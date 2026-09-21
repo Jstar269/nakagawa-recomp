@@ -85,7 +85,7 @@ class TestSBOMTooling(unittest.TestCase):
             json.dump(spdx, tmp)
             spdx_path = Path(tmp.name)
         try:
-            match_errors = verify_sbom.verify_sbom_matches(spdx_path, manifest_path, npm_lock_path, py_lock_path)
+            match_errors, _digests = verify_sbom.verify_sbom_matches(spdx_path, manifest_path, npm_lock_path, py_lock_path)
             self.assertEqual(match_errors, [], f"SPDX verification failed: {match_errors}")
         finally:
             spdx_path.unlink(missing_ok=True)
@@ -127,7 +127,7 @@ class TestSBOMTooling(unittest.TestCase):
             json.dump(sbom, tmp)
             sbom_path = Path(tmp.name)
         try:
-            errors = verify_sbom.verify_sbom_matches(
+            errors, _digests = verify_sbom.verify_sbom_matches(
                 sbom_path,
                 generate_sbom.ROOT / "assets" / "release_manifest.json",
                 generate_sbom.ROOT / "interface" / "package-lock.json",

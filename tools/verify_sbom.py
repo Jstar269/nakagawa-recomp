@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -28,18 +27,6 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "shadcn-ui",
     "vfpu",
 })
-
-
-def _sha256_of_file(path: Path) -> str:
-    """Return the sha256 hex digest of a file's bytes, or an error marker."""
-    try:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1 << 16), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError as exc:
-        return f"<unreadable: {exc}>"
 
 
 def verify_provenance_families(manifest_data: dict) -> list[str]:
@@ -224,18 +211,27 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
     """Verify the SPDX 2.3 SBOM against the exact current lockfile inventory.
 
     The Counter of package-manager dependency identities (purl, name,
-    versionInfo) recorded in the SBOM must exactly equal the Counter derived
-    from the parsed npm/Python lock inventories: exact identity AND exact
-    multiplicity, in both directions. A correct name with the wrong version,
-    a removed duplicate installation, and an over-represented duplicate
-    installation all fail, as does any unrelated PACKAGE-MANAGER purl record
-    that is not a lock dependency. The SBOM's `files` checksum entries for
-    the declared lockfiles must exactly match the current lockfile bytes, so
-    a stale SBOM cannot pass after the lockfiles change (issue #375).
+    versionInfo) recorded in the SBOM must be exactly equal to the Counter
+    derived from the parsed npm/Python lock inventories: full-tuple equality
+    with exact multiplicity, in both directions. A correct name with the
+    wrong version, a removed duplicate installation, an over-represented
+    duplicate installation, and any PACKAGE-MANAGER tuple outside the lock
+    inventory (including one reusing a valid purl with a wrong name or
+    version) all fail. The SBOM's `files` checksum entries for the declared
+    lockfiles must exactly match the current lockfile bytes, so a stale SBOM
+    cannot pass after the lockfiles change (issue #375).
+
+    Returns (errors, verified_digests) where verified_digests carries the
+    sha256 of each lockfile snapshot whose inventory and checksum binding
+    were actually verified above, so callers can report those digests
+    without rereading the files (issue #375 revision 5: no read after the
+    verification decision).
     """
+    verified_digests = {"npm": None, "python": None}
     errors = []
+    verified_digests: dict = {"npm": None, "python": None}
     if not spdx_path.is_file():
-        return [f"SPDX file missing: {spdx_path}"]
+        return errors, verified_digests
 
     npm_pkgs: list[dict] = []
     py_pkgs: list[dict] = []
@@ -249,6 +245,9 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
         # same captured bytes (issue #375 revision 3).
         npm_snap = generate_sbom.snapshot_lockfile(npm_lock_path, "npm")
         py_snap = generate_sbom.snapshot_lockfile(py_lock_path, "Python")
+        # The digests that describe the snapshots every check below operated
+        # on; carried to the caller instead of a post-verification reread.
+        verified_digests = {"npm": npm_snap.sha256, "python": py_snap.sha256}
         try:
             npm_pkgs = generate_sbom._parse_npm_lock_text(npm_snap, npm_lock_path)
         except generate_sbom.LockfileParseError as exc:
@@ -312,33 +311,53 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
         # components carry no PACKAGE-MANAGER purl and are never mistaken for
         # lock dependencies; outside the declared lockfiles there is no
         # legitimate class of non-lock PACKAGE-MANAGER record.
+        # Full-tuple Counter equality in BOTH directions: the SBOM's
+        # package-manager dependency Counter must equal the lock-derived
+        # Counter exactly — under-representation (removed/wrong-version
+        # dependencies), over-representation (extra duplicate records), and
+        # any PACKAGE-MANAGER record not in the lock inventory (unrelated
+        # purl, or a malformed tuple reusing a valid purl with a wrong name
+        # or version) all fail. Membership is never reduced to purl-only:
+        # every (purl, name, version) tuple participates in the exact
+        # equality. The root package, provenance-family packages, and
+        # release-manifest components carry no PACKAGE-MANAGER purl and are
+        # never mistaken for lock dependencies; outside the declared
+        # lockfiles there is no legitimate class of non-lock PACKAGE-MANAGER
+        # record.
         expected_counter = Counter(expected_identities)
-        expected_purls = {identity[0] for identity in expected_counter}
-        for (purl, name, version), expected_count in sorted(expected_counter.items()):
-            found = identity_counter.get((purl, name, version), 0)
-            if found < expected_count:
+        if identity_counter != expected_counter:
+            missing = expected_counter - identity_counter
+            unexpected = identity_counter - expected_counter
+            for (purl, name, version), _shortfall in sorted(missing.items()):
+                found = identity_counter.get((purl, name, version), 0)
                 errors.append(
                     f"Lock dependency identity missing or under-represented in SPDX SBOM: "
-                    f"{purl} (expected {expected_count} record(s), found {found})"
+                    f"{purl} (name {name!r}, version {version!r}) "
+                    f"(expected {expected_counter[(purl, name, version)]} record(s), found {found})"
                 )
-            elif found > expected_count:
-                errors.append(
-                    f"Lock dependency identity over-represented in SPDX SBOM: {purl} "
-                    f"(expected {expected_count} record(s), found {found}); the SBOM must "
-                    "carry exactly the lockfile dependency inventory"
+            for (purl, name, version), _surplus in sorted(unexpected.items()):
+                expected_count = expected_counter.get((purl, name, version), 0)
+                found = identity_counter[(purl, name, version)]
+                # A surplus of an identity the lock declares at all is an
+                # over-representation; a tuple the lock never declares (a
+                # foreign purl, or a malformed record reusing a valid purl
+                # with a wrong name or version) is an unexpected record.
+                label = (
+                    "Lock dependency identity over-represented in SPDX SBOM"
+                    if expected_count > 0
+                    else "Unexpected package-manager package record in SPDX SBOM"
                 )
-        for (purl, _name, _version), extra_count in sorted(identity_counter.items()):
-            if purl not in expected_purls:
                 errors.append(
-                    f"Unexpected package-manager package record in SPDX SBOM: {purl} "
-                    f"({extra_count} record(s)); records outside the declared dependency "
-                    "lockfiles are not accepted"
+                    f"{label}: {purl} (name {name!r}, version {version!r}) "
+                    f"(expected {expected_count} record(s), found {found}); the SBOM's "
+                    "package-manager records must equal the lockfile dependency "
+                    "inventory exactly"
                 )
 
     except Exception as exc:
         errors.append(f"Failed to verify SPDX SBOM {spdx_path}: {exc}")
 
-    return errors
+    return errors, verified_digests
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -372,7 +391,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"Python lockfile passed via --py-lock ({args.py_lock}) is not the lockfile declared "
                 f"by the manifest ({verify_release_locks.last_validated_py_lock})"
             )
-        errors.extend(verify_sbom_matches(args.spdx, args.manifest, args.npm_lock, args.py_lock))
+        match_errors, verified_digests = verify_sbom_matches(
+            args.spdx, args.manifest, args.npm_lock, args.py_lock)
+        errors.extend(match_errors)
 
     if errors:
         seen = set()
@@ -384,10 +405,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.spdx:
+        # Report the digests of the snapshots that were actually verified —
+        # never a fresh read, which could describe bytes other than the ones
+        # whose inventory and checksum binding just passed (issue #375).
+        npm_digest = verified_digests["npm"]
+        py_digest = verified_digests["python"]
+        if npm_digest is None or py_digest is None:
+            # Unreachable when errors is empty (snapshot failure always adds
+            # an error); refuse to print an unverified digest anyway.
+            return 1
         print(
             "SBOM Verification: OK (All release dependency locks and SBOM elements verified)\n"
-            f"  npm lockfile sha256: {_sha256_of_file(args.npm_lock)}\n"
-            f"  python lockfile sha256: {_sha256_of_file(args.py_lock)}"
+            f"  npm lockfile sha256: {npm_digest}\n"
+            f"  python lockfile sha256: {py_digest}"
         )
     else:
         print("SBOM Verification: OK (All release dependency locks verified)")

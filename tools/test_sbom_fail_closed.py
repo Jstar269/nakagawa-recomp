@@ -448,7 +448,7 @@ class TestVerifySbomFailsClosed(unittest.TestCase):
         spdx_path = self.tmp_path / "sbom.json"
         spdx_path.write_text(json.dumps({"packages": []}), encoding="utf-8")
 
-        errors = verify_sbom.verify_sbom_matches(
+        errors, _digests = verify_sbom.verify_sbom_matches(
             spdx_path, manifest,
             self.tmp_path / "fixtures_hostile" / "bad-npm.json",
             PY_LOCK,
@@ -472,7 +472,7 @@ class TestVerifySbomFailsClosed(unittest.TestCase):
             spdx_path = self.tmp_path / "mutated-sbom.json"
             spdx_path.write_text(json.dumps(spdx), encoding="utf-8")
 
-        errors = verify_sbom.verify_sbom_matches(spdx_path, RELEASE_MANIFEST, NPM_LOCK, PY_LOCK)
+        errors, _digests = verify_sbom.verify_sbom_matches(spdx_path, RELEASE_MANIFEST, NPM_LOCK, PY_LOCK)
         # The subverted SBOM (a) lacks the standards-conformant lock binding
         # (`files` entries), (b) lacks the DEPENDENCY_MANIFEST_OF lock
         # relationships, and (c) is missing the exact compiledb identity; all

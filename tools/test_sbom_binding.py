@@ -12,6 +12,8 @@
 # exact dependency identities (ecosystem + name + version, with
 # multiplicity). Machine-local paths must never appear in release evidence.
 
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+import contextlib
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -87,10 +90,15 @@ class BindingFixture(unittest.TestCase):
             lock_relationships=parsed["lock_relationships"],
         )
 
-    def verify(self, spdx: dict) -> list[str]:
+    def verify_with_digests(self, spdx: dict) -> tuple[list[str], dict]:
         spdx_path = self.tmp_path / "sbom.json"
         spdx_path.write_text(json.dumps(spdx), encoding="utf-8", newline="\n")
-        return verify_sbom.verify_sbom_matches(spdx_path, RELEASE_MANIFEST, self.npm_lock, self.py_lock)
+        return verify_sbom.verify_sbom_matches(
+            spdx_path, RELEASE_MANIFEST, self.npm_lock, self.py_lock)
+
+    def verify(self, spdx: dict) -> list[str]:
+        errors, _digests = self.verify_with_digests(spdx)
+        return errors
 
 
 class TestStandardsConformantLockBinding(BindingFixture):
@@ -259,7 +267,8 @@ class TestSingleSnapshotNoTOCTOU(BindingFixture):
             return flippy_read(path_self)
 
         with unittest.mock.patch.object(Path, "read_bytes", autospec=True, side_effect=recording_read):
-            errors = verify_sbom.verify_sbom_matches(spdx_path, RELEASE_MANIFEST, self.npm_lock, self.py_lock)
+            errors, _digests = verify_sbom.verify_sbom_matches(
+                spdx_path, RELEASE_MANIFEST, self.npm_lock, self.py_lock)
         # Exactly one read per lockfile inside verification; the same snapshot
         # fed the inventory and the checksum comparison, so verification still
         # passes (a second read would have returned mutated bytes).
@@ -405,6 +414,140 @@ class TestExactIdentityVerification(BindingFixture):
             str(errors),
         )
 
+    def test_extra_tuple_with_expected_purl_but_wrong_name_fails(self):
+        # The exact-Counter contract is full-tuple: an extra PACKAGE-MANAGER
+        # record reusing a VALID purl but carrying a wrong name must fail, not
+        # escape through purl-only membership.
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        spdx["packages"].append({
+            "SPDXID": "SPDXRef-npm-left-pad-wrongname",
+            "name": "wrong-name",
+            "versionInfo": "9.9.9",
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "externalRefs": [{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/left-pad@1.3.0",
+            }],
+        })
+        errors = self.verify(spdx)
+        self.assertTrue(
+            any("Unexpected package-manager package record" in e
+                and "pkg:npm/left-pad@1.3.0" in e and "'wrong-name'" in e
+                for e in errors),
+            str(errors),
+        )
+
+    def test_extra_tuple_with_expected_purl_but_wrong_version_fails(self):
+        # Same purl, wrong versionInfo: still an unexpected tuple under exact
+        # Counter equality.
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        spdx["packages"].append({
+            "SPDXID": "SPDXRef-npm-left-pad-wrongversion",
+            "name": "left-pad",
+            "versionInfo": "9.9.9",
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "externalRefs": [{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/left-pad@1.3.0",
+            }],
+        })
+        errors = self.verify(spdx)
+        self.assertTrue(
+            any("Unexpected package-manager package record" in e
+                and "pkg:npm/left-pad@1.3.0" in e and "'9.9.9'" in e
+                for e in errors),
+            str(errors),
+        )
+
+    def test_substituted_tuple_with_same_purl_fails(self):
+        # An expected tuple is removed and a wrong tuple reusing its purl is
+        # substituted: Counter equality must report BOTH the shortfall and
+        # the unexpected tuple.
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        kept: list[dict] = []
+        removed = False
+        for pkg in spdx["packages"]:
+            if (not removed and pkg.get("name") == "left-pad"
+                    and pkg.get("versionInfo") == "1.3.0"):
+                removed = True
+                continue
+            kept.append(pkg)
+        self.assertTrue(removed, "fixture sanity: a left-pad record must exist")
+        kept.append({
+            "SPDXID": "SPDXRef-npm-left-pad-substituted",
+            "name": "wrong-name",
+            "versionInfo": "9.9.9",
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "externalRefs": [{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/left-pad@1.3.0",
+            }],
+        })
+        spdx["packages"] = kept
+        errors = self.verify(spdx)
+        self.assertTrue(
+            any("missing or under-represented" in e and "pkg:npm/left-pad@1.3.0" in e
+                for e in errors), str(errors))
+        self.assertTrue(
+            any("Unexpected package-manager package record" in e
+                and "pkg:npm/left-pad@1.3.0" in e and "'wrong-name'" in e
+                for e in errors), str(errors))
+
+    def test_exact_counter_passes_and_mutation_fails(self):
+        # Contract statement: the generated document's Counter equals the
+        # lock-derived Counter exactly (PASS), and a third identical tuple
+        # (FAIL) — the two halves of exact Counter equality.
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        self.assertEqual(self.verify(spdx), [])
+        clone = json.loads(json.dumps(
+            next(p for p in spdx["packages"] if p.get("name") == "left-pad")))
+        clone["SPDXID"] = "SPDXRef-npm-left-pad-1.3.0-extra"
+        spdx["packages"].append(clone)
+        errors = self.verify(spdx)
+        self.assertTrue(
+            any("over-represented" in e and "pkg:npm/left-pad@1.3.0" in e
+                and "expected 2 record(s), found 3" in e for e in errors),
+            str(errors),
+        )
+
+    def test_verify_sbom_matches_returns_verified_snapshot_digests(self):
+        # The returned digests are the snapshots' own sha256 — the exact bytes
+        # whose inventory and checksum binding were verified — not a reread.
+        self.write_npm_lock(LOCK_A_TEXT)
+        spdx = self.generate_sbom_document()
+        spdx_path = self.tmp_path / "sbom.json"
+        spdx_path.write_text(json.dumps(spdx), encoding="utf-8", newline="\n")
+        expected_npm = hashlib.sha256(self.npm_lock.read_bytes()).hexdigest()
+        expected_py = hashlib.sha256(self.py_lock.read_bytes()).hexdigest()
+        errors, digests = verify_sbom.verify_sbom_matches(
+            spdx_path, RELEASE_MANIFEST, self.npm_lock, self.py_lock)
+        self.assertEqual(errors, [])
+        self.assertEqual(digests["npm"], expected_npm)
+        self.assertEqual(digests["python"], expected_py)
+        # Flip the bytes AFTER verification: the returned digests are
+        # unchanged — they are carried, not recomputed.
+        self.write_npm_lock(LOCK_B_TEXT)
+        self.assertEqual(digests["npm"], expected_npm)
+
     def test_non_lock_records_are_not_treated_as_dependencies(self):
         # The root package, provenance-family packages, and manifest components
         # carry no PACKAGE-MANAGER purl; they must never count as (or against)
@@ -433,7 +576,8 @@ class TestExactIdentityVerification(BindingFixture):
         )
         spdx_path = self.tmp_path / "repo-sbom.json"
         spdx_path.write_text(json.dumps(spdx), encoding="utf-8", newline="\n")
-        errors = verify_sbom.verify_sbom_matches(spdx_path, RELEASE_MANIFEST, NPM_LOCK, PY_LOCK)
+        errors, _digests = verify_sbom.verify_sbom_matches(
+            spdx_path, RELEASE_MANIFEST, NPM_LOCK, PY_LOCK)
         self.assertEqual(errors, [], str(errors))
 
 
@@ -466,6 +610,99 @@ class TestCliBinding(unittest.TestCase):
         )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("is not the lockfile declared by the release manifest", proc.stderr)
+
+    def test_cli_success_digest_comes_from_verified_snapshot(self):
+        # The success message must report the digests of the snapshots that
+        # were verified, never a post-verification reread: flip the lockfile
+        # bytes after verification and prove the printed digest still
+        # describes the verified bytes (and that Path.read_bytes is not
+        # called again during reporting).
+        import subprocess
+        tmp = Path(tempfile.mkdtemp())
+        sandbox = tmp / "repo"
+        (sandbox / "interface").mkdir(parents=True)
+        (sandbox / "tools").mkdir(parents=True)
+        (sandbox / "assets").mkdir(parents=True)
+        npm_lock = sandbox / "interface" / "package-lock.json"
+        py_lock = sandbox / "tools" / "requirements-lock.txt"
+        npm_lock.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
+        py_lock.write_text("compiledb==0.10.7\n", encoding="utf-8", newline="\n")
+        (sandbox / "interface" / "package.json").write_text(
+            json.dumps({"devDependencies": {"typescript": "^5.0.0", "eslint": "^9.0.0"}}),
+            encoding="utf-8", newline="\n")
+        manifest_data = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
+        manifest_data["lockfiles"] = {
+            "npm": "interface/package-lock.json",
+            "python": "tools/requirements-lock.txt",
+        }
+        manifest_path = sandbox / "assets" / "release_manifest.json"
+        manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8", newline="\n")
+        spdx_data = generate_sbom.parse_lockfiles(npm_lock, py_lock, repo_root=sandbox)
+        spdx = generate_sbom.generate_spdx23(
+            manifest_data, spdx_data["npm_packages"], spdx_data["py_packages"],
+            lock_files=spdx_data["lock_files"],
+            lock_relationships=spdx_data["lock_relationships"],
+        )
+        spdx_path = sandbox / "sbom.json"
+        spdx_path.write_text(json.dumps(spdx), encoding="utf-8", newline="\n")
+        verified_npm_digest = hashlib.sha256(npm_lock.read_bytes()).hexdigest()
+        verified_py_digest = hashlib.sha256(py_lock.read_bytes()).hexdigest()
+
+        # Flip the lock bytes BEFORE the run: the snapshot inside verification
+        # is captured at its first read, so the digest it verified against is
+        # the ORIGINAL bytes only if the report does not reread the file.
+        npm_lock.write_text(LOCK_B_TEXT, encoding="utf-8", newline="\n")
+
+        # \< rogue flipped bytes must still fail the files-entry checksum with
+        # the ORIGINAL snapshot digest (single-snapshot behavior).
+        proc_fail = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "verify_sbom.py"),
+             "--manifest", str(manifest_path),
+             "--npm-lock", str(npm_lock), "--py-lock", str(py_lock),
+             "--spdx", str(spdx_path)],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        self.assertNotEqual(proc_fail.returncode, 0)
+        self.assertIn(verified_npm_digest, proc_fail.stderr)
+
+        # Restore the verified bytes: the flip above exists only for the
+        # fail-path check; the success leg below needs the original bytes on
+        # disk so the two legitimate reads see them.
+        npm_lock.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
+
+        # Now the same-snapshot success path: verification legitimately reads
+        # each lockfile exactly twice (once in verify_release_locks, once for
+        # the verify_sbom_matches snapshot). Patch Path.read_bytes to record
+        # reads and serve FLIPPED (valid, differently formatted, different
+        # digest) bytes on any THIRD read of a lockfile. main() must succeed,
+        # print exactly the verified-snapshot digests, and never trigger the
+        # flip: a third read would mean the report reread the files.
+        flipped_npm_digest = hashlib.sha256(LOCK_B_TEXT.encode("utf-8")).hexdigest()
+        seen_paths: list[Path] = []
+        real_read_bytes = Path.read_bytes
+
+        def flipping_read(path_self):
+            seen_paths.append(path_self)
+            if path_self in (npm_lock, py_lock) and seen_paths.count(path_self) >= 3:
+                return (LOCK_B_TEXT + "\n").encode("utf-8")
+            return real_read_bytes(path_self)
+
+        stdout_buffer = io.StringIO()
+        with unittest.mock.patch.object(Path, "read_bytes", autospec=True,
+                                        side_effect=flipping_read), \
+                contextlib.redirect_stdout(stdout_buffer):
+            code = verify_sbom.main([
+                "--manifest", str(manifest_path),
+                "--npm-lock", str(npm_lock), "--py-lock", str(py_lock),
+                "--spdx", str(spdx_path),
+            ])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen_paths.count(npm_lock), 2, seen_paths)
+        self.assertEqual(seen_paths.count(py_lock), 2, seen_paths)
+        output = stdout_buffer.getvalue()
+        self.assertIn(verified_npm_digest, output)
+        self.assertIn(verified_py_digest, output)
+        self.assertNotIn(flipped_npm_digest, output)
 
 
 class TestDeclaredLockEnforcement(unittest.TestCase):
