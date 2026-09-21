@@ -14443,6 +14443,29 @@ void sr_hle_init(void) {
 
 /* ---- dispatch ---- */
 
+/* Import linking for runtime-loaded modules: a NID exported by a module whose image is resident
+ * and whose module_start has run executes that module's recompiled guest code (e.g.
+ * scePsmfPlayer* -> libpsmfplayer.prx), exactly as the kernel links the importer's stub to the
+ * export. Returns 1 when the call was linked (result in v0); the host handler then only serves
+ * NIDs no started module exports. */
+static int link_started_export(CpuState *s, uint32_t nid) {
+    uint32_t target = started_module_export(nid);
+    RecompFn gfn = target ? sr_lookup(target) : NULL;
+    if (!gfn) return 0;
+    /* Log each linked NID once. */
+    static uint32_t s_linked_seen[256];
+    static unsigned s_linked_n = 0;
+    unsigned k = 0;
+    while (k < s_linked_n && s_linked_seen[k] != nid) k++;
+    if (k == s_linked_n && s_linked_n < 256) {
+        s_linked_seen[s_linked_n++] = nid;
+        const char *nm = sr_nid_name(nid);
+        fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
+    }
+    gfn(s);
+    return 1;
+}
+
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
     sr_last_nid = nid;
@@ -14452,29 +14475,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
                   if ((++nc & 0x3f) == 0) fflush(nf); }
     }
-    /* Import linking for runtime-loaded modules: a NID exported by a module whose image is
-     * resident and whose module_start has run executes that module's recompiled guest code
-     * (e.g. scePsmfPlayer* -> libpsmfplayer.prx), exactly as the kernel links the importer's
-     * stub to the export. The host handler below only serves NIDs no started module exports. */
-    {
-        uint32_t target = started_module_export(nid);
-        RecompFn gfn = target ? sr_lookup(target) : NULL;
-        if (gfn) {
-            /* Log each linked NID once. */
-            static uint32_t s_linked_seen[256];
-            static unsigned s_linked_n = 0;
-            unsigned k = 0;
-            while (k < s_linked_n && s_linked_seen[k] != nid) k++;
-            if (k == s_linked_n && s_linked_n < 256) {
-                s_linked_seen[s_linked_n++] = nid;
-                const char *nm = sr_nid_name(nid);
-                fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n",
-                        nm ? nm : "?", nid, target);
-            }
-            gfn(s);
-            return s->r[2];
-        }
-    }
+    if (link_started_export(s, nid)) return s->r[2];
     HleEntry *e = hle_find(nid);
     if (hle_log_on()) {
         /* Deduplicate: only log each (thread, nid) pair once to avoid drowning
