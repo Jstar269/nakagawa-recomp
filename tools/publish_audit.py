@@ -277,22 +277,127 @@ def _git_output(cmd: list[str], repo_root: Path = ROOT) -> str:
     return res.stdout.decode("utf-8", errors="replace")
 
 
-def _read_git_lfs_attributes(repo_root: Path = ROOT) -> set[str]:
-    gitattributes_file = repo_root / ".gitattributes"
+GITATTRIBUTES_REL = ".gitattributes"
+
+
+def _parse_gitattributes_lfs_patterns(text: str) -> set[str]:
+    """Extract the path patterns this file declares for Git LFS.
+
+    Only an exact ``filter=lfs`` attribute token counts; substring matches such
+    as ``subfilter=lfs`` are a different attribute and must not be silently
+    treated as an LFS declaration.
+    """
     patterns = set()
-    if gitattributes_file.is_file():
-        try:
-            text = gitattributes_file.read_text(encoding="utf-8")
-            for line in text.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split()
-                if len(parts) >= 2 and any("filter=lfs" in p for p in parts[1:]):
-                    patterns.add(parts[0])
-        except OSError:
-            pass
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and any(part == "filter=lfs" for part in parts[1:]):
+            patterns.add(parts[0])
     return patterns
+
+
+def _read_git_lfs_attributes(
+    repo_root: Path = ROOT,
+    entries: list[GitEntry] | None = None,
+    content_map: dict[str, tuple[bytes | None, str | None]] | None = None,
+    content_source: str = CONTENT_INDEX,
+) -> tuple[set[str], list[Finding]]:
+    """Read ``.gitattributes`` from the SAME selected content source as the audit.
+
+    The attribute policy decides tracked-entry findings (``LFS_MISMATCH`` and
+    ``LFS_UNTRACKED_POINTER``), so reading it from the raw filesystem while the
+    audited bytes come from the index would be a mixed-tree seam: an index-vs-
+    worktree divergence in ``.gitattributes`` could silently change the verdict.
+    The three sources therefore read it exactly like every other control file:
+
+    * ``index`` -- the staged blob behind ``.gitattributes`` (disk edits are
+      invisible, matching how indexed file content is read);
+    * ``worktree`` / ``candidate`` / ``committed`` -- the materialized bytes
+      under *repo_root*.
+
+    A ``.gitattributes`` that is part of the audited source but cannot be read
+    or decoded fails closed with ``GITATTRIBUTES_UNREADABLE``; an absent file
+    means no declared LFS policy and yields an empty pattern set without a
+    finding.
+    """
+
+    def _disk_read() -> tuple[bytes | None, Finding | None]:
+        path = repo_root / GITATTRIBUTES_REL
+        listed = entries is not None and GITATTRIBUTES_REL in {entry.path for entry in entries}
+        if not path.exists():
+            if listed:
+                return None, Finding(
+                    "GITATTRIBUTES_UNREADABLE", GITATTRIBUTES_REL,
+                    "declared attribute policy is listed in the audited source but missing on disk",
+                )
+            return None, None
+        try:
+            return path.read_bytes(), None
+        except OSError as error:
+            return None, Finding(
+                "GITATTRIBUTES_UNREADABLE", GITATTRIBUTES_REL,
+                f"declared attribute policy cannot be read: {error}",
+            )
+
+    raw: bytes | None = None
+    if content_source == CONTENT_INDEX:
+        if content_map is not None and GITATTRIBUTES_REL in content_map:
+            cached, read_error = content_map[GITATTRIBUTES_REL]
+            if cached is None:
+                return set(), [Finding(
+                    "GITATTRIBUTES_UNREADABLE", GITATTRIBUTES_REL,
+                    f"declared attribute policy cannot be read from the index: "
+                    f"{read_error or 'missing'}",
+                )]
+            raw = cached
+        else:
+            # Not among the audited entries (selected-file helper) or no cache
+            # supplied: resolve the staged blob directly so the patterns still
+            # come from the index, never from worktree edits.
+            try:
+                listing = _git_output(
+                    ["ls-files", "-s", "--", GITATTRIBUTES_REL], repo_root=repo_root
+                ).split()
+            except RuntimeError:
+                # No usable index (a real index audit has already driven Git
+                # successfully to build `entries`, so this only fires for
+                # in-process helper calls on a non-Git fixture root). There the
+                # filesystem is the only coherent source; read it fail closed.
+                raw, disk_finding = _disk_read()
+                if disk_finding is not None:
+                    return set(), [disk_finding]
+            else:
+                if not listing:
+                    # Not part of the audited index; untracked disk copies are
+                    # outside an index audit's content source.
+                    return set(), []
+                res = subprocess.run(
+                    ["git", "cat-file", "blob", listing[1]],
+                    cwd=repo_root, capture_output=True, check=False,
+                )
+                if res.returncode != 0:
+                    return set(), [Finding(
+                        "GITATTRIBUTES_UNREADABLE", GITATTRIBUTES_REL,
+                        "git cat-file failed to read the indexed attribute policy blob",
+                    )]
+                raw = res.stdout
+    else:
+        raw, disk_finding = _disk_read()
+        if disk_finding is not None:
+            return set(), [disk_finding]
+
+    if raw is None:
+        return set(), []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        return set(), [Finding(
+            "GITATTRIBUTES_UNREADABLE", GITATTRIBUTES_REL,
+            f"declared attribute policy cannot be parsed: {error}",
+        )]
+    return _parse_gitattributes_lfs_patterns(text), []
 
 
 def _is_contained_in_root(path: Path | str, root: Path | str) -> bool:
@@ -1977,7 +2082,10 @@ def audit_entries_with_semantics(
 
     findings.extend(check_text_hygiene(content_map))
 
-    lfs_patterns = _read_git_lfs_attributes(repo_root)
+    lfs_patterns, lfs_attribute_findings = _read_git_lfs_attributes(
+        repo_root, entries=entries, content_map=content_map, content_source=content_source,
+    )
+    findings.extend(lfs_attribute_findings)
 
     # Check for orphan manifest paths
     entry_path_set = set(paths)

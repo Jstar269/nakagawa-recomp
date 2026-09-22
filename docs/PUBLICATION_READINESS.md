@@ -46,9 +46,18 @@ or a human legal decision.
 2. **Explicit policy and provenance.** Every included path is enumerated in the
    profile and has a concrete record in the externally trusted provenance ledger.
    Missing, unresolved, substituted, or self-authorized records fail closed.
-3. **Candidate export.** `tools/build_public_export.py` produces one deterministic
-   single-commit export. The candidate's policy, ledger, manifest, export digest,
-   counts, and excluded paths are re-audited from the materialized bytes.
+3. **Candidate export.** `tools/build_public_export.py` materializes the exact
+   audited Git index (never a different tree) and produces one deterministic
+   single-commit export. The tree is built in a staging directory and promoted
+   to the target path only after the snapshot completes, so an interrupted
+   generation leaves no candidate at the target, and a candidate that fails the
+   post-export audit is quarantined out of the release path. No provenance-pinned
+   candidate file is mutated after `PUBLIC_EXPORT.json` freezes the candidate's
+   identity. The candidate's policy, ledger, manifest, export digest, counts,
+   and excluded paths are re-audited from the final materialized bytes. The
+   export commit id and its timestamps are intentionally variable snapshot
+   metadata; tracked identity is the tree plus `included_content_sha256`, both
+   deterministic for a given source index.
 4. **History and object audit.** `tools/history_audit.py` scans every reachable
    commit, tree path, ref, and blob content in the proposed history. A clean tip
    is not sufficient.
@@ -104,7 +113,8 @@ python tools/provenance_ledger.py
 python tools/policy_sync.py --regen-export
 python tools/history_audit.py --json
 python tools/verify_sbom.py
-python tools/build_public_export.py --public-safe-profile --export-dir <staging>
+python tools/build_public_export.py --public-safe-profile --export-dir <staging> \
+  --trusted-ledger assets/public_provenance_ledger.json
 python tools/publish_audit.py --candidate-root <staging> --candidate-tree --public-scope \
   --provenance-ledger assets/public_provenance_ledger.json
 ```

@@ -36,13 +36,17 @@ candidate-selectable private-development or relaxed audit flag.
 Build a new candidate with:
 
 ```text
-python tools/build_public_export.py --public-safe-profile --export-dir <staging>
+python tools/build_public_export.py --public-safe-profile --export-dir <staging> \
+  --trusted-ledger assets/public_provenance_ledger.json
 ```
 
-The generator archives one reviewed commit, filters the profile, writes the
-deterministic `PUBLIC_EXPORT.json`, creates a single fresh candidate commit, and
-then runs the candidate-tree audit. It does not publish, change repository
-visibility, copy private refs, or move private inputs.
+The generator materializes the exact audited Git index, filters the profile,
+writes the deterministic `PUBLIC_EXPORT.json` while the tree is still being
+built (no provenance-pinned candidate file is mutated afterwards), creates the
+single fresh candidate commit in a staging directory, promotes the completed
+snapshot to the target path, and then runs the candidate-tree audit against the
+final bytes. It does not publish, change repository visibility, copy private
+refs, or move private inputs.
 
 ## Boundary claims
 

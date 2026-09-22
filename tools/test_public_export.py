@@ -1,19 +1,26 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
+import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
-from tools import history_audit, publication_policy, public_export
+from tools import build_public_export, history_audit, publication_policy, public_export
 from tools.build_public_export import (
+    ROOT,
+    _quarantine_failed_export,
     check_unresolved_legal_blockers,
     export_sanitized_public_tree,
     history_audit_gate_result,
     is_public_safe_export_tree,
     run_all_publication_gates,
+    run_candidate_audit,
     run_publish_audit,
     run_sbom_verification,
 )
@@ -26,6 +33,25 @@ _PUBLIC_SAFE_TREE = is_public_safe_export_tree()
 
 def _git(argv: list[str], cwd: Path) -> None:
     subprocess.run(["git", *argv], cwd=cwd, check=True, capture_output=True)
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    """Materialized candidate bytes keyed by repo-relative POSIX path.
+
+    Excluded: ``.git`` (commit objects are per-invocation snapshot metadata,
+    not tracked candidate identity) and host runtime residue (``__pycache__``/
+    ``*.pyc`` written when Python executes ``tools/*.py`` in place inside a
+    candidate). Neither is candidate content.
+    """
+    result: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if ".git" in rel.parts or "__pycache__" in rel.parts or path.suffix == ".pyc":
+            continue
+        result[rel.as_posix()] = path.read_bytes()
+    return result
 
 
 def _init_synthetic_repo(root: Path, sensitive: bool) -> None:
@@ -217,6 +243,253 @@ class TestPublicExport(unittest.TestCase):
             "tools/pgd_decrypt.py",
         ):
             self.assertTrue(public_candidate.is_excluded(rel, profile), rel)
+
+
+class TestCandidateImmutability293(unittest.TestCase):
+    """Issue #293: candidate bytes are frozen when PUBLIC_EXPORT.json is written.
+
+    ``export_sanitized_public_tree`` must never mutate a provenance-pinned
+    candidate file after that point, two exports of the same index must be
+    byte-identical apart from the intentionally variable commit metadata, and
+    the exhaustive candidate-tree audit must read the exact final bytes.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls._tmp = tempfile.TemporaryDirectory()
+        base = Path(cls._tmp.name)
+        cls.export_a = base / "export_a"
+        cls.export_b = base / "export_b"
+        for target in (cls.export_a, cls.export_b):
+            if not export_sanitized_public_tree(target, public_safe_profile=True):
+                raise AssertionError(f"public-safe export failed for {target}")
+        cls.manifest_a = json.loads(
+            (cls.export_a / "PUBLIC_EXPORT.json").read_text(encoding="utf-8")
+        )
+        cls.manifest_b = json.loads(
+            (cls.export_b / "PUBLIC_EXPORT.json").read_text(encoding="utf-8")
+        )
+        # A rejected copy used by the tamper/authority tests, built once so the
+        # shared fixtures are never modified in place.
+        cls.tampered = base / "export_tampered"
+        shutil.copytree(cls.export_a, cls.tampered, ignore=shutil.ignore_patterns(".git"))
+        pre_commit = cls.tampered / ".pre-commit-config.yaml"
+        pre_commit.write_bytes(pre_commit.read_bytes() + b"# tampered after freeze\n")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+        super().tearDownClass()
+
+    def test_clean_export_is_cleared_by_candidate_tree_audit(self):
+        # Property: audit runs on the exact final candidate and clears a clean
+        # export when the release-controlled trusted ledger is supplied.
+        audit = run_candidate_audit(
+            self.export_a, trusted_ledger=Path("assets/public_provenance_ledger.json")
+        )
+        self.assertTrue(audit.passed, audit.detail)
+
+    def test_recorded_identity_matches_materialized_bytes_and_source_is_untouched(self):
+        # Property: PUBLIC_EXPORT.json, the ledger/manifest shas it records, the
+        # source index, and the materialized candidate all describe the same
+        # bytes; generating the export never mutates the source tree.
+        policy = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        files = _tree_bytes(self.export_a)
+        included = [
+            (rel, raw)
+            for rel, raw in files.items()
+            if policy.resolve(rel).disposition == "included"
+        ]
+        self.assertEqual(
+            public_export.content_digest(included),
+            self.manifest_a["included_content_sha256"],
+        )
+        self.assertEqual(
+            self.manifest_a["provenance_ledger_sha256"],
+            hashlib.sha256(
+                (self.export_a / "assets" / "public_provenance_ledger.json").read_bytes()
+            ).hexdigest(),
+        )
+        self.assertEqual(
+            self.manifest_a["manifest_sha256"],
+            hashlib.sha256(
+                (self.export_a / "assets" / "release_manifest.json").read_bytes()
+            ).hexdigest(),
+        )
+        # The historical #293 victim: staged blob == source worktree == shipped
+        # candidate copy of .pre-commit-config.yaml.
+        staged = subprocess.run(
+            ["git", "show", ":.pre-commit-config.yaml"],
+            cwd=ROOT, capture_output=True, check=True,
+        ).stdout
+        self.assertEqual(
+            staged, (ROOT / ".pre-commit-config.yaml").read_bytes(),
+            "source worktree .pre-commit-config.yaml diverged from the index",
+        )
+        self.assertEqual(
+            staged,
+            (self.export_a / ".pre-commit-config.yaml").read_bytes(),
+            "exported candidate .pre-commit-config.yaml must equal the audited index blob",
+        )
+        # source_tree binds the manifest to the audited index, not to a commit.
+        index_tree = subprocess.run(
+            ["git", "write-tree"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        self.assertEqual(self.manifest_a["source_tree"], index_tree)
+
+    def test_tampered_candidate_fails_the_candidate_tree_audit(self):
+        # Property: any post-freeze byte change is detected by re-auditing the
+        # materialized candidate against the trusted ledger.
+        res = subprocess.run(
+            [
+                sys.executable,
+                "tools/publish_audit.py",
+                "--candidate-root", str(self.tampered),
+                "--candidate-tree",
+                "--public-scope",
+                "--provenance-ledger", "assets/public_provenance_ledger.json",
+            ],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("PROVENANCE_CONTENT_MISMATCH", res.stdout + res.stderr)
+
+    def test_two_exports_are_deterministic_and_commit_metadata_is_variable(self):
+        # Property: two exports of the same index are byte-identical in every
+        # tracked candidate file and in PUBLIC_EXPORT.json. The export commit id
+        # and its timestamps are intentionally variable snapshot metadata and
+        # are not part of the recorded identity.
+        self.assertEqual(self.manifest_a, self.manifest_b)
+        self.assertEqual(_tree_bytes(self.export_a), _tree_bytes(self.export_b))
+        commit_a = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.export_a,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        commit_b = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.export_b,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        tree_a = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=self.export_a,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        tree_b = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=self.export_b,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # Tracked identity is the tree plus the recorded digest; commit ids are
+        # never recorded in PUBLIC_EXPORT.json and may differ across runs.
+        self.assertEqual(tree_a, tree_b)
+        recorded = json.dumps(self.manifest_a)
+        self.assertNotIn(commit_a, recorded)
+        self.assertNotIn(commit_b, recorded)
+        for key in ("commit", "commit_id", "export_commit"):
+            self.assertNotIn(key, self.manifest_a)
+
+    def test_exported_pre_commit_audit_passes_functionally(self):
+        # Property: the exported tree's own pre-commit publication-audit entry
+        # runs against the candidate and passes (public scope, tripwire
+        # provenance scope) without any further mutation of the tree.
+        before = _tree_bytes(self.export_a)
+        res = subprocess.run(
+            [
+                sys.executable,
+                "tools/publish_audit.py",
+                "--tracked-only",
+                "--public-scope",
+                "--provenance-self-consistency",
+            ],
+            cwd=self.export_a, capture_output=True, text=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(before, _tree_bytes(self.export_a), "the audit must not mutate the candidate")
+
+    def test_authority_unavailable_is_not_conflated_with_content_invalid(self):
+        # Property: a missing trusted ledger (authority unavailable) fails as
+        # PROVENANCE_UNVERIFIED, while a trusted ledger plus altered bytes fails
+        # as PROVENANCE_CONTENT_MISMATCH. The two failures never collapse into
+        # one another.
+        base_cmd = [
+            sys.executable,
+            "tools/publish_audit.py",
+            "--candidate-root", str(self.export_a),
+            "--candidate-tree",
+            "--public-scope",
+        ]
+        no_authority = subprocess.run(base_cmd, cwd=ROOT, capture_output=True, text=True)
+        self.assertNotEqual(no_authority.returncode, 0)
+        no_authority_out = no_authority.stdout + no_authority.stderr
+        self.assertIn("PROVENANCE_UNVERIFIED", no_authority_out)
+        self.assertNotIn("PROVENANCE_CONTENT_MISMATCH", no_authority_out)
+
+        invalid = subprocess.run(
+            [
+                sys.executable,
+                "tools/publish_audit.py",
+                "--candidate-root", str(self.tampered),
+                "--candidate-tree",
+                "--public-scope",
+                "--provenance-ledger", "assets/public_provenance_ledger.json",
+            ],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertNotEqual(invalid.returncode, 0)
+        invalid_out = invalid.stdout + invalid.stderr
+        self.assertIn("PROVENANCE_CONTENT_MISMATCH", invalid_out)
+        self.assertNotIn("PROVENANCE_UNVERIFIED", invalid_out)
+
+    def test_interrupted_export_is_not_finalized(self):
+        # Property: a generation failure leaves no candidate at the requested
+        # path and no staging residue.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "interrupted_export"
+            with mock.patch(
+                "tools.build_public_export._index_snapshot",
+                side_effect=RuntimeError("simulated interrupt"),
+            ):
+                ok = export_sanitized_public_tree(target, public_safe_profile=True)
+            self.assertFalse(ok)
+            self.assertFalse(target.exists())
+            leftovers = [
+                p.name
+                for p in Path(tmpdir).iterdir()
+                if p.name.startswith(".interrupted_export.staging-")
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_failed_candidate_audit_quarantines_the_export(self):
+        # Property: a fully generated but uncleared candidate is moved out of
+        # the release path so nothing can consume it as finalized.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export = Path(tmpdir) / "doomed"
+            export.mkdir()
+            (export / "file.txt").write_text("not cleared\n", encoding="utf-8", newline="\n")
+            quarantined = _quarantine_failed_export(export)
+            self.assertIsNotNone(quarantined)
+            self.assertFalse(export.exists())
+            self.assertEqual(quarantined.name, "doomed.not-cleared")
+            self.assertTrue(quarantined.exists())
+
+    def test_export_handles_source_and_target_paths_with_spaces(self):
+        # Property: both a source path containing spaces and an export target
+        # path containing spaces materialize byte-exact.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            synth = Path(tmpdir) / "source repo"
+            synth.mkdir()
+            _git(["init", "-q"], synth)
+            nested = synth / "docs" / "dir with space"
+            nested.mkdir(parents=True)
+            (nested / "file name.md").write_text("# spaced\n", encoding="utf-8", newline="\n")
+            (synth / "README.md").write_text("readme\n", encoding="utf-8", newline="\n")
+            _git(["add", "-A"], synth)
+
+            target = Path(tmpdir) / "export with spaces" / "public export"
+            with mock.patch.object(build_public_export, "ROOT", synth):
+                ok = export_sanitized_public_tree(target, public_safe_profile=False)
+            self.assertTrue(ok)
+            materialized = target / "docs" / "dir with space" / "file name.md"
+            self.assertEqual(materialized.read_text(encoding="utf-8"), "# spaced\n")
 
 
 if __name__ == "__main__":
