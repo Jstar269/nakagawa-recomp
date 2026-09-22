@@ -301,15 +301,6 @@ def verify_sbom_matches(spdx_path: Path, manifest_path: Path, npm_lock_path: Pat
         expected_identities: list[tuple[str, str, str]] = [
             (pkg["purl"], pkg["name"], pkg["version"]) for pkg in [*npm_pkgs, *py_pkgs]
         ]
-        # Exact multiplicity in BOTH directions: the SBOM's package-manager
-        # dependency identities must equal the lock-derived Counter exactly —
-        # under-representation (removed/wrong-version dependencies) and
-        # over-representation (extra duplicate records, or any unrelated
-        # PACKAGE-MANAGER purl record outside the declared lockfiles) both fail.
-        # The root package, provenance-family packages, and release-manifest
-        # components carry no PACKAGE-MANAGER purl and are never mistaken for
-        # lock dependencies; outside the declared lockfiles there is no
-        # legitimate class of non-lock PACKAGE-MANAGER record.
         # Full-tuple Counter equality in BOTH directions: the SBOM's
         # package-manager dependency Counter must equal the lock-derived
         # Counter exactly — under-representation (removed/wrong-version
