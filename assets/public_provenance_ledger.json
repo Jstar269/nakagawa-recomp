@@ -990,7 +990,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3dba4f4b898159f4cdff0e64df84e6777eed372b86d70084ce4e903958415f86"
+      "sha256": "d47704dfcc5d0c62871fcc67015d12818eff4dcefa48c857245c655ee100cbc1"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1035,7 +1035,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "706b778f635343dbe36987067ad0d6da787b8a8d2e5250c5ab0da579b48c21d1"
+      "sha256": "ea9b951bda2c2aba69cc40a47f2d1c672614be2d658c661885ff9e40ebc7cd96"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -3465,7 +3465,7 @@
         "generator": "project-owned generator; recomputable from tracked public inputs",
         "source_family": "tracked public project inputs"
       },
-      "sha256": "7e7e84fff3f225f437d78dc33e9b635bfbf0a9692b8f2755816e249ff7041fe8"
+      "sha256": "94ee283ef924be6842713910756f2809daceb4b37b64d5c8045b7d48fbf81965"
     },
     {
       "path": "src/core/generated/nk_title_catalog.h",
@@ -3477,7 +3477,7 @@
         "generator": "project-owned generator; recomputable from tracked public inputs",
         "source_family": "tracked public project inputs"
       },
-      "sha256": "228a569b2bcd4aaccf4a691fd36867e641bde865ad3111567c7f527e5fd12655"
+      "sha256": "54e2f901ccd411a8d22ce44241272c12636c129a8f202f17b1df941f7eee2475"
     },
     {
       "path": "src/core/nk_iso.c",
@@ -3513,7 +3513,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70330716c89357c05097fb874c849134d80bf1f272d86df135f11e76fcbd6a5d"
+      "sha256": "ea5f14c1a191a746bd3c2732130b49bc48747e618b87dc5056eeb1467fe7d438"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3525,7 +3525,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c0884d6880e6d2f41c7e4105635fed1c9b4371df7b5da76cc3b41f4dec7ec36"
+      "sha256": "74684cd03f7de1ef9bfd6250043eb79c6dde1539008e5e597fcf4703ef18d092"
     },
     {
       "path": "src/core/nk_library.c",
@@ -6505,7 +6505,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "641e2b07f0b94ac86d131d4086a51127164eed05c099a0c6f902f76c9ecbb586"
+      "sha256": "de86479c74196d51a8ea39d49330c8a5f000e76a0e22076166aef409dee9f64f"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -7364,7 +7364,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "53fa500a54fa5bf0cc12daea892aaad5d1944d8a71da3ee7505f1b00bb1d777c"
+      "sha256": "bc5958ad288c951474ce1e9c101ea0b67efe1c244cde1ef2def2fb57c43b1c6d"
     },
     {
       "path": "tools/nk_core/library.py",
@@ -8546,7 +8546,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50cfdeb5d206b795ffa079c846b85f6f6451b8b5c0f18e2419635afd6bd9fc83"
+      "sha256": "1a349fb6c9103e170dcf49f46db60b3af1ee64639877ae9eef6d265b5db3050e"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -8693,7 +8693,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cb6d9cd530365d7468d66617f43b879deab1f0e10fd73b5dc0d0e14e835e13f6"
+      "sha256": "30b36c9e7c19fb96b4a9d11b91565a6e1118905a59da32ec900ca133805a7fa8"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -9017,7 +9017,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f93980d4cd1bd40a18c40edcce0bcf17b42cfa993bae7e3a81f764833c9a864"
+      "sha256": "13bcfd2be5ec2dd7c8177d08c87b3e0abf50b4a916f81ccc7d12f405aafdb2c9"
     },
     {
       "path": "tools/test_shader_embed.py",
@@ -9302,7 +9302,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7a9f25f973cbd3d5ef1424019870baa8b031cd0804c7947e96ea1a524b83eb9e"
+      "sha256": "006ebd7fb43ce515d9b3ee9ed5ae86a684b5315aec633f046a29c18b1460fbe1"
     },
     {
       "path": "tools/title_codegen_plan.py",

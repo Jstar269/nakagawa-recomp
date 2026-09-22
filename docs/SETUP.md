@@ -245,6 +245,12 @@ intentionally not HST defaults.
 
 `assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
+The local manifest must also declare its build name (`"game_name": "hst"`). Generic launch
+resolution (issue #366) derives every runtime and image path from validated title identity only:
+an HST session reaches `build/hst/hst[.exe]` because HST's own manifest says so, never because a
+launcher defaults to it. A manifest without `game_name` fails closed with a missing-runtime error
+instead of inheriting another title's build.
+
 The requirement is enforced incrementally, not only on a clean tree: the generated title-config
 header is keyed to a content-addressed identity of the effective configuration, so dropping
 `TITLE_MANIFEST` from a previously bound build directory refuses rather than reusing the header

@@ -212,3 +212,9 @@ const NkTitleEntry *nk_title_catalog_find_by_id(const char *title_id) {
     }
     return NULL;
 }
+
+/* Generic launch-resolution candidate contract (#366): see the header
+ * block; these values are projected from tools/nk_core/launcher.py. */
+const char *const nk_launch_name_sources[NK_LAUNCH_NAME_SOURCE_COUNT] = { "game_name", "title_id" };
+const char *const nk_launch_exe_candidates[NK_LAUNCH_EXE_CANDIDATE_COUNT] = { "build/%s/%s.exe", "build/%s/%s" };
+const char *const nk_launch_image_candidates[NK_LAUNCH_IMAGE_CANDIDATE_COUNT] = { "build/%s/%s_image.bin" };
