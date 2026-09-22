@@ -138,9 +138,14 @@ validated title/catalog/manifest/session data:
    declared once in `tools/nk_core/launcher.py`, projected into
    `src/core/generated/nk_title_catalog.[ch]` by
    `tools/title_catalog_codegen.py`, and consumed by both planners.
+   Native binds name-source *order* only through the generated
+   `NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX` macros, so a planner-side reorder
+   propagates mechanically and a missing/unsupported/duplicated source fails
+   compilation instead of inventing an ordering.
    `title_catalog_codegen.py --verify` fails closed on drift, and
    `tools/test_nk_core.py` proves machine parity of the selected
-   title/runtime/image/base/entry outcome for identical fixtures.
+   title/runtime/image/base/entry outcome for identical fixtures, including
+   a two-valid-candidate precedence case and a reorder tripwire.
 3. **Pre-spawn identity binding.** Before any process is created, the native
    launcher re-derives the selected entry from the session's own disc/title
    identity and requires the resolved executable's final two path components

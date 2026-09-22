@@ -74,6 +74,20 @@ def _launch_contract_header_lines() -> List[str]:
     """
     if '"' in IMAGE_SUFFIX or chr(92) in IMAGE_SUFFIX:
         raise ValueError(f"IMAGE_SUFFIX {IMAGE_SUFFIX!r} is not C-literal safe")
+    # Fail closed on a contract native cannot bind mechanically: a source
+    # that is not a macro-safe identifier could not produce a
+    # NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX macro, and a duplicate would
+    # silently alias two names onto one generated slot.
+    seen_sources = set()
+    for source in NAME_SOURCES:
+        if re.fullmatch(r"[a-z][a-z0-9_]*", source) is None:
+            raise ValueError(
+                f"name source {source!r} must be a lowercase macro-safe "
+                "identifier to emit NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX"
+            )
+        if source in seen_sources:
+            raise ValueError(f"duplicate name source {source!r} in NAME_SOURCES")
+        seen_sources.add(source)
     return [
         "",
         "/* Generic launch-resolution candidate contract (#366).",
@@ -86,12 +100,21 @@ def _launch_contract_header_lines() -> List[str]:
         " * fails closed on drift; tools/test_nk_core.py proves machine parity",
         " * of the selected title/runtime/image/base/entry outcome.",
         " *",
-        " * Contract: name sources are consulted in array order (the",
+        " * Contract: name sources are consulted in array order (currently",
         " * manager-selected game_name first, then the title id), and for each",
-        " * name the candidate patterns are probed in array order. Patterns are",
-        " * instantiated with strings from the validated catalog entry only;",
-        " * no retail title name, disc id, or title-specific path belongs here. */",
+        " * name the candidate patterns are probed in array order. Each source",
+        " * also gets a generated NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX macro so",
+        " * src/core/nk_launch.c binds its native name array through generated",
+        " * indices only: a planner-side NAME_SOURCES reorder changes the",
+        " * indices and native follows mechanically, while --verify fails",
+        " * closed on drift. Patterns are instantiated with strings from the",
+        " * validated catalog entry only; no retail title name, disc id, or",
+        " * title-specific path belongs here. */",
         f"#define NK_LAUNCH_NAME_SOURCE_COUNT {len(NAME_SOURCES)}",
+        *[
+            f"#define NK_LAUNCH_NAME_SOURCE_{source.upper()}_INDEX {index}"
+            for index, source in enumerate(NAME_SOURCES)
+        ],
         f"#define NK_LAUNCH_EXE_CANDIDATE_COUNT {len(EXE_CANDIDATES)}",
         f"#define NK_LAUNCH_IMAGE_CANDIDATE_COUNT {len(IMAGE_CANDIDATES)}",
         f'#define NK_LAUNCH_IMAGE_SUFFIX "{IMAGE_SUFFIX}"',

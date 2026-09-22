@@ -1035,7 +1035,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ea9b951bda2c2aba69cc40a47f2d1c672614be2d658c661885ff9e40ebc7cd96"
+      "sha256": "002f04059ea99e131fd72195dfa4382afb354550c46e6452c41d3a5ece9552a2"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -3477,7 +3477,7 @@
         "generator": "project-owned generator; recomputable from tracked public inputs",
         "source_family": "tracked public project inputs"
       },
-      "sha256": "54e2f901ccd411a8d22ce44241272c12636c129a8f202f17b1df941f7eee2475"
+      "sha256": "f306430221a9e5d91c85d2b1ed47b1eb62ba3e09710590959c8d7d589cbc7454"
     },
     {
       "path": "src/core/nk_iso.c",
@@ -3513,7 +3513,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea5f14c1a191a746bd3c2732130b49bc48747e618b87dc5056eeb1467fe7d438"
+      "sha256": "2a8f2edaadd505dc3441d30c22bea7b23899590e89403901371c8a8ec3767168"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -8693,7 +8693,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30b36c9e7c19fb96b4a9d11b91565a6e1118905a59da32ec900ca133805a7fa8"
+      "sha256": "79d70eec76ea46f59c94b9970914c1ad80d5b2e02f50dad9e542605b083835fe"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -9302,7 +9302,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "006ebd7fb43ce515d9b3ee9ed5ae86a684b5315aec633f046a29c18b1460fbe1"
+      "sha256": "4e37c058e1eb9c5912215a400d334e2c3b04b922233177730b88cb664a9eb665"
     },
     {
       "path": "tools/title_codegen_plan.py",

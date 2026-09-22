@@ -1088,9 +1088,219 @@ int main(int argc, char **argv) {
         self.assertNotIn("hst", native.get("ERROR", ""))
         self.assertEqual(native.get("AVAILABLE"), "0")
 
+    # Cross-planner precedence: when BOTH the game_name build and the
+    # title_id build are valid candidates, native and Python must choose the
+    # exact same file, and it must be the one NAME_SOURCES orders first --
+    # with .exe beating the extensionless spelling within a name.
+    def test_two_valid_candidates_follow_name_sources_in_both_planners(self) -> None:
+        import nk_core.launcher as nk_launcher
+
+        names_by_source = {"game_name": self.TITLE2_GAME, "title_id": self.TITLE2}
+        first_src, second_src = nk_launcher.NAME_SOURCES[:2]
+        self.assertIn(first_src, names_by_source)
+        self.assertIn(second_src, names_by_source)
+        first = names_by_source[first_src]
+        second = names_by_source[second_src]
+
+        # Case A: both builds exist with both spellings; the contract's first
+        # source must win, and its .exe must win over its extensionless twin.
+        root_a = self.temp_dir / "ws_two_a"
+        _write_title_runtime(root_a, first, exe_ext="")
+        _write_title_runtime(root_a, first, exe_ext=".exe")
+        _write_title_runtime(root_a, second, exe_ext="")
+        _write_title_runtime(root_a, second, exe_ext=".exe")
+        expect_exe_a = root_a / "build" / first / f"{first}.exe"
+        expect_img_a = root_a / "build" / first / f"{first}_image.bin"
+
+        cmd_a, _ = self._python_plan(root_a)
+        native_a = self._native(root_a)
+        self.assertEqual(native_a.get("RESULT"), "0", native_a.get("ERROR"))
+        self.assertTrue(self._same_path(cmd_a[0], str(expect_exe_a)), cmd_a[0])
+        self.assertTrue(self._same_path(native_a["EXE"], str(expect_exe_a)), native_a["EXE"])
+        self.assertTrue(self._same_path(cmd_a[0], native_a["EXE"]))
+        self.assertTrue(self._same_path(cmd_a[2], str(expect_img_a)), cmd_a[2])
+        self.assertTrue(self._same_path(native_a["IMAGE"], str(expect_img_a)), native_a["IMAGE"])
+        self.assertTrue(self._same_path(cmd_a[2], native_a["IMAGE"]))
+        self.assertEqual(native_a.get("AVAILABLE"), "1")
+
+        # Case B: name-source order beats pattern order. The first source has
+        # only the extensionless spelling while the second source has the
+        # .exe; both planners must still choose the first source's binary.
+        root_b = self.temp_dir / "ws_two_b"
+        _write_title_runtime(root_b, first, exe_ext="")
+        _write_title_runtime(root_b, second, exe_ext=".exe")
+        expect_exe_b = root_b / "build" / first / first
+        expect_img_b = root_b / "build" / first / f"{first}_image.bin"
+
+        cmd_b, _ = self._python_plan(root_b)
+        native_b = self._native(root_b)
+        self.assertEqual(native_b.get("RESULT"), "0", native_b.get("ERROR"))
+        self.assertTrue(self._same_path(cmd_b[0], str(expect_exe_b)), cmd_b[0])
+        self.assertTrue(self._same_path(native_b["EXE"], str(expect_exe_b)), native_b["EXE"])
+        self.assertTrue(self._same_path(cmd_b[0], native_b["EXE"]))
+        self.assertTrue(self._same_path(cmd_b[2], str(expect_img_b)), cmd_b[2])
+        self.assertTrue(self._same_path(native_b["IMAGE"], str(expect_img_b)), native_b["IMAGE"])
+        self.assertEqual(native_b.get("AVAILABLE"), "1")
+
+    # Tripwire: a planner-side NAME_SOURCES reorder must propagate into the
+    # generated header AND native behavior. Native binds its name array only
+    # through the generated index macros, so compiling nk_launch.c against a
+    # regenerated reordered contract must flip the chosen candidate -- it
+    # cannot silently remain on the old order -- and the Python planner must
+    # flip with it. Unsupported or duplicated sources fail generation.
+    def test_name_source_reorder_propagates_to_native_and_python(self) -> None:
+        import nk_core.launcher as nk_launcher
+        import publication_policy
+        import title_catalog_codegen as tcg
+
+        fixture_root = self.temp_dir / "ws_reorder"
+        _write_title_runtime(fixture_root, self.TITLE2_GAME, exe_ext=".exe")
+        _write_title_runtime(fixture_root, self.TITLE2, exe_ext=".exe")
+        game_exe = fixture_root / "build" / self.TITLE2_GAME / f"{self.TITLE2_GAME}.exe"
+        id_exe = fixture_root / "build" / self.TITLE2 / f"{self.TITLE2}.exe"
+
+        original_sources = tcg.NAME_SOURCES
+        original_planner = nk_launcher.NAME_SOURCES
+        reversed_sources = ("title_id", "game_name")
+        try:
+            tcg.NAME_SOURCES = reversed_sources
+            nk_launcher.NAME_SOURCES = reversed_sources
+
+            # 1. Codegen derives the index macros from the tuple itself, and
+            # the committed header therefore disagrees with the mutated
+            # projection: regeneration / --verify fails closed on the drift.
+            header_lines = tcg._launch_contract_header_lines()
+            self.assertIn("#define NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX 0", header_lines)
+            self.assertIn("#define NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX 1", header_lines)
+            committed = (
+                REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.h"
+            ).read_text(encoding="utf-8")
+            self.assertIn("#define NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX 0", committed)
+            self.assertNotIn("#define NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX 0", committed)
+
+            # Fail-closed shape: duplicated or non-macro-safe sources are
+            # refused at generation time instead of emitting a broken bind.
+            for bad in (("game_name", "game_name"), ("Game Name", "title_id")):
+                tcg.NAME_SOURCES = bad
+                with self.assertRaises(ValueError):
+                    tcg._launch_contract_header_lines()
+            tcg.NAME_SOURCES = reversed_sources
+
+            # 2. Regenerate the FULL catalog under the reversed contract and
+            # compile native against it (generated dir first on the include
+            # path): nk_launch.c must follow the new order, not the old one.
+            policy = publication_policy.load_policy(
+                REPO_ROOT / "assets" / "public_source_profile.json"
+            )
+            manifest_files, titles = tcg.collect_public_manifests(
+                REPO_ROOT / "assets" / "titles", policy=policy
+            )
+            digest = tcg.compute_manifest_digest(manifest_files)
+            # Quote-includes resolve next to the including file first
+            # ("generated/nk_title_catalog.h"), so -I ordering cannot
+            # redirect the contract: the mutated header must sit beside a
+            # copy of the sources that consume it.
+            src_dir = self.temp_dir / "reordered_src"
+            (src_dir / "generated").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / "src" / "core" / "nk_launch.c", src_dir / "nk_launch.c")
+            shutil.copy2(REPO_ROOT / "src" / "core" / "nk_launch.h", src_dir / "nk_launch.h")
+            header_content = tcg.generate_header(digest, titles)
+            source_content = tcg.generate_source(digest, titles)
+            (src_dir / "generated" / "nk_title_catalog.h").write_text(
+                header_content, encoding="utf-8", newline=""
+            )
+            (src_dir / "generated" / "nk_title_catalog.c").write_text(
+                source_content, encoding="utf-8", newline=""
+            )
+            self.assertIn(
+                "#define NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX 0", header_content
+            )
+
+            harness_c = src_dir / "reorder_harness.c"
+            harness_c.write_text(self.HARNESS_C, encoding="utf-8", newline="\n")
+            out = self.temp_dir / (
+                "reorder_harness.exe" if sys.platform == "win32" else "reorder_harness"
+            )
+            platform_src = (
+                REPO_ROOT / "src" / "core" / "nk_platform_win32.c"
+                if sys.platform == "win32"
+                else REPO_ROOT / "src" / "core" / "nk_platform_posix.c"
+            )
+            cc = [
+                self.gcc, "-std=c99", "-Wall", "-Wextra",
+                "-I", str(src_dir),
+                "-I", str(REPO_ROOT / "src" / "core"),
+                "-I", str(REPO_ROOT / "src" / "core" / "generated"),
+                str(harness_c),
+                str(REPO_ROOT / "src" / "core" / "nk_iso.c"),
+                str(REPO_ROOT / "src" / "core" / "nk_library.c"),
+                str(src_dir / "nk_launch.c"),
+                str(src_dir / "generated" / "nk_title_catalog.c"),
+                str(platform_src),
+                "-o", str(out),
+            ]
+            res = subprocess.run(cc, capture_output=True, text=True)
+            self.assertEqual(
+                res.returncode, 0,
+                f"reordered-contract native build failed: {res.stderr}",
+            )
+            run = subprocess.run(
+                [str(out), str(fixture_root), self.TITLE2_DISC, self.TITLE2, str(self.iso)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(run.returncode, 0, run.stderr)
+            native = self._parse_native(run.stdout)
+            self.assertEqual(native.get("RESULT"), "0", native.get("ERROR"))
+
+            # 3. Python under the same reversed contract.
+            cmd_py, _ = self._python_plan(fixture_root)
+
+            # Both planners flipped TOGETHER: native did not stay silently on
+            # the old game_name-first order.
+            self.assertTrue(
+                self._same_path(native["EXE"], str(id_exe)),
+                f"reordered contract not honored natively: {native.get('EXE')}",
+            )
+            self.assertFalse(self._same_path(native["EXE"], str(game_exe)))
+            self.assertTrue(self._same_path(cmd_py[0], str(id_exe)))
+            self.assertTrue(self._same_path(cmd_py[0], native["EXE"]))
+            self.assertTrue(self._same_path(cmd_py[2], native["IMAGE"]))
+        finally:
+            tcg.NAME_SOURCES = original_sources
+            nk_launcher.NAME_SOURCES = original_planner
+
 
 class GenericLauncherReintroductionGateTests(unittest.TestCase):
     """Source-shape and mutation gates against retail fallback reintroduction."""
+
+    # Name-source ordering gate: native may bind name sources ONLY through
+    # the generated index macros. A positional names[0]/names[1] assignment
+    # would silently pin the order regardless of NAME_SOURCES -- exactly the
+    # hole this suite exists to keep closed.
+    def test_native_name_sources_bound_only_via_generated_indices(self) -> None:
+        import title_catalog_codegen as tcg
+
+        src = (REPO_ROOT / "src" / "core" / "nk_launch.c").read_text(encoding="utf-8")
+        self.assertIn("launch_bind_name_sources", src)
+        self.assertIn("NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX", src)
+        self.assertIn("NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX", src)
+        for positional in ("names[0]", "names[1]"):
+            self.assertNotIn(
+                positional, src,
+                f"{positional} hard-codes name-source order; bind with "
+                "launch_bind_name_sources (generated indices) instead",
+            )
+        header = (
+            REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.h"
+        ).read_text(encoding="utf-8")
+        # The committed header must agree with the live planner projection,
+        # macro for macro -- reorder or substitution fails here too.
+        for line in tcg._launch_contract_header_lines():
+            if line.startswith("#define NK_LAUNCH_NAME_SOURCE"):
+                self.assertIn(
+                    line, header,
+                    "committed generated header drifted from NAME_SOURCES projection",
+                )
 
     TITLE2 = "pspdev-phase5-v1"
     TITLE2_DISC = "TEST00005"

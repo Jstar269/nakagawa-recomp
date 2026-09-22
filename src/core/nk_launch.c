@@ -125,11 +125,38 @@ static bool ensure_writable_dir(const char *path) {
     return true;
 }
 
-/* #366: nk_launch.c maps the shared contract's name sources onto the
- * validated catalog entry. Extend this mapping if NAME_SOURCES ever grows. */
+/* #366: nk_launch.c binds the shared contract's name sources onto the
+ * validated catalog entry through GENERATED index macros only
+ * (NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX, emitted by title_catalog_codegen.py
+ * from tools/nk_core/launcher.py: NAME_SOURCES). A planner-side reorder
+ * changes those indices and native ordering follows mechanically; losing a
+ * required source, growing NAME_SOURCES, or aliasing two sources onto one
+ * slot fails compilation instead of silently inventing an ordering. Extend
+ * this mapping when NAME_SOURCES grows. */
 #if NK_LAUNCH_NAME_SOURCE_COUNT != 2
 #error "nk_launch.c maps (game_name, title_id); extend it when NAME_SOURCES grows"
 #endif
+#ifndef NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX
+#error "generated NAME_SOURCES lost 'game_name'; nk_launch.c cannot bind name sources"
+#endif
+#ifndef NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX
+#error "generated NAME_SOURCES lost 'title_id'; nk_launch.c cannot bind name sources"
+#endif
+#if NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX >= NK_LAUNCH_NAME_SOURCE_COUNT || \
+    NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX >= NK_LAUNCH_NAME_SOURCE_COUNT || \
+    NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX == NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX
+#error "generated name-source indices are out of range or alias one another"
+#endif
+
+static void launch_bind_name_sources(
+    const char *game_name,
+    const char *title_id,
+    const char *names[NK_LAUNCH_NAME_SOURCE_COUNT]
+) {
+    for (size_t i = 0; i < NK_LAUNCH_NAME_SOURCE_COUNT; i++) names[i] = NULL;
+    names[NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX] = game_name;
+    names[NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX] = title_id;
+}
 
 /* Select the ONE validated catalog entry that a session's identity names.
  *
@@ -234,8 +261,7 @@ static bool launch_executable_bound_to_entry(const char *exe_path,
         const char *file_name = file_sep + 1;
         const char *dir_name = dir_sep ? dir_sep + 1 : work;
         if (!dir_name[0] || !file_name[0]) return false;
-        names[0] = entry->game_name;
-        names[1] = entry->id;
+        launch_bind_name_sources(entry->game_name, entry->id, names);
         for (size_t i = 0; i < NK_LAUNCH_NAME_SOURCE_COUNT; i++) {
             const char *name = names[i];
             if (!name || !name[0]) continue;
@@ -272,8 +298,7 @@ static bool find_candidate_executable(
 
     if (!root || !root[0] || !out_path || max_len == 0) return false;
     sep = nk_platform_path_separator();
-    names[0] = game_name;
-    names[1] = title_id;
+    launch_bind_name_sources(game_name, title_id, names);
     for (size_t ni = 0; ni < NK_LAUNCH_NAME_SOURCE_COUNT; ni++) {
         const char *name = names[ni];
         if (!name || !name[0]) continue;
@@ -622,8 +647,7 @@ static bool find_candidate_image(
 
     /* 2. Identity-derived build layouts from the shared contract. */
     if (working_dir && working_dir[0]) {
-        names[0] = game_name;
-        names[1] = title_id;
+        launch_bind_name_sources(game_name, title_id, names);
         for (size_t ni = 0; ni < NK_LAUNCH_NAME_SOURCE_COUNT; ni++) {
             const char *name = names[ni];
             if (!name || !name[0]) continue;
