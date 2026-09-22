@@ -152,7 +152,6 @@ reproduced here.
 
 ### 3.2 Register Clobber Guards and Loop Caps (Tier 5)
 
-
 #### 1. `INIT_WALKER_GUARD` (Callee-Saved `$s0` / `$r16` Preservation)
 
 - **Location:** `src/rt/recomp.c:2068–2080`, inline in `dispatch()`, not a dispatch hook-table entry.

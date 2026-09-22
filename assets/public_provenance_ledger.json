@@ -801,7 +801,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c0e55b924d7a8cdc290438983f72b297c43dfc3e3043419203e8ecaa794fded2"
+      "sha256": "beacefc68652053e0a35d41a64f2df52e5c81fb25ee07ec76c225cb2bdc5e6b8"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
