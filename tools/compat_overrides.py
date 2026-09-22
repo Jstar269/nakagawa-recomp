@@ -298,10 +298,14 @@ DISPATCH_HOOKS = [
          reason="SR_ALLOC_TRACE-gated log of free requests; always falls through unchanged",
          test="none"),
     dict(address=0x0001b584, category="diagnostic", name="HFILL",
-         reason="traces hash_fill entry, then always delegates to the real function",
+         reason="traces hash_fill entry, then falls through so ordinary dispatch "
+                "performs the single authoritative lookup (#362: never self-delegates "
+                "and never consumes)",
          test="none"),
     dict(address=0x00018130, category="diagnostic", name="FMT_TRACE",
-         reason="traces the format-parser integer handler, then always delegates to the real function",
+         reason="traces the format-parser integer handler, then falls through so "
+                "ordinary dispatch performs the single authoritative lookup "
+                "(#362: never self-delegates and never consumes)",
          test="none"),
     dict(address=0x00000ec0, category="diagnostic", name="THUNK_A",
          reason="logs thunk dispatches through the function-pointer slot at 0x2CED08; always "

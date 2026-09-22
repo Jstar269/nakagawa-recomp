@@ -1347,16 +1347,21 @@ static int hook_log_free_req(CpuState *s, uint32_t target) {
 }
 
 static int hook_hash_fill_trace(CpuState *s, uint32_t target) {
-    /* f_0001b584: hash_fill — outer loop calling f_0001b6c4 per entry. Trace entry. */
+    /* f_0001b584: hash_fill — outer loop calling f_0001b6c4 per entry.
+     * Diagnostic trace only (issue #362): this helper never looks the target up
+     * itself and never consumes it. Returning 1 lets the ordinary dispatch path
+     * below perform the single authoritative sr_lookup — a registered body
+     * executes exactly once there, and an unregistered key keeps its poisoned
+     * state and reaches the interpreter/fail-closed floor instead of being
+     * blessed as apparent success. */
+    (void)target;
     static int hfd = 0;
     if (hfd < 4) {
         uint32_t ht = s->r[4], src = s->r[5];
         fprintf(stderr, "HFILL[%d]: htable=0x%08x cap=%u src=0x%08x count=%u\n",
                 hfd++, ht, ht ? MEM_R32(ht+4) : 0, src, src ? MEM_R32(src+4) : 0);
     }
-    RecompFn fhf = sr_lookup(target);
-    if (fhf) fhf(s);
-    return 0;
+    return 1;  /* fall through — diagnostic only */
 }
 
 /* Recover the guest address of the call instruction that reached dispatch().
@@ -1383,7 +1388,10 @@ static uint32_t sr_dispatch_call_site(const CpuState *s) {
  * there is no synthetic guest vtable to trampoline through. */
 
 static int hook_fmt_trace(CpuState *s, uint32_t target) {
-    /* HST: Format parser integer handler. Just log and let it run. */
+    /* Format parser integer handler: diagnostic trace only (issue #362).
+     * The ordinary dispatch path below owns the single authoritative lookup,
+     * so this helper neither resolves nor consumes the target. */
+    (void)target;
     static unsigned long long fmt_count = 0;
     static uint32_t last_r19 = 0;
     fmt_count++;
@@ -1401,10 +1409,7 @@ static int hook_fmt_trace(CpuState *s, uint32_t target) {
         last_r19 = r19;
         fflush(stderr);
     }
-    /* Let it run: call the recompiled handler */
-    RecompFn fn = sr_lookup(target);
-    if (fn) fn(s);
-    return 0;
+    return 1;  /* fall through — diagnostic only */
 }
 
 static int hook_thunk_call_trace(CpuState *s, uint32_t target) {

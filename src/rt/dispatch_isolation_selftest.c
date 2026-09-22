@@ -858,6 +858,45 @@ static void test_historical_target_shapes_fail_closed(void) {
     }
 }
 
+/* ---- diagnostic exact hooks are fall-through, never a consume path (#362) ---------- */
+
+/* HFILL (0x0001b584) and FMT_TRACE (0x00018130) are diagnostic entries in
+ * g_exact_hooks[]. The pre-revision helpers looked each target up themselves
+ * and returned 0 (CONSUMED), so an UNREGISTERED exact key became apparent
+ * success while the poisoned v0/pc were left in place. Both directions of the
+ * corrected contract are pinned here, in every configuration:
+ *   - unregistered key: the diagnostic hook must not bless the dispatch; the
+ *     ordinary miss floor rejects it with poisoned state preserved;
+ *   - registered key: normal dispatch performs the single authoritative
+ *     lookup and executes the body exactly once (a helper that both
+ *     self-delegated AND fell through would double-execute here). */
+static void test_diagnostic_exact_hooks_never_consume(void) {
+    static const uint32_t keys[] = { 0x0001b584u, 0x00018130u };
+    sr_mem_init();
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; ++i) {
+        uint32_t key = keys[i];
+
+        Probe p = probe(key, PROBE_PC, PROBE_RA);
+        CHECK(generic_outcome(p, key),
+              "unregistered diagnostic key 0x%08x was consumed as apparent success "
+              "by its hook instead of failing closed (result=%d v0=0x%08x pc=0x%08x)",
+              key, p.dispatch_result, p.v0, p.pc);
+
+        int before = g_body_hits;
+        own_synthetic_aot_word(key);
+        sr_register(key, synthetic_body);
+        Probe q = probe(key, PROBE_PC, PROBE_RA);
+        CHECK(g_body_hits == before + 1,
+              "registered diagnostic key 0x%08x must execute its body exactly once "
+              "(hits %d -> %d, result=%d)",
+              key, before, g_body_hits, q.dispatch_result);
+        CHECK(q.body_ran && q.dispatch_result == SR_GUEST_INTERP_AOT_HANDOFF,
+              "registered diagnostic key 0x%08x did not complete through normal "
+              "dispatch (result=%d ran=%d)",
+              key, q.dispatch_result, q.body_ran);
+    }
+}
+
 /* ---- aliases: exactly what this build configures, and nothing else ------------------ */
 
 static void test_configured_aliases_redirect(void) {
@@ -1180,6 +1219,7 @@ int main(int argc, char **argv) {
     test_public_dispatch_wrapper_terminates_rejection(argv[0]);
     test_retired_bindings_are_inert();
     test_historical_target_shapes_fail_closed();
+    test_diagnostic_exact_hooks_never_consume();
     test_configured_aliases_redirect();
     test_foreign_aliases_do_not_redirect();
     test_configured_terminators_match_their_site_only();
