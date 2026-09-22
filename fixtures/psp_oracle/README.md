@@ -14,7 +14,55 @@ case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
 of the four `CASE=dma-invalid-tail-*` cases described below. Display/interrupt-mask
 sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
-`CASE=display-ge-mask`. Display-wait sessions use `CASE=display-wait-late`,
+`CASE=display-ge-mask`. Transport sessions use `CASE=transport-write`, which
+emits `PSP-TRANSPORT-001`/`host0-write-readback`. Lifecycle sessions use
+`CASE=thread-exit-delete` (`PSP-THREAD-EXIT-001`, 12 cells). Allocator
+sessions use `CASE=dmac-survey` (`PSP-DMAC-001`/`allocator-survey`). The
+thread-free `CASE=dma-size-matrix` control keeps both spans inside VRAM and
+measures full copies at sizes around `0xC000` through 1 MiB, separating a true
+API-wide size limit from invalid-tail boundary behavior. The thread-free
+`CASE=model-profile` control records the raw `kuKernelGetModel()` PSPSDK/
+kubridge ordinal, `sceKernelDevkitVersion()` word, and CPU clock. A host-side
+decoder maps the ordinal to a generation and retail family; it never applies
+the PSPSDK enum table to the kernel-only `sceKernelGetModel()` original/slim
+convention.
+
+## Transport write-readback (`CASE=transport-write`)
+
+The PSP writes a fixed 64-byte pattern (byte `i` =
+`(0x5A ^ (i * 0x25 + (i >> 3))) & 0xFF`) to the probe-owned disposable path
+`host0:/nakagawa_transport_write.bin`, reads it back, and reports FNV-1a,
+written/read-back sizes, a self-match flag, and the CPU clock in MHz
+(`scePowerGetCpuClockFrequencyInt`). The host independently regenerates the
+pattern and compares bytes and SHA-256. Only that one path is touched; the
+host removes it after verification. `status=PASS` means the PSP-side
+write/read-back matched; file acceptance additionally requires the host-side
+byte/SHA comparison.
+
+## Thread exit/delete boundary (`CASE=thread-exit-delete`)
+
+Twelve cells: implicit return / `sceKernelExitThread` /
+`sceKernelExitDeleteThread` across `0x77`, `0`, `-17` (`0xffffffef`), and
+`0x800201ac`. Each cell records the `WaitThreadEnd` return, the
+`ReferThreadStatus` exit status and thread state, and the raw results of a
+post-mortem delete and a restart attempt. `ExitDeleteThread` cells
+specifically measure whether the UID is gone (delete/restart raw codes) and
+what a joiner observes. `result` is the `WaitThreadEnd` return; `PASS` means
+the harness completed, not that any outcome matched an expectation. One
+thread per cell, sequential, immediate exits; accepted restarts are
+waited on and deleted so the launch leaks nothing in-process.
+
+## Allocator boundary survey (`CASE=dmac-survey`)
+
+The invalid-tail cells' compiled-in user-end assumption (`0x0A000000`) is
+rejected by the firmware on 64 MiB units (partition 2 allocates there), so
+those cells SKIP by design. This case scans partition-2 fixed-address
+allocatability upward from the old assumption in 64 KiB steps (32 attempts),
+freeing every success immediately, and emits the highest provable base plus
+the first failure. Thread-free and write-free; failures are ordinary error
+codes. Its output is the redesign input for a corrected invalid-tail
+boundary — it settles no DMA semantics itself.
+Display-wait sessions use `CASE=display-wait-late`,
 `CASE=display-wait-priority`, or `CASE=display-vblank-window`. Plain-mutex
 sessions use one of the four `CASE=mutex-*` cases described below.
 
@@ -110,6 +158,39 @@ setup error) and these scalar outputs:
 | `out22` | First-caller thread priority |
 | `out23` | Last first-caller return |
 
+The sequential `dma-size-matrix` records cover `0xBFFF`, `0xC000`,
+`0xC001`, `0xD000`, `0xF000`, `0xFFFF`, `0x10000`, and `0x100000` (1 MiB)
+for both APIs. Each case is repeated three times. The record uses `result`
+for the last DMAC return and these outputs: `out0` requested bytes, `out1`
+maximum contiguous copied prefix, `out2` maximum non-sentinel bytes after that
+prefix, `out3` full-source integrity flag, `out4` maximum elapsed microseconds,
+`out5` API (`0` blocking, `1` try), `out6` trial count, `out7` failed-trial
+count, and `out8` maximum mutation count in the adjacent source guard. Before
+each call the probe writes back and invalidates both spans; after the call it
+invalidates both spans before inspection. A PASS record requires every trial to
+return zero, copy the complete requested prefix, leave sentinels and the full
+source/guard unchanged, and emit all 16 matrix records. These fully in-VRAM
+spans are the control for separating transfer size from allocator-boundary
+truncation. A current local PSP-3000/6.61 capture passed all 16 records, but
+it remains local diagnostic evidence until the trusted provenance/publication
+record is refreshed; the probe itself does not promote results to public
+hardware evidence.
+
+The existing runner can retain and validate the host0 stream after launching the
+PRX. Supply the local path that `usbhostfs_pc` exposes as `host0:`:
+
+```powershell
+python tools/psp_oracle/run_psplink.py `
+  --command '<explicit pspsh ldstart command>' `
+  --host0-output dmac_size_matrix_log.txt `
+  --validate-dmac-size-matrix `
+  --out oracle/hardware-results/dmac-size-matrix.report.json
+```
+
+The runner waits for the complete 16-record stream rather than accepting the
+metadata-only prefix, retains a result copy under the ignored hardware-results
+area, and reports placeholder provenance as `acceptance_eligible: false`.
+
 The invalid-tail cases isolate one API and invalid endpoint per launch:
 
 - `dma-invalid-tail-memcpy-dst`;
@@ -117,14 +198,14 @@ The invalid-tail cases isolate one API and invalid endpoint per launch:
 - `dma-invalid-tail-try-dst`;
 - `dma-invalid-tail-try-src`.
 
-The Makefile explicitly opts out of expanded memory. At the pinned PSPSDK
-revision this requests the 24 MiB user partition described by the public uOFW
-memory map. Before calling DMAC, the probe reserves the entire final valid
-`0xC000`-byte prefix through `sceKernelAllocPartitionMemory`, checks that the
-returned block begins at the requested address, and verifies that partition 2
-rejects a new allocation beginning at the next address. If any safety check
-fails, it emits `SKIP` and never issues the invalid-tail call. The requested
-size is `0xC001`, so exactly one requested byte lies beyond the
+The Makefile keeps the invalid-tail variants on the bounded public memory
+baseline, but the probe no longer assumes a fixed partition end. Before
+calling DMAC it allocates a page-aligned `0x10000`-byte block from the current
+high end of partition 2, uses its final `0xC000` bytes as the valid prefix, and
+probes an allocation beginning at the next address while the block is held.
+Only a strict allocator rejection passes the safety gate; a successful or
+ambiguous adjacent allocation emits `SKIP` and no invalid-tail call is issued.
+The requested size is `0xC001`, so exactly one requested byte lies beyond the
 allocator-proven boundary. No byte outside an owned block is read by the probe
 itself.
 
@@ -135,8 +216,12 @@ and measured-prefix sizes; `out3` is the invalid endpoint (`0` destination,
 prefix pattern-match and non-sentinel mutation counts; `out7` is lead-guard
 mutation; `out8`/`out9` report the valid destination tail and post-request
 guard where observable (`0xFFFFFFFF` otherwise); `out10` verifies the source
-prefix; `out11` is wall time; and `out12` is the rejected boundary-allocation
-error. `status=PASS` means that the call returned and the scalar measurement
+prefix; `out11` is wall time; `out12` is the rejected boundary-allocation
+error; and `out13` is the runtime-discovered boundary block size.
+For an explicit `SKIP` setup record, `out5` carries the tail-probe result and
+`out6` carries the discovered block size instead of the post-call mutation
+fields.
+`status=PASS` means that the call returned and the scalar measurement
 completed; it does not mean that the observed DMA semantics match Nakagawa or
 close issue #23.
 

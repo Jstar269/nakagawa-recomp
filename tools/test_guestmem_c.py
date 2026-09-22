@@ -84,6 +84,13 @@ class TestSpanHelperWiring(unittest.TestCase):
         self.assertIn("sr_size_add_ok", RECOMP_H)
         self.assertIn("sr_size_mul_ok", RECOMP_H)
 
+    def test_prefix_helper_is_present_and_overflow_safe(self):
+        body = _body(RECOMP_H, "sr_guest_span_prefix")
+        self.assertIn("SR_PHYS(addr)", body)
+        self.assertIn("0x0c000000u - phys", body)
+        self.assertNotRegex(body, r"addr\s*\+\s*size")
+        self.assertIn("sr_guest_span_prefix(0x0bfffff0u, 17u)", SELFTEST_C.read_text(encoding="utf-8"))
+
     def test_rect_helpers_use_checked_geometry_and_complete_spans(self):
         geometry = _body(RECOMP_H, "sr_guest_rect_geometry")
         self.assertIn("sr_size_mul_ok", geometry)

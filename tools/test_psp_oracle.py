@@ -4,16 +4,29 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from psp_oracle.protocol import ProtocolError, compare_texts, parse_output, provenance_issues
+from psp_oracle.protocol import (
+    ProtocolError,
+    compare_texts,
+    decode_psp_model_code,
+    parse_output,
+    provenance_issues,
+    validate_dmac_size_matrix,
+    DMAC_SIZE_MATRIX_SIZES,
+    DMAC_SIZE_MATRIX_TRIALS,
+)
 from psp_oracle.run_psplink import (
     _record_summary,
     _split_command,
+    _validate_host0_capture,
     annotate_terminal_outcome,
 )
 
@@ -33,6 +46,23 @@ def stream(source: str, result: str = "0x1") -> str:
     ) + ("NAKAGAWA_PSP_TEST schema=1 test_id=SMOKE case_id=one status=PASS result=" + result + "\n")
 
 
+def dmac_matrix_stream() -> str:
+    lines = [META.format(
+        source="psp", model="PSP-3000", firmware="6.61-ARK",
+        binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+    )]
+    for api, api_name in enumerate(("memcpy", "try")):
+        for size in DMAC_SIZE_MATRIX_SIZES:
+            lines.append(
+                "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+                f"case_id=size-matrix-{api_name}-0x{size:08x} status=PASS "
+                f"result=0x0 out0=0x{size:x} out1=0x{size:x} out2=0x0 "
+                f"out3=0x1 out4=0x10 out5=0x{api:x} "
+                f"out6=0x{DMAC_SIZE_MATRIX_TRIALS:x} out7=0x0 out8=0x0\n"
+            )
+    return "".join(lines)
+
+
 def measured_stream(source: str, result: str = "0x1") -> str:
     """A stream whose provenance fields are host-measured, not fixture defaults."""
 
@@ -46,6 +76,15 @@ def measured_stream(source: str, result: str = "0x1") -> str:
 
 
 class PspOracleProtocolTests(unittest.TestCase):
+    def test_pspsdk_model_ordinal_three_is_psp3000_generation_04g(self) -> None:
+        self.assertEqual(decode_psp_model_code(3), ("04g", "PSP-3000"))
+        self.assertEqual(decode_psp_model_code(4), ("05g", "PSP-N1000"))
+
+    def test_pspsdk_model_decoder_rejects_unknown_or_non_integer_values(self) -> None:
+        for value in (-1, 8, True, "3"):
+            with self.assertRaises(ValueError):
+                decode_psp_model_code(value)  # type: ignore[arg-type]
+
     def test_parser_requires_metadata_and_orders_records(self) -> None:
         parsed = parse_output(stream("psp"))
         self.assertEqual(parsed.metadata_dict()["source"], "psp")
@@ -67,6 +106,20 @@ class PspOracleProtocolTests(unittest.TestCase):
     def test_malformed_hex_is_rejected(self) -> None:
         with self.assertRaises(ProtocolError):
             parse_output(stream("psp", "not-hex"))
+
+
+class PspDmacProtocolTests(unittest.TestCase):
+    def test_size_matrix_validator_requires_all_sizes_and_trials(self) -> None:
+        parsed = validate_dmac_size_matrix(dmac_matrix_stream())
+        self.assertEqual(len(parsed.results), 16)
+
+    def test_size_matrix_validator_rejects_missing_boundary_case(self) -> None:
+        text = dmac_matrix_stream().replace(
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+            "case_id=size-matrix-try-0x0000c001", "# removed", 1
+        )
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix(text)
 
 
 class PspOracleAcceptanceGateTests(unittest.TestCase):
@@ -180,6 +233,20 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
 
 
 class PspOracleRunnerTests(unittest.TestCase):
+    def test_dmac_host0_capture_uses_the_runner_validation_path(self) -> None:
+        args = SimpleNamespace(
+            validate_dmac_size_matrix=True,
+            binary=None,
+            source_commit=None,
+            model=None,
+            firmware=None,
+            model_code=None,
+        )
+        report = _validate_host0_capture(dmac_matrix_stream(), args)
+        self.assertEqual(report["classification"], "PASS")
+        self.assertEqual(report["test_record_count"], 16)
+        self.assertTrue(report["acceptance_eligible"])
+
     def test_capture_records_distinguish_result_skip_and_no_record(self) -> None:
         self.assertEqual(_record_summary("transport only\n"), ("NO_RECORD", 0))
         self.assertEqual(_record_summary(stream("psp")), ("RESULT_RECORDS", 1))
@@ -210,6 +277,23 @@ class PspOracleRunnerTests(unittest.TestCase):
                 "ldstart host0:/nakagawa_psp_oracle.prx",
             ],
         )
+
+    def test_model_code_is_derived_without_the_old_n1000_mapping(self) -> None:
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "psp_oracle" / "run_psplink.py"),
+            "--dry-run",
+            "--model-code",
+            "3",
+        ]
+        # Dry-run still validates/derives the model before reporting the plan.
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=True
+        )
+        plan = json.loads(completed.stdout)
+        self.assertFalse(plan["provenance_supplied"])
+        self.assertEqual(plan["model"], "PSP-3000-04g")
+        self.assertEqual(plan["model_code"], 3)
 
     def test_nakagawa_mode_reuses_production_selftest_and_derives_records(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -249,6 +333,60 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertIn("stdout=subprocess.PIPE", launcher.read_text(encoding="utf-8"))
 
 
+class PspOracleBuildRouteTests(unittest.TestCase):
+    """Keep the merged CASE/Makefile/import contract structurally explicit."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+
+    def test_supported_case_names_map_to_unique_case_ids(self) -> None:
+        routes = re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        )
+        self.assertEqual(len(routes), 54)
+        names = [name for name, _ in routes]
+        ids = [int(case_id) for _, case_id in routes]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(set(ids), set(range(1, 55)))
+        self.assertNotIn("psp_b1_imports.S", self.makefile)
+        self.assertNotIn("psp_b2_imports.S", self.makefile)
+        self.assertNotIn("psp_b3_imports.S", self.makefile)
+
+    def test_kernel_object_routes_use_shared_threadman_import_block(self) -> None:
+        for case, source, macro in (("kobj-b1", "psp_b1.c", "B1"), ("wait-b2", "psp_b2.c", "B2"), ("kernel-b3", "psp_b3.c", "B3")):
+            start = self.makefile.rfind(f"else ifeq ($(CASE),{case})")
+            self.assertGreaterEqual(start, 0)
+            end = self.makefile.find("else ifeq", start + 1)
+            if end < 0:
+                end = self.makefile.find("endif", start + 1)
+            body = self.makefile[start:end]
+            self.assertIn(f"TARGET = $(BUILD_DIR)/{source[:-2]}", body)
+            self.assertIn(f"OBJS = $(BUILD_DIR)/{source[:-2]}.o $(BUILD_DIR)/threadman_user_imports.o", body)
+            self.assertIn(f"CFLAGS += -D{macro}_BUILD_COMMIT=", body)
+        shared = (self.fixture / "threadman_user_imports.S").read_text(encoding="utf-8")
+        for symbol in (
+            "sceKernelCreateCallback", "sceKernelCreateEventFlag", "sceKernelCreateFpl",
+            "sceKernelCreateMsgPipe", "sceKernelCreateMbx", "sceKernelWaitEventFlag",
+            "sceKernelTerminateDeleteThread", "sceKernelGetThreadExitStatus",
+        ):
+            self.assertIn(symbol, shared)
+
+    def test_b_kernel_object_recipes_are_unique_and_import_sources_are_reachable(self) -> None:
+        for stem in ("psp_b1", "psp_b2", "psp_b3"):
+            self.assertEqual(len(re.findall(rf"^\$\(BUILD_DIR\)/{stem}\.o:", self.makefile, re.MULTILINE)), 1)
+            self.assertEqual(len(re.findall(rf"^\$\(BUILD_DIR\)/{stem}_imports\.o:", self.makefile, re.MULTILINE)), 0)
+            self.assertFalse((self.fixture / f"{stem}_imports.S").exists())
+        self.assertEqual(len(re.findall(r"^\$\(BUILD_DIR\)/threadman_user_imports\.o:", self.makefile, re.MULTILINE)), 1)
+        self.assertIn("threadman_user_imports.S", self.makefile)
+
+
 class PspDmacProbeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
@@ -266,6 +404,7 @@ class PspDmacProbeTests(unittest.TestCase):
             "dma-invalid-tail-memcpy-src",
             "dma-invalid-tail-try-dst",
             "dma-invalid-tail-try-src",
+            "dma-size-matrix",
         ):
             self.assertIn(f"else ifeq ($(CASE),{case})", self.makefile)
         self.assertIn("LIBS = -lpspdmac", self.makefile)
@@ -286,11 +425,43 @@ class PspDmacProbeTests(unittest.TestCase):
     def test_invalid_tail_probe_fails_closed_before_the_call(self) -> None:
         self.assertIn("PSP_LARGE_MEMORY = 0", self.makefile)
         self.assertIn("sceKernelAllocPartitionMemory", self.probe)
-        self.assertIn("DMAC_BOUNDARY_BLOCK_BASE", self.probe)
-        self.assertIn("DMAC_BASELINE_USER_END", self.probe)
+        self.assertIn("PSP_SMEM_High", self.probe)
+        self.assertIn("DMAC_BOUNDARY_BLOCK_BYTES", self.probe)
+        self.assertIn("candidate_tail", self.probe)
+        self.assertNotIn("DMAC_BASELINE_USER_END", self.probe)
+        self.assertNotIn("DMAC_BOUNDARY_BLOCK_BASE", self.probe)
         self.assertIn('emit_dmac_invalid_setup(emulated, "SKIP"', self.probe)
         self.assertIn("DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)", self.probe)
         self.assertNotIn("boundary_prefix[DMAC_MEASURED_PREFIX]", self.probe)
+
+    def test_size_matrix_covers_boundaries_repeats_and_cache_guards(self) -> None:
+        self.assertIn("DMAC_SIZE_BYTES 0x00100000u", self.probe)
+        self.assertIn("DMAC_SIZE_TRIALS 3u", self.probe)
+        for size in ("0x0000bfffu", "0x0000c000u", "0x0000c001u", "0x0000d000u",
+                     "0x0000f000u", "0x0000ffffu", "0x00010000u", "0x00100000u"):
+            self.assertIn(size, self.probe)
+        self.assertIn("sceKernelDcacheWritebackRange", self.probe)
+        self.assertIn("sceKernelDcacheInvalidateRange", self.probe)
+        self.assertIn("dmac_size_source_mutations", self.probe)
+        self.assertIn('PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"', self.probe)
+        self.assertIn('"size-matrix-%s-0x%08x"', self.probe)
+
+    def test_model_profile_uses_the_user_bridge_and_raw_firmware_word(self) -> None:
+        self.assertIn("PSP_ORACLE_CASE_MODEL_PROFILE", self.probe)
+        self.assertIn("kuKernelGetModel()", self.probe)
+        self.assertIn("sceKernelDevkitVersion()", self.probe)
+        self.assertIn('PROBE_HOST0_LOG "host0:/model_profile_log.txt"', self.probe)
+        self.assertIn("-lpspkubridge", self.makefile)
+
+    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
+        manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        system = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-SYSTEM-001")
+        self.assertEqual(system["status"], "implemented")
+        self.assertEqual(system["case_ids"], ["model-profile"])
 
     def test_manifest_routes_issue_23_to_dedicated_scalar_probe(self) -> None:
         manifest = json.loads(
@@ -300,7 +471,9 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
-        self.assertEqual(len(dmac["case_ids"]), 7)
+        self.assertEqual(len(dmac["case_ids"]), 23)
+        self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
+        self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])
         self.assertIn("missing record is never PASS", dmac["reset"])
         self.assertEqual(
             set(dmac["outcome_contract"]),

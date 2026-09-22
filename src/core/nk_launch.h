@@ -76,8 +76,12 @@ typedef struct {
 } NkLaunchSession;
 
 /* True when the launcher's executable search can resolve a runtime for `title_id`
- * under `root`. This is the same probe used by nk_launch_prepare_session, so UI
- * readiness cannot drift from the eventual launch path. */
+ * under the root directory `root`. Requires `title_id` to name a validated
+ * catalog entry and probes only that entry's identity-derived candidates (the
+ * shared contract in generated/nk_title_catalog.h); an unknown title, or a
+ * workspace holding only another title's build, is not "available". This is
+ * the same probe used by nk_launch_prepare_session, so UI readiness cannot
+ * drift from the eventual launch path. */
 bool nk_launch_runtime_available(const char *root, const char *title_id);
 
 /* Validate a promoted staging EBOOT.BIN against the selected title manifest.
@@ -91,9 +95,14 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
                                               char *error_message,
                                               size_t error_message_size);
 
-/* Prepare a launch session for the given game entry. Validates runtime
- * executable existence, staged source metadata when present, and resolves the
- * source ISO/data/save roots before building environment/argv. */
+/* Prepare a launch session for the given game entry under the root directory
+ * `repo_or_install_root` (a file path is not accepted as an explicit-legacy
+ * escape). The session's disc_id/title_id must resolve to ONE agreeing
+ * validated catalog entry; the runtime executable and image are resolved only
+ * from that entry's identity-derived candidates (no sibling-title or
+ * retail-title fallback exists), and a missing runtime or image is an honest
+ * fail-closed error. Staged source metadata is validated when present, and
+ * the source ISO/data/save roots are resolved before returning NK_OK. */
 
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,
@@ -101,7 +110,10 @@ NkResult nk_launch_prepare_session(
     const char *repo_or_install_root
 );
 
-/* Start the prepared session, launching the native runtime as a child process. */
+/* Start the prepared session, launching the native runtime as a child process.
+ * Immediately before spawn the session identity and the resolved executable
+ * path are re-checked against each other: a session whose executable or title
+ * identity was swapped after preparation is rejected instead of spawned. */
 NkResult nk_launch_start(NkLaunchSession *session);
 
 /* Check if runtime child process is currently running */

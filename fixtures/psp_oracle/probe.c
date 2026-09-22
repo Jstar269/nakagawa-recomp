@@ -7,9 +7,13 @@
 #include <pspdmac.h>
 #include <psppower.h>
 #include <pspiofilemgr.h>
+#include <pspiofilemgr_fcntl.h>
 #include <pspsysmem.h>
 #include <pspthreadman.h>
 #include <psputils.h>
+#include <pspctrl.h>
+#include <psprtc.h>
+#include <pspaudio.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,6 +42,21 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT 13
 #define PSP_ORACLE_CASE_DISPLAY_MASK_DUTY 14
 #define PSP_ORACLE_CASE_DISPLAY_GE_MASK 15
+#define PSP_ORACLE_CASE_TRANSPORT_WRITE 44
+#define PSP_ORACLE_CASE_THREAD_EXIT_DELETE 45
+#define PSP_ORACLE_CASE_DMAC_SURVEY 46
+#define PSP_ORACLE_CASE_CTRL_CLOCK 47
+#define PSP_ORACLE_CASE_FPU_VECTOR 48
+#define PSP_ORACLE_CASE_TEARDOWN_TEST 49
+#define PSP_ORACLE_CASE_IO_MATRIX 50
+#define PSP_ORACLE_CASE_AUDIO_QUERY 51
+#define PSP_ORACLE_CASE_CACHE_ALIAS 52
+#define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX 53
+#define PSP_ORACLE_CASE_MODEL_PROFILE 54
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+#include <kubridge.h>
+#endif
 #define PSP_ORACLE_CASE_DISPLAY_WAIT_LATE 16
 #define PSP_ORACLE_CASE_DISPLAY_WAIT_PRIORITY 17
 #define PSP_ORACLE_CASE_DISPLAY_VBLANK_WINDOW 18
@@ -85,6 +104,14 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 PSP_HEAP_SIZE_KB(512);
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
+/* Same bounded heap as the tails: the default heap demonstrably squats the
+   surveyed range (32/32 clean-fails), while the bounded one leaves the free
+   pool observable. Survey and tails must share heap geometry or their
+   results are incomparable. */
+PSP_HEAP_SIZE_KB(512);
+#endif
+
 /* PPSSPP exposes a pseudo-device that headless builds use to capture test
    output; see Core/HLE/sceIo.cpp. Real hardware has no such device and the
    devctl simply fails, which is how the probe tells the two apart. The same
@@ -119,8 +146,23 @@ static void emit(int emulated, const char *text) {
         sceIoDevctl("emulator:", EMULATOR_DEVCTL_SEND_OUTPUT, (void *)text, (int)strlen(text), NULL, 0);
     } else {
         printf("%s", text);
+        fflush(stdout);
     }
 }
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+#define PROBE_HOST0_LOG "host0:/fpu_vector_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
+#define PROBE_HOST0_LOG "host0:/io_matrix_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+#define PROBE_HOST0_LOG "host0:/audio_query_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+#define PROBE_HOST0_LOG "host0:/cache_alias_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+#define PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+#define PROBE_HOST0_LOG "host0:/model_profile_log.txt"
+#endif
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CALLBACK || \
@@ -162,6 +204,70 @@ static void emit_record_extended(int emulated, const char *test_id,
         line[used] = '\0';
     }
     emit(emulated, line);
+#ifdef PROBE_HOST0_LOG
+    if (!emulated) {
+        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+        if (fd >= 0) {
+            sceIoWrite(fd, line, strlen(line));
+            sceIoClose(fd);
+        }
+    }
+#endif
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+/* Deferred record buffer.
+   The IO matrix measures IoFileMgr itself and the cache matrix measures
+   dcache line residency across cells.  Emitting a record inside the measured
+   window would perturb the very state under test: `emit_record_extended`
+   opens, writes and closes a `host0:` descriptor, which allocates a fresh
+   SceUID from the same IoFileMgr namespace the IO probe samples, and drives a
+   blocking USB round trip whose kernel and DMA footprint can evict the
+   `s_cache_buf` line whose residency the cache probe samples between cells.
+
+   Records are therefore accumulated as raw values -- no formatting, no
+   syscall, no allocation -- and emitted only after every measurement cell has
+   run.  Capacity is a compile-time constant checked against the largest cell
+   count either probe can emit, so overflow is impossible by construction
+   rather than handled at runtime. */
+#define DEFERRED_MAX_RECORDS 8
+#define DEFERRED_MAX_OUT 6
+
+struct deferred_record {
+    const char *case_id; /* string literal; never freed */
+    const char *status;  /* "PASS" / "FAIL" literal */
+    uint32_t result;
+    uint32_t out[DEFERRED_MAX_OUT];
+    size_t out_count;
+};
+
+static struct deferred_record s_deferred[DEFERRED_MAX_RECORDS];
+static size_t s_deferred_count;
+
+static void defer_record(const char *case_id, const char *status,
+                         uint32_t result, const uint32_t *out,
+                         size_t out_count) {
+    struct deferred_record *rec = &s_deferred[s_deferred_count++];
+    rec->case_id = case_id;
+    rec->status = status;
+    rec->result = result;
+    for (size_t i = 0; i < out_count; i++) {
+        rec->out[i] = out[i];
+    }
+    rec->out_count = out_count;
+}
+
+/* Emit every buffered record in capture order.  Called only after the last
+   measurement cell has completed, so no emission touches measured state. */
+static void flush_deferred(int emulated, const char *test_id) {
+    for (size_t i = 0; i < s_deferred_count; i++) {
+        emit_record_extended(emulated, test_id, s_deferred[i].case_id,
+                             s_deferred[i].status, s_deferred[i].result,
+                             s_deferred[i].out, s_deferred[i].out_count);
+    }
 }
 #endif
 
@@ -632,8 +738,9 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 }
 #endif
 
-#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
-    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+#if (PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
+     PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
 #define DMAC_API_MEMCPY 0u
 #define DMAC_API_TRY_MEMCPY 1u
 #define DMAC_MEASURED_PREFIX 0x0000c000u
@@ -652,6 +759,116 @@ static uint8_t dmac_pattern(uint32_t offset) {
 static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
     const uint64_t elapsed = end >= start ? end - start : 0;
     return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+/* Sequential, thread-free size controls.  The invalid-tail family measures a
+   block boundary; this matrix keeps both spans fully inside VRAM so a result
+   above 0xC000 cannot be mistaken for boundary truncation. */
+#define DMAC_SIZE_BYTES 0x00100000u
+#define DMAC_SIZE_SENTINEL 0xa5u
+#define DMAC_SIZE_TRIALS 3u
+#define DMAC_SIZE_DST ((uint8_t *)0x04000000u)
+#define DMAC_SIZE_SRC ((uint8_t *)0x04100000u)
+static const uint32_t dmac_size_requests[] = {
+    0x0000bfffu, 0x0000c000u, 0x0000c001u, 0x0000d000u,
+    0x0000f000u, 0x0000ffffu, 0x00010000u, 0x00100000u,
+};
+
+static void dmac_size_cache_sync(void *address, uint32_t size) {
+    sceKernelDcacheWritebackRange(address, size);
+    sceKernelDcacheInvalidateRange(address, size);
+}
+
+static uint32_t dmac_size_prefix(uint32_t requested) {
+    uint32_t offset = 0;
+    while (offset < requested && DMAC_SIZE_DST[offset] == dmac_pattern(offset)) {
+        ++offset;
+    }
+    return offset;
+}
+
+static uint32_t dmac_size_non_sentinel(uint32_t offset, uint32_t requested) {
+    uint32_t count = 0;
+    while (offset < requested) {
+        if (DMAC_SIZE_DST[offset] != DMAC_SIZE_SENTINEL) ++count;
+        ++offset;
+    }
+    return count;
+}
+
+static uint32_t dmac_size_source_mutations(void) {
+    uint32_t count = 0;
+    for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
+        if (DMAC_SIZE_SRC[offset] != dmac_pattern(offset)) ++count;
+    }
+    return count;
+}
+
+static void run_dmac_size_matrix(int emulated) {
+    for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
+        DMAC_SIZE_SRC[offset] = dmac_pattern(offset);
+    }
+    dmac_size_cache_sync(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
+
+    const uint32_t api_count = 2u;
+    const uint32_t request_count =
+        (uint32_t)(sizeof(dmac_size_requests) / sizeof(dmac_size_requests[0]));
+    for (uint32_t api = 0; api < api_count; ++api) {
+        for (uint32_t i = 0; i < request_count; ++i) {
+            const uint32_t requested = dmac_size_requests[i];
+            uint32_t failed_trials = 0;
+            uint32_t max_prefix = 0;
+            uint32_t max_stray = 0;
+            uint32_t max_source_mutations = 0;
+            uint32_t max_elapsed_us = 0;
+            uint32_t last_result = 0;
+            for (uint32_t trial = 0; trial < DMAC_SIZE_TRIALS; ++trial) {
+                memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, requested);
+                dmac_size_cache_sync(DMAC_SIZE_DST, requested);
+                const uint64_t start_us = sceKernelGetSystemTimeWide();
+                last_result = (uint32_t)dmac_call(
+                    api, DMAC_SIZE_DST, DMAC_SIZE_SRC, requested);
+                const uint64_t end_us = sceKernelGetSystemTimeWide();
+                sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, requested);
+                sceKernelDcacheInvalidateRange(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
+
+                const uint32_t prefix = dmac_size_prefix(requested);
+                const uint32_t stray = dmac_size_non_sentinel(prefix, requested);
+                const uint32_t source_mutations = dmac_size_source_mutations();
+                const uint32_t elapsed_us = dmac_elapsed_us(start_us, end_us);
+                if (prefix > max_prefix) max_prefix = prefix;
+                if (stray > max_stray) max_stray = stray;
+                if (source_mutations > max_source_mutations) {
+                    max_source_mutations = source_mutations;
+                }
+                if (elapsed_us > max_elapsed_us) max_elapsed_us = elapsed_us;
+                if (last_result != 0u || prefix != requested || stray != 0u ||
+                    source_mutations != 0u) {
+                    ++failed_trials;
+                }
+            }
+            char case_id[64];
+            snprintf(case_id, sizeof(case_id), "size-matrix-%s-0x%08x",
+                     api == DMAC_API_TRY_MEMCPY ? "try" : "memcpy",
+                     (unsigned int)requested);
+            const uint32_t out[] = {
+                requested,
+                max_prefix,
+                max_stray,
+                max_source_mutations == 0u ? 1u : 0u,
+                max_elapsed_us,
+                api,
+                DMAC_SIZE_TRIALS,
+                failed_trials,
+                max_source_mutations,
+            };
+            emit_record_extended(emulated, "PSP-DMAC-001", case_id,
+                                 failed_trials == 0u ? "PASS" : "FAIL",
+                                 last_result, out, sizeof(out) / sizeof(out[0]));
+        }
+    }
 }
 #endif
 
@@ -874,17 +1091,15 @@ static void run_dmac_concurrency(int emulated) {
 
 #if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
     PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
-/* With PSP_LARGE_MEMORY=0, the pinned PSPSDK build contract requests the
-   24 MiB baseline user partition.  uOFW's public memory map places that
-   partition at 0x08800000 with size 0x01800000, ending at 0x0A000000.
-   The probe does not touch that boundary until the allocator has reserved the
-   entire valid prefix and independently rejected a block beginning at the
-   next address. */
-#define DMAC_BASELINE_USER_END 0x0a000000u
-#define DMAC_BOUNDARY_LEAD 0x00000100u
-#define DMAC_BOUNDARY_BLOCK_BASE \
-    (DMAC_BASELINE_USER_END - DMAC_MEASURED_PREFIX - DMAC_BOUNDARY_LEAD)
-#define DMAC_BOUNDARY_BLOCK_BYTES (DMAC_MEASURED_PREFIX + DMAC_BOUNDARY_LEAD)
+/* The old probe baked in a 32 MiB partition end.  That premise was false on
+   some PSP-3000/ARK configurations and made every tail result vacuous.  The
+   replacement discovers a boundary in the current allocator state: a
+   page-aligned high block is held, and the next address is probed while that
+   block is still live.  A successful adjacent allocation (or any allocator
+   ambiguity) is a strict SKIP, so the invalid-tail syscall is issued only
+   after the allocator itself rejects the candidate. */
+#define DMAC_BOUNDARY_LEAD 0x00004000u
+#define DMAC_BOUNDARY_BLOCK_BYTES 0x00010000u
 #define DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)
 #define DMAC_BOUNDARY_SENTINEL 0xa5u
 #define DMAC_BOUNDARY_GUARD 0x6du
@@ -939,6 +1154,7 @@ static void emit_dmac_invalid_setup(int emulated, const char *status,
         DMAC_INVALID_DIRECTION,
         DMAC_INVALID_API,
         tail_allocation_result,
+        DMAC_BOUNDARY_BLOCK_BYTES,
     };
     emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
                          status, result, out, sizeof(out) / sizeof(out[0]));
@@ -946,9 +1162,12 @@ static void emit_dmac_invalid_setup(int emulated, const char *status,
 
 static void run_dmac_invalid_tail(int emulated) {
     uint32_t setup_mask = 0;
+    /* Allocate from the high end so the candidate immediately after the
+       page-aligned block has no unobserved space above it.  The allocation is
+       kept live throughout the tail call. */
     const SceUID block = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-boundary", PSP_SMEM_Addr,
-        DMAC_BOUNDARY_BLOCK_BYTES, (void *)DMAC_BOUNDARY_BLOCK_BASE);
+        2, "oracle-dmac-boundary", PSP_SMEM_High,
+        DMAC_BOUNDARY_BLOCK_BYTES, NULL);
     if (block < 0) {
         emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)block,
                                 setup_mask, 0);
@@ -956,22 +1175,26 @@ static void run_dmac_invalid_tail(int emulated) {
     }
     setup_mask |= 1u;
     uint8_t *const block_head = (uint8_t *)sceKernelGetBlockHeadAddr(block);
-    if ((uintptr_t)block_head != (uintptr_t)DMAC_BOUNDARY_BLOCK_BASE) {
+    if (!block_head || ((uintptr_t)block_head & 0xfffu) != 0u ||
+        (uintptr_t)block_head > UINTPTR_MAX - DMAC_BOUNDARY_BLOCK_BYTES) {
         sceKernelFreePartitionMemory(block);
         emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
         return;
     }
     setup_mask |= 2u;
 
-    /* This allocation is an observational safety gate.  If partition 2 can
-       allocate at or above the assumed end, no invalid DMA call is issued. */
-    const SceUID tail_block = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-tail-check", PSP_SMEM_Addr, 0x100,
-        (void *)DMAC_BASELINE_USER_END);
-    if (tail_block >= 0) {
-        sceKernelFreePartitionMemory(tail_block);
+    uint8_t *const candidate_tail = block_head + DMAC_BOUNDARY_BLOCK_BYTES;
+    const SceUID tail_probe = sceKernelAllocPartitionMemory(
+        2, "oracle-dmac-tail-probe", PSP_SMEM_Addr, 0x100, candidate_tail);
+    const uint32_t tail_error = tail_probe < 0
+        ? (uint32_t)tail_probe : UINT32_MAX;
+    if (tail_probe >= 0) {
+        /* A successful or ambiguous allocation means the candidate is not a
+           proven invalid byte.  Never issue the DMAC request in that case. */
+        sceKernelFreePartitionMemory(tail_probe);
         sceKernelFreePartitionMemory(block);
-        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
+        emit_dmac_invalid_setup(emulated, "SKIP", 1u, setup_mask,
+                                tail_error);
         return;
     }
     setup_mask |= 4u;
@@ -1047,7 +1270,8 @@ static void run_dmac_invalid_tail(int emulated) {
         post_request_changed,
         source_prefix_matches,
         dmac_elapsed_us(start_us, end_us),
-        (uint32_t)tail_block,
+        tail_error,
+        DMAC_BOUNDARY_BLOCK_BYTES,
     };
     sceKernelFreePartitionMemory(block);
     emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
@@ -1589,6 +1813,826 @@ static void run_display_ge_mask(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TRANSPORT_WRITE
+/* Bidirectional host0 file proof: the PSP writes a fixed 64-byte pattern to a
+   probe-owned disposable path, reads it back, and reports a checksum plus a
+   match flag. The host independently hashes the file it receives. Pattern byte
+   i is (0x5A ^ (i * 0x25 + (i >> 3))) & 0xFF. Only this one path is touched. */
+#define TRANSPORT_PATH "host0:/nakagawa_transport_write.bin"
+#define TRANSPORT_LEN 64u
+static uint32_t transport_fnv1a(const uint8_t *data, size_t len) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+static int run_transport_write_case(int emulated, uint32_t *out) {
+    uint8_t pattern[TRANSPORT_LEN];
+    uint8_t back[TRANSPORT_LEN];
+    for (uint32_t i = 0; i < TRANSPORT_LEN; i++) {
+        pattern[i] = (uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)));
+    }
+    memset(back, 0, sizeof(back));
+    out[0] = transport_fnv1a(pattern, sizeof(pattern));
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = (uint32_t)scePowerGetCpuClockFrequencyInt();
+    SceUID fd = sceIoOpen(TRANSPORT_PATH,
+                          PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) {
+        return (int)fd;
+    }
+    const int written = sceIoWrite(fd, pattern, (SceSize)sizeof(pattern));
+    out[1] = (uint32_t)(written < 0 ? 0 : written);
+    sceIoClose(fd);
+    if (written != (int)sizeof(pattern)) {
+        return -1;
+    }
+    fd = sceIoOpen(TRANSPORT_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) {
+        return (int)fd;
+    }
+    const int got = sceIoRead(fd, back, (SceSize)sizeof(back));
+    out[2] = (uint32_t)(got < 0 ? 0 : got);
+    sceIoClose(fd);
+    if (got != (int)sizeof(back)) {
+        return -1;
+    }
+    const uint32_t match =
+        (memcmp(pattern, back, sizeof(pattern)) == 0) ? 1u : 0u;
+    out[3] = match;
+    const int pass = (match == 1u) ? 0 : -1;
+    emit_record_extended(emulated, "PSP-TRANSPORT-001",
+                         "host0-write-readback", match == 1u ? "PASS" : "FAIL",
+                         (uint32_t)pass, out, 5);
+    return pass;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
+/* Exit/delete boundary matrix: implicit return vs sceKernelExitThread vs
+   sceKernelExitDeleteThread, across positive / zero / small-negative /
+   error-shaped statuses. Each cell observes through sceKernelWaitThreadEnd
+   AND SceKernelThreadInfo.exitStatus, then probes post-state (delete and
+   restart legality). One thread per cell, sequential, immediate exits; NULL
+   waits are against threads that exit at once (deterministic sync).
+   PASS = harness completed and all raw observations captured; raw API
+   outcomes (including errors) are data in result/out*, never converted. */
+#define ED_METHOD_RETURN 0u
+#define ED_METHOD_EXIT 1u
+#define ED_METHOD_EXITDELETE 2u
+static uint32_t g_ed_status;
+static uint32_t g_ed_method;
+static int ed_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    if (g_ed_method == ED_METHOD_EXIT) {
+        sceKernelExitThread((int)g_ed_status);
+        return 0x55; /* unreachable */
+    }
+    if (g_ed_method == ED_METHOD_EXITDELETE) {
+        sceKernelExitDeleteThread((int)g_ed_status);
+        return 0x55; /* unreachable */
+    }
+    return (int)g_ed_status;
+}
+static int run_exit_delete_cell(int emulated, const char *case_id,
+                                uint32_t status, uint32_t method) {
+    uint32_t out[6] = {0xffffffffu, 0xffffffffu, 0xffffffffu,
+                       0xffffffffu, 0xffffffffu, 0xffffffffu};
+    g_ed_status = status;
+    g_ed_method = method;
+    SceUID thid = sceKernelCreateThread(case_id, ed_entry, 32, 0x1000, 0, NULL);
+    if (thid < 0) {
+        emit_record_extended(emulated, "PSP-THREAD-EXIT-001", case_id, "FAIL",
+                             (uint32_t)thid, out, 6);
+        return (int)thid;
+    }
+    out[5] = (uint32_t)sceKernelStartThread(thid, 0, NULL);
+    if ((int)out[5] < 0) {
+        sceKernelDeleteThread(thid);
+        emit_record_extended(emulated, "PSP-THREAD-EXIT-001", case_id, "FAIL",
+                             out[5], out, 6);
+        return (int)out[5];
+    }
+    out[0] = (uint32_t)sceKernelWaitThreadEnd(thid, NULL);
+    SceKernelThreadInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    if (sceKernelReferThreadStatus(thid, &info) == 0) {
+        out[1] = (uint32_t)info.exitStatus;
+        out[2] = (uint32_t)info.status;
+    }
+    out[3] = (uint32_t)sceKernelDeleteThread(thid);
+    out[4] = (uint32_t)sceKernelStartThread(thid, 0, NULL);
+    if (method != ED_METHOD_EXITDELETE && (int)out[4] == 0) {
+        /* Accepted restart: wait for the rerun, then delete, so the launch
+           leaks nothing in-process. */
+        sceKernelWaitThreadEnd(thid, NULL);
+        sceKernelDeleteThread(thid);
+    }
+    emit_record_extended(emulated, "PSP-THREAD-EXIT-001", case_id, "PASS",
+                         out[0], out, 6);
+    return 0;
+}
+static void run_thread_exit_delete(int emulated) {
+    static const struct {
+        const char *id;
+        uint32_t status;
+        uint32_t method;
+    } cells[] = {
+        {"ED-R77", 0x00000077u, ED_METHOD_RETURN},
+        {"ED-R00", 0x00000000u, ED_METHOD_RETURN},
+        {"ED-RNEG", 0xffffffefu, ED_METHOD_RETURN},
+        {"ED-RERR", 0x800201acu, ED_METHOD_RETURN},
+        {"ED-X77", 0x00000077u, ED_METHOD_EXIT},
+        {"ED-X00", 0x00000000u, ED_METHOD_EXIT},
+        {"ED-XNEG", 0xffffffefu, ED_METHOD_EXIT},
+        {"ED-XERR", 0x800201acu, ED_METHOD_EXIT},
+        {"ED-D77", 0x00000077u, ED_METHOD_EXITDELETE},
+        {"ED-D00", 0x00000000u, ED_METHOD_EXITDELETE},
+        {"ED-DNEG", 0xffffffefu, ED_METHOD_EXITDELETE},
+        {"ED-DERR", 0x800201acu, ED_METHOD_EXITDELETE},
+    };
+    for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        run_exit_delete_cell(emulated, cells[i].id, cells[i].status,
+                             cells[i].method);
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
+/* Allocator-observed user-memory boundary survey: redesign input for the
+   invalid-tail precedence cells, whose compiled-in end assumption
+   (0x0A000000) the firmware rejects by successfully allocating there.
+   Scans partition-2 fixed-address allocatability upward, freeing every
+   success immediately. Thread-free, main-thread only; failures are ordinary
+   error codes, never faults. Nothing is written through the surveyed
+   addresses. Emits highest provable base + first failure. */
+#define DMAC_SURVEY_STEPS 4u
+static const uint32_t dmac_survey_bases[DMAC_SURVEY_STEPS] = {
+    0x0b740000u, 0x0b780000u, 0x0b7c0000u, 0x0b7e0000u,
+};
+static void run_dmac_survey(int emulated) {
+    uint32_t top_ok = 0;
+    uint32_t first_fail = 0;
+    uint32_t first_err = 0;
+    uint32_t attempts = 0;
+    for (uint32_t i = 0; i < DMAC_SURVEY_STEPS; i++) {
+        const uint32_t base = dmac_survey_bases[i];
+        attempts++;
+        const SceUID got = sceKernelAllocPartitionMemory(
+            2, "oracle-dmac-survey", PSP_SMEM_Addr, 0x100,
+            (void *)(uintptr_t)base);
+        if (got < 0) {
+            if (first_fail == 0u) {
+                first_fail = base;
+                first_err = (uint32_t)got;
+            }
+            continue;
+        }
+        if (base > top_ok) {
+            top_ok = base;
+        }
+        sceKernelFreePartitionMemory(got);
+    }
+    const uint32_t out[] = {
+        top_ok, first_fail, first_err, attempts, DMAC_SURVEY_STEPS,
+    };
+    emit_record_extended(emulated, "PSP-DMAC-001", "allocator-survey", "PASS",
+                         top_ok, out, sizeof(out) / sizeof(out[0]));
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
+/* Controller timestamp + clock-domain correlations (main thread only, no
+   threads created). Timestamp units/epoch are NOT assumed: every cell pairs
+   the controller timestamp against sceKernelGetSystemTimeLow so the host
+   derives offset/rate empirically. All deltas are raw u32 wraps (host
+   interprets). 8-iteration summaries use min/max only (no float). */
+#define CC_ITERS 8
+static void run_ctrl_clock(int emulated) {
+    SceCtrlData pad;
+    /* CC-TS-PAIRS: peek timestamp vs system time, back-to-back. */
+    {
+        uint32_t ts_prev = 0, sys_prev = 0, ts0 = 0, sys0 = 0;
+        uint32_t min_dts = 0xffffffffu, max_dts = 0;
+        uint32_t min_dsys = 0xffffffffu, max_dsys = 0;
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < CC_ITERS; i++) {
+            memset(&pad, 0, sizeof(pad));
+            if (sceCtrlPeekBufferPositive(&pad, 1) < 0) {
+                continue;
+            }
+            const uint32_t sys = sceKernelGetSystemTimeLow();
+            if (n == 0) {
+                ts0 = pad.TimeStamp;
+                sys0 = sys;
+            } else {
+                /* wrap-safe forward deltas via unsigned arithmetic */
+                const uint32_t fwd_ts = pad.TimeStamp - ts_prev;
+                const uint32_t fwd_sys = sys - sys_prev;
+                if (fwd_ts < min_dts) {
+                    min_dts = fwd_ts;
+                }
+                if (fwd_ts > max_dts) {
+                    max_dts = fwd_ts;
+                }
+                if (fwd_sys < min_dsys) {
+                    min_dsys = fwd_sys;
+                }
+                if (fwd_sys > max_dsys) {
+                    max_dsys = fwd_sys;
+                }
+            }
+            ts_prev = pad.TimeStamp;
+            sys_prev = sys;
+            n++;
+        }
+        const uint32_t out[] = {n, min_dts, max_dts, min_dsys, max_dsys, ts0,
+                                sys0};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-ts-pairs",
+                             n > 1 ? "PASS" : "FAIL", n, out, 7);
+    }
+    /* CC-TS-VCOUNT: vcount vs peek timestamp. */
+    {
+        uint32_t v_prev = 0, ts_prev = 0, v0 = 0, ts00 = 0;
+        uint32_t min_dv = 0xffffffffu, max_dv = 0;
+        uint32_t min_dts = 0xffffffffu, max_dts = 0;
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < CC_ITERS; i++) {
+            const uint32_t v = sceDisplayGetVcount();
+            memset(&pad, 0, sizeof(pad));
+            if (sceCtrlPeekBufferPositive(&pad, 1) < 0) {
+                continue;
+            }
+            if (n == 0) {
+                v0 = v;
+                ts00 = pad.TimeStamp;
+            } else {
+                const uint32_t dv = v - v_prev;
+                const uint32_t dts = pad.TimeStamp - ts_prev;
+                if (dv < min_dv) {
+                    min_dv = dv;
+                }
+                if (dv > max_dv) {
+                    max_dv = dv;
+                }
+                if (dts < min_dts) {
+                    min_dts = dts;
+                }
+                if (dts > max_dts) {
+                    max_dts = dts;
+                }
+            }
+            v_prev = v;
+            ts_prev = pad.TimeStamp;
+            n++;
+        }
+        const uint32_t out[] = {n, min_dv, max_dv, min_dts, max_dts, v0, ts00};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-ts-vcount",
+                             n > 1 ? "PASS" : "FAIL", n, out, 7);
+    }
+    /* CC-SNAPSHOT: one clock-domain anchor row. */
+    {
+        const uint32_t sys = sceKernelGetSystemTimeLow();
+        const uint32_t v = sceDisplayGetVcount();
+        const uint32_t h = sceDisplayGetAccumulatedHcount();
+        uint64_t tick = 0;
+        const int rtc_rc = sceRtcGetCurrentTick(&tick);
+        const uint32_t mhz = (uint32_t)scePowerGetCpuClockFrequencyInt();
+        const uint32_t out[] = {sys, v, h, (uint32_t)(tick & 0xffffffffu),
+                                (uint32_t)(tick >> 32), mhz,
+                                (uint32_t)rtc_rc};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "clock-snapshot",
+                             rtc_rc == 0 ? "PASS" : "FAIL", sys, out, 7);
+    }
+    /* CC-DELAY: 10 ms DelayThread ground truth. */
+    {
+        const uint32_t before = sceKernelGetSystemTimeLow();
+        sceKernelDelayThread(10000);
+        const uint32_t after = sceKernelGetSystemTimeLow();
+        const uint32_t out[] = {before, after, after - before, 10000u};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "delay-10ms",
+                             "PASS", after - before, out, 4);
+    }
+    /* CC-ZERO: zero-count read behavior. */
+    {
+        memset(&pad, 0, sizeof(pad));
+        const int rc = sceCtrlReadBufferPositive(&pad, 0);
+        const uint32_t out[] = {(uint32_t)pad.TimeStamp};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-zero-count",
+                             "PASS", (uint32_t)rc, out, 1);
+    }
+    /* CC-PEEK-READ: does a consuming read change the timestamp? */
+    {
+        SceCtrlData a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        const int prc = sceCtrlPeekBufferPositive(&a, 1);
+        const int rrc = sceCtrlReadBufferPositive(&b, 1);
+        const uint32_t out[] = {(uint32_t)a.TimeStamp, (uint32_t)b.TimeStamp,
+                                (uint32_t)prc, (uint32_t)rrc};
+        emit_record_extended(emulated, "PSP-SYSTEM-001", "ctrl-peek-read",
+                             (prc >= 0 && rrc >= 0) ? "PASS" : "FAIL",
+                             (uint32_t)(b.TimeStamp - a.TimeStamp), out, 4);
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+/* COP1/FPU result vectors (main thread only, no threads created). Two
+   evidence classes, kept distinct in the report: PINNED cells use inline
+   asm for the exact opcode (cvt.w.s/cvt.s.w, FCR31 access); COMPILER cells
+   use C operators (the compiler selects the sequence — measured as run,
+   opcode not pinned). FCR31 exception enables stay OFF throughout (a trap
+   would kill the launch); only RM and FS bits are touched, saved/restored
+   per cell. All bit patterns travel as u32 (memcpy-punned, volatile).
+
+   MAXIMALLY HARDENED v3:
+   1. Boot FCR31 is captured via explicit cfc1 at the entry of main() and
+      recorded as diagnostic data, but NEVER restored during execution
+      (the boot FCR31 has IEEE trap enables active, 0x0E00).
+   2. FCR31 is cleared to 0 (all traps off, flags 0, RM=RN) at the literal
+      first instruction of main() and between every single test cell.
+   4. Cell index is maintained in volatile memory diagnostic marker
+      g_fpu_cell_index before each cell. The unsafe undeclared $s2 register write
+      (which clobbered GCC's emulated local variable in v4) is removed;
+      the volatile memory store guarantees strict sequence ordering and zero
+      register allocation hazards.
+      host0:/fpu_vector_log.txt.
+   6. Clean ExitGame only once, zero threads created, 16 expected records.
+*/
+static volatile uint32_t g_fpu_cell_index = 0;
+
+static inline uint32_t fpu_get_fcr31(void) {
+    uint32_t v;
+    __asm__ volatile("cfc1 %0, $31" : "=r"(v) :: "memory");
+    return v;
+}
+
+static inline void fpu_set_fcr31(uint32_t v) {
+    __asm__ volatile("ctc1 %0, $31" :: "r"(v) : "memory");
+}
+
+/* Traps OFF, RM=RN: the only FCR31 state FP arithmetic may run under here.
+   The boot FCR31 is never trusted (it carries exception enables 0x0E00). */
+static inline void fpu_quiet(void) {
+    fpu_set_fcr31(0);
+}
+
+/* PINNED: cvt.w.s honors RM. */
+static inline int32_t fpu_cvt_w_s(float f) {
+    float w;
+    __asm__ volatile("cvt.w.s %0, %1" : "=f"(w) : "f"(f) : "memory");
+    int32_t r;
+    memcpy(&r, &w, 4);
+    return r;
+}
+
+/* PINNED: cvt.s.w int->float. */
+static inline float fpu_cvt_s_w(int32_t i) {
+    float in;
+    memcpy(&in, &i, 4);
+    float f;
+    __asm__ volatile("cvt.s.w %0, %1" : "=f"(f) : "f"(in) : "memory");
+    return f;
+}
+
+static inline uint32_t f32_bits(float f) {
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return u;
+}
+
+static inline float u32_f32(uint32_t u) {
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
+}
+
+static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
+    static const uint32_t inputs[12] = {
+        0x3fc00000u, /* 1.5 */
+        0x40200000u, /* 2.5 */
+        0xbfc00000u, /* -1.5 */
+        0xc0200000u, /* -2.5 */
+        0x3dccccddu, /* 0.1 */
+        0x501502f9u, /* 1e10 */
+        0xd01502f9u, /* -1e10 */
+        0x7fc00001u, /* quiet NaN, payload 1 */
+        0x7f800000u, /* +Inf */
+        0xff800000u, /* -Inf */
+        0x00000000u, /* +0 */
+        0x80000000u, /* -0 */
+    };
+
+    /* Cell 0: Diagnostic record of inherited boot FCR31. */
+    g_fpu_cell_index = 0;
+    {
+        const uint32_t out[] = {boot_fcr31};
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-boot-fcr31", "PASS", boot_fcr31, out, 1);
+    }
+
+    /* PINNED cells 1..4: cvt.w.s under each RM (0 RN, 1 RZ, 2 RP, 3 RM). */
+    for (uint32_t rm = 0; rm < 4; rm++) {
+        g_fpu_cell_index = 1 + rm;
+        fpu_set_fcr31(rm & 3u); /* RM set, all trap enables strictly 0 */
+        uint32_t out[12];
+        for (uint32_t i = 0; i < 12; i++) {
+            out[i] = (uint32_t)fpu_cvt_w_s(u32_f32(inputs[i]));
+        }
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet(); /* clear flags, traps remain 0; NEVER restore boot_fcr31 */
+        char cid[32];
+        snprintf(cid, sizeof(cid), "fpu-cvt-rm%u", (unsigned int)rm);
+        emit_record_extended(emulated, "PSP-FPU-001", cid, "PASS", flags, out, 12);
+    }
+
+    /* COMPILER cell 5: C-cast float->int (compiler selects trunc sequence). */
+    g_fpu_cell_index = 5;
+    {
+        uint32_t out[12];
+        fpu_quiet();
+        for (uint32_t i = 0; i < 12; i++) {
+            volatile float vf = u32_f32(inputs[i]);
+            out[i] = (uint32_t)(int32_t)vf;
+        }
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ccast-trunc", "PASS", flags, out, 12);
+    }
+
+    /* PINNED cell 6: int->float exactness. */
+    g_fpu_cell_index = 6;
+    {
+        static const int32_t ints[6] = {0, 1, -1, 0x7fffffff, (int32_t)0x80000000,
+                                        123456789};
+        uint32_t out[6];
+        fpu_quiet();
+        for (uint32_t i = 0; i < 6; i++) {
+            out[i] = f32_bits(fpu_cvt_s_w(ints[i]));
+        }
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-cvt-s-w", "PASS", flags, out, 6);
+    }
+
+    /* COMPILER cells 7..11: flag/edge arithmetic (volatile C operators). */
+    {
+        struct {
+            const char *id;
+            float a;
+            float b;
+            uint32_t op; /* 0=mul 1=div 2=add */
+        } const ops[] = {
+            {"fpu-flag-overflow", 1e30f, 1e30f, 0},
+            {"fpu-flag-div0", 1.0f, 0.0f, 1},
+            {"fpu-flag-invalid", 0.0f, 0.0f, 1},
+            {"fpu-flag-underflow", 1e-30f, 1e-30f, 0},
+            {"fpu-flag-inexact", 0.1f, 0.2f, 2},
+        };
+        for (uint32_t k = 0; k < sizeof(ops) / sizeof(ops[0]); k++) {
+            g_fpu_cell_index = 7 + k;
+            fpu_quiet();
+            volatile float va = ops[k].a;
+            volatile float vb = ops[k].b;
+            volatile float vr = 0;
+            if (ops[k].op == 0u) {
+                vr = va * vb;
+            } else if (ops[k].op == 1u) {
+                vr = va / vb;
+            } else {
+                vr = va + vb;
+            }
+            const uint32_t bits = f32_bits(vr);
+            const uint32_t flags = fpu_get_fcr31();
+            fpu_quiet(); /* clear flags; NEVER restore boot_fcr31 */
+            const uint32_t out[] = {bits, flags};
+            emit_record_extended(emulated, "PSP-FPU-001", ops[k].id, "PASS", flags, out, 2);
+        }
+    }
+
+    /* COMPILER cell 12: FTZ contrast (FS=1 vs FS=0) on the underflow op. */
+    g_fpu_cell_index = 12;
+    {
+        volatile float va = 1e-30f;
+        volatile float vb = 1e-30f;
+        fpu_quiet();
+        volatile float r0 = va * vb;
+        const uint32_t b0 = f32_bits(r0);
+        const uint32_t f0 = fpu_get_fcr31();
+        fpu_set_fcr31(0x01000000u); /* FS=1, all enables strictly 0 */
+        volatile float r1 = va * vb;
+        const uint32_t b1 = f32_bits(r1);
+        const uint32_t f1 = fpu_get_fcr31();
+        fpu_quiet(); /* clear flags and FS */
+        const uint32_t out[] = {b0, f0, b1, f1};
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-ftz-contrast", "PASS", b0 ^ b1, out, 4);
+    }
+
+    /* COMPILER cell 13: signed-zero behaviors. */
+    g_fpu_cell_index = 13;
+    {
+        volatile float pz = 0.0f;
+        volatile float nz = u32_f32(0x80000000u);
+        volatile float inf = u32_f32(0x7f800000u);
+        fpu_quiet();
+        const uint32_t out[] = {
+            f32_bits(pz + nz), f32_bits(nz + nz), f32_bits(1.0f / pz),
+            f32_bits(1.0f / nz), f32_bits(pz * inf), f32_bits(nz * inf),
+        };
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-signed-zero", "PASS", flags, out, 6);
+    }
+
+    /* COMPILER cell 14: NaN payload propagation through + and *. */
+    g_fpu_cell_index = 14;
+    {
+        static const uint32_t nans[3] = {0x7fc00001u, 0x7fffffffu, 0xffc00001u};
+        uint32_t out[6];
+        fpu_quiet();
+        for (uint32_t i = 0; i < 3; i++) {
+            volatile float vn = u32_f32(nans[i]);
+            volatile float vo = 1.0f;
+            out[2 * i] = f32_bits(vn + vo);
+            out[2 * i + 1] = f32_bits(vn * vo);
+        }
+        const uint32_t flags = fpu_get_fcr31();
+        fpu_quiet();
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-nan-payload", "PASS", flags, out, 6);
+    }
+
+    /* Cell 15: Done record confirming all preceding cells executed without trap. */
+    g_fpu_cell_index = 15;
+    fpu_quiet();
+    {
+        const uint32_t out[] = {15};
+        emit_record_extended(emulated, "PSP-FPU-001", "fpu-done", "PASS", 0, out, 1);
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
+/* Teardown-method experiment: does ending main via sceKernelExitDeleteThread
+   (instead of returning into sceKernelExitGame) avoid poisoning the boot's
+   thread table for the NEXT launch? Main-thread only, no other threads.
+   Emits one record, then ExitDeleteThread(0). The DIAGNOSIS is the next
+   launch (any binary): loads+passes => teardown clean; startup-crash =>
+   same poison. NEVER run anything after this except the diagnostic. */
+static void run_teardown_test(int emulated) {
+    const uint32_t self = (uint32_t)sceKernelGetThreadId();
+    const uint32_t out[] = {self};
+    emit_record_extended(emulated, "PSP-TEARDOWN-001", "exitdelete-main",
+                         "PASS", self, out, 1);
+    sceKernelExitDeleteThread(0);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
+/* 6 measurement cells + 1 completion sentinel. */
+_Static_assert(DEFERRED_MAX_RECORDS >= 7, "io-matrix needs 7 deferred slots");
+
+static void run_io_matrix(int emulated) {
+    const char *test_path = "host0:/test_io_matrix.tmp";
+    uint32_t out[6];
+
+    /* Cell 1: io-open-create */
+    memset(out, 0xFF, sizeof(out));
+    SceUID fd = sceIoOpen(test_path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    out[0] = (uint32_t)fd;
+    defer_record("io-open-create",
+                 fd >= 0 ? "PASS" : "FAIL", (uint32_t)fd, out, 1);
+
+    if (fd >= 0) {
+        /* Cell 2: io-write */
+        memset(out, 0xFF, sizeof(out));
+        uint8_t wbuf[64];
+        memset(wbuf, 0x5A, sizeof(wbuf));
+        int written = sceIoWrite(fd, wbuf, sizeof(wbuf));
+        int close_rc = sceIoClose(fd);
+        out[0] = (uint32_t)written;
+        out[1] = (uint32_t)close_rc;
+        defer_record("io-write",
+                     (written == 64 && close_rc == 0) ? "PASS" : "FAIL",
+                     (uint32_t)written, out, 2);
+    }
+
+    /* Cell 3: io-read-verify */
+    memset(out, 0xFF, sizeof(out));
+    fd = sceIoOpen(test_path, PSP_O_RDONLY, 0777);
+    if (fd >= 0) {
+        uint8_t rbuf[64];
+        memset(rbuf, 0, sizeof(rbuf));
+        int nread = sceIoRead(fd, rbuf, sizeof(rbuf));
+        int match = 1;
+        for (int i = 0; i < 64; i++) {
+            if (rbuf[i] != 0x5A) { match = 0; break; }
+        }
+        out[0] = (uint32_t)nread;
+        out[1] = (uint32_t)match;
+        defer_record("io-read-verify",
+                     (nread == 64 && match) ? "PASS" : "FAIL",
+                     (uint32_t)nread, out, 2);
+
+        /* Cell 4: io-lseek */
+        memset(out, 0xFF, sizeof(out));
+        SceOff s_set = sceIoLseek(fd, 32, PSP_SEEK_SET);
+        SceOff s_cur = sceIoLseek(fd, -16, PSP_SEEK_CUR);
+        SceOff s_end = sceIoLseek(fd, 0, PSP_SEEK_END);
+        sceIoClose(fd);
+        out[0] = (uint32_t)s_set;
+        out[1] = (uint32_t)s_cur;
+        out[2] = (uint32_t)s_end;
+        defer_record("io-lseek",
+                     (s_set == 32 && s_cur == 16 && s_end == 64) ? "PASS" : "FAIL",
+                     (uint32_t)s_end, out, 3);
+    } else {
+        out[0] = (uint32_t)fd;
+        defer_record("io-read-verify", "FAIL", (uint32_t)fd, out, 1);
+    }
+
+    /* Cell 5: io-append */
+    memset(out, 0xFF, sizeof(out));
+    fd = sceIoOpen(test_path, PSP_O_WRONLY | PSP_O_APPEND, 0777);
+    if (fd >= 0) {
+        uint8_t abuf[32];
+        memset(abuf, 0xA5, sizeof(abuf));
+        int app_written = sceIoWrite(fd, abuf, sizeof(abuf));
+        sceIoClose(fd);
+
+        fd = sceIoOpen(test_path, PSP_O_RDONLY, 0777);
+        SceOff total_sz = sceIoLseek(fd, 0, PSP_SEEK_END);
+        sceIoClose(fd);
+        out[0] = (uint32_t)app_written;
+        out[1] = (uint32_t)total_sz;
+        defer_record("io-append",
+                     (app_written == 32 && total_sz == 96) ? "PASS" : "FAIL",
+                     (uint32_t)total_sz, out, 2);
+    } else {
+        out[0] = (uint32_t)fd;
+        defer_record("io-append", "FAIL", (uint32_t)fd, out, 1);
+    }
+
+    /* Cell 6: io-errors & cleanup */
+    memset(out, 0xFF, sizeof(out));
+    SceUID bad_open = sceIoOpen("host0:/__nonexistent_file_matrix_xyz__.tmp", PSP_O_RDONLY, 0777);
+    int bad_read = sceIoRead(-1, out, 4);
+    int rem_rc = sceIoRemove(test_path);
+    out[0] = (uint32_t)bad_open;
+    out[1] = (uint32_t)bad_read;
+    out[2] = (uint32_t)rem_rc;
+    defer_record("io-errors",
+                 (bad_open < 0 && bad_read < 0 && rem_rc == 0) ? "PASS" : "FAIL",
+                 (uint32_t)bad_open, out, 3);
+
+    /* Every IoFileMgr measurement is now complete.  The completion sentinel
+       carries the number of semantic records actually captured, so a truncated
+       transport is detectable against the emitted stream length. */
+    const uint32_t done_out[1] = {(uint32_t)s_deferred_count};
+    defer_record("io-done", "PASS", 0, done_out, 1);
+
+    flush_deferred(emulated, "PSP-IO-001");
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+static void run_audio_query(int emulated) {
+    uint32_t out[6];
+
+    /* Cell 1: audio-ch-reserve */
+    memset(out, 0xFF, sizeof(out));
+    int res0 = sceAudioChReserve(0, 512, PSP_AUDIO_FORMAT_STEREO);
+    int rest0 = sceAudioGetChannelRestLen(0);
+    out[0] = (uint32_t)res0;
+    out[1] = (uint32_t)rest0;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-ch-reserve",
+                         res0 == 0 ? "PASS" : "FAIL", (uint32_t)res0, out, 2);
+
+    /* Cell 2: audio-ch-release */
+    memset(out, 0xFF, sizeof(out));
+    int rel0 = sceAudioChRelease(0);
+    int rel_again = sceAudioChRelease(0);
+    out[0] = (uint32_t)rel0;
+    out[1] = (uint32_t)rel_again;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-ch-release",
+                         (rel0 == 0 && rel_again < 0) ? "PASS" : "FAIL", (uint32_t)rel0, out, 2);
+
+    /* Cell 3: audio-out2-query */
+    memset(out, 0xFF, sizeof(out));
+    int out2_res = sceAudioOutput2Reserve(512);
+    int out2_rest = sceAudioOutput2GetRestSample();
+    int out2_rel = sceAudioOutput2Release();
+    out[0] = (uint32_t)out2_res;
+    out[1] = (uint32_t)out2_rest;
+    out[2] = (uint32_t)out2_rel;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-out2-query",
+                         (out2_res == 0 && out2_rel == 0) ? "PASS" : "FAIL",
+                         (uint32_t)out2_res, out, 3);
+
+    /* Cell 4: audio-src-reserve */
+    memset(out, 0xFF, sizeof(out));
+    int src_res = sceAudioSRCChReserve(512, 44100, 2);
+    int src_rel = sceAudioSRCChRelease();
+    out[0] = (uint32_t)src_res;
+    out[1] = (uint32_t)src_rel;
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-src-reserve",
+                         (src_res == 0 && src_rel == 0) ? "PASS" : "FAIL",
+                         (uint32_t)src_res, out, 2);
+
+    /* Cell 5: Completion sentinel */
+    uint32_t done_out[1] = {4u};
+    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-done", "PASS", 0, done_out, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+/* 4 measurement cells + 1 completion sentinel. */
+_Static_assert(DEFERRED_MAX_RECORDS >= 5, "cache-alias needs 5 deferred slots");
+
+static uint32_t s_cache_buf[64] __attribute__((aligned(64)));
+
+static void run_cache_alias(int emulated) {
+    uint32_t out[6];
+    volatile uint32_t *c_ptr = s_cache_buf;
+    volatile uint32_t *u_ptr = (volatile uint32_t *)((uintptr_t)s_cache_buf | 0x40000000u);
+
+    /* Cell 1: cache-alias-init (Uncached write visible after invalidate) */
+    memset(out, 0xFF, sizeof(out));
+    u_ptr[0] = 0x11223344u;
+    sceKernelDcacheInvalidateRange((void *)c_ptr, 64);
+    uint32_t c_read1 = c_ptr[0];
+    out[0] = u_ptr[0];
+    out[1] = c_read1;
+    out[2] = (c_read1 == 0x11223344u) ? 1u : 0u;
+    defer_record("cache-alias-init",
+                 c_read1 == 0x11223344u ? "PASS" : "FAIL", c_read1, out, 3);
+
+    /* Cell 2: cache-writeback-contrast (Cached write vs uncached visibility before/after WB) */
+    memset(out, 0xFF, sizeof(out));
+    c_ptr[0] = 0x55667788u;
+    uint32_t u_before = u_ptr[0];
+    sceKernelDcacheWritebackRange((void *)c_ptr, 64);
+    uint32_t u_after = u_ptr[0];
+    out[0] = u_before;
+    out[1] = u_after;
+    out[2] = (u_after == 0x55667788u) ? 1u : 0u;
+    defer_record("cache-writeback-contrast",
+                 u_after == 0x55667788u ? "PASS" : "FAIL", u_after, out, 3);
+
+    /* Cell 3: cache-inval-contrast (Uncached write vs stale cached read before/after inval) */
+    memset(out, 0xFF, sizeof(out));
+    u_ptr[0] = 0x99AABBCCu;
+    uint32_t c_stale = c_ptr[0];
+    sceKernelDcacheInvalidateRange((void *)c_ptr, 64);
+    uint32_t c_fresh = c_ptr[0];
+    out[0] = c_stale;
+    out[1] = c_fresh;
+    out[2] = (c_fresh == 0x99AABBCCu) ? 1u : 0u;
+    defer_record("cache-inval-contrast",
+                 c_fresh == 0x99AABBCCu ? "PASS" : "FAIL", c_fresh, out, 3);
+
+    /* Cell 4: cache-wball (Writeback all lines) */
+    memset(out, 0xFF, sizeof(out));
+    c_ptr[1] = 0xDEADBEEFu;
+    sceKernelDcacheWritebackAll();
+    uint32_t u_wball = u_ptr[1];
+    out[0] = u_wball;
+    out[1] = (u_wball == 0xDEADBEEFu) ? 1u : 0u;
+    defer_record("cache-wball",
+                 u_wball == 0xDEADBEEFu ? "PASS" : "FAIL", u_wball, out, 2);
+
+    /* Every dcache/alias measurement is now complete.  Emission below is the
+       first host0 or stdout activity since the probe began, so no line
+       residency observed above was perturbed by logging. */
+    const uint32_t done_out[1] = {(uint32_t)s_deferred_count};
+    defer_record("cache-done", "PASS", 0, done_out, 1);
+
+    flush_deferred(emulated, "PSP-CACHE-001");
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+/* The PSPSDK/kubridge user bridge exposes the PspModel ordinal.  It is kept
+   as a scalar record beside the firmware word; the host decoder owns the
+   generation-to-retail-family presentation and rejects unknown ordinals. */
+static void run_model_profile(int emulated) {
+    const int model_code = kuKernelGetModel();
+    const uint32_t firmware = (uint32_t)sceKernelDevkitVersion();
+    const uint32_t cpu_mhz = (uint32_t)scePowerGetCpuClockFrequencyInt();
+    const uint32_t out[] = {
+        (uint32_t)model_code,
+        firmware,
+        cpu_mhz,
+    };
+    emit_record_extended(emulated, "PSP-SYSTEM-001", "model-profile",
+                         model_code < 0 ? "ERROR" : "PASS",
+                         (uint32_t)model_code, out,
+                         sizeof(out) / sizeof(out[0]));
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_LATE
 /* D1 -- what does a LATE display wait do?
  *
@@ -2435,7 +3479,17 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+    /* Capture boot FCR31 immediately at process entry before ANY other code runs */
+    uint32_t boot_fcr31 = 0;
+    __asm__ volatile("cfc1 %0, $31" : "=r"(boot_fcr31) :: "memory");
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+#endif
     const int emulated = emulator_present();
+    /* Unbuffered stdout so a probe-induced exception stays attributable to
+       the exact record instead of losing buffered output. Zero semantic
+       effect on emitted records. */
+    setvbuf(stdout, NULL, _IONBF, 0);
     char line[320];
 
     /* uint32_t is `unsigned long` in the PSP newlib ABI, so %x must be fed an
@@ -2446,6 +3500,16 @@ int main(int argc, char *argv[]) {
              "source_commit=0000000000000000000000000000000000000000 fixture=%s\n",
              emulated ? "ppsspp" : "psp", FIXTURE_BUILD_ID);
     emit(emulated, line);
+#ifdef PROBE_HOST0_LOG
+    if (!emulated) {
+        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+        if (fd >= 0) {
+            sceIoWrite(fd, line, strlen(line));
+            sceIoClose(fd);
+        }
+    }
+#endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CALLBACK
     uint32_t out0 = 0;
@@ -2512,6 +3576,34 @@ int main(int argc, char *argv[]) {
     run_display_mask_duty(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
     run_display_ge_mask(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TRANSPORT_WRITE
+    uint32_t tout[5] = {0};
+    const int tpass = run_transport_write_case(emulated, tout);
+    if (tpass != 0) {
+        emit_record_extended(emulated, "PSP-TRANSPORT-001",
+                             "host0-write-readback", "FAIL",
+                             (uint32_t)tpass, tout, 5);
+    }
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
+    run_thread_exit_delete(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
+    run_dmac_survey(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+    run_dmac_size_matrix(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
+    run_ctrl_clock(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+    run_fpu_vector(emulated, boot_fcr31);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
+    run_teardown_test(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
+    run_io_matrix(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+    run_audio_query(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+    run_cache_alias(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
+    run_model_profile(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_LATE
     run_display_wait_late(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_PRIORITY

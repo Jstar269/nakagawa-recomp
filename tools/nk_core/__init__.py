@@ -14,7 +14,7 @@ from .types import (
 )
 from .title_registry import TitleRegistry, get_default_registry
 from .iso_inspect import inspect_iso, IsoInspectionError
-from .prep_engine import PreparationEngine
+from .prep_engine import PreparationEngine, PreparationOutputError
 from .launcher import RuntimeLauncher, RuntimeLaunchError
 from .library import GameLibrary, LibraryGameRecord
 
@@ -26,6 +26,7 @@ __all__ = [
     "IsoInspectionError",
     "LibraryGameRecord",
     "PreparationEngine",
+    "PreparationOutputError",
     "PreparationResult",
     "PrepStage",
     "ProgressEvent",

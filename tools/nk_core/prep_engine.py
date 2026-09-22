@@ -22,11 +22,21 @@ from .types import (
     PreparationResult,
     PrepStage,
     ProgressEvent,
+    TitleProfile,
 )
 
 
 MANIFEST_SCHEMA_VERSION = 1
-PREP_ENGINE_VERSION = "0.2.0"
+PREP_ENGINE_VERSION = "0.3.0"
+
+# Archive formats this Python route is allowed to promote. Everything else
+# (notably claphanz_xb) is refused before any filesystem mutation; bounded
+# ISO/XB extraction is owned by the native player staging path (#374).
+SUPPORTED_ARCHIVE_FORMATS = frozenset({"raw"})
+
+
+class PreparationOutputError(RuntimeError):
+    """Staged preparation outputs failed validation before atomic promotion."""
 
 
 def _sha256_file(path: Path) -> str:
@@ -47,6 +57,68 @@ class PreparationEngine:
     ) -> None:
         self.base_dir = Path(base_dir or Path.cwd()).resolve()
         self.registry = registry or get_default_registry()
+
+    @staticmethod
+    def _validate_staged_outputs(
+        staging_dir: Path,
+        source_iso: Path,
+        profile: TitleProfile,
+        disc_id: str,
+    ) -> None:
+        """Refuse promotion unless every required staged output is present.
+
+        A parsed manifest alone is not evidence of preparation (#374): the
+        disc tree, an ISO reference that resolves to the inspected source,
+        and a manifest attributable to this disc/profile/source must all be
+        verified on disk before atomic promotion.
+        """
+        disc_dir = staging_dir / "disc"
+        if not disc_dir.is_dir():
+            raise PreparationOutputError("staged disc directory is missing")
+
+        game_iso = disc_dir / "game.iso"
+        iso_pointer = disc_dir / "iso_path.txt"
+        references_source = False
+        if game_iso.exists():
+            try:
+                references_source = game_iso.samefile(source_iso)
+            except OSError:
+                references_source = False
+        if not references_source and iso_pointer.is_file():
+            try:
+                pointed = Path(iso_pointer.read_text(encoding="utf-8").strip())
+                references_source = pointed.resolve() == source_iso
+            except (OSError, ValueError):
+                references_source = False
+        if not references_source:
+            raise PreparationOutputError(
+                "staged ISO reference does not resolve to the inspected source image"
+            )
+
+        manifest_path = staging_dir / "manifest.json"
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                staged = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PreparationOutputError(f"staged manifest is unreadable: {exc}") from exc
+
+        if staged.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+            raise PreparationOutputError("staged manifest schema_version mismatch")
+        if staged.get("disc_id") != disc_id:
+            raise PreparationOutputError("staged manifest disc_id is not attributable to this disc")
+        if staged.get("title_id") != profile.id:
+            raise PreparationOutputError("staged manifest title_id does not match the profile")
+        if staged.get("archive_format") not in SUPPORTED_ARCHIVE_FORMATS:
+            raise PreparationOutputError("staged manifest archive_format is not supported")
+        if staged.get("iso_path") != str(source_iso):
+            raise PreparationOutputError("staged manifest iso_path does not match the source image")
+        try:
+            staged_size = staged.get("iso_size")
+            actual_size = source_iso.stat().st_size
+        except OSError as exc:
+            raise PreparationOutputError(f"cannot stat source image: {exc}") from exc
+        if staged_size != actual_size:
+            raise PreparationOutputError("staged manifest iso_size does not match the source image")
 
     def prepare_game(
         self,
@@ -86,6 +158,7 @@ class PreparationEngine:
                 on_progress(event)
 
         staging_dir: Optional[Path] = None
+        disc_id = "UNKNOWN"
         try:
             # Stage 1: Inspect ISO
             emit(PrepStage.INSPECTING_ISO, "Inspecting disc image", completed=0, total=100)
@@ -124,6 +197,28 @@ class PreparationEngine:
             inspected_disc_id = (iso_meta.disc_id or "").strip()
             disc_id = inspected_disc_id if inspected_disc_id in profile.disc_ids else profile.disc_ids[0]
 
+            # Route gate (#374): refuse non-raw archive formats before any
+            # filesystem mutation. The incomplete Python XB staging path is
+            # not a supported extraction implementation; the native player
+            # staging path owns bounded ISO/XB extraction.
+            if profile.archive_format not in SUPPORTED_ARCHIVE_FORMATS:
+                message = (
+                    f"Preparation route for archive format '{profile.archive_format}' "
+                    f"(profile '{profile.id}') is not supported by nk_cli prepare; "
+                    "the native player staging path owns bounded ISO/XB extraction."
+                )
+                emit(
+                    PrepStage.FAILED,
+                    message,
+                    severity=EventSeverity.ERROR,
+                )
+                return PreparationResult(
+                    success=False,
+                    disc_id=disc_id,
+                    error_code="PREPARATION_ROUTE_UNSUPPORTED",
+                    error_message=message,
+                )
+
             games_root = destination_root or (self.base_dir / "games")
             target_dir = games_root / disc_id
 
@@ -157,39 +252,10 @@ class PreparationEngine:
 
             cancel_token.check()
 
-            # Stage 3: Extract Archives (using built-in xb_probe if ClapHanz XB format)
-            extracted_dir = staging_dir / "extracted"
-            extracted_dir.mkdir(parents=True, exist_ok=True)
-
-            if profile.archive_format == "claphanz_xb":
-                emit(
-                    PrepStage.EXTRACTING_ARCHIVES,
-                    "Preparing ClapHanz XB archives via clean-room parser",
-                    completed=2,
-                    total=5,
-                )
-                # If xb archives exist in an extracted ISO tree or container
-                xb_candidates = list((staging_dir / "disc").glob("**/*.xb*"))
-                for idx, arc in enumerate(xb_candidates, start=1):
-                    cancel_token.check()
-                    emit(
-                        PrepStage.EXTRACTING_ARCHIVES,
-                        f"Extracting {arc.name}",
-                        completed=idx,
-                        total=len(xb_candidates),
-                        current_item=arc.name,
-                    )
-                    out_path = extracted_dir / f"{arc.stem}_extracted"
-                    out_path.mkdir(parents=True, exist_ok=True)
-                    try:
-                        from ..xb_probe import XBArchiveReader
-                        reader = XBArchiveReader(arc)
-                        for entry in reader.entries:
-                            target_file = out_path / entry.path.replace("/", os.sep)
-                            target_file.parent.mkdir(parents=True, exist_ok=True)
-                            target_file.write_bytes(reader.read_entry(entry))
-                    except Exception:
-                        pass
+            # Stage 3: no Python-side XB archive staging. Only "raw" reaches
+            # this point (route-gated above); the empty extracted/ tree is
+            # retained as the runtime's expected data-root layout.
+            (staging_dir / "extracted").mkdir(parents=True, exist_ok=True)
 
             cancel_token.check()
 
@@ -212,6 +278,12 @@ class PreparationEngine:
             manifest_path = staging_dir / "manifest.json"
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2)
+
+            cancel_token.check()
+
+            # A parsed manifest is not sufficient evidence of preparation
+            # (#374). Verify the required staged outputs before promotion.
+            self._validate_staged_outputs(staging_dir, iso, profile, disc_id)
 
             cancel_token.check()
 
@@ -256,9 +328,19 @@ class PreparationEngine:
             emit(PrepStage.CANCELLED, "Preparation cancelled by user", severity=EventSeverity.WARN)
             return PreparationResult(
                 success=False,
-                disc_id="UNKNOWN",
+                disc_id=disc_id,
                 error_code="PREPARATION_CANCELLED",
                 error_message="Preparation was cancelled by user.",
+            )
+        except PreparationOutputError as exc:
+            if staging_dir and staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            emit(PrepStage.FAILED, f"Preparation failed: {exc}", severity=EventSeverity.ERROR)
+            return PreparationResult(
+                success=False,
+                disc_id=disc_id,
+                error_code="PREPARATION_OUTPUT_INVALID",
+                error_message=str(exc),
             )
         except Exception as exc:
             if staging_dir and staging_dir.exists():
@@ -266,7 +348,7 @@ class PreparationEngine:
             emit(PrepStage.FAILED, f"Preparation failed: {exc}", severity=EventSeverity.ERROR)
             return PreparationResult(
                 success=False,
-                disc_id="UNKNOWN",
+                disc_id=disc_id,
                 error_code="PREPARATION_FAILED",
                 error_message=str(exc),
             )

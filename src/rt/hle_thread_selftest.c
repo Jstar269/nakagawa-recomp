@@ -134,6 +134,7 @@ extern unsigned long sr_hle_test_data_build_attempts(void);
 extern unsigned long sr_hle_test_data_builds_after_guest(void);
 extern int sr_hle_test_data_state(void);
 extern size_t sr_hle_test_data_entry_count(void);
+extern int sr_hle_test_data_key_seen(const char *key_prefix);
 extern void sr_hle_test_data_reset(int pace_ms);
 
 /* Issue #178 white-box message-pipe probes (defined in hle.c, selftest-only). */
@@ -2819,9 +2820,11 @@ static uint32_t prewarm_open_common(CpuState *cpu) {
     memset(cpu, 0, sizeof *cpu);
     cpu->r[4] = path_addr;
     /* disc0:/<rel> exercises the same device-strip + binary-search shape the
-     * extracted-data route serves in production. (The combined PSP_GAME/ +
-     * USRDIR/ double-strip has a pre-existing leading-slash quirk documented
-     * since PR #108; it is unchanged here and out of scope.) */
+     * extracted-data route serves in production. The combined PSP_GAME/ + USRDIR/
+     * double-strip used to carry a leading-slash quirk (PR #108); the off-by-one
+     * behind it is fixed and the double-strip form is covered by
+     * test_disc_route_serves_archive_and_loose_content_in_one_namespace below, so
+     * the bare form is kept here only to pin the single-strip case. */
     const char *path = "disc0:/data/menu/text/common.to";
     for (unsigned i = 0;; i++) {
         MEM_W8(path_addr + i, (uint8_t)path[i]);
@@ -2935,6 +2938,130 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
            "guest time never enumerates on behalf of an unprepared route");
     expect(sr_hle_test_data_builds_after_guest() == 0,
            "and never records a post-guest build attempt");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+}
+
+/* 2b. The disc route serves the whole namespace the guest addresses, not one
+ *     physical tree: the archive-derived keys and the loose content beside the
+ *     root land in the same key space, and the declared census keeps describing
+ *     the configured root alone.
+ *
+ *     Fixture: <cwd>/build/disc_route_<pid>/USRDIR/xbdata_extracted/menu\a.xb0.d\data\menu\archived.to
+ *              <cwd>/build/disc_route_<pid>/USRDIR/data/sound/bgm/bgm_title.sgb
+ *     SR_DATAROOT is the xbdata_extracted tree, so BOTH keys must resolve through
+ *     one prepared index, and the archive tree must not appear under a second key. */
+static char s_disc_route_root[MAX_PATH];
+
+static int disc_route_make_fixture(void) {
+    char cwd[MAX_PATH];
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    CreateDirectoryA("build", NULL);
+    snprintf(s_disc_route_root, sizeof s_disc_route_root,
+             "%s\\build\\disc_route_%lu", cwd, (unsigned long)GetCurrentProcessId());
+
+    /* CreateDirectoryA makes ONE directory; every intermediate is listed so the
+     * fixture cannot depend on an earlier test having left a parent behind. */
+    static const char *const dirs[] = {
+        "", "\\USRDIR",
+        "\\USRDIR\\xbdata_extracted",
+        "\\USRDIR\\xbdata_extracted\\menu",
+        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d",
+        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data",
+        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu",
+        "\\USRDIR\\data",
+        "\\USRDIR\\data\\sound",
+        "\\USRDIR\\data\\sound\\bgm"
+    };
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", s_disc_route_root, dirs[i]);
+        if (!(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)) return 0;
+    }
+    static const struct { const char *rel; const char *body; } files[] = {
+        { "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
+        { "\\USRDIR\\data\\sound\\bgm\\bgm_title.sgb", "loose" }
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char file[MAX_PATH];
+        snprintf(file, sizeof file, "%s%s", s_disc_route_root, files[i].rel);
+        FILE *f = fopen(file, "wb");
+        if (!f) return 0;
+        fputs(files[i].body, f);
+        fclose(f);
+    }
+    return 1;
+}
+
+static uint32_t disc_route_open(CpuState *cpu, const char *path) {
+    static const uint32_t path_addr = 0x09104000u;
+    memset(cpu, 0, sizeof *cpu);
+    cpu->r[4] = path_addr;
+    for (unsigned i = 0;; i++) {
+        MEM_W8(path_addr + i, (uint8_t)path[i]);
+        if (!path[i]) break;
+    }
+    return sr_hle_test_io_open(cpu);
+}
+
+static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(void) {
+    CpuState cpu;
+    sr_hle_init();
+    expect(disc_route_make_fixture(), "the disc-route fixture was created");
+
+    char dataroot[MAX_PATH];
+    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\xbdata_extracted", s_disc_route_root);
+    SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    sr_hle_test_data_reset(0);
+
+    int state = sr_host_data_prepare();
+    expect(state == SR_DATA_TEST_STATE_READY,
+           "a prepared root with loose content beside it still reaches READY");
+
+    /* Both physical trees are in one key space... */
+    const char *archived = "disc0:/PSP_GAME/USRDIR/data/menu/archived.to";
+    uint32_t archived_fd = disc_route_open(&cpu, archived);
+    expect(archived_fd >= 3u && archived_fd < 64u,
+           "an archive-derived asset still resolves through the disc path");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = archived_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the archive-derived descriptor closes");
+
+    const char *loose = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/bgm_title.sgb";
+    uint32_t loose_fd = disc_route_open(&cpu, loose);
+    expect(loose_fd >= 3u && loose_fd < 64u,
+           "a loose asset beside the root resolves through the same disc path");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = loose_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the loose descriptor closes");
+
+    /* The device-qualified disc form the engine actually issues must normalize to
+     * the same relative key as the bare form.  Both strips consume their trailing
+     * separator; when they did not, every `disc0:/PSP_GAME/USRDIR/<rel>` lookup
+     * produced `/usrdir/<rel>` and missed, which is what starved this title's
+     * equivalent guest filesystem paths otherwise miss the prepared namespace. */
+    static const char *const equivalent_forms[] = {
+        "disc0:/PSP_GAME/USRDIR/data/sound/bgm/bgm_title.sgb",
+        "disc0:/data/sound/bgm/bgm_title.sgb",
+        "data/sound/bgm/bgm_title.sgb",
+        "disc0:\\PSP_GAME\\USRDIR\\data\\sound\\bgm\\bgm_title.sgb"
+    };
+    for (size_t i = 0; i < sizeof(equivalent_forms) / sizeof(equivalent_forms[0]); i++) {
+        uint32_t fd = disc_route_open(&cpu, equivalent_forms[i]);
+        expect(fd >= 3u && fd < 64u,
+               "every form of a disc path normalizes to one key (double strip included)");
+        if (fd >= 3u && fd < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = fd;
+            expect(sr_hle_test_io_close(&cpu) == 0u, "each form's descriptor closes");
+        }
+    }
+
+    /* ...and the configured root is not enumerated a second time under a key it
+     * never had, which is what the skip exists to prevent. */
+    expect(!sr_hle_test_data_key_seen("xbdata_extracted/"),
+           "the configured root is skipped by the loose walk, not re-indexed");
 
     prewarm_env_restore();
     sr_hle_test_data_reset(0);
@@ -3982,6 +4109,7 @@ static void test_sema_hardware_codes(void) {
 #define NID_B1_DELETE_LWMUTEX 0x60107536u
 #define NID_B1_LOCK_LWMUTEX   0xbea46419u
 #define NID_B1_TRYLOCK_LWMUTEX 0xdc692ee3u
+#define NID_TRYLOCK_LWMUTEX_600 0x37431849u
 #define NID_B1_UNLOCK_LWMUTEX 0x15b6446bu
 
 static void test_lwmutex_hardware_codes(void) {
@@ -4007,6 +4135,10 @@ static void test_lwmutex_hardware_codes(void) {
     MEM_W32(wa + 4u, me + 0x100u);
     b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201c4u,
               "TryLock held by another thread returns 800201C4");
+    /* The 6.00+ export reports the same contention as LOCKED, which SDK-built code (the retail
+     * libpsmfplayer) tests for; the state is left untouched either way. */
+    b1_expect(b1_call(NID_TRYLOCK_LWMUTEX_600, wa, 1u, 0u, 0u), 0x800201cbu,
+              "TryLock_600 held by another thread returns 800201CB");
     b1_expect(b1_call(NID_B1_UNLOCK_LWMUTEX, wa, 1u, 0u, 0u), 0x800201ccu,
               "Unlock by a non-owner returns 800201CC");
     expect(MEM_R32(wa) == 1u && MEM_R32(wa + 4u) == me + 0x100u,
@@ -7908,10 +8040,10 @@ static void test_bulk_guest_span_atomicity(void) {
     expect(MEM_R8(0x0bfffff0u) == 0x3cu && MEM_R8(0x0bfffff0u + 15u) == 0x3cu,
            "rejected memset performs no partial guest mutation");
     for (uint32_t i = 0; i < 16u; i++) MEM_W8(0x0bfffff0u + i, 0x2au);
-    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
-           "production DMA reports its PSP return value for a rejected span");
-    expect(MEM_R8(0x0bfffff0u) == 0x2au && MEM_R8(0x0bfffff0u + 15u) == 0x2au,
-           "rejected DMA performs no partial guest mutation");
+    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == 0u,
+           "production DMA reports success for a measured one-byte tail");
+    expect(MEM_R8(0x0bfffff0u) == 0x30u && MEM_R8(0x0bfffff0u + 15u) == 0x3fu,
+           "measured one-byte DMA tail copies the valid prefix");
 }
 
 /* ---- sceDmacMemcpy / sceDmacTryMemcpy hardware regressions ------------------
@@ -7920,13 +8052,11 @@ static void test_bulk_guest_span_atomicity(void) {
  * registered NID, so these assert the PSP-visible return value and the
  * PSP-visible memory state of the shipped handlers.
  *
- * The expected values come from repeated PSP-3001 / 6.61-ARK observations;
- * private capture details are intentionally not part of this public-safe tree.
- * The measured large-transfer ceiling is asserted as a prefix copy with an
- * untouched tail. The invalid-truncated-tail case is deliberately labelled as
- * a conservative runtime policy: hardware has not yet established whether the
- * tail is validated before the effective transfer length is applied. */
-extern uint32_t sr_hle_test_dmac_effective_max(void);
+ * The expected values come from the source-owned PSP-3000 / 6.61-ARK
+ * measurements; private capture details are intentionally not part of this
+ * public-safe tree. Fully valid spans are complete copies through 1 MiB. A
+ * one-byte tail past a proven prefix is copied through that prefix; larger
+ * or wrapped overruns remain fail-closed until separately measured. */
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
  * Reusing the exact fill makes the expected bytes below the same literals the
@@ -7985,24 +8115,46 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_is(dst, 256u, 0xa5u),
            "PSP: a NULL-pointer request modifies no destination byte");
 
-    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000, so
-     * these requests end exactly one byte past it or wrap uint32_t outright.
-     * A base-address-only check or an `addr + size` comparison would accept
-     * them; both must be rejected before any byte moves. */
+    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000.
+     * The one-byte boundary shape is the newly measured partial-tail control;
+     * the complete prefix is copied and the byte past it is untouched. */
+    dmac_fill(src, 17u);
     dmac_clear(0x0bfffff0u, 16u, 0x3bu);
-    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
-           "PSP class: a destination span ending past the arena is rejected");
-    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == SCE_DMAC_ILLEGAL_ADDR,
-           "PSP class: a source span ending past the arena is rejected");
+    gpu_dirty_reset();
+    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == 0u,
+           "PSP: a one-byte invalid destination tail returns success");
+    expect(dmac_span_matches(0x0bfffff0u, 16u, 0u),
+           "PSP: a one-byte invalid destination tail copies only the prefix");
+    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x0bfffff0u &&
+               s_gpu_dirty_bytes == 16u,
+           "PSP: a partial destination tail dirties only the valid prefix");
+
+    dmac_fill(0x0bfffff0u, 16u);
+    dmac_clear(dst, 17u, 0x4bu);
+    gpu_dirty_reset();
+    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == 0u,
+           "PSP: a one-byte invalid source tail returns success");
+    expect(dmac_span_matches(dst, 16u, 0u),
+           "PSP: a one-byte invalid source tail copies only the prefix");
+    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
+               s_gpu_dirty_bytes == 16u,
+           "PSP: a partial source tail dirties only the valid prefix");
+
+    /* Larger tails and uint32 wrap are still deliberately conservative: no
+     * partial host pointer is formed for an unmeasured shape. */
+    dmac_clear(0x0bff1000u, 0xc000u, 0x3bu);
+    gpu_dirty_reset();
+    expect(bulk_call(nid, 0x0bff1000u, src, 0x10000u) == SCE_DMAC_ILLEGAL_ADDR,
+           "unmeasured multi-byte invalid tail remains fail-closed");
     expect(bulk_call(nid, 0x0bffff00u, src, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
            "PSP class: a destination span that wraps uint32_t is rejected");
     expect(bulk_call(nid, dst, 0x0bffff00u, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
            "PSP class: a source span that wraps uint32_t is rejected");
-    expect(dmac_span_is(0x0bfffff0u, 16u, 0x3bu) && dmac_span_is(dst, 256u, 0xa5u),
-           "PSP: a rejected span leaves both buffers byte-for-byte unchanged");
-    /* Every rejection above ran with the counter still at zero. A GPU dirty
-     * notification for a transfer that never happened would invalidate a live
-     * texture or framebuffer cache entry for no reason. */
+    expect(dmac_span_is(0x0bff1000u, 0xc000u, 0x3bu) &&
+               dmac_span_is(dst + 16u, 1u, 0x4bu),
+           "PSP: unmeasured invalid tails leave their destinations unchanged");
+    /* A rejection must not issue a GPU dirty notification for a transfer that
+     * never happened. */
     expect(s_gpu_dirty_calls == 0u,
            "no rejected DMA request issues a GPU dirty notification");
 
@@ -8020,9 +8172,12 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
 
     /* --- proven: sizes that hardware measured as complete copies ------------ */
 
-    /* 16385 and 32769 are the sizes that ruled out a 16 KiB / 32 KiB ceiling on
-     * hardware; every byte is checked here, not just the sampled endpoints. */
-    static const uint32_t full_sizes[] = { 1u, 1024u, 4096u, 16384u, 16385u, 32768u, 32769u };
+    /* The sequential size matrix ruled out an API-wide 0xC000 ceiling:
+     * every byte is checked through a 1 MiB request for both registered NIDs. */
+    static const uint32_t full_sizes[] = {
+        1u, 1024u, 4096u, 16384u, 16385u, 32768u, 32769u,
+        0xC000u, 0xC001u, 0x10000u, 0x20000u, 0x100000u
+    };
     for (unsigned i = 0; i < sizeof(full_sizes) / sizeof(full_sizes[0]); i++) {
         const uint32_t n = full_sizes[i];
         dmac_fill(src, n);
@@ -8100,62 +8255,13 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_matches(src, 16384u, 16u),
            "PSP: a backward-overlapping copy is memmove-correct across the span");
 
-    /* --- measured: the 0xC000 effective ceiling ----------------------------- */
-
-    /* Independent PSP-3001 / 6.61-ARK runs bracketed the boundary at 0xC000:
-     * 0xBFFF and 0xC000 are complete, while larger requests return success,
-     * copy the contiguous prefix, and leave the remainder untouched. Assert
-     * every byte for both registered NIDs, including the dirty range reported
-     * to the renderer. */
-    const uint32_t ceiling = sr_hle_test_dmac_effective_max();
-    expect(ceiling == 0xC000u, "the measured DMA effective ceiling is 0xC000");
-    static const uint32_t ceiling_sizes[] = {
-        0xBFFFu, 0xC000u, 0xC001u, 0xD000u, 0xF000u, 0xFFFFu, 0x10000u
-    };
-    for (unsigned i = 0; i < sizeof(ceiling_sizes) / sizeof(ceiling_sizes[0]); i++) {
-        const uint32_t requested = ceiling_sizes[i];
-        const uint32_t effective = requested > ceiling ? ceiling : requested;
-        dmac_fill(src, requested);
-        dmac_clear(dst, requested + 1u, 0xa7u);
-        gpu_dirty_reset();
-        expect(bulk_call(nid, dst, src, requested) == 0u,
-               "a measured-ceiling request returns success");
-        expect(dmac_span_matches(dst, effective, 0u),
-               "a measured-ceiling request copies the complete effective prefix");
-        expect(dmac_span_is(dst + effective, requested - effective, 0xa7u),
-               "a measured-ceiling request leaves the truncated tail untouched");
-        expect(MEM_R8(dst + requested) == 0xa7u,
-               "a measured-ceiling request writes nothing past its request");
-        expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
-                   s_gpu_dirty_bytes == effective,
-               "a measured-ceiling request dirties only the effective destination prefix");
-    }
-
-    /* Conservative memory-safety policy (not a hardware claim): a request
-     * whose effective prefix is in range but whose requested tail crosses the
-     * modeled arena is rejected atomically until hardware settles precedence.
-     * This prevents a partially validated bulk access from reaching SR_HOST. */
-    const uint32_t invalid_tail_dst = 0x0bff1000u;
-    const uint32_t invalid_tail_src = 0x08210000u;
-    const uint32_t invalid_tail_size = 0x10000u;
-    dmac_fill(invalid_tail_src, invalid_tail_size);
-    dmac_clear(invalid_tail_dst, ceiling, 0x6du);
-    gpu_dirty_reset();
-    expect(bulk_call(nid, invalid_tail_dst, invalid_tail_src, invalid_tail_size) ==
-               SCE_DMAC_ILLEGAL_ADDR,
-           "the conservative policy rejects an invalid requested tail");
-    expect(dmac_span_is(invalid_tail_dst, ceiling, 0x6du),
-           "an invalid requested tail causes no prefix mutation");
-    expect(s_gpu_dirty_calls == 0u,
-           "an invalid requested tail causes no GPU dirty notification");
-
     (void)who;
 }
 
-/* Hardware measured sceDmacTryMemcpy blocking for the full transfer and
- * producing the same content as the blocking form at every size it tried, so
- * the whole contract above is asserted against both NIDs. No BUSY result was
- * ever observed in any session, so none is asserted or fabricated. */
+/* Hardware measured sceDmacTryMemcpy matching the blocking form for every
+ * single-caller size tested, while the multi-threaded campaign observed BUSY
+ * during active DMA. The production runtime still has no active-transfer
+ * state, so no BUSY result is fabricated here. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");
@@ -9029,6 +9135,37 @@ static void test_td24d_hle_batch(void) {
     expect(td24b_dispatch4(NID_SCE_ATRAC_REINIT, 0u, 0u, 0u, 0u) == 0u,
            "sceAtracReinit succeeds again after releasing all contexts");
     expect(sr_hle_test_atrac_reinit_count() == 2u, "reinit count reached 2");
+}
+
+/* sceImpose language/confirm-button mode: the setter (0x36aa6e91) was registered to the generic
+ * h_ok fake success and the getter (0x24fd7bcf) had no registration at all, so the pair could not
+ * even round-trip. Both legs dispatch through sr_syscall to pin the production NID mapping; the
+ * default must match the system-param table the state seeds from (language 1, button pref 1). */
+#define NID_SCE_IMPOSE_SET_LANGUAGE_MODE 0x36aa6e91u
+#define NID_SCE_IMPOSE_GET_LANGUAGE_MODE 0x24fd7bcfu
+
+static void test_impose_language_mode_pair(void) {
+    reset_fixture();
+    sr_hle_init();
+    enum { IMPOSE_LANG = 0x08007300u, IMPOSE_BTN = 0x08007310u };
+    MEM_W32(IMPOSE_LANG, 0xdeadbeefu);
+    MEM_W32(IMPOSE_BTN, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_GET_LANGUAGE_MODE, IMPOSE_LANG, IMPOSE_BTN, 0u, 0u) == 0u &&
+               MEM_R32(IMPOSE_LANG) == 1u && MEM_R32(IMPOSE_BTN) == 1u,
+           "sceImposeGetLanguageMode reports the system-param defaults before any set");
+
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_SET_LANGUAGE_MODE, 0u, 1u, 0u, 0u) == 0u,
+           "sceImposeSetLanguageMode accepts a language that differs from the system language");
+    MEM_W32(IMPOSE_LANG, 0u);
+    MEM_W32(IMPOSE_BTN, 0u);
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_GET_LANGUAGE_MODE, IMPOSE_LANG, IMPOSE_BTN, 0u, 0u) == 0u &&
+               MEM_R32(IMPOSE_LANG) == 0u && MEM_R32(IMPOSE_BTN) == 1u,
+           "sceImposeGetLanguageMode round-trips the stored pair");
+
+    MEM_W32(IMPOSE_LANG, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_IMPOSE_GET_LANGUAGE_MODE, IMPOSE_LANG, 0u, 0u, 0u) == 0u &&
+               MEM_R32(IMPOSE_LANG) == 0u,
+           "sceImposeGetLanguageMode writes language when the button pointer is NULL");
 }
 
 
@@ -13048,6 +13185,7 @@ int main(int argc, char **argv) {
     test_vcount_credits_one_deferred_period_on_resume();
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
+    test_disc_route_serves_archive_and_loose_content_in_one_namespace();
     test_unprepared_route_lookup_fails_closed_without_building();
     test_slow_enumeration_completes_before_guest_start();
     test_unapplicable_route_disables_without_scanning();
@@ -13073,6 +13211,7 @@ int main(int argc, char **argv) {
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
     test_td24d_hle_batch();
+    test_impose_language_mode_pair();
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_state_contracts();
     test_msgpipe_safety();

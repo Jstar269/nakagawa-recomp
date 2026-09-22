@@ -68,4 +68,35 @@ void nk_title_catalog_register_overlay(const NkTitleEntry *overlay_entry);
 void nk_title_catalog_clear_overlay(void);
 const NkTitleEntry *nk_title_catalog_get_overlay(void);
 
+
+/* Generic launch-resolution candidate contract (#366).
+ *
+ * Projected from the Python planner's single source of truth
+ * (tools/nk_core/launcher.py: NAME_SOURCES / EXE_CANDIDATES /
+ * IMAGE_CANDIDATES / IMAGE_SUFFIX) so src/core/nk_launch.c and the
+ * Python RuntimeLauncher consume one ordered candidate contract
+ * instead of two hard-coded lists. title_catalog_codegen.py --verify
+ * fails closed on drift; tools/test_nk_core.py proves machine parity
+ * of the selected title/runtime/image/base/entry outcome.
+ *
+ * Contract: name sources are consulted in array order (currently
+ * manager-selected game_name first, then the title id), and for each
+ * name the candidate patterns are probed in array order. Each source
+ * also gets a generated NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX macro so
+ * src/core/nk_launch.c binds its native name array through generated
+ * indices only: a planner-side NAME_SOURCES reorder changes the
+ * indices and native follows mechanically, while --verify fails
+ * closed on drift. Patterns are instantiated with strings from the
+ * validated catalog entry only; no retail title name, disc id, or
+ * title-specific path belongs here. */
+#define NK_LAUNCH_NAME_SOURCE_COUNT 2
+#define NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX 0
+#define NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX 1
+#define NK_LAUNCH_EXE_CANDIDATE_COUNT 2
+#define NK_LAUNCH_IMAGE_CANDIDATE_COUNT 1
+#define NK_LAUNCH_IMAGE_SUFFIX "_image.bin"
+extern const char *const nk_launch_name_sources[NK_LAUNCH_NAME_SOURCE_COUNT];
+extern const char *const nk_launch_exe_candidates[NK_LAUNCH_EXE_CANDIDATE_COUNT];
+extern const char *const nk_launch_image_candidates[NK_LAUNCH_IMAGE_CANDIDATE_COUNT];
+
 #endif /* NK_TITLE_CATALOG_H */

@@ -404,7 +404,7 @@ committed.
 | Variable | Description |
 | ---------- | ------------- |
 | `SR_FONTLOG=1` | Log font operations |
-| `SR_MPEGLOG=1` | Log mpeg operations |
+| `SR_MPEGLOG=1` | Log mpeg operations. The PSMF media producer also logs one bounded counter line per reporting interval: bytes read, packs, PES packets, per-track PES and access-unit counts, access units that carried no presentation time, resync bytes, both compressed-queue depths, EOF state and failure offset, pictures and audio blocks delivered, decoder-error counts, the two presentation clocks (`vpts`/`apts`), the last `displaypts`, and the drain flags — enough to locate the first boundary that stops a movie without attaching a debugger |
 | `SR_DLGLOG=1` | Log dialog operations |
 | `SR_CBLOG=1` | Log callback operations |
 | `SR_SYSLOG=1` | Log system calls |

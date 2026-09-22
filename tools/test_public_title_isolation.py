@@ -25,6 +25,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import policy_sync
 import publication_policy
 import title_catalog_codegen
 import title_manifest
@@ -38,12 +39,23 @@ class PublicTitleIsolationTests(unittest.TestCase):
         self.titles_dir = ROOT / "assets" / "titles"
 
     def test_tracked_titles_are_all_public_included(self) -> None:
-        """Every title in assets/titles/ must be explicitly INCLUDED by publication policy."""
-        json_files = list(self.titles_dir.glob("*.json"))
+        """Every tracked title in assets/titles/ must be explicitly INCLUDED by policy.
+
+        The contract is about what the repository tracks, so enumerate the index
+        rather than the directory: assets/titles/ also holds the operator's
+        publication-excluded retail manifest on any working tree that can
+        actually run the title, and that exclusion is exactly what keeps it out
+        of the public tree.
+        """
+        json_files = [
+            Path(rel)
+            for rel in policy_sync.tracked_paths(ROOT)
+            if rel.startswith("assets/titles/") and rel.endswith(".json")
+        ]
         self.assertGreater(len(json_files), 0, "Expected at least one public title manifest")
 
         for mf in json_files:
-            rel = mf.relative_to(ROOT).as_posix()
+            rel = mf.as_posix()
             res = self.policy.resolve(rel)
             self.assertEqual(
                 res.disposition,

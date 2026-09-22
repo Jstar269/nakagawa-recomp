@@ -105,7 +105,7 @@ When an ISO is prepared for the first time, the preparation engine writes a priv
 ```json
 {
   "schema_version": 1,
-  "engine_version": "0.2.0",
+  "engine_version": "0.3.0",
   "title_id": "hst-ucus98701",
   "disc_id": "UCUS98701",
   "title_name": "Hot Shots Tennis: Get a Grip! (North America)",
@@ -120,3 +120,40 @@ When an ISO is prepared for the first time, the preparation engine writes a priv
 ```
 
 This manifest provides an explicit, deterministic session contract for the runtime launcher, completely removing reliance on ambient environment variables (`PSP_ISO`, `SR_DATAROOT`).
+
+---
+
+## 6. Generic Launch Resolution Identity Contract (issue #366)
+
+Both launchers — `tools/nk_core/launcher.py` (Python) and `src/core/nk_launch.c`
+(native) — resolve identity, runtime, image, base, and entry **only** from
+validated title/catalog/manifest/session data:
+
+1. **No retail defaults.** There is no default title id, no default disc id,
+   no retail-title path candidate, and no wrong-title rescue path in generic
+   resolution. A missing or unvalidated identity is an actionable
+   validation/planning error (Python) or a fail-closed session error (native).
+2. **One candidate contract.** The ordered name sources
+   (`game_name`, `title_id`) and the executable/image candidate patterns are
+   declared once in `tools/nk_core/launcher.py`, projected into
+   `src/core/generated/nk_title_catalog.[ch]` by
+   `tools/title_catalog_codegen.py`, and consumed by both planners.
+   Native binds name-source *order* only through the generated
+   `NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX` macros, so a planner-side reorder
+   propagates mechanically and a missing/unsupported/duplicated source fails
+   compilation instead of inventing an ordering.
+   `title_catalog_codegen.py --verify` fails closed on drift, and
+   `tools/test_nk_core.py` proves machine parity of the selected
+   title/runtime/image/base/entry outcome for identical fixtures, including
+   a two-valid-candidate precedence case and a reorder tripwire.
+3. **Pre-spawn identity binding.** Before any process is created, the native
+   launcher re-derives the selected entry from the session's own disc/title
+   identity and requires the resolved executable's final two path components
+   to be that entry's own name (`<name>/<name>[.exe]`). A runtime produced for
+   title A can never launch as title B merely because its path exists.
+4. **Legacy HST support is identity-driven, not defaulted.** The private HST
+   title keeps working because its validated manifest identifies it (and its
+   manager builds the `hst` name it declares) — never because generic code
+   prefers it. Any historical fallback wrapper stays outside the generic API
+   and is tracked for retirement by issue #338; private HST literals never
+   enter the generic contracts above.

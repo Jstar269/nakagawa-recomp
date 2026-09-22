@@ -16,6 +16,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import title_catalog_codegen
 import title_manifest
 
 
@@ -373,9 +374,16 @@ class NativeTitleIdentityTests(unittest.TestCase):
         shutil.copyfile(ROOT / "assets/public_source_profile.json",
                         self.root / "assets/public_source_profile.json")
         # Stage what the policy includes rather than a hardcoded subset: the
-        # policy copied just above names every public manifest.
+        # policy copied just above names every public manifest.  The policy, not
+        # the directory listing, is the authority here -- assets/titles/ also
+        # holds the operator's publication-excluded retail manifest on any real
+        # working tree, and staging it made the projection under test count a
+        # manifest the policy never publishes.
         self.public_manifests = sorted(
-            p.name for p in (ROOT / "assets" / "titles").glob("*.json")
+            p.name
+            for p in title_catalog_codegen.collect_public_manifests(
+                ROOT / "assets" / "titles"
+            )[0]
         )
         for name in self.public_manifests:
             shutil.copyfile(ROOT / "assets/titles" / name, self.titles / name)

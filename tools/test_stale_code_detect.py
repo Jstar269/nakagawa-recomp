@@ -263,15 +263,21 @@ class TestStaleCodeWiring(unittest.TestCase):
         self.assertIn("sceKernelDcacheWritebackRange", HLE_C[gate - 2000:gate])
         for nid, name in ((0x920F104A, "sceKernelIcacheInvalidateAll"),
                           (0xD8779AC6, "sceKernelIcacheClearAll"),
-                          (0xC2DF770E, "sceKernelIcacheInvalidateRange"),
-                          (0xBFA98062, "sceKernelDcacheInvalidateRange"),
-                          (0x34B9FA9E, "sceKernelDcacheWritebackInvalidateRange")):
+                          (0xC2DF770E, "sceKernelIcacheInvalidateRange")):
             self.assertIn(f"0x{nid:08x}", low[gate:gate + 2000],
                           f"{name} must register under the opt-in gate")
             self.assertEqual(low.count(f"0x{nid:08x}"), 1,
                              f"{name} NID must appear exactly once (no duplicate registration)")
             self.assertNotIn(f"0x{nid:08x}", low[:gate],
                              f"{name} NID must not appear before the opt-in gate")
+        # Data-cache range maintenance is routine around DMA (guest middleware calls it),
+        # so it registers unconditionally, once, ahead of the Icache gate.
+        for nid, name in ((0xBFA98062, "sceKernelDcacheInvalidateRange"),
+                          (0x34B9FA9E, "sceKernelDcacheWritebackInvalidateRange")):
+            self.assertEqual(low.count(f"0x{nid:08x}"), 1,
+                             f"{name} NID must appear exactly once (no duplicate registration)")
+            self.assertIn(f"0x{nid:08x}", low[gate - 2000:gate],
+                          f"{name} must register unconditionally before the Icache gate")
 
     def test_lookup_stays_structural_with_pointer_to_detector(self):
         self.assertIn('#include "stale_code.h"', RECOMP_H)

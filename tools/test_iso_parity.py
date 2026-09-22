@@ -466,15 +466,23 @@ int main(int argc, char **argv) {{
         self.assertIn("LIBRARY_TEST_PASSED", res.stdout)
 
     def test_native_launch_plan(self) -> None:
-        """Verify native C launch session resolves mock executable and ISO."""
+        """Native launch resolution is identity-bound to the selected title.
+
+        #366 failing-before contract: this fixture used to PROVE the defect --
+        a stale build/<retail>/<retail> runtime satisfied an unrelated
+        selected title (display-smoke-v1) and the session paired that binary
+        with another title's session data. The stale artifact now must be
+        irrelevant, and only the selected title's own build may resolve.
+        """
         if not (ROOT / "src" / "core" / "nk_launch.c").is_file():
             self.skipTest("nk_launch.c not present in this slice")
         mock_root = self.temp_dir / "mock_repo"
-        bin_dir = mock_root / "build" / "hst"
-        bin_dir.mkdir(parents=True, exist_ok=True)
+        stale_dir = mock_root / "build" / "hst"
+        stale_dir.mkdir(parents=True, exist_ok=True)
         exe_name = "hst.exe" if sys.platform == "win32" else "hst"
-        mock_exe = bin_dir / exe_name
-        mock_exe.write_bytes(b"MZfake")
+        stale_exe = stale_dir / exe_name
+        stale_exe.write_bytes(b"MZfake")
+        (stale_dir / "hst_image.bin").write_bytes(b"image")
 
         mock_iso = self.temp_dir / "game.iso"
         create_test_iso(mock_iso)
@@ -491,14 +499,34 @@ int main(int argc, char **argv) {{
             "HOME": str(self.temp_dir),
         }
 
-        # A title the public catalog DOES describe resolves, and takes its load
-        # addresses from the catalog rather than from a constant.
+        # A selected title the catalog describes must NOT resolve through the
+        # stale retail-shaped build: only its own game_name layout counts, and
+        # an absent own runtime is an honest missing-runtime error.
+        cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
+               "TEST00006", "display-smoke-v1"]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
+        self.assertIn("LAUNCH_PREPARE_ERROR", res.stdout)
+        self.assertNotIn("LAUNCH_PREPARE_OK", res.stdout)
+        self.assertIn("Runtime binary not found", res.stdout)
+        self.assertNotIn("hst.exe", res.stdout)
+
+        # With the selected title's own runtime present, the session resolves
+        # it -- still ignoring the stale sibling -- and takes its addresses
+        # from the catalog rather than from a constant.
+        own_dir = mock_root / "build" / "display-smoke"
+        own_dir.mkdir(parents=True, exist_ok=True)
+        own_exe = own_dir / ("display-smoke.exe" if sys.platform == "win32" else "display-smoke")
+        own_exe.write_bytes(b"MZfake")
+        (own_dir / "display-smoke_image.bin").write_bytes(b"image")
+
         cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
                "TEST00006", "display-smoke-v1"]
         res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
         self.assertIn("LAUNCH_PREPARE_OK", res.stdout)
-        self.assertIn(Path(mock_exe).name, res.stdout)
+        self.assertIn(Path(own_exe).name, res.stdout)
+        self.assertNotIn("hst.exe", res.stdout)
         self.assertIn(Path(mock_iso).name, res.stdout)
         self.assertIn("BASE:0x08810000", res.stdout)
         self.assertIn("ENTRY:0x08810000", res.stdout)

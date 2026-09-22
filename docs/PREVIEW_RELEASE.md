@@ -155,7 +155,7 @@ if (Test-Path -LiteralPath $ArtifactRoot) {
     Remove-Item -LiteralPath $ArtifactRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Path $Source -Force | Out-Null
-python tools/build_public_export.py --public-safe-profile --export-dir $Source
+python tools/build_public_export.py --public-safe-profile --export-dir $Source --trusted-ledger assets/public_provenance_ledger.json
 
 New-Item -ItemType Directory -Path (Join-Path $Stage 'bin') -Force | Out-Null
 Copy-Item build\production-smoke\production_smoke.exe (Join-Path $Stage 'bin')

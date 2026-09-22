@@ -191,7 +191,9 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 5
 
-/* Halfword load at an odd address (PSP-A3-05, load half). */
+/* A mapped, writable, 16-byte-aligned buffer in the probe's own data. The fault
+ * under test must come from the low address bits, not from the page being
+ * absent, so the base is deliberately a real object this module owns. */
 static volatile uint32_t a3_aligned_buffer[4] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
 };
@@ -218,7 +220,9 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 6
 
-/* Halfword store at an odd address (PSP-A3-05, store half). */
+/* A mapped, writable, 16-byte-aligned buffer in the probe's own data. The fault
+ * under test must come from the low address bits, not from the page being
+ * absent, so the base is deliberately a real object this module owns. */
 static volatile uint32_t a3_aligned_buffer[4] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
 };
@@ -245,10 +249,6 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 7
 
-/* Negative control (PSP-A3-06): lwl/lwr/swl/swr across alignment boundaries
- * must not fault. This case RETURNS and writes a results file; it never
- * raises. Buffers are owned, aligned, mapped and writable, so any fault would
- * be attributable to the unaligned op itself. */
 static uint8_t a3_src[12] __attribute__((aligned(4))) = {
     0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u, 0x77u, 0x88u,
     0x99u, 0xaau, 0xbbu, 0xccu,
@@ -289,8 +289,7 @@ __attribute__((noinline)) static uint32_t a3_unaligned_load_pair(
     return paired;
 }
 
-__attribute__((noinline)) static void a3_unaligned_store_pair(
-    uint8_t *base, uint32_t value) {
+__attribute__((noinline)) static void a3_unaligned_store_pair(uint8_t *base, uint32_t value) {
     register uint8_t *p __asm__("$8") = base;
     register uint32_t v __asm__("$9") = value;
     __asm__ volatile(
@@ -308,11 +307,8 @@ __attribute__((noinline)) static void a3_unaligned_store_pair(
 
 __attribute__((noinline)) static int a3_run_unaligned(char *out, size_t out_size) {
     uint32_t lwl_only = 0u, lwr_only = 0u;
-    /* Unaligned load pair: bytes src[1..4] as one little-endian word. */
     uint32_t loaded = a3_unaligned_load_pair(a3_src, &lwl_only, &lwr_only);
-    /* Unaligned store pair: write that word to dst[1..4]. */
     a3_unaligned_store_pair(a3_dst, loaded);
-    /* Single swl/swr at another odd offset as a second no-fault witness. */
     {
         register uint8_t *p __asm__("$8") = a3_dst + 6;
         register uint32_t v __asm__("$9") = 0x0badc0deu;
@@ -334,22 +330,19 @@ __attribute__((noinline)) static int a3_run_unaligned(char *out, size_t out_size
         "expectation_under_test=lwl/lwr/swl/swr cross alignment boundaries without faulting\n",
         A3_BUILD_COMMIT,
         (unsigned int)(uintptr_t)a3_src, (unsigned int)(uintptr_t)a3_dst,
-        a3_src[0], a3_src[1], a3_src[2], a3_src[3],
-        a3_src[4], a3_src[5], a3_src[6], a3_src[7],
-        a3_src[8], a3_src[9], a3_src[10], a3_src[11],
+        a3_src[0], a3_src[1], a3_src[2], a3_src[3], a3_src[4], a3_src[5],
+        a3_src[6], a3_src[7], a3_src[8], a3_src[9], a3_src[10], a3_src[11],
         (unsigned int)(uintptr_t)a3_u_lwl, (unsigned int)(uintptr_t)a3_u_lwr,
         (unsigned int)(uintptr_t)a3_u_swl, (unsigned int)(uintptr_t)a3_u_swr,
         (unsigned int)loaded, (unsigned int)lwl_only, (unsigned int)lwr_only,
-        a3_dst[0], a3_dst[1], a3_dst[2], a3_dst[3],
-        a3_dst[4], a3_dst[5], a3_dst[6], a3_dst[7],
-        a3_dst[8], a3_dst[9], a3_dst[10], a3_dst[11]);
+        a3_dst[0], a3_dst[1], a3_dst[2], a3_dst[3], a3_dst[4], a3_dst[5],
+        a3_dst[6], a3_dst[7], a3_dst[8], a3_dst[9], a3_dst[10], a3_dst[11]);
 }
 
 #elif A3_CASE == 8
 
-/* PSP-A3-08: VFPU single load at base+2. The effective address is held in $t5
- * with offset 0 because the low offset bits are register-encoding bits for
- * lv.s (assembling `lv.s S000, 2($t5)` silently encodes S002 at offset 0). */
+/* The VFPU accesses below use owned, mapped, aligned storage so an alignment
+ * result cannot be confused with an unmapped-page result. */
 static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -377,9 +370,8 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 9 || A3_CASE == 10
 
-/* PSP-A3-09: VFPU quad load at base+4 (case 9) or base+8 (case 10) of an owned
- * 16-byte-aligned buffer. Together they separate a 4-byte rule (neither
- * faults), an 8-byte rule (only +4 faults) and a 16-byte rule (both fault). */
+/* The VFPU accesses below use owned, mapped, aligned storage so an alignment
+ * result cannot be confused with an unmapped-page result. */
 static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -411,9 +403,8 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 11
 
-/* PSP-A3-10: VFPU quad store at base+4. The stored lanes are whatever C000
- * holds; the value is irrelevant because a fault precedes any commit, and a
- * clean return (exit 4, no frame) is itself the no-fault observation. */
+/* The VFPU accesses below use owned, mapped, aligned storage so an alignment
+ * result cannot be confused with an unmapped-page result. */
 static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -441,10 +432,6 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 12
 
-/* Negative control (PSP-A3-11): aligned lv.q/sv.q plus lvl.q/lvr.q at a
- * 4-byte-aligned unaligned-to-16 address must complete normally. Returns and
- * writes a results file; never raises. The left/right destinations are
- * pre-filled from a sentinel quad so the reported words are deterministic. */
 static uint32_t a3_v_src[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -515,10 +502,8 @@ __attribute__((noinline)) static int a3_write_vfpu_results(char *out, size_t out
 
 #elif A3_CASE == 13
 
-/* PSP-A3-12: VFPU single store at base+2. Store half of the single-alignment
- * question: lv.s at +2 (case 8) already proved loads need 4-byte alignment.
- * The effective address is held in $t5 with offset 0 for the same
- * register-encoding reason as case 8. */
+/* The VFPU accesses below use owned, mapped, aligned storage so an alignment
+ * result cannot be confused with an unmapped-page result. */
 static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -546,9 +531,8 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 14
 
-/* PSP-A3-13: VFPU quad store at base+8. Confirms the 16-byte store rule at +8:
- * case 11 (sv.q at +4) already faults; an 8-byte rule would let +8 through
- * while a 16-byte rule faults here too. */
+/* The VFPU accesses below use owned, mapped, aligned storage so an alignment
+ * result cannot be confused with an unmapped-page result. */
 static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -576,9 +560,8 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 15
 
-/* PSP-A3-14: VFPU quad load at base+4 in the delay slot of an always-taken
- * branch. Delay-slot pattern copied from case 4 (PSP-A3-04): establishes
- * whether Cause.BD is set and EPC names the branch, as for scalar words. */
+/* The VFPU accesses below use owned, mapped, aligned storage so an alignment
+ * result cannot be confused with an unmapped-page result. */
 static volatile uint32_t a3_vfpu_buffer[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -613,12 +596,6 @@ __attribute__((noinline)) static void a3_raise_address_error(void) {
 
 #elif A3_CASE == 16
 
-/* PSP-A3-15: VFPU left merge at an odd address (lvl.q at base+1). Returns and
- * writes a results file if it completes; the PSPLink exception frame is
- * itself the fault observation. The destination is pre-filled from a sentinel
- * quad so the reported words are deterministic either way. Offset 0 holds the
- * full effective address in $t5, as in cases 8..11, because the low offset
- * bits encode the register. */
 static uint32_t a3_v_src[8] __attribute__((aligned(16))) = {
     0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u,
     0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u,
@@ -732,8 +709,6 @@ int main(int argc, char **argv) {
 #endif
             );
         if (length < 0 || (size_t)length >= sizeof(header)) return 1;
-        /* O_EXCL on purpose: a rerun must not silently overwrite a previous
-         * run's header, because that is the record the measurement is cited from. */
         SceUID fd = sceIoOpen(
 #if A3_CASE == 2
                              "host0:/a3_mload_header.txt",
@@ -870,8 +845,6 @@ int main(int argc, char **argv) {
 #endif
             );
         if (length < 0 || (size_t)length >= sizeof(header)) return 1;
-        /* O_EXCL on purpose: a rerun must not silently overwrite a previous
-         * run's header, because that is the record the measurement is cited from. */
         SceUID fd = sceIoOpen(
 #if A3_CASE == 8
                               "host0:/a3_vfpu_lvs_header.txt",

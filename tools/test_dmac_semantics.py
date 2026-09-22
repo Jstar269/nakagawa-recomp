@@ -8,13 +8,13 @@ The PSP-visible behavior itself is proven executably by
 ``sr_syscall`` registry and asserts return values and guest memory contents.
 These assertions guard the two properties a behavioral test cannot express:
 
-* validation of the complete requested spans before any guest or GPU side
-  effect, and
-* the measured effective-prefix ceiling, including the fact that the dirty
-  notification covers only bytes that were actually transferred.
+* complete valid spans must not be silently clamped to the old 0xC000
+  allocator-boundary observation, and
+* the measured one-byte invalid-tail prefix is the only partial shape admitted
+  before a larger overrun is measured.
 
-The concurrent BUSY result and invalid-truncated-tail precedence remain
-unknown; this module must not turn either into an invented hardware fact.
+The concurrent BUSY result remains hardware-measured but runtime-unimplemented;
+this module must not turn it into an invented synchronous state machine.
 """
 
 from pathlib import Path
@@ -43,27 +43,25 @@ class TestDmacValidationOrder(unittest.TestCase):
             "if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;", region
         )
 
-    def test_complete_requested_spans_precede_copy_and_dirty(self) -> None:
-        """A failed request must not move a byte or dirty a GPU range."""
+    def test_prefix_policy_precedes_copy_and_dirty(self) -> None:
+        """The bounded prefix is selected before a host pointer is formed."""
         region = _dmac_region()
         size_check = region.index("if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;")
         null_check = region.index("if (dst == 0u || src == 0u)")
-        span_check = region.index(
-            "if (!sr_guest_span_readable(src, n) || !sr_guest_span_writable(dst, n))"
-        )
-        effective = region.index(
-            "uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;"
-        )
+        prefix = region.index("const uint32_t src_prefix = sr_guest_span_prefix(src, n);")
+        policy = region.index("n - src_prefix != 1u")
+        effective = region.index("uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;")
         copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), effective)")
         dirty = region.index("sr_gpu_vram_dirty(dst, effective)")
 
         self.assertLess(size_check, null_check)
-        self.assertLess(null_check, span_check)
-        self.assertLess(span_check, effective, "requested spans must be validated before clamping")
+        self.assertLess(null_check, prefix)
+        self.assertLess(prefix, effective)
+        self.assertLess(effective, policy)
         self.assertLess(effective, copy, "the effective length must be selected before copying")
         self.assertLess(copy, dirty, "the GPU is notified only after a real transfer")
-        self.assertIn("sr_guest_span_readable(src, n)", region)
-        self.assertIn("sr_guest_span_writable(dst, n)", region)
+        self.assertIn("sr_guest_span_readable(src, effective)", region)
+        self.assertIn("sr_guest_span_writable(dst, effective)", region)
 
     def test_overlap_safe_primitive(self) -> None:
         """Hardware showed both overlap directions landing memmove-correct."""
@@ -84,17 +82,12 @@ class TestDmacValidationOrder(unittest.TestCase):
         self.assertEqual(text.count('"sceDmacMemcpy"'), 1)
 
 
-class TestDmacMeasuredCeiling(unittest.TestCase):
-    def test_measured_effective_ceiling_is_encoded(self) -> None:
+class TestDmacMeasuredBoundary(unittest.TestCase):
+    def test_no_api_wide_effective_ceiling_is_encoded(self) -> None:
         region = _dmac_region()
-        self.assertIn("#define SCE_DMAC_EFFECTIVE_MAX 0xC000u", region)
-        self.assertIn(
-            "uint32_t effective = n > SCE_DMAC_EFFECTIVE_MAX ? SCE_DMAC_EFFECTIVE_MAX : n;",
-            region,
-        )
-        self.assertNotIn("SR_DMAC_VERIFIED_FULL_MAX", region)
-        self.assertNotIn("sr_dmac_note_unverified_size", region)
-        self.assertNotIn("s_dmac_unverified", region)
+        self.assertNotIn("SCE_DMAC_EFFECTIVE_MAX", region)
+        self.assertIn("there is no\n *     API-wide 0xC000 ceiling", region)
+        self.assertIn("fully valid RAM/VRAM spans copy their complete", region)
 
     def test_only_effective_prefix_has_side_effects(self) -> None:
         region = _dmac_region()
@@ -109,12 +102,11 @@ class TestDmacMeasuredCeiling(unittest.TestCase):
         self.assertNotIn("0x80000021", code)
         self.assertNotIn("SCE_DMAC_BUSY", code)
 
-    def test_conservative_invalid_tail_policy_is_explicit(self) -> None:
+    def test_measured_invalid_tail_policy_is_explicit(self) -> None:
         region = _dmac_region()
-        self.assertIn("validating the requested range is the conservative memory-safety", region)
-        self.assertIn("Hardware has not yet settled whether an invalid truncated tail", region)
-        self.assertIn("sr_guest_span_readable(src, n)", region)
-        self.assertIn("sr_guest_span_writable(dst, n)", region)
+        self.assertIn("one-byte arena-end tail", region)
+        self.assertIn("larger or ambiguous overruns remain fail-closed", region)
+        self.assertIn("n - src_prefix != 1u", region)
 
 
 class TestDmacExecutableCoverage(unittest.TestCase):
@@ -130,7 +122,8 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "PSP: zero size returns the illegal-size error",
             "PSP: a NULL destination returns the illegal-address error",
             "PSP: a NULL source returns the illegal-address error",
-            "PSP: a rejected span leaves both buffers byte-for-byte unchanged",
+            "PSP: a one-byte invalid destination tail returns success",
+            "PSP: a one-byte invalid source tail returns success",
             "PSP: a same-pointer self copy leaves the buffer unchanged",
             "PSP: a forward-overlapping copy is memmove-correct across the span",
             "PSP: a backward-overlapping copy is memmove-correct across the span",
@@ -138,9 +131,8 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "VRAM-to-RAM",
             "VRAM-to-VRAM",
             "aliased VRAM destination",
-            "a measured-ceiling request copies the complete effective prefix",
-            "a measured-ceiling request leaves the truncated tail untouched",
-            "the conservative policy rejects an invalid requested tail",
+            "PSP: a hardware-verified transfer size copies every byte",
+            "unmeasured multi-byte invalid tail remains fail-closed",
         ):
             self.assertIn(needle, text)
 

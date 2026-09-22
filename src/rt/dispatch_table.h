@@ -144,8 +144,8 @@ static inline uintptr_t sr_dtab_lookup(SrDispatchTable *t, uint32_t addr) {
  * a module-relative code offset 0, or a future image-relative target: that is unresolved
  * under #45 (an address-taken offset-0 function pointer carried through guest data also
  * arrives as integer 0 without module identity) and is owned by #20/#45, not by this API.
- * sr_dtab_lookup(0) therefore resolves the offset-0 function like any other key. The current
- * HST runtime null-call policy lives separately in dispatch() (the NULL_CALL_B exact hook,
- * which runs before lookup); keeping that policy out of this file is the point. */
+ * sr_dtab_lookup(0) therefore resolves the offset-0 function like any other key. The
+ * generic dispatch layer separately applies its normal executable-ownership and
+ * interpreter/fail-closed checks; this table never turns a target value into success. */
 
 #endif /* SR_DISPATCH_TABLE_H */

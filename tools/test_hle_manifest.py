@@ -357,13 +357,20 @@ class LiveManifestTests(unittest.TestCase):
             self.assertIn(status, meta.HANDLER_STATUSES)
             self.assertIn(handler, handlers)
 
-    def test_psmf_getters_are_controlled_unsupported(self) -> None:
-        self.assertEqual(self.regs[0x46F61F8B]["classification"], "controlled_unsupported")
-        self.assertEqual(self.regs[0xB9848A74]["classification"], "controlled_unsupported")
+    def test_psmf_getters_are_dedicated_partial(self) -> None:
+        # Both getters drive the media producer and a host codec backend now, so
+        # they are dedicated handlers with an honest `partial` status rather than
+        # the blanket refusal they used to be.  Pinned per NID so a silent
+        # downgrade back to a non-implementing class fails here as well as in the
+        # baseline diff.
+        self.assertEqual(self.regs[0x46F61F8B]["classification"], "dedicated")
+        self.assertEqual(self.regs[0x46F61F8B]["status"], "partial")
+        self.assertEqual(self.regs[0xB9848A74]["classification"], "dedicated")
+        self.assertEqual(self.regs[0xB9848A74]["status"], "partial")
 
-    def test_psmf_controlled_unsupported_cites_no_stale_public_tracker(self) -> None:
+    def test_sas_voice_codec_gap_cites_no_stale_public_tracker(self) -> None:
         # Public #31 is a closed dependency-bump PR unrelated to the PSMF demux
-        # surface; the metadata must describe the refusal contract instead of
+        # surface; the metadata must describe the implemented contract instead of
         # pointing at a live-but-wrong tracker object.
         source = Path(meta.__file__).read_text(encoding="utf-8")
         self.assertNotIn("issue #31", source)
@@ -400,9 +407,14 @@ class FindingRuleTests(unittest.TestCase):
         self.assertEqual(hle_manifest.classify("h_ok"), ("fake_success", "stub"))
         self.assertEqual(hle_manifest.classify("h_Anything"), ("dedicated", "unreviewed"))
         self.assertEqual(
-            hle_manifest.classify("h_PsmfGetVideo"),
+            hle_manifest.classify("h_SasUnsupportedVoice"),
             ("controlled_unsupported", "controlled_unsupported"),
         )
+        # The PSMF getters are no longer a blanket refusal: they drive the media
+        # producer and the host codecs, so their classification is pinned to the
+        # implemented status rather than the old controlled-unsupported one.
+        self.assertEqual(hle_manifest.classify("h_PsmfGetVideo"), ("dedicated", "partial"))
+        self.assertEqual(hle_manifest.classify("h_PsmfGetAudio"), ("dedicated", "partial"))
 
     def test_float_return_nid_rejects_integer_stub(self) -> None:
         regs = [

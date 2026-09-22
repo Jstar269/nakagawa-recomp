@@ -356,7 +356,10 @@ static void test_manifest_mutations(void) {
     assert(!nk_title_manifest_parse_buffer(bad_hex, strlen(bad_hex), false, &entry, err, sizeof(err)));
 
     /* 8. Duplicate module binding */
-    const char *dup_mod = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [{\"name\": \"a.prx\", \"load_address\": 1, \"required\": true, \"role\": \"guest-prx\"}, {\"name\": \"A.PRX\", \"load_address\": 2, \"required\": true, \"role\": \"guest-prx\"}], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
+    /* The bases must lie in user RAM: with load_address 1/2 the guest-module window rule fires
+       first, so the fixture would test that rule rather than the duplicate-name comparison it
+       is named for. Both parsers reject a guest-prx base of 1 for the same reason. */
+    const char *dup_mod = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [{\"name\": \"a.prx\", \"load_address\": \"0x08900000\", \"required\": true, \"role\": \"guest-prx\"}, {\"name\": \"A.PRX\", \"load_address\": \"0x08b00000\", \"required\": true, \"role\": \"guest-prx\"}], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
     assert(!nk_title_manifest_parse_buffer(dup_mod, strlen(dup_mod), false, &entry, err, sizeof(err)));
     assert(strstr(err, "duplicate module name") != NULL);
 
@@ -411,6 +414,35 @@ static void test_manifest_mutations(void) {
     assert(!nk_title_manifest_parse_buffer(arr_trailing_comma, strlen(arr_trailing_comma), false, &entry, err, sizeof(err)));
     assert(strstr(err, "Trailing comma") != NULL);
 
+    /* 18. Guest module base outside user RAM -> REJECT
+     *
+     * A guest module's code AND data live at load_address, so a base outside user RAM lets
+     * translated code run while every data write is dropped (the late-PRX bases once sat at
+     * 0x322xxxxx). The Python parser has always rejected this; the native parser accepted it,
+     * which is precisely the differential-parser divergence the two implementations must not
+     * have. */
+    const char *guest_base_outside_ram = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [{\"name\": \"late.prx\", \"load_address\": \"0x32200000\", \"required\": false, \"role\": \"optional-guest-prx\"}], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
+    assert(!nk_title_manifest_parse_buffer(guest_base_outside_ram, strlen(guest_base_outside_ram), false, &entry, err, sizeof(err)));
+    assert(strstr(err, "guest module base must lie in user RAM") != NULL);
+
+    /* 19. Guest module with guest_path + load_address_evidence -> ACCEPT
+     *
+     * Both are schema v1 module declarations, and the Python parser validates them. Rejecting
+     * them as unknown fields made the native parser refuse any manifest that names where a
+     * module image lives -- including the operator's own retail title manifest. */
+    const char *guest_declared = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [{\"name\": \"libfont.prx\", \"load_address\": 146800640, \"required\": false, \"role\": \"optional-guest-prx\", \"guest_path\": \"disc0:/PSP_GAME/USRDIR/module/libfont.prx\", \"load_address_evidence\": \"measured-hw\"}], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
+    assert(nk_title_manifest_parse_buffer(guest_declared, strlen(guest_declared), false, &entry, err, sizeof(err)));
+
+    /* 20. guest_path that is not an absolute PSP device path -> REJECT */
+    const char *bad_guest_path = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [{\"name\": \"libfont.prx\", \"load_address\": 146800640, \"required\": false, \"role\": \"optional-guest-prx\", \"guest_path\": \"C:/PSP_GAME/USRDIR/module/libfont.prx\"}], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
+    assert(!nk_title_manifest_parse_buffer(bad_guest_path, strlen(bad_guest_path), false, &entry, err, sizeof(err)));
+    assert(strstr(err, "absolute PSP device path") != NULL);
+
+    /* 21. load_address_evidence outside the published classes -> REJECT */
+    const char *bad_evidence = "{\"schema_version\": 1, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [{\"name\": \"libfont.prx\", \"load_address\": 146800640, \"required\": false, \"role\": \"optional-guest-prx\", \"load_address_evidence\": \"trust-me\"}], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
+    assert(!nk_title_manifest_parse_buffer(bad_evidence, strlen(bad_evidence), false, &entry, err, sizeof(err)));
+    assert(strstr(err, "unsupported evidence class") != NULL);
+
     printf("[MANIFEST_TEST] Schema mutation tests PASSED!\n");
 }
 
@@ -447,6 +479,13 @@ static void test_multi_overlay_storage(void) {
     printf("[MANIFEST_TEST] Testing simultaneous multiple overlay storage and memory durability...\n");
     char err[512];
     NkTitleEntry ov1, ov2;
+
+    /* Overlay storage is a process-lifetime pool of NK_MANIFEST_MAX_OVERLAYS slots and every
+       accepted parse_buffer() call takes one, so this test must start from a released pool: it
+       needs two slots that stay independent, and once the pool is full the parser deliberately
+       replaces the last slot instead. Without this the test silently depended on fewer than
+       MAX_OVERLAYS accepted parses having happened before it. */
+    nk_title_catalog_clear_overlay();
 
     const char *manifest_alpha =
         "{\n"

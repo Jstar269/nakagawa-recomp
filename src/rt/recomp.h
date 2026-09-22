@@ -142,6 +142,20 @@ static inline int sr_guest_span_writable(uint32_t addr, uint32_t size) {
     return sr_inrange_n(addr, size);
 }
 
+/* Return the largest prefix of [addr, addr + size) that remains inside the
+ * flat guest arena.  This is intentionally a prefix calculation, not a
+ * validity predicate: the measured PSP DMAC path can complete a one-byte tail
+ * request when the valid prefix ends at an allocation boundary.  Callers must
+ * apply their own policy to larger or otherwise ambiguous overruns before
+ * forming a host pointer. */
+static inline uint32_t sr_guest_span_prefix(uint32_t addr, uint32_t size) {
+    if (size == 0u) return 0u;
+    const uint32_t phys = (uint32_t)SR_PHYS(addr);
+    if (phys >= 0x0c000000u) return 0u;
+    const uint32_t available = 0x0c000000u - phys;
+    return available < size ? available : size;
+}
+
 /* Checked size arithmetic for computing a span extent BEFORE validating it, so a
  * parser cannot wrap uint32_t (e.g. count*stride, base+len) into a small value that
  * then passes a bounds check. Return 1 and store the result on success; return 0 on

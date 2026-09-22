@@ -108,6 +108,34 @@ def _client_dir_tools() -> set[str]:
     return found
 
 
+def _psplink_wsl_device() -> tuple[bool, str]:
+    """Detect the PSPLink endpoint from the WSL USB view.
+
+    usbipd moves the device out of Windows' present PnP tree when it is
+    attached to WSL.  In that state a Windows-only PnP query is a false
+    negative, while ``lsusb`` inside the configured WSL distribution still
+    exposes the same VID/PID.  The fallback remains read-only and accepts only
+    the PSPLink PID, never the mass-storage PID.
+    """
+
+    # Tests and supported callers may model Windows while running on a
+    # non-Windows host.  Python 3.14's shutil.which consults _winapi for that
+    # modeled platform, which is absent outside Windows; a detector failure is
+    # equivalent to an unavailable WSL fallback, not a readiness error.
+    try:
+        wsl = shutil.which("wsl.exe") or shutil.which("wsl")
+    except (AttributeError, OSError):
+        return False, ""
+    if not wsl:
+        return False, ""
+    code, output = _run(
+        [wsl, "-e", "bash", "-c", "lsusb 2>/dev/null"], timeout=20.0
+    )
+    if code == 0 and "054c:01c9" in output.lower():
+        return True, "PSPLINK USB endpoint present via WSL lsusb (VID 054C, PID 01C9)"
+    return False, ""
+
+
 def _psplink_device() -> tuple[bool, str]:
     """Detect the PSPLINK USB endpoint (VID 054C, PID 01C9).
 
@@ -133,6 +161,9 @@ def _psplink_device() -> tuple[bool, str]:
         return False, "device query failed; treat as not connected"
     if output.strip().isdigit() and int(output.strip()) > 0:
         return True, "PSPLINK USB endpoint present (VID_054C&PID_01C9)"
+    wsl_connected, wsl_detail = _psplink_wsl_device()
+    if wsl_connected:
+        return True, wsl_detail
     return False, "no PSPLINK USB endpoint; PSP not running PSPLINK (mass-storage mode does not count)"
 
 

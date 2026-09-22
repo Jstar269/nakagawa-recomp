@@ -425,6 +425,13 @@ At a PSP import/HLE boundary:
 Do not infer PSP correctness merely because a handler returns zero or because a route advances.
 Behavioral side effects, waits, wakeups, callbacks, outputs, and error values are part of the ABI.
 
+The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully valid RAM/VRAM
+requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
+allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
+one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. Cross-thread
+DMAC BUSY/blocking state remains outside the synchronous HLE helper until the scheduler owns an
+active-transfer operation.
+
 ### Scheduler / coroutines
 
 `sched.c` models PSP threads cooperatively. Host execution context is provided by `sr_coro` rather
@@ -515,7 +522,10 @@ Clock ownership:
   constant, and that single UTC/local-conversion criterion stays blocked on the missing owner.
   The explicit-offset `sceRtcGetCurrentClock` path is complete and independent of it.
 - **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
-  domains and are not wall time.
+  domains and are not wall time. The `scePsmfPlayer*` handlers sit above a bounded project-authored
+  PSMF producer (`psmf_producer.c`): a normalized access unit carries the stream's own presentation
+  time, and a picture whose PES packet carried none is extrapolated by one codec frame step from the
+  last known time instead of being invented before the first timestamp arrives.
 
 Host behavior: in paced mode (default) `s_vtime_us` tracks SDL's monotonic clock at scheduler
 boundaries — a host stall or sleep advances guest time by the stall, and slow frames are caught up by

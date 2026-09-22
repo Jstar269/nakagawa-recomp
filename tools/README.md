@@ -33,13 +33,23 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
   pre-HLE trace with a user-supplied oracle trace (captured from PPSSPP or the reference interpreter).
 - **`verify_gates.py`** — orchestrates the optional codegen and microtest gates used by
   `make verify`; it reports blocked when their external inputs are absent.
-- **`funcdiff_cmp.py …`** — compares per-function traces supplied by the developer.
+- **`funcdiff_cmp.py <oracle-trace> <my-trace> <entry-step>`** — compares per-function
+  traces supplied by the developer. Fail-closed evidence gate (issue #381): exit 0 requires
+  at least one compared step, oracle coverage of every recomp step from `<entry-step>`
+  onward (the oracle may continue beyond that slice), and all steps matched. Empty traces,
+  oracle truncation, entry beyond the oracle, or malformed records exit nonzero.
 - **`microtest_gate.py`, `gen_microtest.py`, `vfpu_fuzz_gen.py`** —
   per-instruction / per-function tests for translator regressions.
 - **`tracediff.py`** — trace-format diff during bring-up (`TRACE_FORMAT.md`).
 - **`ppmdiff.py`, `ppm2png.py`** — A/B framebuffer diffs and PPM-to-PNG conversion.
   `SR_FBSNAP=<N>` writes rotating PPM snapshots every N vblanks.
-- **`nidseq.py`, `gen_nidnames.py`** — NID-table tooling.
+- **`nidseq.py`, `gen_nidnames.py`** — NID-table tooling. `nidseq.py <imports.toml>
+  <trace>` is informational extraction (no equivalence claim, exit 0). With a second trace,
+  `nidseq.py <imports.toml> <trace> <oracle-trace>` is verification: exit 0 means exact
+  import-sequence equality with at least one import compared (issue #381); divergence,
+  zero compared imports, either-side sequence mismatch, or malformed data exit nonzero.
+  `--allow-prefix` explicitly accepts strict-prefix agreement for documented prefix
+  analysis and is never the default.
 - **`import_audit_gate.py`** — public import-coverage/fake-success gate:
   fail-closed HLE manifest from `src/rt/hle.c` (`hle_manifest.py` +
   `hle_registry_meta.py`), classification baseline drift, and synthetic malformed-ELF
