@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from unittest import mock
 from tools import build_public_export, history_audit, publication_policy, public_export
 from tools.build_public_export import (
     ROOT,
+    GateResult,
     _quarantine_failed_export,
     check_unresolved_legal_blockers,
     export_sanitized_public_tree,
@@ -31,8 +33,27 @@ from tools.build_public_export import (
 _PUBLIC_SAFE_TREE = is_public_safe_export_tree()
 
 
-def _git(argv: list[str], cwd: Path) -> None:
-    subprocess.run(["git", *argv], cwd=cwd, check=True, capture_output=True)
+def _git(argv: list[str], cwd: Path, env: dict | None = None) -> None:
+    subprocess.run(["git", *argv], cwd=cwd, check=True, capture_output=True, env=env)
+
+
+def _hermetic_git_env(repo: Path) -> dict:
+    """Git environment with host-global/system config disabled.
+
+    Hermetic fixtures must decide their own blob bytes: a host ``filter.lfs``
+    clean driver (common in global/system Git config) would rewrite ``git add``
+    content for matching patterns, so the staged blob -- the exact bytes the
+    export materializes -- would depend on the machine running the test. Point
+    both config env vars at one empty file. Call after ``git init`` so the
+    empty file lives under ``.git/`` and is never enumerated as a fixture path.
+    """
+    empty = repo / ".git" / "_empty_git_config"
+    if not empty.exists():
+        empty.write_text("", encoding="utf-8", newline="\n")
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = str(empty)
+    env["GIT_CONFIG_SYSTEM"] = str(empty)
+    return env
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:
@@ -282,18 +303,36 @@ class TestCandidateImmutability293(unittest.TestCase):
         cls._tmp.cleanup()
         super().tearDownClass()
 
-    def test_clean_export_is_cleared_by_candidate_tree_audit(self):
-        # Property: audit runs on the exact final candidate and clears a clean
-        # export when the release-controlled trusted ledger is supplied.
-        audit = run_candidate_audit(
-            self.export_a, trusted_ledger=Path("assets/public_provenance_ledger.json")
-        )
-        self.assertTrue(audit.passed, audit.detail)
+    def test_real_candidate_audit_promotes_a_clean_export(self):
+        # Property: audit-before-promotion -- the exhaustive candidate-tree
+        # audit (release-controlled trusted ledger) runs against the staging
+        # bytes, and the requested path exists only because that audit passed.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "e2e_cleared"
+            ok = export_sanitized_public_tree(
+                target,
+                public_safe_profile=True,
+                audit_candidate=lambda root: run_candidate_audit(
+                    root, trusted_ledger=Path("assets/public_provenance_ledger.json")
+                ),
+            )
+            self.assertTrue(ok)
+            self.assertTrue((target / "PUBLIC_EXPORT.json").is_file())
+            self.assertFalse((Path(tmpdir) / "e2e_cleared.not-cleared").exists())
+            leftovers = [
+                p.name
+                for p in Path(tmpdir).iterdir()
+                if ".e2e_cleared.staging-" in p.name
+            ]
+            self.assertEqual(leftovers, [])
 
     def test_recorded_identity_matches_materialized_bytes_and_source_is_untouched(self):
-        # Property: PUBLIC_EXPORT.json, the ledger/manifest shas it records, the
-        # source index, and the materialized candidate all describe the same
-        # bytes; generating the export never mutates the source tree.
+        # Property: PUBLIC_EXPORT.json and the ledger/manifest shas it records
+        # describe the exact materialized candidate bytes; generating the
+        # export never mutates the source tree. The staged-index-vs-worktree
+        # binding is asserted hermetically by
+        # test_export_materializes_staged_index_bytes_not_unstaged_worktree_drift
+        # so this test never depends on ambient index/worktree state.
         policy = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
         files = _tree_bytes(self.export_a)
         included = [
@@ -317,26 +356,6 @@ class TestCandidateImmutability293(unittest.TestCase):
                 (self.export_a / "assets" / "release_manifest.json").read_bytes()
             ).hexdigest(),
         )
-        # The historical #293 victim: staged blob == source worktree == shipped
-        # candidate copy of .pre-commit-config.yaml.
-        staged = subprocess.run(
-            ["git", "show", ":.pre-commit-config.yaml"],
-            cwd=ROOT, capture_output=True, check=True,
-        ).stdout
-        self.assertEqual(
-            staged, (ROOT / ".pre-commit-config.yaml").read_bytes(),
-            "source worktree .pre-commit-config.yaml diverged from the index",
-        )
-        self.assertEqual(
-            staged,
-            (self.export_a / ".pre-commit-config.yaml").read_bytes(),
-            "exported candidate .pre-commit-config.yaml must equal the audited index blob",
-        )
-        # source_tree binds the manifest to the audited index, not to a commit.
-        index_tree = subprocess.run(
-            ["git", "write-tree"], cwd=ROOT, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        self.assertEqual(self.manifest_a["source_tree"], index_tree)
 
     def test_tampered_candidate_fails_the_candidate_tree_audit(self):
         # Property: any post-freeze byte change is detected by re-auditing the
@@ -459,17 +478,210 @@ class TestCandidateImmutability293(unittest.TestCase):
             self.assertEqual(leftovers, [])
 
     def test_failed_candidate_audit_quarantines_the_export(self):
-        # Property: a fully generated but uncleared candidate is moved out of
-        # the release path so nothing can consume it as finalized.
+        # Property: an uncleared candidate is moved to a diagnostic sibling of
+        # the REQUESTED path; the requested path is never created for it.
         with tempfile.TemporaryDirectory() as tmpdir:
-            export = Path(tmpdir) / "doomed"
-            export.mkdir()
-            (export / "file.txt").write_text("not cleared\n", encoding="utf-8", newline="\n")
-            quarantined = _quarantine_failed_export(export)
+            candidate = Path(tmpdir) / ".doomed.staging-0"
+            candidate.mkdir()
+            (candidate / "file.txt").write_text("not cleared\n", encoding="utf-8", newline="\n")
+            requested = Path(tmpdir) / "doomed"
+            quarantined = _quarantine_failed_export(candidate, requested)
             self.assertIsNotNone(quarantined)
-            self.assertFalse(export.exists())
+            self.assertFalse(requested.exists())
+            self.assertFalse(candidate.exists())
             self.assertEqual(quarantined.name, "doomed.not-cleared")
             self.assertTrue(quarantined.exists())
+
+    def test_passing_candidate_audit_promotes_staging_to_requested_path(self):
+        # Property (regression, #293): audit-before-promotion -- a PASS gate
+        # atomically promotes the staging tree to the requested path with no
+        # staging residue, and the promoted bytes are exactly what the audit
+        # saw.
+        seen: dict[str, dict[str, bytes]] = {}
+
+        def _clear(root: Path) -> GateResult:
+            self.assertNotEqual(root.name, "cleared")
+            self.assertTrue(root.is_dir())
+            seen["tree"] = _tree_bytes(root)
+            return GateResult("Candidate-Tree Audit", True, "synthetic clear")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "cleared"
+            ok = export_sanitized_public_tree(
+                target, public_safe_profile=True, audit_candidate=_clear
+            )
+            self.assertTrue(ok)
+            self.assertTrue(target.is_dir())
+            self.assertEqual(seen["tree"], _tree_bytes(target))
+            leftovers = [
+                p.name for p in Path(tmpdir).iterdir() if ".staging-" in p.name
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_failing_candidate_audit_never_materializes_requested_path(self):
+        # Property (regression, #293): a FAIL gate runs against a completed
+        # staging tree that is not the requested path; afterwards the requested
+        # path is absent and the rejected candidate survives only as the
+        # *.not-cleared diagnostic sibling.
+        audited: dict[str, Path] = {}
+
+        def _reject(root: Path) -> GateResult:
+            audited["root"] = root
+            self.assertTrue(root.is_dir())
+            return GateResult("Candidate-Tree Audit", False, "synthetic reject")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "rejected"
+            ok = export_sanitized_public_tree(
+                target, public_safe_profile=True, audit_candidate=_reject
+            )
+            self.assertFalse(ok)
+            self.assertIn("root", audited)
+            self.assertNotEqual(audited["root"], target)
+            self.assertFalse(target.exists())
+            quarantined = Path(tmpdir) / "rejected.not-cleared"
+            self.assertTrue(quarantined.is_dir())
+            self.assertTrue((quarantined / "PUBLIC_EXPORT.json").is_file())
+            leftovers = [
+                p.name for p in Path(tmpdir).iterdir() if ".staging-" in p.name
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_quarantine_failure_leaves_requested_path_absent(self):
+        # Property (regression, #293): even when the diagnostic copy itself
+        # fails, the requested path is never created -- staging is cleaned up
+        # and no partially promoted candidate survives anywhere releasable.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "quarantine_boom"
+            with mock.patch.object(
+                build_public_export,
+                "_quarantine_failed_export",
+                side_effect=OSError("simulated quarantine failure"),
+            ):
+                ok = export_sanitized_public_tree(
+                    target,
+                    public_safe_profile=True,
+                    audit_candidate=lambda root: GateResult(
+                        "Candidate-Tree Audit", False, "synthetic reject"
+                    ),
+                )
+            self.assertFalse(ok)
+            self.assertFalse(target.exists())
+            leftovers = [
+                p.name for p in Path(tmpdir).iterdir() if ".staging-" in p.name
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_existing_nonempty_destination_is_untouched(self):
+        # Property (regression, #293): an existing nonempty destination fails
+        # closed before any staging work or audit runs; its bytes are never
+        # mutated or removed.
+        calls: list[Path] = []
+
+        def _audit(root: Path) -> GateResult:
+            calls.append(root)
+            return GateResult("Candidate-Tree Audit", True, "must not run")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "occupied"
+            target.mkdir()
+            sentinel = target / "precious.txt"
+            sentinel.write_text("do not clobber\n", encoding="utf-8", newline="\n")
+            ok = export_sanitized_public_tree(
+                target, public_safe_profile=True, audit_candidate=_audit
+            )
+            self.assertFalse(ok)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "do not clobber\n")
+            self.assertEqual(calls, [])
+
+    def test_malformed_index_record_fails_closed(self):
+        # Property (regression, #293): a malformed nonempty
+        # ``git ls-files -s -z`` record raises instead of being silently
+        # skipped, so the export can never drop an index entry it cannot parse.
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            if list(cmd[:2]) == ["git", "write-tree"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="synthetic-tree\n", stderr=""
+                )
+            if list(cmd[:2]) == ["git", "ls-files"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=b"100644 deadbeef\n\0", stderr=b""
+                )
+            raise AssertionError(f"unexpected command in malformed-record test: {cmd}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            synth = Path(tmpdir) / "src"
+            synth.mkdir()
+            _git(["init", "-q"], synth)
+            with mock.patch.object(
+                build_public_export.subprocess, "run", side_effect=fake_run
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    build_public_export._index_snapshot(synth)
+            self.assertIn("malformed git ls-files -s -z record", str(ctx.exception))
+            # The original runner still works after the patch unwinds.
+            self.assertIsNot(subprocess.run, fake_run)
+            self.assertTrue(real_run is subprocess.run)
+
+    def test_export_materializes_staged_index_bytes_not_unstaged_worktree_drift(self):
+        # Property (#293, the original victim): with worktree bytes (B)
+        # diverging from the staged index (A), the export materializes A --
+        # never B -- and generation mutates neither the worktree nor the index.
+        # The recorded content digest covers the A variant and differs from the
+        # B variant, so binding to worktree drift would be detectable.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            synth = Path(tmpdir) / "synth source"
+            synth.mkdir()
+            _git(["init", "-q"], synth)
+            env = _hermetic_git_env(synth)
+            assets = synth / "assets"
+            assets.mkdir()
+            shutil.copy2(
+                ROOT / "assets" / "public_source_profile.json",
+                assets / "public_source_profile.json",
+            )
+            staged_a = b"# staged index payload A\n"
+            worktree_b = b"unstaged worktree payload B"
+            victim = synth / ".pre-commit-config.yaml"
+            victim.write_bytes(staged_a)
+            _git(["add", ".pre-commit-config.yaml"], synth, env=env)
+            victim.write_bytes(worktree_b)
+
+            target = Path(tmpdir) / "export_ab"
+            with mock.patch.object(build_public_export, "ROOT", synth):
+                ok = export_sanitized_public_tree(target, public_safe_profile=True)
+            self.assertTrue(ok)
+
+            self.assertEqual((target / ".pre-commit-config.yaml").read_bytes(), staged_a)
+            self.assertEqual(victim.read_bytes(), worktree_b)
+            index_a = subprocess.run(
+                ["git", "show", ":.pre-commit-config.yaml"],
+                cwd=synth, capture_output=True, check=True, env=env,
+            ).stdout
+            self.assertEqual(index_a, staged_a)
+
+            policy = publication_policy.load_policy(
+                synth / "assets" / "public_source_profile.json"
+            )
+            materialized = _tree_bytes(target)
+            included = [
+                (rel, raw)
+                for rel, raw in materialized.items()
+                if policy.resolve(rel).disposition == "included"
+            ]
+            self.assertIn(".pre-commit-config.yaml", [rel for rel, _ in included])
+            manifest = json.loads(
+                (target / "PUBLIC_EXPORT.json").read_text(encoding="utf-8")
+            )
+            digest_a = public_export.content_digest(included)
+            self.assertEqual(digest_a, manifest["included_content_sha256"])
+            included_b = [
+                (rel, worktree_b if rel == ".pre-commit-config.yaml" else raw)
+                for rel, raw in included
+            ]
+            self.assertNotEqual(public_export.content_digest(included_b), digest_a)
 
     def test_export_handles_source_and_target_paths_with_spaces(self):
         # Property: both a source path containing spaces and an export target

@@ -14,13 +14,16 @@ Candidate immutability invariant (#293): the export materializes the exact
 Git **index** the publication gates bind to (``git write-tree``), establishes
 ``PUBLIC_EXPORT.json`` over those exact bytes, and never mutates any
 provenance-pinned candidate file afterwards. The candidate is built in a
-staging directory and only promoted to the requested export path once the
-single-commit snapshot is complete, so an interrupted generation cannot leave
-a candidate that appears finalized. The export commit's author/committer
-timestamps and commit id are intentionally variable metadata; tracked
-candidate identity is the candidate tree id plus the recorded
-``included_content_sha256``, both of which are deterministic for a given
-source index.
+staging directory; the optional candidate-tree audit runs against those
+staging bytes BEFORE promotion, and the staging directory is renamed to the
+requested export path only after the snapshot is complete and (when
+requested) that audit passes. An interrupted or rejected generation therefore
+never leaves a candidate -- cleared or uncleared -- at the requested path; a
+failed audit may preserve a ``*.not-cleared`` diagnostic sibling. The export
+commit's author/committer timestamps and commit id are intentionally variable
+metadata; tracked candidate identity is the candidate tree id plus the
+recorded ``included_content_sha256``, both deterministic for a given source
+index.
 
 Usage:
   python tools/build_public_export.py --verify-only
@@ -29,11 +32,13 @@ Usage:
 """
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -334,7 +339,12 @@ def _index_snapshot(repo_root: Path) -> tuple[str, list[tuple[str, str, bytes]]]
             continue
         parts = item.split(None, 3)
         if len(parts) != 4:
-            continue
+            # Fail closed instead of manufacturing a partial snapshot from
+            # malformed enumeration: release tooling must never silently drop
+            # an index record it cannot parse.
+            raise RuntimeError(
+                f"malformed git ls-files -s -z record cannot be exported: {item!r}"
+            )
         mode, sha, _stage, path = parts
         relative = PurePosixPath(path)
         if relative.is_absolute() or ".." in relative.parts:
@@ -380,36 +390,75 @@ def _index_snapshot(repo_root: Path) -> tuple[str, list[tuple[str, str, bytes]]]
     return tree_sha, snapshot
 
 
-def _quarantine_failed_export(export_dir: Path) -> Path | None:
-    """Move a candidate that failed its post-export audit out of the release path.
+def _remove_tree_force(path: Path) -> None:
+    """Best-effort ``rmtree`` that clears read-only bits before retrying.
 
-    A fully generated single-commit export at the requested path *looks*
-    finalized. When the candidate-tree audit rejects it, leaving it there lets a
-    later step ship bytes that were never cleared. Rename it to a sibling
-    ``*.not-cleared`` path so the requested export path is absent (fail closed
-    for anything that consumes it) while the rejected evidence stays inspectable.
+    ``git commit`` writes ``.git/objects/pack/*`` read-only on Windows. A
+    plain ``shutil.rmtree`` cannot unlink those files, so cleanup after a
+    failed pre-promotion audit would leave staging residue even though the
+    requested export path correctly stayed absent. Clear the read-only bit and
+    retry; a genuinely locked file may still remain, but read-only attributes
+    never do. ``FileNotFoundError`` is ignored so callers may treat this as an
+    unconditional cleanup step.
     """
-    if not export_dir.exists():
+
+    def _onexc(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+        except OSError:
+            return
+        try:
+            func(target)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=_onexc)
+    except FileNotFoundError:
+        pass
+
+
+def _quarantine_failed_export(candidate: Path, export_dir: Path) -> Path | None:
+    """Move an uncleared candidate to a ``*.not-cleared`` diagnostic sibling.
+
+    *candidate* is the staging tree that failed its pre-promotion audit and
+    *export_dir* is the requested release path, which must never hold it.
+    Rename the candidate to a sibling of the REQUESTED path so the requested
+    path stays absent (fail closed for anything that consumes it) while the
+    rejected evidence stays inspectable. Rename failure returns None; the
+    caller's cleanup then removes staging, so the requested path is still
+    never created.
+    """
+    if not candidate.exists():
         return None
     target = export_dir.with_name(export_dir.name + ".not-cleared")
     if target.exists():
         if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
+            _remove_tree_force(target)
         else:
-            target.unlink()
+            try:
+                target.unlink()
+            except PermissionError:
+                os.chmod(target, stat.S_IWRITE)
+                target.unlink()
     try:
-        export_dir.rename(target)
+        candidate.rename(target)
     except OSError as exc:
         print(
-            f"ERROR: candidate audit failed and the export could not be quarantined "
-            f"({exc}); treat '{export_dir}' as NOT CLEARED.",
+            f"ERROR: candidate audit failed and the rejected candidate could not be "
+            f"copied to '{target}' ({exc}).",
             file=sys.stderr,
         )
         return None
     return target
 
 
-def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = False, dry_run: bool = False) -> bool:
+def export_sanitized_public_tree(
+    export_dir: Path,
+    public_safe_profile: bool = False,
+    dry_run: bool = False,
+    audit_candidate: Callable[[Path], GateResult] | None = None,
+) -> bool:
     """Build a clean single-commit public repository export.
 
     The materialized bytes come from the exact Git index the publication gates
@@ -417,17 +466,21 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
     ``public_safe_profile=True`` the export applies the exclusion profile
     from ``assets/public_source_profile.json`` (PGF fonts and PGF/PGD sources
     and tools) and writes ``PUBLIC_EXPORT.json`` provenance metadata into the
-    exported tree. The exhaustive candidate-tree public audit on the
-    materialized result is run separately by ``main()`` (``run_candidate_audit``)
-    so the tree mechanics remain deterministic and independent of the source
-    Git HEAD state.
+    exported tree. When *audit_candidate* is supplied (``main()`` wires
+    ``run_candidate_audit`` with ``--trusted-ledger``), the exhaustive
+    candidate-tree public audit runs against the completed staging tree
+    BEFORE promotion: the requested *export_dir* receives the snapshot only
+    after that audit passes, so an audit failure never materializes an
+    uncleared candidate at the release path (it may leave a
+    ``*.not-cleared`` diagnostic sibling instead).
 
     Nothing mutates a candidate file after ``PUBLIC_EXPORT.json`` records its
     identity: profile filtering and manifest generation happen while the tree
     is still being materialized, and the staging directory is promoted to
-    *export_dir* only after the single-commit snapshot completes. An
-    interrupted or failed generation removes the staging directory and leaves
-    no candidate at *export_dir*.
+    *export_dir* only after the single-commit snapshot completes and (when
+    requested) the candidate-tree audit passes. An interrupted or rejected
+    generation removes the staging directory and leaves no candidate at
+    *export_dir*.
     """
     print(f"\n--- Public Export Generation ({'DRY RUN' if dry_run else 'EXECUTING'}) ---")
     print(f"Target Directory: {export_dir}")
@@ -536,8 +589,42 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
             capture_output=True,
         )
 
-        # Promote only after the snapshot is complete, so the requested path
-        # never holds a half-written candidate.
+        # Pre-promotion gate: audit the completed staging tree before it can
+        # ever occupy the requested release path. Audit failure quarantines
+        # the staging tree to a *.not-cleared sibling of the requested path
+        # (or removes it), so the requested path stays absent.
+        if audit_candidate is not None:
+            gate = audit_candidate(staging)
+            print(f"[{'PASS' if gate.passed else 'FAIL'}] {gate.name}: {gate.detail}")
+            if not gate.passed:
+                try:
+                    quarantined = _quarantine_failed_export(staging, export_dir)
+                except OSError as exc:
+                    quarantined = None
+                    print(
+                        f"ERROR: candidate-tree audit failed and the diagnostic copy "
+                        f"could not be created ({exc}).",
+                        file=sys.stderr,
+                    )
+                if quarantined is not None:
+                    print(
+                        f"ERROR: exported candidate failed the candidate-tree public audit "
+                        f"before promotion; '{export_dir}' was never created and must not be "
+                        f"shipped. The rejected candidate is preserved at '{quarantined}'.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"ERROR: exported candidate failed the candidate-tree public audit "
+                        f"before promotion; '{export_dir}' was never created and must not be "
+                        f"shipped.",
+                        file=sys.stderr,
+                    )
+                return False
+
+        # Promote only after the snapshot is complete and (when requested) the
+        # candidate-tree audit passes, so the requested path never holds a
+        # half-written or uncleared candidate.
         if export_dir.exists():
             export_dir.rmdir()
         staging.rename(export_dir)
@@ -547,7 +634,7 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
         return False
     finally:
         if staging is not None and staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+            _remove_tree_force(staging)
 
     return True
 
@@ -604,35 +691,19 @@ def main() -> int:
         export_dir=args.export_dir,
         public_safe_profile=args.public_safe_profile,
         dry_run=args.dry_run,
+        # The exhaustive candidate-tree audit runs against the staging bytes
+        # BEFORE promotion (export_sanitized_public_tree promotes only on
+        # audit pass), so an uncleared candidate never occupies the release
+        # path and nothing has to be quarantined out of it afterwards.
+        audit_candidate=lambda root: run_candidate_audit(
+            root, trusted_ledger=args.trusted_ledger
+        ),
     )
     if not success:
         return 1
 
     if args.dry_run:
         return 0
-
-    # Post-export gate: the materialized tree must itself pass the exhaustive
-    # candidate public-scope manifest gate, not just the source gates above.
-    # The audit reads the exact final candidate; nothing mutates the tree
-    # between generation and this check (or after it).
-    audit = run_candidate_audit(args.export_dir, trusted_ledger=args.trusted_ledger)
-    print(f"[{'PASS' if audit.passed else 'FAIL'}] {audit.name}: {audit.detail}")
-    if not audit.passed:
-        quarantined = _quarantine_failed_export(args.export_dir)
-        if quarantined is not None:
-            print(
-                f"ERROR: exported candidate failed the candidate-tree public audit; "
-                f"export is not cleared for use. The rejected candidate was moved to "
-                f"'{quarantined}' and must not be shipped.",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                "ERROR: exported candidate failed the candidate-tree public audit; "
-                "export is not cleared for use.",
-                file=sys.stderr,
-            )
-        return 1
 
     print("\n[EXPORT CLEARED] Sanitized public export passed the candidate-tree audit.")
     return 0

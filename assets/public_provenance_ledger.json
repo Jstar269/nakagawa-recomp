@@ -954,7 +954,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a6141012c9b9a7d9b9ef3a2eff94038c633ddbb8a09a0456dbbebed9a9358397"
+      "sha256": "754e87e12d648d45f0bc5eb09f25a21d4d0c1f85ade297199ad412ea66908dad"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -963,7 +963,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "45834140376636a38c299e956a3c5eb484fca4cbda116f8968ab77e6fd6cb13c"
+      "sha256": "93b77017c883caca9f8eb155b49e1d82aa3bbbec2891e61f4aa6320ca1ed7632"
     },
     {
       "path": "docs/README.md",
@@ -6696,7 +6696,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "090959afa076a275dc0856809f4dcb048d91a31a2385d5c84529f3d671d7e18b"
+      "sha256": "b4a73a739765f561ab6b9f0784d08c115b421aa54f5b04199d9459f2003f5f74"
     },
     {
       "path": "tools/capture_native_screenshots.py",
@@ -8912,7 +8912,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0621f220f86fbb11bb9a769c1ccb053d2cca783cbbccfd479787ae66ba8c64e1"
+      "sha256": "7adc2114cd982d6519ac0aaa57a60c09df5ff38a38f76c34977873e5a31279d2"
     },
     {
       "path": "tools/test_public_title_isolation.py",

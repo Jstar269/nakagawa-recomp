@@ -48,16 +48,17 @@ or a human legal decision.
    Missing, unresolved, substituted, or self-authorized records fail closed.
 3. **Candidate export.** `tools/build_public_export.py` materializes the exact
    audited Git index (never a different tree) and produces one deterministic
-   single-commit export. The tree is built in a staging directory and promoted
-   to the target path only after the snapshot completes, so an interrupted
-   generation leaves no candidate at the target, and a candidate that fails the
-   post-export audit is quarantined out of the release path. No provenance-pinned
-   candidate file is mutated after `PUBLIC_EXPORT.json` freezes the candidate's
-   identity. The candidate's policy, ledger, manifest, export digest, counts,
-   and excluded paths are re-audited from the final materialized bytes. The
-   export commit id and its timestamps are intentionally variable snapshot
-   metadata; tracked identity is the tree plus `included_content_sha256`, both
-   deterministic for a given source index.
+   single-commit export. The tree is built in a staging directory; the
+   candidate-tree audit runs against those staging bytes and the staging tree
+   is promoted to the target path only on audit pass, so an interrupted or
+   rejected generation never creates the target path (a failed audit may
+   leave a `*.not-cleared` diagnostic sibling of the target instead). No
+   provenance-pinned candidate file is mutated after `PUBLIC_EXPORT.json`
+   freezes the candidate's identity. The candidate's policy, ledger, manifest,
+   export digest, counts, and excluded paths are re-audited from the final
+   materialized bytes. The export commit id and its timestamps are
+   intentionally variable snapshot metadata; tracked identity is the tree plus
+   `included_content_sha256`, both deterministic for a given source index.
 4. **History and object audit.** `tools/history_audit.py` scans every reachable
    commit, tree path, ref, and blob content in the proposed history. A clean tip
    is not sufficient.

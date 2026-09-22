@@ -43,10 +43,12 @@ python tools/build_public_export.py --public-safe-profile --export-dir <staging>
 The generator materializes the exact audited Git index, filters the profile,
 writes the deterministic `PUBLIC_EXPORT.json` while the tree is still being
 built (no provenance-pinned candidate file is mutated afterwards), creates the
-single fresh candidate commit in a staging directory, promotes the completed
-snapshot to the target path, and then runs the candidate-tree audit against the
-final bytes. It does not publish, change repository visibility, copy private
-refs, or move private inputs.
+single fresh candidate commit in a staging directory, runs the candidate-tree
+audit against those staging bytes, and promotes the snapshot to the target
+path only on audit pass. An audit failure leaves the target path absent (a
+rejected candidate may survive only as a `*.not-cleared` diagnostic sibling).
+It does not publish, change repository visibility, copy private refs, or move
+private inputs.
 
 ## Boundary claims
 
