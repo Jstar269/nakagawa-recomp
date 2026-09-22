@@ -185,6 +185,11 @@ int main(void) {
         mock_c.write_text(mock_code, encoding="utf-8")
         comp = subprocess.run([self.gcc, str(mock_c), "-o", str(mock_exe)], capture_output=True, text=True)
         self.assertEqual(comp.returncode, 0, f"Mock runtime compile failed: {comp.stderr}")
+        # The launch session is only complete with the title's own image beside
+        # its runtime: a plan without --image would exit through driver.c's
+        # usage path, so an imageless fixture is not a launchable fixture (#366).
+        mock_img = bin_dir / "pspdev-phase5-v1_image.bin"
+        mock_img.write_bytes(b"image")
 
         res = subprocess.run(
             [str(self.exe_path), str(iso1), str(iso2), str(lib_json), str(self.temp_dir)],

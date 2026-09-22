@@ -31,6 +31,51 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ALL_ZERO_RE = re.compile(r"^0+$")
 UNMEASURED_TOKENS = frozenset({"unknown", "unset", "placeholder", "none", "n/a", "na", "tbd"})
 EXPECTED_SOURCE = {"psp": "psp", "nakagawa": "nakagawa"}
+DMAC_SIZE_MATRIX_SIZES = (0xBFFF, 0xC000, 0xC001, 0xD000, 0xF000, 0xFFFF, 0x10000, 0x100000)
+DMAC_SIZE_MATRIX_TRIALS = 3
+
+# PSPSDK's ``enum PspModel`` is an ordinal generation value, not a retail
+# model number.  In particular, ordinal 3 means generation 04g, which belongs
+# to the PSP-3000 family; PSP-N1000 is generation 05g (ordinal 4).  Keep this
+# table separate from the kernel-only ``sceKernelGetModel`` API, whose public
+# header documents a different original/slim return convention.
+PSP_MODEL_CODE_TO_GENERATION = {
+    0: "01g",
+    1: "02g",
+    2: "03g",
+    3: "04g",
+    4: "05g",
+    5: "07g",
+    6: "09g",
+    7: "11g",
+}
+PSP_GENERATION_TO_RETAIL = {
+    "01g": "PSP-1000",
+    "02g": "PSP-2000",
+    "03g": "PSP-3000",
+    "04g": "PSP-3000",
+    "05g": "PSP-N1000",
+    "07g": "PSP-3000",
+    "09g": "PSP-3000",
+    "11g": "PSP-E1000",
+}
+
+
+def decode_psp_model_code(raw_code: int) -> tuple[str, str]:
+    """Decode a PSPSDK ``PspModel`` ordinal into generation and retail family.
+
+    The caller must know that the value came from the PSPSDK/kubridge model
+    enum.  This function intentionally rejects unknown ordinals instead of
+    guessing a retail identity or applying the table to ``sceKernelGetModel``.
+    """
+
+    if isinstance(raw_code, bool) or not isinstance(raw_code, int):
+        raise ValueError("PSPSDK model code must be an integer")
+    try:
+        generation = PSP_MODEL_CODE_TO_GENERATION[raw_code]
+    except KeyError as exc:
+        raise ValueError(f"unknown PSPSDK model code {raw_code}") from exc
+    return generation, PSP_GENERATION_TO_RETAIL[generation]
 
 
 class ProtocolError(ValueError):
@@ -190,7 +235,168 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
         _validate_metadata(metadata, line_number=0)
     if not results:
         raise ProtocolError("result stream contains no test records")
-    return ParsedOutput(tuple(sorted(metadata.items())), tuple(sorted(results, key=TestResult.key)))
+    return ParsedOutput(tuple(sorted(metadata.items())), tuple(results))
+
+
+@dataclass(frozen=True)
+class StreamSpec:
+    """The complete record contract of one source-owned probe stream.
+
+    ``semantic_cases`` are the measurement records in emission order.  The
+    terminal record is held separately and is never a measurement: it is the
+    probe's own claim about how many semantic records it believes it emitted,
+    which makes a truncated transport detectable against the stream itself.
+    """
+
+    test_id: str
+    semantic_cases: tuple[str, ...]
+    terminal_case: str
+
+    @property
+    def ordered_cases(self) -> tuple[str, ...]:
+        return self.semantic_cases + (self.terminal_case,)
+
+    @property
+    def terminal_count(self) -> int:
+        return len(self.semantic_cases)
+
+    @property
+    def record_count(self) -> int:
+        return len(self.semantic_cases) + 1
+
+
+@dataclass(frozen=True)
+class SequenceReport:
+    """The verdict of one channel, parsed alone.
+
+    ``complete`` is a property of the observed record sequence and never of the
+    caller's strictness flag.  ``all_passed`` is gated on ``complete`` in both
+    modes, so a partial stream can never report a semantic pass.
+    ``terminal_present`` is reported separately and never substitutes for
+    completeness -- a probe that emits its terminal record after losing middle
+    records is exactly the shape the transport defect produces.
+    """
+
+    spec: StreamSpec
+    raw_record_count: int
+    record_count: int
+    observed_order: tuple[str, ...]
+    complete: bool
+    terminal_present: bool
+    all_passed: bool
+    results: dict[str, TestResult]
+    metadata: dict[str, str]
+    provenance: tuple[str, ...]
+
+
+def parse_sequence(
+    text: str, spec: StreamSpec, *, require_complete: bool = True
+) -> SequenceReport:
+    """Parse one channel of a probe stream against its exact record contract.
+
+    ``require_complete=True`` is complete-or-error.  ``require_complete=False``
+    permits *inspection* of an ordered prefix so a truncated capture can still
+    be classified, and relaxes nothing else: unknown case IDs, foreign
+    ``test_id`` values, duplicates, reordering, records after the terminal and
+    a terminal whose encoded count disagrees with the protocol are rejected in
+    both modes, because none of those shapes is a truncation.
+
+    Stale-log contamination is rejected mechanically rather than by inspection.
+    A second run appended to the same log carries a second ``NAKAGAWA_PSP_META``
+    record (duplicate metadata field) and repeats every ``case_id`` (duplicate
+    test case); both are hard errors in :func:`parse_output` and here.
+    """
+
+    parsed = parse_output(text)
+    expected_index = {case: index for index, case in enumerate(spec.ordered_cases)}
+
+    ordered: list[TestResult] = []
+    seen: set[str] = set()
+    for record in parsed.results:
+        if record.test_id != spec.test_id:
+            raise ProtocolError(
+                f"{spec.test_id}: stream carries a foreign test_id {record.test_id!r} "
+                f"(case {record.case_id!r})"
+            )
+        if record.case_id not in expected_index:
+            raise ProtocolError(
+                f"{spec.test_id}: unknown case_id {record.case_id!r}"
+            )
+        if record.case_id in seen:
+            raise ProtocolError(f"{spec.test_id}: duplicate case {record.case_id!r}")
+        seen.add(record.case_id)
+        ordered.append(record)
+
+    observed = tuple(record.case_id for record in ordered)
+    results = {record.case_id: record for record in ordered}
+
+    # Nothing may follow the terminal record.  Without this an appended stale
+    # fragment carrying only new case IDs would be read as a longer stream.
+    if spec.terminal_case in observed and observed[-1] != spec.terminal_case:
+        trailing = observed[observed.index(spec.terminal_case) + 1 :]
+        raise ProtocolError(
+            f"{spec.test_id}: {len(trailing)} record(s) follow the terminal "
+            f"{spec.terminal_case!r}: {list(trailing)}"
+        )
+
+    complete = observed == spec.ordered_cases
+    if require_complete and not complete:
+        missing = [case for case in spec.ordered_cases if case not in results]
+        if missing:
+            raise ProtocolError(
+                f"{spec.test_id}: stream incomplete, missing {len(missing)} "
+                f"record(s): {missing}"
+            )
+        raise ProtocolError(
+            f"{spec.test_id}: records out of order: expected "
+            f"{list(spec.ordered_cases)}, got {list(observed)}"
+        )
+    if not complete:
+        indices = [expected_index[case] for case in observed]
+        if any(indices[i] > indices[i + 1] for i in range(len(indices) - 1)):
+            raise ProtocolError(
+                f"{spec.test_id}: records out of order: {list(observed)}"
+            )
+
+    terminal_present = spec.terminal_case in results
+    if terminal_present:
+        values = dict(results[spec.terminal_case].values)
+        if "out0" not in values:
+            raise ProtocolError(
+                f"{spec.test_id}: terminal record {spec.terminal_case!r} is missing "
+                "its out0 completion count"
+            )
+        try:
+            claimed = int(values["out0"], 0)
+        except ValueError as exc:
+            raise ProtocolError(
+                f"{spec.test_id}: terminal count is not an integer: {values['out0']!r}"
+            ) from exc
+        if claimed != spec.terminal_count:
+            raise ProtocolError(
+                f"{spec.test_id}: terminal count mismatch: {spec.terminal_case} claims "
+                f"{claimed} semantic records, protocol expects {spec.terminal_count}"
+            )
+        observed_semantic = len([c for c in observed if c != spec.terminal_case])
+        if complete and observed_semantic != claimed:
+            raise ProtocolError(
+                f"{spec.test_id}: terminal count mismatch: {spec.terminal_case} claims "
+                f"{claimed} semantic records, stream carries {observed_semantic}"
+            )
+
+    metadata = parsed.metadata_dict()
+    return SequenceReport(
+        spec=spec,
+        raw_record_count=len(parsed.results),
+        record_count=len(ordered),
+        observed_order=observed,
+        complete=complete,
+        terminal_present=terminal_present,
+        all_passed=complete and all(r.status == "PASS" for r in ordered),
+        results=results,
+        metadata=metadata,
+        provenance=provenance_issues(metadata),
+    )
 
 
 def compare_outputs(psp: ParsedOutput, nakagawa: ParsedOutput) -> dict[str, Any]:
@@ -266,6 +472,61 @@ def compare_texts(psp_text: str, nakagawa_text: str) -> dict[str, Any]:
             "error": str(exc),
         }
     return compare_outputs(psp, nakagawa)
+
+
+def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIALS) -> ParsedOutput:
+    """Validate the complete scalar contract emitted by ``dma-size-matrix``.
+
+    This checks record identity, coverage, repeated-trial accounting, and the
+    full-span/sentinel invariants without interpreting a hardware result as
+    measured unless its surrounding provenance is independently accepted.
+    """
+
+    parsed = parse_output(text)
+    expected = {
+        ("memcpy" if api == 0 else "try", size): (api, size)
+        for api in (0, 1)
+        for size in DMAC_SIZE_MATRIX_SIZES
+    }
+    observed: set[tuple[str, int]] = set()
+    for record in parsed.results:
+        if record.test_id != "PSP-DMAC-001" or not record.case_id.startswith("size-matrix-"):
+            raise ProtocolError("DMAC size matrix contains a non-matrix record")
+        match = re.fullmatch(r"size-matrix-(memcpy|try)-0x([0-9a-f]{8})", record.case_id)
+        if not match:
+            raise ProtocolError(f"invalid DMAC matrix case_id {record.case_id!r}")
+        api_name, raw_size = match.groups()
+        key = api_name, int(raw_size, 16)
+        if key not in expected or key in observed:
+            raise ProtocolError(f"unexpected or duplicate DMAC matrix case {record.case_id!r}")
+        observed.add(key)
+        values = dict(record.values)
+        required = {f"out{i}" for i in range(9)}
+        if not required <= values.keys():
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r} is missing scalar fields")
+        numbers = {key: int(value, 0) for key, value in values.items() if key.startswith("out")}
+        api, size = expected[key]
+        checks = {
+            "requested size": (numbers["out0"], size),
+            "copied prefix": (numbers["out1"], size),
+            "sentinel mutation": (numbers["out2"], 0),
+            "source integrity": (numbers["out3"], 1),
+            "API": (numbers["out5"], api),
+            "trial count": (numbers["out6"], trials),
+            "failed trials": (numbers["out7"], 0),
+            "source-guard mutation": (numbers["out8"], 0),
+        }
+        if record.status != "PASS":
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r} is {record.status}")
+        for label, (actual, wanted) in checks.items():
+            if actual != wanted:
+                raise ProtocolError(
+                    f"DMAC matrix case {record.case_id!r}: {label} {actual:#x} != {wanted:#x}"
+                )
+    if observed != set(expected):
+        missing = sorted(set(expected) - observed)
+        raise ProtocolError(f"DMAC size matrix is incomplete; missing {missing}")
+    return parsed
 
 
 def dump_json(value: Any) -> str:

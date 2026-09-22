@@ -105,6 +105,24 @@ class PsplinkDeviceDetectionTests(unittest.TestCase):
         self.assertIn("VID_054C&PID_01C9", script)
         self.assertNotIn("PID_02D2", script, "mass-storage mode must not count as a link")
 
+    def test_wsl_usbip_attach_is_detected_after_windows_pnp_disappears(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command, *, timeout=5.0):
+            calls.append(command)
+            if command[0].lower().endswith("powershell.exe"):
+                return 0, "0"
+            return 0, "Bus 001 Device 004: ID 054c:01c9 Sony Corp. PSP Type B"
+
+        with mock.patch.object(psp_readiness.sys, "platform", "win32"), \
+             mock.patch.object(psp_readiness, "_run", fake_run), \
+             mock.patch.object(psp_readiness.shutil, "which", return_value="wsl.exe"):
+            connected, detail = psp_readiness._psplink_device()
+
+        self.assertTrue(connected)
+        self.assertIn("via WSL lsusb", detail)
+        self.assertTrue(any(command[-1] == "lsusb 2>/dev/null" for command in calls))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,7 +59,8 @@ static const GUID L_MF_LOW_LATENCY      = {0x9c27891a,0xed7a,0x40e1,{0x88,0xe8,0
 #define MF_E_NOTACCEPTING ((HRESULT)0xC00D36B5L)
 #endif
 
-typedef struct { uint32_t off, len; int64_t pts; } EsChunk;
+/* psStart: absolute program-stream offset of the PES packet in which the chunk begins. */
+typedef struct { uint32_t off, len; int64_t pts; uint64_t psStart; } EsChunk;
 
 typedef struct {
     int used;
@@ -69,9 +70,13 @@ typedef struct {
     int drained;
     /* MPEG-PS input accumulation (unparsed tail) */
     uint8_t *ps; uint32_t psLen, psCap, psPos;
+    uint64_t psBase;               /* program-stream bytes dropped before ps[0] */
     /* demuxed H.264 ES byte fifo + chunk table (one chunk per video PES payload) */
     uint8_t *es; uint32_t esLen, esCap;
     EsChunk *ck; uint32_t nCk, capCk, curCk;
+    uint32_t takeCk;               /* chunks handed out as access units (sceMpegGetAvcAu) */
+    int64_t firstAudioPts;         /* PTS of the first audio PES (private stream 1), -1 before */
+    int ckOpen;                    /* last chunk is still receiving bytes (no AUD after it yet) */
     LONGLONG fakeTime;             /* synthetic input timestamp when the PES had no PTS */
 } Dec;
 
@@ -101,9 +106,7 @@ static int buf_reserve(uint8_t **d, uint32_t *cap, uint32_t need, uint32_t max) 
     return 1;
 }
 
-static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
-    if (n > H264_MAX_ES_BYTES - d->esLen ||
-        !buf_reserve(&d->es, &d->esCap, d->esLen + n, H264_MAX_ES_BYTES)) return 0;
+static int ck_push(Dec *d, uint32_t off, int64_t pts, uint64_t psStart) {
     if (d->nCk == d->capCk) {
         if (d->nCk >= H264_MAX_ES_CHUNKS) return 0;
         uint32_t c = d->capCk ? d->capCk : 256u;
@@ -114,16 +117,43 @@ static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
         if (!t) return 0;
         d->ck = t; d->capCk = c;
     }
-    memcpy(d->es + d->esLen, p, n);
-    d->ck[d->nCk].off = d->esLen;
-    d->ck[d->nCk].len = n;
+    d->ck[d->nCk].off = off;
+    d->ck[d->nCk].len = 0;
     d->ck[d->nCk].pts = pts;
+    d->ck[d->nCk].psStart = psStart;
     d->nCk++;
-    d->esLen += n;
     return 1;
 }
 
-/* Drop consumed bytes so the fifos stay small (the ring is ~1.2MB; the game feeds as we drain). */
+/* Append a video PES payload to the ES fifo, cut into one chunk per access unit. PSMF streams
+ * carry an access-unit delimiter NAL (type 9) at the start of every picture but a PTS on only a
+ * few PES packets, so pictures are delimited by AUD start codes; the decoder runs in
+ * low-latency mode and treats each input sample as one whole picture. The last chunk stays open
+ * (not submitted) until the next delimiter or end of stream. */
+static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts, uint64_t psStart) {
+    if (n > H264_MAX_ES_BYTES - d->esLen ||
+        !buf_reserve(&d->es, &d->esCap, d->esLen + n, H264_MAX_ES_BYTES)) return 0;
+    uint32_t start = d->esLen;
+    memcpy(d->es + d->esLen, p, n);
+    d->esLen += n;
+    if (!d->ckOpen) {
+        if (!ck_push(d, start, pts, psStart)) return 0;
+        d->ckOpen = 1;
+    }
+    uint32_t from = start >= 3u ? start - 3u : 0u;
+    for (uint32_t k = from; k + 3u < d->esLen; k++) {
+        EsChunk *last = &d->ck[d->nCk - 1];
+        if (k <= last->off) continue;
+        if (d->es[k] != 0 || d->es[k + 1] != 0 || d->es[k + 2] != 1 || (d->es[k + 3] & 0x1F) != 9)
+            continue;
+        uint32_t cut = (k > last->off + 1u && d->es[k - 1] == 0) ? k - 1u : k;
+        last->len = cut - last->off;
+        if (!ck_push(d, cut, -1, psStart)) return 0;
+    }
+    EsChunk *open = &d->ck[d->nCk - 1];
+    open->len = d->esLen - open->off;
+    return 1;
+}
 static void es_compact(Dec *d) {
     if (d->curCk == 0 || d->curCk >= d->nCk || d->curCk < d->nCk / 2 ||
         d->esLen < (1u << 20)) return;
@@ -136,6 +166,7 @@ static void es_compact(Dec *d) {
         d->ck[i] = d->ck[d->curCk + i];
         d->ck[i].off -= base;
     }
+    d->takeCk = d->takeCk > d->curCk ? d->takeCk - d->curCk : 0;
     d->nCk = live; d->curCk = 0;
 }
 
@@ -169,6 +200,12 @@ static int ps_parse_one(Dec *d) {
     uint32_t len = ((uint32_t)p[4] << 8) | p[5];
     uint32_t tot = 6 + len;
     if (n < tot) return 0;
+    if (code == 0xBD && d->firstAudioPts < 0 && len >= 8 && (p[6] & 0xC0) == 0x80 &&
+        (p[7] & 0x80) && p[8] >= 5) {
+        d->firstAudioPts = ((int64_t)(p[9]  >> 1 & 7) << 30) | ((int64_t) p[10] << 22) |
+                           ((int64_t)(p[11] >> 1)    << 15) | ((int64_t) p[12] << 7)  |
+                           ((int64_t)(p[13] >> 1));
+    }
     if (code >= 0xE0 && code <= 0xEF && len >= 3 && (p[6] & 0xC0) == 0x80) {
         uint32_t hdr = 9 + p[8];
         int64_t pts = -1;
@@ -179,7 +216,7 @@ static int ps_parse_one(Dec *d) {
                   ((int64_t) p[12]          << 7)  |
                   ((int64_t)(p[13] >> 1));
         }
-        if (tot > hdr && !es_append(d, p + hdr, tot - hdr, pts)) {
+        if (tot > hdr && !es_append(d, p + hdr, tot - hdr, pts, d->psBase + d->psPos)) {
             d->failed = 1;
             return 0;
         }
@@ -298,31 +335,34 @@ static int feed_one(Dec *d) {
 static uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
 
 /* NV12 -> PSP pixel format (BT.601 limited range). buffer is the guest video buffer address,
- * frameWidth its stride in pixels; PSP movie buffers are 272 rows tall. */
-static void convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
-                          uint32_t buffer, int frameWidth, int pixelMode) {
-    if (!buffer || !src || frameWidth <= 0 || pixelMode < 0 || pixelMode > 3) return;
+ * frameWidth its stride in pixels; PSP movie buffers are 272 rows tall.  Returns 1 when the
+ * picture was actually written into guest memory and 0 when it was refused (invalid buffer,
+ * malformed NV12 extent, unusable geometry) -- a refused conversion is never reported as a
+ * produced frame. */
+static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
+                         uint32_t buffer, int frameWidth, int pixelMode) {
+    if (!buffer || !src || frameWidth <= 0 || pixelMode < 0 || pixelMode > 3) return 0;
     int stride = d->outStride > 0 ? d->outStride : d->outW;
     int w = d->outW, h = d->outH;
-    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return;
+    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;
     uint64_t yBytes = (uint64_t)(uint32_t)stride * (uint32_t)h;
     uint64_t uvRows = ((uint64_t)(uint32_t)h + 1u) / 2u;
     uint64_t srcNeed = yBytes + (uint64_t)(uint32_t)stride * uvRows;
-    if (srcNeed < yBytes || srcNeed > srcLen) return;   /* malformed NV12 extent */
+    if (srcNeed < yBytes || srcNeed > srcLen) return 0;   /* malformed NV12 extent */
     if (w > frameWidth) w = frameWidth;
     if (h > 272) h = 272;
-    if (w <= 0 || h <= 0 || w > stride || ((w & 1) != 0 && w >= stride)) return;
+    if (w <= 0 || h <= 0 || w > stride || ((w & 1) != 0 && w >= stride)) return 0;
     uint64_t bpp = pixelMode == 3 ? 4u : 2u;
     uint64_t rowBytes64 = (uint64_t)(uint32_t)w * bpp;
     uint64_t pitchBytes64 = (uint64_t)(uint32_t)frameWidth * bpp;
     if (rowBytes64 == 0 || rowBytes64 > UINT32_MAX || pitchBytes64 == 0 || pitchBytes64 > UINT32_MAX)
-        return;
+        return 0;
     /* Preflight every destination row before taking a host pointer.  A single malformed row
      * must not leave an earlier row partially converted in guest VRAM. */
     for (int y = 0; y < h; y++) {
         uint64_t rowAddr = (uint64_t)buffer + (uint64_t)(uint32_t)y * pitchBytes64;
         if (rowAddr > UINT32_MAX || rowAddr + rowBytes64 > UINT64_C(0x100000000) ||
-            !sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return;
+            !sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;
     }
     uint8_t *dst = (uint8_t *)SR_HOST(buffer);
     const uint8_t *yp = src, *uvp = src + (size_t)yBytes;
@@ -368,10 +408,46 @@ static void convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
             sr_gpu_vram_dirty(buffer + (uint32_t)y * pitchBytes, rowBytes);
         }
     }
+    return 1;
 }
 
 /* Try to pull one decoded frame. 1 = frame written to buffer, 0 = need more input, -1 = failure. */
-static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode) {
+/* NV12 -> host RGBA8888 (BT.601 limited range), for pictures the caller stores and converts
+ * later (the sceMpegAvc*YCbCr path).  Returns 1 when the picture was written, 0 when the
+ * destination or the decoded extent made the conversion impossible. */
+static int convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8_t *dst,
+                              int maxW, int strideBytes) {
+    if (!dst || !src || maxW <= 0 || strideBytes < maxW * 4) return 0;
+    int stride = d->outStride > 0 ? d->outStride : d->outW;
+    int w = d->outW, h = d->outH;
+    if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;
+    uint64_t yBytes = (uint64_t)(uint32_t)stride * (uint32_t)h;
+    uint64_t srcNeed = yBytes + (uint64_t)(uint32_t)stride * (((uint64_t)(uint32_t)h + 1u) / 2u);
+    if (srcNeed > srcLen) return 0;
+    if (w > maxW) w = maxW;
+    if (h > 272) h = 272;
+    const uint8_t *uvp = src + (size_t)yBytes;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *yr = src + (size_t)y * (size_t)stride;
+        const uint8_t *uv = uvp + (size_t)(y / 2) * (size_t)stride;
+        uint8_t *row = dst + (size_t)y * (size_t)strideBytes;
+        for (int x = 0; x < w; x++) {
+            int c = yr[x] - 16, dd = uv[x & ~1] - 128, e = uv[(x & ~1) + 1] - 128;
+            row[x * 4 + 0] = clamp8((298 * c + 409 * e + 128) >> 8);
+            row[x * 4 + 1] = clamp8((298 * c - 100 * dd - 208 * e + 128) >> 8);
+            row[x * 4 + 2] = clamp8((298 * c + 516 * dd + 128) >> 8);
+            row[x * 4 + 3] = 0xFF;
+        }
+    }
+    return 1;
+}
+
+static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
+                    uint8_t *host, int hostW, int hostStride) {
+    /* 1 = a picture was produced AND delivered, 2 = produced but there was nowhere to write
+     * it (the caller asked for a frame it cannot receive), 0 = need more input, -1 = decoder
+     * failure.  Distinguishing 2 from 1 is what keeps "a frame was written" from becoming a
+     * fabricated success when the destination buffer or the decoded extent is unusable. */
     for (;;) {
         MFT_OUTPUT_STREAM_INFO si;
         memset(&si, 0, sizeof(si));
@@ -405,19 +481,21 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode) {
             if (mflog()) fprintf(stderr, "h264: ProcessOutput hr=0x%08lx\n", (unsigned long)hr);
             return -1;
         }
-        if (buffer) {
+        int delivered = 0;
+        if (buffer || host) {
             IMFMediaBuffer *cbuf = NULL;
             if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(smp, &cbuf)) && cbuf) {
                 BYTE *base = NULL; DWORD cur = 0;
                 if (SUCCEEDED(IMFMediaBuffer_Lock(cbuf, &base, NULL, &cur))) {
-                    convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
+                    delivered = host ? convert_frame_host(d, base, cur, host, hostW, hostStride)
+                                     : convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
                     IMFMediaBuffer_Unlock(cbuf);
                 }
                 IMFMediaBuffer_Release(cbuf);
             }
         }
         IMFMediaBuffer_Release(mb); IMFSample_Release(smp);
-        return 1;
+        return delivered ? 1 : 2;
     }
 }
 
@@ -429,6 +507,7 @@ int sr_h264_create(void) {
         Dec *d = &s_dec[i];
         memset(d, 0, sizeof(*d));
         d->used = 1;
+        d->firstAudioPts = -1;
         if (!dec_open(d)) {
             if (d->xf) { IMFTransform_Release(d->xf); d->xf = NULL; }
             d->used = 0;
@@ -463,26 +542,57 @@ void sr_h264_feed(int id, const uint8_t *data, uint32_t len) {
     if (d->failed) return;
     if (d->psPos > (1u << 20)) {            /* drop the parsed prefix */
         memmove(d->ps, d->ps + d->psPos, d->psLen - d->psPos);
+        d->psBase += d->psPos;
         d->psLen -= d->psPos;
         d->psPos = 0;
     }
 }
 
+/* Feed one already-demuxed access unit (the scePsmfPlayer media path, which owns its own
+ * MPEG-PS parsing). The bytes join the same ES fifo the PS demux fills, pictures are still
+ * delimited by AUD NALs, and every picture that becomes complete is immediately eligible for
+ * decoding -- the caller does not have to mirror the au_take() consumption bookkeeping.
+ * psStart is only au_take()'s consumed-byte report; on this path it is a diagnostic ES
+ * offset and no caller ever reads it back. */
+void sr_h264_submit_au(int id, const uint8_t *au, uint32_t len) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !len) return;
+    Dec *d = &s_dec[id];
+    if (d->failed) return;
+    if (!es_append(d, au, len, -1, (uint64_t)d->esLen)) { d->failed = 1; return; }
+    d->takeCk = d->nCk - (d->ckOpen ? 1u : 0u);
+}
+
 /* Decode the next frame into buffer (guest video buffer address). eos != 0 once the
  * game has fed the whole movie, so the MFT gets drained for the last buffered frames.
  * Returns 1 if a frame was written, 0 if none is available yet, -1 if decoding failed. */
-int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode) {
+static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode,
+                      uint8_t *host, int hostW, int hostStride) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     Dec *d = &s_dec[id];
     if (d->failed || !d->xf) return -1;
     for (int guard = 0; guard < 4096; guard++) {
-        int r = pump_out(d, buffer, frameWidth, pixelMode);
-        if (r > 0) return 1;
+        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostStride);
+        /* A refused destination (r == 2) is reported as "no frame written" but does NOT poison
+         * the decoder: the picture was already consumed from the MFT, the stream is still
+         * valid, and a later call with a usable buffer must keep working.  Only decoder-level
+         * failures set d->failed. */
+        if (r > 0) return r == 1 ? 1 : -1;
         if (r < 0) { d->failed = 1; return -1; }
-        if (d->curCk < d->nCk) {
+        uint32_t ready = d->nCk - (d->ckOpen ? 1u : 0u);
+        if (ready > d->takeCk) ready = d->takeCk;
+        if (d->curCk < ready) {
             int f = feed_one(d);
             if (f < 0) { d->failed = 1; return -1; }
             if (f == 0) return 0;           /* MFT full but no output: shouldn't happen */
+        } else if (eos && d->ckOpen) {
+            /* End of stream both closes the last picture and releases it: a caller that hands
+             * over whole access units (scePsmfPlayer) has no second AU to close the final one
+             * with, so without this the last picture of every stream was never fed. Callers that
+             * release pictures one at a time through sr_h264_au_take() have already cleared
+             * ckOpen and advanced takeCk by the time they ask for a frame, so this is inert for
+             * them. */
+            d->ckOpen = 0;
+            if (d->takeCk < d->nCk) d->takeCk = d->nCk;
         } else if (eos && !d->drained) {
             d->drained = 1;
             IMFTransform_ProcessMessage(d->xf, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
@@ -492,6 +602,36 @@ int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMod
         }
     }
     return 0;
+}
+
+int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode) {
+    return pull_frame(id, eos, buffer, frameWidth, pixelMode, NULL, 0, 0);
+}
+
+int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
+    if (!dst) return -1;
+    return pull_frame(id, eos, 0, 0, 0, dst, maxW, strideBytes);
+}
+
+int64_t sr_h264_first_audio_pts(int id) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
+    return s_dec[id].firstAudioPts;
+}
+
+int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
+    Dec *d = &s_dec[id];
+    if (d->failed) return -1;
+    if (eos) d->ckOpen = 0;               /* end of stream closes the last picture */
+    uint32_t closed = d->nCk - (d->ckOpen ? 1u : 0u);
+    if (d->takeCk >= closed) return 0;
+    uint32_t i = d->takeCk++;
+    /* Everything before the PES packet that starts the next picture belongs to this one or
+     * earlier; the last picture consumes everything fed. */
+    if (psConsumed)
+        *psConsumed = (i + 1u < d->nCk) ? d->ck[i + 1u].psStart : d->psBase + d->psLen;
+    if (pts) *pts = d->ck[i].pts;
+    return 1;
 }
 
 #endif /* _WIN32 */

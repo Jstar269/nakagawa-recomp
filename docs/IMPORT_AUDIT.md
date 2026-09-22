@@ -14,7 +14,7 @@ title imports, plus one honest refusal state:
 | `missing` | No static HLE registration. Under the fiber scheduler the first call terminates the process (`_Exit(7)` in `src/rt/hle.c`). |
 | `fake_success` | Routed to a generic always-success handler (`h_ok` family), a handler curated as `stub`, or a handler mechanically detected as doing nothing but `(void)s` / logging / `return 0` (see `tools/hle_manifest.py`). The call reports success but performs none of the API's contract — the silent-corruption case. |
 | `dedicated` | Has its own handler. Not a claim of completeness: the handler carries a status (`complete`, `partial`, `compatibility`, `unreviewed`). |
-| `controlled_unsupported` | A dedicated handler that deliberately refuses with the API's documented error (e.g. the PSMF getters returning `PSMF_ERR_NO_DATA` until issue #31 lands). |
+| `controlled_unsupported` | A dedicated handler that deliberately refuses with the API's documented error (e.g. the `sceSasCore` ATRAC3 and waveform entry points whose source codecs are not implemented, returning the documented invalid-state error). |
 
 ## Components
 

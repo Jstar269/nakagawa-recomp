@@ -18,6 +18,12 @@
 *.[iI][sS][oO]
 *.[pP][rR][xX]
 *.[pP][bB][pP]
+# Firmware font payloads: the runtime loads sceFont glyphs from SR_FONTDIR or from the
+# executable's sibling `font` directory, and copy_build_assets.ps1 stages this directory next to
+# the binary on every build, so font/ is the operator's drop point. The payloads are never
+# redistributed with the public source (see font/README.md), so they must never be committed.
+/font/*.pgf
+/font/*.pgd
 *.[cC][sS][oO]
 *.[zZ][sS][oO]
 *.[cC][hH][dD]
@@ -107,6 +113,7 @@ nidseq_mine.txt
 # Python caches and local environments
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

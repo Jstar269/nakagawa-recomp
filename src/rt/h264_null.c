@@ -18,9 +18,22 @@
 int  sr_h264_create(void) { return -1; }
 void sr_h264_destroy(int id) { (void)id; }
 void sr_h264_feed(int id, const uint8_t *data, uint32_t len) { (void)id; (void)data; (void)len; }
+void sr_h264_submit_au(int id, const uint8_t *au, uint32_t len) {
+    (void)id; (void)au; (void)len;
+}
+
 int  sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode) {
     (void)id; (void)eos; (void)buffer; (void)frameWidth; (void)pixelMode;
     return -1;   /* no decoder: mpeg.c clears the frame buffer and advances the timestamp model */
+}
+int64_t sr_h264_first_audio_pts(int id) { (void)id; return -1; }
+int  sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
+    (void)id; (void)eos; (void)psConsumed; (void)pts;
+    return -1;
+}
+int  sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
+    (void)id; (void)eos; (void)dst; (void)maxW; (void)strideBytes;
+    return -1;
 }
 
 #endif /* !_WIN32 */

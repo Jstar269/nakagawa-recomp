@@ -356,7 +356,10 @@ def build_interleaved_import_elf(
 MIXED_FIXTURE_LIBS = [
     # dedicated (real handler), fake_success (h_ok), controlled_unsupported
     ("ThreadManForUser", [0x446D8DE6, 0x349D6D6C]),
+    # dedicated: the PSMF video getter drives the media producer and host codecs
     ("scePsmfPlayer", [0x46F61F8B]),
+    # controlled unsupported: ATRAC3 voice setter with no source codec
+    ("sceSasCore", [0x4AA9EAD6]),
     # missing: nobody registers these synthetic NIDs
     ("SynthLibA", [0x00C0FFEE, 0x0BADF00D]),
     # duplicate NID imported by two different libraries

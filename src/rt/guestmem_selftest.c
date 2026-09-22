@@ -9,6 +9,7 @@
  * pure bounds/arithmetic helpers:
  *   - sr_inrange / sr_inrange_n      (existing scalar-access bounds)
  *   - sr_guest_span_readable/writable (bulk/parser span validation)
+ *   - sr_guest_span_prefix (bounded partial-tail arithmetic)
  *   - sr_size_add_ok / sr_size_mul_ok (overflow-safe size arithmetic)
  *   - sr_guest_rect_readable/writable (pitched whole-rectangle validation)
  *
@@ -68,6 +69,14 @@ static void test_overflow_safety(void) {
     /* Exactly filling the arena from the base is the largest valid span. */
     CHECK(sr_guest_span_readable(0x08000000u, 0x04000000u), "span exactly to arena end is ok");
     CHECK(!sr_guest_span_readable(0x08000000u, 0x04000001u), "span one past arena end must fail");
+    CHECK(sr_guest_span_prefix(0x0bfffff0u, 16u) == 16u,
+          "prefix ending at the arena boundary must be complete");
+    CHECK(sr_guest_span_prefix(0x0bfffff0u, 17u) == 16u,
+          "prefix arithmetic must retain a one-byte valid-tail boundary");
+    CHECK(sr_guest_span_prefix(0x0c000000u, 1u) == 0u,
+          "prefix from one past the arena must be empty");
+    CHECK(sr_guest_span_prefix(0x08000000u, 0xFFFFFFFFu) == 0x04000000u,
+          "prefix arithmetic must remain overflow-safe for huge requests");
 }
 
 static void test_zero_size_span(void) {

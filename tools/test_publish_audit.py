@@ -59,6 +59,27 @@ def hermetic_policy(repo: Path, include_paths, exclude_paths=(), exclude_globs=(
     return policy_path, export_path
 
 
+def _isolated_git_env(repo: Path) -> dict:
+    """Git environment with host-global/system config disabled.
+
+    Hermetic fixtures must decide their own blob bytes. A host ``filter.lfs``
+    clean driver (common in global/system Git config) would rewrite ``git add``
+    content for any ``filter=lfs`` pattern, so the staged blob -- and the
+    entry kind derived from it -- would depend on the machine running the test.
+    Point both config env vars at one empty file for the fixture's Git calls.
+
+    Call after ``git init``: the empty file lives under ``.git/`` so it is
+    never enumerated as a fixture path.
+    """
+    empty = repo / ".git" / "_empty_git_config"
+    if not empty.exists():
+        empty.write_text("", encoding="utf-8", newline="\n")
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = str(empty)
+    env["GIT_CONFIG_SYSTEM"] = str(empty)
+    return env
+
+
 class TestPublishAudit(unittest.TestCase):
     def test_forbidden_private_paths_and_formats(self):
         self.assertIsNotNone(publish_audit._forbidden_path("place_game_here/EBOOT.elf"))
@@ -349,6 +370,123 @@ class TestPublishAudit(unittest.TestCase):
             entries = [publish_audit.GitEntry("100644", "", "0", "data.dat", "file")]
             findings = publish_audit.audit_entries(entries, repo_root=repo, is_candidate_root=True)
             self.assertTrue(any(f.code == "LFS_MISMATCH" for f in findings))
+
+    def test_lfs_attribute_policy_follows_selected_content_source(self):
+        # Issue #293: .gitattributes decides LFS findings, so it must be read
+        # from the SAME content source as the audited bytes. An index-vs-worktree
+        # divergence in .gitattributes must change the verdict exactly when the
+        # selected source changes, never silently.
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            env = _isolated_git_env(repo)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, env=env)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, env=env)
+
+            for name in ("LICENSE", "NOTICE.md", "README.md", "AGENTS.md"):
+                (repo / name).write_text(name + "\n", encoding="utf-8", newline="\n")
+            (repo / ".gitattributes").write_text(
+                "*.dat filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8", newline="\n"
+            )
+            (repo / "data.dat").write_text("Not an LFS pointer content\n", encoding="utf-8", newline="\n")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True, env=env)
+
+            # Index declares LFS; an unstaged worktree edit removes the policy.
+            (repo / ".gitattributes").write_text(
+                "# unstaged policy removal\n", encoding="utf-8", newline="\n"
+            )
+
+            entries_index = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
+            )
+            findings_index = publish_audit.audit_entries(
+                entries_index, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
+            )
+            self.assertTrue(
+                any(f.code == "LFS_MISMATCH" for f in findings_index),
+                "index-source audit must use the staged .gitattributes even when the worktree drops it",
+            )
+            entries_worktree = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE
+            )
+            findings_worktree = publish_audit.audit_entries(
+                entries_worktree, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE
+            )
+            self.assertFalse(
+                any(f.code == "LFS_MISMATCH" for f in findings_worktree),
+                "worktree-source audit must not inherit the staged LFS policy",
+            )
+
+            # Reverse: stage the empty policy and leave the LFS policy only in
+            # the (unstaged) worktree.
+            subprocess.run(
+                ["git", "add", ".gitattributes"], cwd=repo, check=True, capture_output=True, env=env
+            )
+            (repo / ".gitattributes").write_text(
+                "*.dat filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8", newline="\n"
+            )
+
+            entries_index = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
+            )
+            findings_index = publish_audit.audit_entries(
+                entries_index, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
+            )
+            self.assertFalse(
+                any(f.code == "LFS_MISMATCH" for f in findings_index),
+                "index-source audit must ignore an unstaged worktree LFS declaration",
+            )
+            entries_worktree = publish_audit._get_git_entries(
+                tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE
+            )
+            findings_worktree = publish_audit.audit_entries(
+                entries_worktree, repo_root=repo, content_source=publish_audit.CONTENT_WORKTREE
+            )
+            self.assertTrue(
+                any(f.code == "LFS_MISMATCH" for f in findings_worktree),
+                "worktree-source audit must use the worktree .gitattributes",
+            )
+
+    def test_gitattributes_invalid_utf8_fails_closed(self):
+        # A declared attribute policy that cannot be parsed must fail closed
+        # with an explicit finding, never be skipped as "no LFS policy".
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            env = _isolated_git_env(repo)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, env=env)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, env=env)
+
+            for name in ("LICENSE", "NOTICE.md", "README.md", "AGENTS.md"):
+                (repo / name).write_text(name + "\n", encoding="utf-8", newline="\n")
+            (repo / ".gitattributes").write_bytes(b"*.dat filter=lfs \xff\xfe -text\n")
+            (repo / "data.dat").write_text("content\n", encoding="utf-8", newline="\n")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True, env=env)
+
+            entries = publish_audit._get_git_entries(tracked_only=True, repo_root=repo)
+            findings = publish_audit.audit_entries(entries, repo_root=repo)
+            self.assertTrue(
+                any(f.code == "GITATTRIBUTES_UNREADABLE" for f in findings),
+                "undeclared-utf8 attribute policy must fail closed, not silently pass",
+            )
+
+    def test_lfs_attribute_requires_exact_filter_lfs_token(self):
+        # ``subfilter=lfs`` is a different attribute; only an exact
+        # ``filter=lfs`` token declares Git LFS. A substring match would create
+        # false LFS findings.
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            (repo / ".gitattributes").write_text(
+                "*.dat subfilter=lfs merge=lfs -text\n", encoding="utf-8", newline="\n"
+            )
+            (repo / "data.dat").write_text("Not an LFS pointer content\n", encoding="utf-8", newline="\n")
+
+            entries = [publish_audit.GitEntry("100644", "", "0", "data.dat", "file")]
+            findings = publish_audit.audit_entries(entries, repo_root=repo, is_candidate_root=True)
+            self.assertFalse(
+                any(f.code == "LFS_MISMATCH" for f in findings),
+                "subfilter=lfs must not be treated as a Git LFS declaration",
+            )
 
     def test_public_scope_unresolved_asset_rejection(self):
         manifest_path = publish_audit.ROOT / "assets" / "release_manifest.json"

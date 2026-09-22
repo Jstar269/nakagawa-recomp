@@ -1,16 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
-/* Launch-session resolution: sibling image discovery and save routing.
+/* Launch-session resolution: identity-bound runtime/image discovery, sibling
+ * image discovery, and save routing.
  *
- * Both behaviours are host-shaped and were wrong in host-specific ways:
- *
- *   - the alongside-image transformation ran only for names ending in .exe,
- *     so an ordinary extensionless POSIX binary never probed its sibling
- *     <executable>_image.bin and the runtime was started with no --image;
- *   - SR_MEMSTICK was hard-coded to the relative path "saves", which a
- *     packaged install below a read-only directory cannot create, and which
- *     routed every title into one shared root.
+ * Hostile contract (#366): generic launch resolution may only select a
+ * runtime/image from the selected title's own validated identity
+ * (catalog game_name / title id). A stale sibling-title build, a root-level
+ * binary, or a retail-specific image probe must never satisfy another title;
+ * identity disagreement between session disc and title is rejected before any
+ * spawn. The alongside-image and save-routing behaviours remain host-shaped
+ * regressions: the sibling transform must work for extensionless POSIX names
+ * and replace, not append to, a Windows extension.
  *
  * These tests run identically on Win32 and POSIX: nothing here depends on a
  * particular separator or on an executable carrying an extension.
@@ -131,22 +132,35 @@ int main(void) {
 
     /* 1. Extensionless executable: <executable>_image.bin must be found.
      *
-     * This is the case that regressed. On POSIX the runtime binary normally
-     * has no extension at all, so the .exe-only transformation never fired and
-     * src/rt/driver.c exited through its insufficient-arguments path. */
+     * The runtime binary normally has no extension on POSIX, so the sibling
+     * image probe must fire for the extensionless spelling of the selected
+     * title's own build product, and src/rt/driver.c must never be started
+     * without --image. The fixture lives under the title-owned build layout.
+     */
     printf("[LAUNCH_TEST] Subtest 1: extensionless executable sibling image\n");
     fflush(stdout);
-    char exe_noext[700];
-    char img_noext[800];
-    snprintf(exe_noext, sizeof(exe_noext), "%s%cmy-title", base, sep);
-    snprintf(img_noext, sizeof(img_noext), "%s%cmy-title_image.bin", base, sep);
+    char root1[700];
+    char exe_noext[800];
+    char img_noext[900];
+    snprintf(root1, sizeof(root1), "%s%croot1", base, sep);
+    snprintf(exe_noext, sizeof(exe_noext), "%s%cbuild%csynthetic%csynthetic",
+             root1, sep, sep, sep);
+    snprintf(img_noext, sizeof(img_noext), "%s%cbuild%csynthetic%csynthetic_image.bin",
+             root1, sep, sep, sep);
+    assert(nk_platform_mkdir_p(root1));
+    {
+        char exe_parent[800];
+        snprintf(exe_parent, sizeof(exe_parent), "%s%cbuild%csynthetic",
+                 root1, sep, sep);
+        assert(nk_platform_mkdir_p(exe_parent));
+    }
     write_file(exe_noext, "binary");
     write_file(img_noext, "image");
 
     make_game(&game, iso_path);
-    assert(nk_launch_prepare_session(&session, &game, exe_noext) == NK_OK);
-    assert(ends_with(session.executable_path, "my-title"));
-    assert(ends_with(session.image_path, "my-title_image.bin"));
+    assert(nk_launch_prepare_session(&session, &game, root1) == NK_OK);
+    assert(ends_with(session.executable_path, "synthetic"));
+    assert(ends_with(session.image_path, "synthetic_image.bin"));
 
     /* 2. A writable, title-specific memory stick root must be resolved.
      *
@@ -161,22 +175,34 @@ int main(void) {
     /* 3. A .exe name still has its extension replaced, not appended to. */
     printf("[LAUNCH_TEST] Subtest 3: .exe extension is replaced\n");
     fflush(stdout);
-    char exe_dot[700];
-    char img_dot[800];
-    snprintf(exe_dot, sizeof(exe_dot), "%s%cother.exe", base, sep);
-    snprintf(img_dot, sizeof(img_dot), "%s%cother_image.bin", base, sep);
+    char root2[700];
+    char exe_dot[800];
+    char img_dot[900];
+    snprintf(root2, sizeof(root2), "%s%croot2", base, sep);
+    snprintf(exe_dot, sizeof(exe_dot), "%s%cbuild%csynthetic%csynthetic.exe",
+             root2, sep, sep, sep);
+    snprintf(img_dot, sizeof(img_dot), "%s%cbuild%csynthetic%csynthetic_image.bin",
+             root2, sep, sep, sep);
+    {
+        char exe_parent[800];
+        snprintf(exe_parent, sizeof(exe_parent), "%s%cbuild%csynthetic",
+                 root2, sep, sep);
+        assert(nk_platform_mkdir_p(exe_parent));
+    }
     write_file(exe_dot, "binary");
     write_file(img_dot, "image");
 
     make_game(&game, iso_path);
-    assert(nk_launch_prepare_session(&session, &game, exe_dot) == NK_OK);
-    assert(ends_with(session.image_path, "other_image.bin"));
+    assert(nk_launch_prepare_session(&session, &game, root2) == NK_OK);
+    assert(ends_with(session.executable_path, "synthetic.exe"));
+    assert(ends_with(session.image_path, "synthetic_image.bin"));
 
     /* 4. A dot in a DIRECTORY component is not an extension.
      *
-     * /opt/nakagawa.d/bin/tool must probe tool_image.bin, not
-     * /opt/nakagawa_image.bin. Scanning the whole path for the last '.' gets
-     * this wrong; scanning only the final component gets it right. */
+     * A root such as <base>/nested.d/build/<title>/<title> must probe
+     * <title>_image.bin beside the executable, not <root>_image.bin. Scanning
+     * the whole path for the last '.' gets this wrong; scanning only the final
+     * component gets it right. */
     printf("[LAUNCH_TEST] Subtest 4: dotted directory is not an extension\n");
     fflush(stdout);
     char dotted_dir[700];
@@ -185,14 +211,22 @@ int main(void) {
 
     char exe_nested[800];
     char img_nested[900];
-    snprintf(exe_nested, sizeof(exe_nested), "%s%ctool", dotted_dir, sep);
-    snprintf(img_nested, sizeof(img_nested), "%s%ctool_image.bin", dotted_dir, sep);
+    snprintf(exe_nested, sizeof(exe_nested), "%s%cbuild%csynthetic%csynthetic",
+             dotted_dir, sep, sep, sep);
+    snprintf(img_nested, sizeof(img_nested), "%s%cbuild%csynthetic%csynthetic_image.bin",
+             dotted_dir, sep, sep, sep);
+    {
+        char exe_parent[800];
+        snprintf(exe_parent, sizeof(exe_parent), "%s%cbuild%csynthetic",
+                 dotted_dir, sep, sep);
+        assert(nk_platform_mkdir_p(exe_parent));
+    }
     write_file(exe_nested, "binary");
     write_file(img_nested, "image");
 
     make_game(&game, iso_path);
-    assert(nk_launch_prepare_session(&session, &game, exe_nested) == NK_OK);
-    assert(ends_with(session.image_path, "tool_image.bin"));
+    assert(nk_launch_prepare_session(&session, &game, dotted_dir) == NK_OK);
+    assert(ends_with(session.image_path, "synthetic_image.bin"));
 
     /* 5. The catalog build-layout convention.
      *
@@ -376,6 +410,415 @@ int main(void) {
     snprintf(game.disc_id, sizeof(game.disc_id), "ZZZZ99999");
     snprintf(game.title_id, sizeof(game.title_id), "not-a-catalog-title");
     assert(nk_launch_prepare_session(&session, &game, base) != NK_OK);
+
+    /* 9. A stale retail-shaped build must not satisfy a second title (#366).
+     *
+     * The legacy generic candidates probed build/<retail> BEFORE the
+     * manifest-selected build/<game_name> and build/<title_id> layouts, so a
+     * stale sibling-title binary in the workspace won executable discovery
+     * for an unrelated selected title. The stale artifacts below are
+     * source-owned synthetic stand-ins, not retail bytes. */
+    printf("[LAUNCH_TEST] Subtest 9: stale retail build cannot satisfy second title\n");
+    fflush(stdout);
+    char root9[700];
+    char stale_dir[800];
+    char stale_exe[900];
+    snprintf(root9, sizeof(root9), "%s%croot9", base, sep);
+    snprintf(stale_dir, sizeof(stale_dir), "%s%cbuild%chst", root9, sep, sep);
+    assert(nk_platform_mkdir_p(stale_dir));
+    snprintf(stale_exe, sizeof(stale_exe), "%s%chst.exe", stale_dir, sep);
+    write_file(stale_exe, "MZfake");
+    snprintf(stale_exe, sizeof(stale_exe), "%s%chst", stale_dir, sep);
+    write_file(stale_exe, "binary");
+    snprintf(stale_exe, sizeof(stale_exe), "%s%chst_image.bin", stale_dir, sep);
+    write_file(stale_exe, "image");
+    snprintf(stale_exe, sizeof(stale_exe), "%s%chst.exe", root9, sep);
+    write_file(stale_exe, "MZfake");
+    snprintf(stale_exe, sizeof(stale_exe), "%s%chst", root9, sep);
+    write_file(stale_exe, "binary");
+    snprintf(stale_exe, sizeof(stale_exe), "%s%chst_image.bin", root9, sep);
+    write_file(stale_exe, "image");
+    {
+        char runtime_dir[800];
+        snprintf(runtime_dir, sizeof(runtime_dir), "%s%cruntime", root9, sep);
+        assert(nk_platform_mkdir_p(runtime_dir));
+        snprintf(stale_exe, sizeof(stale_exe), "%s%cruntime%chst_image.bin",
+                 root9, sep, sep);
+        write_file(stale_exe, "image");
+    }
+
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
+    snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    assert(nk_launch_prepare_session(&session, &game, root9) != NK_OK);
+    assert(strstr(session.last_error, "Runtime binary not found") != NULL);
+    assert(strstr(session.last_error, "hst") == NULL);
+    assert(nk_launch_runtime_available(root9, "pspdev-phase5-v1") == false);
+
+    /* The second title's OWN runtime (its catalog game_name layout) satisfies
+     * it, even while every stale artifact above still exists. */
+    {
+        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        char t2_dir[800];
+        char t2_exe[900];
+        char t2_img[900];
+        assert(t2 != NULL && t2->game_name != NULL);
+        snprintf(t2_dir, sizeof(t2_dir), "%s%cbuild%c%s", root9, sep, sep,
+                 t2->game_name);
+        assert(nk_platform_mkdir_p(t2_dir));
+        snprintf(t2_exe, sizeof(t2_exe), "%s%c%s", t2_dir, sep, t2->game_name);
+        snprintf(t2_img, sizeof(t2_img), "%s%c%s_image.bin", t2_dir, sep,
+                 t2->game_name);
+        write_file(t2_exe, "binary");
+        write_file(t2_img, "image");
+        assert(nk_launch_prepare_session(&session, &game, root9) == NK_OK);
+        assert(strstr(session.executable_path, t2->game_name) != NULL);
+        assert(strstr(session.executable_path, "build") != NULL);
+        assert(strstr(session.image_path, "hst") == NULL);
+        assert(strstr(session.image_path, "_image.bin") != NULL);
+        assert(nk_launch_runtime_available(root9, "pspdev-phase5-v1") == true);
+        remove(t2_exe);
+        remove(t2_img);
+    }
+
+    /* 10. A root-level retail-shaped binary cannot satisfy any other title,
+     * and the generic API accepts only a root DIRECTORY: handing it the exact
+     * retail file path does not create an explicit-legacy escape. */
+    printf("[LAUNCH_TEST] Subtest 10: root retail binary and file-root escape rejected\n");
+    fflush(stdout);
+    char root10[700];
+    char root10_file[800];
+    snprintf(root10, sizeof(root10), "%s%croot10", base, sep);
+    assert(nk_platform_mkdir_p(root10));
+    snprintf(root10_file, sizeof(root10_file), "%s%chst.exe", root10, sep);
+    write_file(root10_file, "MZfake");
+    snprintf(root10_file, sizeof(root10_file), "%s%chst", root10, sep);
+    write_file(root10_file, "binary");
+    snprintf(root10_file, sizeof(root10_file), "%s%chst_image.bin", root10, sep);
+    write_file(root10_file, "image");
+    snprintf(root10_file, sizeof(root10_file), "%s%chst.exe", root10, sep);
+
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
+    snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    assert(nk_launch_prepare_session(&session, &game, root10) != NK_OK);
+    assert(strstr(session.last_error, "Runtime binary not found") != NULL);
+    assert(strstr(session.last_error, "hst") == NULL);
+    assert(nk_launch_runtime_available(root10, "pspdev-phase5-v1") == false);
+    /* Explicit file path handed to the generic API: refused, not launched. */
+    assert(nk_launch_prepare_session(&session, &game, root10_file) != NK_OK);
+    assert(strstr(session.last_error, "Runtime binary not found") != NULL);
+
+    /* 11. Retail-specific image candidates cannot satisfy another title. */
+    printf("[LAUNCH_TEST] Subtest 11: retail image cannot satisfy second title\n");
+    fflush(stdout);
+    char root11[700];
+    char t2_dir11[800];
+    char t2_exe11[900];
+    char plant[900];
+    snprintf(root11, sizeof(root11), "%s%croot11", base, sep);
+    assert(nk_platform_mkdir_p(root11));
+    {
+        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        assert(t2 != NULL && t2->game_name != NULL);
+        snprintf(t2_dir11, sizeof(t2_dir11), "%s%cbuild%c%s", root11, sep, sep,
+                 t2->game_name);
+        assert(nk_platform_mkdir_p(t2_dir11));
+        snprintf(t2_exe11, sizeof(t2_exe11), "%s%c%s.exe", t2_dir11, sep,
+                 t2->game_name);
+        write_file(t2_exe11, "MZfake");
+    }
+    snprintf(plant, sizeof(plant), "%s%chst_image.bin", t2_dir11, sep);
+    write_file(plant, "image");
+    snprintf(plant, sizeof(plant), "%s%chst_image.bin", root11, sep);
+    write_file(plant, "image");
+    {
+        char runtime_dir[800];
+        snprintf(runtime_dir, sizeof(runtime_dir), "%s%cruntime", root11, sep);
+        assert(nk_platform_mkdir_p(runtime_dir));
+        snprintf(plant, sizeof(plant), "%s%cruntime%chst_image.bin", root11,
+                 sep, sep);
+        write_file(plant, "image");
+    }
+    {
+        char build_hst[800];
+        snprintf(build_hst, sizeof(build_hst), "%s%cbuild%chst", root11, sep, sep);
+        assert(nk_platform_mkdir_p(build_hst));
+        snprintf(plant, sizeof(plant), "%s%chst_image.bin", build_hst, sep);
+        write_file(plant, "image");
+    }
+
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
+    snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    assert(nk_launch_prepare_session(&session, &game, root11) != NK_OK);
+    assert(strstr(session.last_error, "Runtime image not found") != NULL);
+    assert(strstr(session.last_error, "hst") == NULL);
+
+    /* 12. A session whose disc and title identities disagree is rejected
+     * before spawn, even when a runtime exists for either identity. */
+    printf("[LAUNCH_TEST] Subtest 12: wrong-title session identity rejected\n");
+    fflush(stdout);
+    char root12[700];
+    snprintf(root12, sizeof(root12), "%s%croot12", base, sep);
+    {
+        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        char dir[800];
+        char exe[900];
+        char img[900];
+        assert(t2 != NULL && t2->game_name != NULL);
+        snprintf(dir, sizeof(dir), "%s%cbuild%c%s", root12, sep, sep, t2->game_name);
+        assert(nk_platform_mkdir_p(dir));
+        snprintf(exe, sizeof(exe), "%s%c%s.exe", dir, sep, t2->game_name);
+        snprintf(img, sizeof(img), "%s%c%s_image.bin", dir, sep, t2->game_name);
+        write_file(exe, "MZfake");
+        write_file(img, "image");
+    }
+    {
+        char dir[800];
+        char exe[900];
+        char img[900];
+        snprintf(dir, sizeof(dir), "%s%cbuild%csynthetic", root12, sep, sep);
+        assert(nk_platform_mkdir_p(dir));
+        snprintf(exe, sizeof(exe), "%s%csynthetic.exe", dir, sep);
+        snprintf(img, sizeof(img), "%s%csynthetic_image.bin", dir, sep);
+        write_file(exe, "MZfake");
+        write_file(img, "image");
+    }
+
+    make_game(&game, iso_path); /* TEST00001 + synthetic-allegrex-v1 */
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005"); /* title2 disc */
+    assert(nk_launch_prepare_session(&session, &game, root12) != NK_OK);
+    assert(strstr(session.last_error, "identity") != NULL);
+    assert(strstr(session.last_error, "pspdev-phase5-v1") != NULL);
+    assert(strstr(session.last_error, "synthetic-allegrex-v1") != NULL);
+
+    /* Half of the identity pair is not a validation: a disc that resolves
+     * beside a title id that does not is still a disagreement. */
+    snprintf(game.title_id, sizeof(game.title_id), "not-a-real-title");
+    assert(nk_launch_prepare_session(&session, &game, root12) != NK_OK);
+    assert(strstr(session.last_error, "identity") != NULL);
+
+    /* 13. Ambiguous valid candidates follow the explicit contract order:
+     * manager game_name before title id, .exe before the extensionless
+     * spelling within one name. */
+    printf("[LAUNCH_TEST] Subtest 13: ambiguous candidates are deterministic\n");
+    fflush(stdout);
+    char root13[700];
+    char amb_dir[800];
+    char amb_exe[900];
+    char amb_img[900];
+    char amb_expected[900];
+    snprintf(root13, sizeof(root13), "%s%croot13", base, sep);
+    snprintf(amb_dir, sizeof(amb_dir), "%s%cbuild%cdisplay-smoke", root13, sep, sep);
+    assert(nk_platform_mkdir_p(amb_dir));
+    snprintf(amb_exe, sizeof(amb_exe), "%s%cdisplay-smoke.exe", amb_dir, sep);
+    snprintf(amb_img, sizeof(amb_img), "%s%cdisplay-smoke_image.bin", amb_dir, sep);
+    write_file(amb_exe, "MZfake");
+    write_file(amb_img, "image");
+    {
+        char plain[940];
+        char plain_dir[900];
+        snprintf(plain, sizeof(plain), "%s%cbuild%cdisplay-smoke%cdisplay-smoke",
+                 root13, sep, sep, sep);
+        write_file(plain, "binary");
+        snprintf(plain_dir, sizeof(plain_dir), "%s%cbuild%cdisplay-smoke-v1",
+                 root13, sep, sep);
+        assert(nk_platform_mkdir_p(plain_dir));
+        snprintf(plain, sizeof(plain), "%s%cdisplay-smoke-v1.exe", plain_dir, sep);
+        write_file(plain, "MZfake");
+    }
+    snprintf(amb_expected, sizeof(amb_expected),
+             "display-smoke%cdisplay-smoke.exe", sep);
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
+    snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    assert(nk_launch_prepare_session(&session, &game, root13) == NK_OK);
+    assert(ends_with(session.executable_path, amb_expected));
+
+    /* 14. Moving the repository root never changes the selected identity or
+     * its addresses; a root without the title's runtime reports exactly that. */
+    printf("[LAUNCH_TEST] Subtest 14: moved root does not alter identity\n");
+    fflush(stdout);
+    char root14a[700];
+    char root14b[700];
+    snprintf(root14a, sizeof(root14a), "%s%croot14 a", base, sep);
+    snprintf(root14b, sizeof(root14b), "%s%croot14-b", base, sep);
+    assert(nk_platform_mkdir_p(root14a));
+    assert(nk_platform_mkdir_p(root14b));
+    {
+        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        char dir[800];
+        char exe[900];
+        char img[900];
+        assert(t2 != NULL && t2->game_name != NULL);
+        snprintf(dir, sizeof(dir), "%s%cbuild%c%s", root14a, sep, sep, t2->game_name);
+        assert(nk_platform_mkdir_p(dir));
+        snprintf(exe, sizeof(exe), "%s%c%s", dir, sep, t2->game_name);
+        snprintf(img, sizeof(img), "%s%c%s_image.bin", dir, sep, t2->game_name);
+        write_file(exe, "binary");
+        write_file(img, "image");
+    }
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
+    snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    {
+        NkLaunchSession session_a;
+        NkLaunchSession session_b;
+        uint32_t base_a, entry_a;
+        assert(nk_launch_prepare_session(&session_a, &game, root14a) == NK_OK);
+        base_a = session_a.base_address;
+        entry_a = session_a.entry_point;
+        /* Same identity, different (empty) root: identical addresses, and a
+         * controlled missing-runtime error rather than a different identity. */
+        assert(nk_launch_prepare_session(&session_b, &game, root14b) != NK_OK);
+        assert(strstr(session_b.last_error, "Runtime binary not found") != NULL);
+        assert(strstr(session_b.last_error, "hst") == NULL);
+        assert(nk_launch_runtime_available(root14b, "pspdev-phase5-v1") == false);
+        /* Re-root the same session: identity fields and addresses hold. */
+        assert(nk_launch_prepare_session(&session, &game, root14a) == NK_OK);
+        assert(session.base_address == base_a);
+        assert(session.entry_point == entry_a);
+        assert(strcmp(session.title_id, "pspdev-phase5-v1") == 0);
+        assert(strcmp(session.disc_id, "TEST00005") == 0);
+    }
+
+    /* 15. Paths with spaces keep working through the generic route. */
+    printf("[LAUNCH_TEST] Subtest 15: spaced repository root\n");
+    fflush(stdout);
+    char root15[700];
+    snprintf(root15, sizeof(root15), "%s%croot with spaces", base, sep);
+    {
+        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        char dir[800];
+        char exe[900];
+        char img[900];
+        assert(t2 != NULL && t2->game_name != NULL);
+        snprintf(dir, sizeof(dir), "%s%cbuild%c%s", root15, sep, sep, t2->game_name);
+        assert(nk_platform_mkdir_p(dir));
+        snprintf(exe, sizeof(exe), "%s%c%s", dir, sep, t2->game_name);
+        snprintf(img, sizeof(img), "%s%c%s_image.bin", dir, sep, t2->game_name);
+        write_file(exe, "binary");
+        write_file(img, "image");
+    }
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
+    snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    assert(nk_launch_prepare_session(&session, &game, root15) == NK_OK);
+    assert(strchr(session.executable_path, ' ') != NULL);
+
+    /* 16. Identity binding is re-checked immediately before spawn: a session
+     * whose executable or title identity was swapped after preparation is
+     * rejected before any process is created. */
+    printf("[LAUNCH_TEST] Subtest 16: pre-spawn identity gate\n");
+    fflush(stdout);
+    {
+        char tampered[720];
+        snprintf(tampered, sizeof(tampered), "%s%chst.exe", root15, sep);
+        write_file(tampered, "MZfake");
+
+        /* Untampered: passes the identity gate (spawn of a fake fixture may
+         * still fail for its own reason, never for identity). */
+        make_game(&game, iso_path);
+        snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
+        snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+        assert(nk_launch_prepare_session(&session, &game, root15) == NK_OK);
+        (void)nk_launch_start(&session);
+        nk_launch_stop(&session);
+        assert(strstr(session.last_error, "does not match the selected title") == NULL);
+        assert(strstr(session.last_error, "No catalog entry") == NULL);
+
+        /* Tampered executable: rejected before spawn. */
+        assert(nk_launch_prepare_session(&session, &game, root15) == NK_OK);
+        assert(strlen(tampered) < sizeof(session.executable_path));
+        memcpy(session.executable_path, tampered, strlen(tampered) + 1);
+        assert(nk_launch_start(&session) != NK_OK);
+        assert(session.is_running == false);
+        assert(strstr(session.last_error, "does not match the selected title") != NULL);
+        nk_launch_stop(&session);
+
+        /* Tampered title identity: rejected before spawn. */
+        assert(nk_launch_prepare_session(&session, &game, root15) == NK_OK);
+        snprintf(session.title_id, sizeof(session.title_id), "%s",
+                 "not-a-catalog-title");
+        session.disc_id[0] = '\0';
+        assert(nk_launch_start(&session) != NK_OK);
+        assert(session.is_running == false);
+        assert(strstr(session.last_error, "No catalog entry") != NULL);
+        nk_launch_stop(&session);
+    }
+
+    /* 17. An explicitly retail-identified title keeps working through the
+     * generic route because its OWN validated manifest identifies it: the
+     * manifest declares the legacy build name, zero base/entry are its
+     * declared launch values, and no generic fallback is involved. Without
+     * that validated identity the same session fails closed. */
+    printf("[LAUNCH_TEST] Subtest 17: legacy retail-identified route via own identity\n");
+    fflush(stdout);
+    char root17[700];
+    char legacy_manifest[900];
+    char legacy_dir[800];
+    char legacy_exe[900];
+    char legacy_img[900];
+    char legacy_error[512];
+    snprintf(root17, sizeof(root17), "%s%croot17", base, sep);
+    assert(nk_platform_mkdir_p(root17));
+    snprintf(legacy_manifest, sizeof(legacy_manifest), "%s%clegacy-retail.json",
+             root17, sep);
+    const char *legacy_manifest_json =
+        "{\"schema_version\":1,\"id\":\"hst-ucus98701-v1\","
+        "\"game_name\":\"hst\","
+        "\"display_name\":\"Legacy Retail Fixture\",\"kind\":\"retail\","
+        "\"disc\":{\"id\":\"UCUS98701\",\"region\":\"NA\","
+        "\"revision_policy\":\"exact-disc-id\"},"
+        "\"executable\":{\"base\":\"0x00000000\",\"entry\":\"0x00000000\","
+        "\"bss_metadata_source\":\"elf\",\"extra_executable_spans\":[]},"
+        "\"modules\":[],\"filesystem\":{\"data_root\":\"legacy-data\","
+        "\"memory_stick_root\":\"legacy-ms\",\"device_prefixes\":[\"host0:\"]},"
+        "\"hle_profile\":\"standard\",\"feature_requirements\":[\"allegrex\"],"
+        "\"verification_profile\":\"smoke\"}";
+    write_file(legacy_manifest, legacy_manifest_json);
+    snprintf(legacy_dir, sizeof(legacy_dir), "%s%cbuild%chst", root17, sep, sep);
+    assert(nk_platform_mkdir_p(legacy_dir));
+    snprintf(legacy_exe, sizeof(legacy_exe), "%s%chst.exe", legacy_dir, sep);
+    snprintf(legacy_img, sizeof(legacy_img), "%s%chst_image.bin", legacy_dir, sep);
+    write_file(legacy_exe, "MZfake");
+    write_file(legacy_img, "image");
+
+    make_game(&game, iso_path);
+    snprintf(game.disc_id, sizeof(game.disc_id), "UCUS98701");
+    snprintf(game.title_id, sizeof(game.title_id), "hst-ucus98701-v1");
+
+    /* Without the validated overlay: fail closed, never by default. */
+    assert(nk_launch_prepare_session(&session, &game, root17) != NK_OK);
+    assert(strstr(session.last_error, "No catalog entry") != NULL);
+
+    /* With its own validated manifest loaded: resolves its own declared
+     * layout at its own declared addresses (zero base/entry are the
+     * manifest's values, not unknown-address guesses). */
+    if (!nk_title_manifest_load_overlay_ext(legacy_manifest, false,
+                                            legacy_error, sizeof(legacy_error))) {
+        printf("[LAUNCH_TEST] legacy manifest rejected: %s\n", legacy_error);
+        fflush(stdout);
+        assert(!"legacy fixture manifest must validate");
+    }
+    assert(nk_launch_prepare_session(&session, &game, root17) == NK_OK);
+    assert(session.base_address == 0u);
+    assert(session.entry_point == 0u);
+    assert(ends_with(session.executable_path, "hst.exe"));
+    assert(ends_with(session.image_path, "hst_image.bin"));
+    assert(nk_launch_runtime_available(root17, "hst-ucus98701-v1") == true);
+    nk_title_catalog_clear_overlay();
+    remove(legacy_exe);
+    remove(legacy_img);
+    remove(legacy_manifest);
+    {
+        char legacy_ms[900];
+        snprintf(legacy_ms, sizeof(legacy_ms), "%s%clegacy-ms", root17, sep);
+        test_rmdir(legacy_ms);
+    }
+    test_rmdir(legacy_dir);
+    test_rmdir(root17);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     return 0;

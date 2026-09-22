@@ -104,6 +104,28 @@ else ifeq ($(CASE),wait-b2)
 CASE_ID = 27
 else ifeq ($(CASE),kernel-b3)
 CASE_ID = 28
+else ifeq ($(CASE),transport-write)
+CASE_ID = 44
+else ifeq ($(CASE),thread-exit-delete)
+CASE_ID = 45
+else ifeq ($(CASE),dmac-survey)
+CASE_ID = 46
+else ifeq ($(CASE),ctrl-clock)
+CASE_ID = 47
+else ifeq ($(CASE),fpu-vector)
+CASE_ID = 48
+else ifeq ($(CASE),teardown-test)
+CASE_ID = 49
+else ifeq ($(CASE),io-matrix)
+CASE_ID = 50
+else ifeq ($(CASE),audio-query)
+CASE_ID = 51
+else ifeq ($(CASE),cache-alias)
+CASE_ID = 52
+else ifeq ($(CASE),dma-size-matrix)
+CASE_ID = 53
+else ifeq ($(CASE),model-profile)
+CASE_ID = 54
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -208,8 +230,8 @@ CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
 BUILD_PRX = 1
 PSP_FW_VERSION = 500
-# Keep only the invalid-tail variants at the public 24 MiB baseline. They
-# reserve the final valid prefix with the system-memory allocator and prove
+# Keep only the invalid-tail variants at the bounded public memory baseline.
+# They discover and reserve a page-aligned high block at runtime, then prove
 # that an allocation beginning at the next address is rejected before issuing
 # the syscall. Existing probes and the concurrency case retain their prior
 # memory request.
@@ -218,7 +240,10 @@ PSP_LARGE_MEMORY = 0
 endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
-LIBS = -lpspdmac -lpsppower -lpspge
+LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
+ifeq ($(CASE),model-profile)
+LIBS += -lpspkubridge
+endif
 # Case 22 (mutex-interrupt-context) uses sceKernelIsIntrContext() from the
 # kernel interrupt manager library for independent ISR execution proof.
 ifeq ($(CASE),mutex-interrupt-context)
@@ -252,13 +277,13 @@ $(BUILD_DIR)/probe_exception_a2.o: probe_exception_a2.c
 $(BUILD_DIR)/probe_exception_a3.o: probe_exception_a3.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/psp_b1.o: psp_b1.c
+$(BUILD_DIR)/psp_b3.o: psp_b3.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/psp_b2.o: psp_b2.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/psp_b3.o: psp_b3.c
+$(BUILD_DIR)/psp_b1.o: psp_b1.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Keep the documented `make EBOOT.PBP` invocation while storing generated files

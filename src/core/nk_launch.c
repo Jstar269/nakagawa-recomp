@@ -125,98 +125,210 @@ static bool ensure_writable_dir(const char *path) {
     return true;
 }
 
-/* Helper to check candidate binary paths */
+/* #366: nk_launch.c binds the shared contract's name sources onto the
+ * validated catalog entry through GENERATED index macros only
+ * (NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX, emitted by title_catalog_codegen.py
+ * from tools/nk_core/launcher.py: NAME_SOURCES). A planner-side reorder
+ * changes those indices and native ordering follows mechanically; losing a
+ * required source, growing NAME_SOURCES, or aliasing two sources onto one
+ * slot fails compilation instead of silently inventing an ordering. Extend
+ * this mapping when NAME_SOURCES grows. */
+#if NK_LAUNCH_NAME_SOURCE_COUNT != 2
+#error "nk_launch.c maps (game_name, title_id); extend it when NAME_SOURCES grows"
+#endif
+#ifndef NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX
+#error "generated NAME_SOURCES lost 'game_name'; nk_launch.c cannot bind name sources"
+#endif
+#ifndef NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX
+#error "generated NAME_SOURCES lost 'title_id'; nk_launch.c cannot bind name sources"
+#endif
+#if NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX >= NK_LAUNCH_NAME_SOURCE_COUNT || \
+    NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX >= NK_LAUNCH_NAME_SOURCE_COUNT || \
+    NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX == NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX
+#error "generated name-source indices are out of range or alias one another"
+#endif
+
+static void launch_bind_name_sources(
+    const char *game_name,
+    const char *title_id,
+    const char *names[NK_LAUNCH_NAME_SOURCE_COUNT]
+) {
+    for (size_t i = 0; i < NK_LAUNCH_NAME_SOURCE_COUNT; i++) names[i] = NULL;
+    names[NK_LAUNCH_NAME_SOURCE_GAME_NAME_INDEX] = game_name;
+    names[NK_LAUNCH_NAME_SOURCE_TITLE_ID_INDEX] = title_id;
+}
+
+/* Select the ONE validated catalog entry that a session's identity names.
+ *
+ * disc_id and title_id, when both present, must agree on the same entry. A
+ * half-resolved pair (one side names a catalog title, the other does not) or
+ * a pair that resolves to two different titles is a session identity
+ * disagreement and is rejected: letting one side win would pair a runtime
+ * and addresses from one title with session data from another. An identity
+ * that resolves to no catalog entry fails closed with the same diagnostic
+ * the launch path has always reported for unknown titles. */
+static const NkTitleEntry *launch_select_entry(const NkGameEntry *game,
+                                               char *error_message,
+                                               size_t error_message_size) {
+    const NkTitleEntry *by_disc = NULL;
+    const NkTitleEntry *by_id = NULL;
+    if (!game) {
+        launch_error(error_message, error_message_size,
+                     "launch identity received invalid arguments");
+        return NULL;
+    }
+    if (game->disc_id[0]) by_disc = nk_title_catalog_find_by_disc_id(game->disc_id);
+    if (game->title_id[0]) by_id = nk_title_catalog_find_by_id(game->title_id);
+
+    if (game->disc_id[0] && game->title_id[0]) {
+        if (by_disc && by_id) {
+            if (by_disc == by_id || strcmp(by_disc->id, by_id->id) == 0) {
+                return by_disc;
+            }
+            if (error_message && error_message_size > 0) {
+                snprintf(error_message, error_message_size,
+                         "Session identity disagreement: disc_id '%.16s' resolves "
+                         "to title '%.64s' but title_id '%.64s' resolves to title "
+                         "'%.64s'",
+                         game->disc_id, by_disc->id, game->title_id, by_id->id);
+            }
+            return NULL;
+        }
+        if (by_disc) {
+            if (error_message && error_message_size > 0) {
+                snprintf(error_message, error_message_size,
+                         "Session identity disagreement: disc_id '%.16s' resolves "
+                         "to title '%.64s' but title_id '%.64s' does not name a "
+                         "catalog title",
+                         game->disc_id, by_disc->id, game->title_id);
+            }
+            return NULL;
+        }
+        if (by_id) {
+            if (error_message && error_message_size > 0) {
+                snprintf(error_message, error_message_size,
+                         "Session identity disagreement: title_id '%.64s' resolves "
+                         "to title '%.64s' but disc_id '%.16s' does not name a "
+                         "catalog disc",
+                         game->title_id, by_id->id, game->disc_id);
+            }
+            return NULL;
+        }
+    } else if (by_disc) {
+        return by_disc;
+    } else if (by_id) {
+        return by_id;
+    }
+
+    /* No validated identity: the historic unknown-title diagnostic, unchanged. */
+    if (error_message && error_message_size > 0) {
+        snprintf(error_message, error_message_size,
+                 "No catalog entry describes this title (disc_id=%.16s title_id=%.32s)",
+                 game->disc_id, game->title_id);
+    }
+    return NULL;
+}
+
+/* The executable's final two path components must BE the selected title's own
+ * identity: <name>/<name>[.exe] for one of the entry's contract name sources.
+ * This is the pre-spawn identity binding: a runtime produced for title A must
+ * not launch as title B merely because its path exists. */
+static bool launch_executable_bound_to_entry(const char *exe_path,
+                                             const NkTitleEntry *entry) {
+    char work[NK_MAX_PATH * 2];
+    char expected[NK_MAX_PATH];
+    char *file_sep = NULL;
+    char *dir_sep = NULL;
+    char *p;
+    size_t len;
+    const char *names[NK_LAUNCH_NAME_SOURCE_COUNT];
+
+    if (!exe_path || !exe_path[0] || !entry) return false;
+    snprintf(work, sizeof(work), "%s", exe_path);
+    len = strlen(work);
+    while (len > 1 && (work[len - 1] == '/' || work[len - 1] == '\\')) {
+        work[--len] = '\0';
+    }
+    for (p = work; *p; p++) {
+        if (*p == '/' || *p == '\\') file_sep = p;
+    }
+    if (!file_sep) return false;
+    *file_sep = '\0';
+    for (p = work; *p; p++) {
+        if (*p == '/' || *p == '\\') dir_sep = p;
+    }
+    {
+        const char *file_name = file_sep + 1;
+        const char *dir_name = dir_sep ? dir_sep + 1 : work;
+        if (!dir_name[0] || !file_name[0]) return false;
+        launch_bind_name_sources(entry->game_name, entry->id, names);
+        for (size_t i = 0; i < NK_LAUNCH_NAME_SOURCE_COUNT; i++) {
+            const char *name = names[i];
+            if (!name || !name[0]) continue;
+            if (strcmp(dir_name, name) != 0) continue;
+            if (strcmp(file_name, name) == 0) return true;
+            snprintf(expected, sizeof(expected), "%s.exe", name);
+            if (strcmp(file_name, expected) == 0) return true;
+        }
+    }
+    return false;
+}
+
+/* Resolve the SELECTED TITLE's own runtime executable under `root`.
+ *
+ * Every candidate comes from the generated shared contract
+ * (nk_launch_exe_candidates, projected from tools/nk_core/launcher.py by
+ * tools/title_catalog_codegen.py) instantiated with the validated catalog
+ * entry's game_name and title id in the contract's name-source order. `root`
+ * is a directory by contract. There is no sibling-title, retail-title, or
+ * other rescue path: a stale build of a different title in this workspace is
+ * irrelevant, and an unresolved runtime is an honest missing-runtime error.
+ */
 static bool find_candidate_executable(
     const char *root,
-    const char *title_id,
     const char *game_name,
+    const char *title_id,
     char *out_path,
     size_t max_len
 ) {
-    /* Candidate 0: Direct executable path passed as root */
-    if (root && nk_platform_file_exists(root) && !nk_platform_dir_exists(root)) {
-        snprintf(out_path, max_len, "%s", root);
-        return true;
-    }
+    char sep;
+    char rel[NK_MAX_PATH];
+    char cand[NK_MAX_PATH * 2];
+    const char *names[NK_LAUNCH_NAME_SOURCE_COUNT];
 
-    char sep = nk_platform_path_separator();
-    char cand[NK_MAX_PATH];
-
-    /* Candidate 1: legacy build/hst/hst.exe or build/hst/hst */
-    snprintf(cand, sizeof(cand), "%s%cbuild%chst%chst.exe", root, sep, sep, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-    snprintf(cand, sizeof(cand), "%s%cbuild%chst%chst", root, sep, sep, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-
-    /* Candidate 2: manifest-selected build/<game_name>/<game_name>[.exe].
-     * The generic manager plans and builds by game_name, which may be an
-     * explicit manifest value rather than the versioned title id. */
-    if (game_name && *game_name) {
-        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s.exe", root, sep, sep, game_name, sep, game_name);
-        if (nk_platform_file_exists(cand)) {
-            snprintf(out_path, max_len, "%s", cand);
-            return true;
-        }
-        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s", root, sep, sep, game_name, sep, game_name);
-        if (nk_platform_file_exists(cand)) {
-            snprintf(out_path, max_len, "%s", cand);
-            return true;
+    if (!root || !root[0] || !out_path || max_len == 0) return false;
+    sep = nk_platform_path_separator();
+    launch_bind_name_sources(game_name, title_id, names);
+    for (size_t ni = 0; ni < NK_LAUNCH_NAME_SOURCE_COUNT; ni++) {
+        const char *name = names[ni];
+        if (!name || !name[0]) continue;
+        for (int ci = 0; ci < NK_LAUNCH_EXE_CANDIDATE_COUNT; ci++) {
+            int rw = snprintf(rel, sizeof(rel), nk_launch_exe_candidates[ci],
+                              name, name);
+            if (rw <= 0 || (size_t)rw >= sizeof(rel)) continue;
+            for (int k = 0; k < rw; k++) {
+                if (rel[k] == '/') rel[k] = sep;
+            }
+            int w = snprintf(cand, sizeof(cand), "%s%c%s", root, sep, rel);
+            if (w > 0 && (size_t)w < sizeof(cand) &&
+                nk_platform_file_exists(cand)) {
+                if ((size_t)w >= max_len) return false;
+                snprintf(out_path, max_len, "%s", cand);
+                return true;
+            }
         }
     }
-
-    /* Candidate 3: title-id compatibility layout build/<title_id>/<title_id>.exe */
-    if (title_id && *title_id) {
-        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s.exe", root, sep, sep, title_id, sep, title_id);
-        if (nk_platform_file_exists(cand)) {
-            snprintf(out_path, max_len, "%s", cand);
-            return true;
-        }
-        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s", root, sep, sep, title_id, sep, title_id);
-        if (nk_platform_file_exists(cand)) {
-            snprintf(out_path, max_len, "%s", cand);
-            return true;
-        }
-    }
-
-    /* Candidate 4: bin/nakagawa_runtime.exe or bin/nakagawa_runtime */
-    snprintf(cand, sizeof(cand), "%s%cbin%cnakagawa_runtime.exe", root, sep, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-    snprintf(cand, sizeof(cand), "%s%cbin%cnakagawa_runtime", root, sep, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-
-    /* Candidate 5: hst.exe in root */
-    snprintf(cand, sizeof(cand), "%s%chst.exe", root, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-    snprintf(cand, sizeof(cand), "%s%chst", root, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-
     return false;
 }
 
 bool nk_launch_runtime_available(const char *root, const char *title_id) {
     char resolved[NK_MAX_PATH];
     const char *effective_root = (root && *root) ? root : ".";
-    const NkTitleEntry *entry = nk_title_catalog_find_by_id(title_id);
-    const char *game_name = entry ? entry->game_name : NULL;
-    return find_candidate_executable(effective_root, title_id, game_name, resolved, sizeof(resolved));
+    const NkTitleEntry *entry =
+        (title_id && *title_id) ? nk_title_catalog_find_by_id(title_id) : NULL;
+    if (!entry) return false;
+    return find_candidate_executable(effective_root, entry->game_name, entry->id,
+                                     resolved, sizeof(resolved));
 }
 
 NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
@@ -475,29 +587,36 @@ staged_elf_cleanup:
     return result;
 }
 
+/* Resolve the SELECTED TITLE's own runtime image under `working_dir`.
+ *
+ * Order (shared with the Python planner, #366):
+ *   1. the sibling of the resolved executable: <stem><IMAGE_SUFFIX>;
+ *   2. the identity-derived build layouts from the generated contract,
+ *      instantiated with the validated entry's name sources in order.
+ *
+ * There is no sibling-title image probe and no title-specific image
+ * fallback: a selected title without its own image fails closed, because a
+ * session started without --image exits through src/rt/driver.c's usage path.
+ *
+ * Only a dot in the FINAL path component can be an extension:
+ * /opt/nakagawa.d/bin/my-title has a dot but no extension, and a leading
+ * dot (.hidden) names the file rather than separating an extension. */
 static bool find_candidate_image(
     const char *working_dir,
     const char *executable_path,
-    const char *title_id,
     const char *game_name,
+    const char *title_id,
     char *out_path,
     size_t max_len
 ) {
     char cand[NK_MAX_PATH * 2];
+    char rel[NK_MAX_PATH];
     char sep = nk_platform_path_separator();
+    const char *names[NK_LAUNCH_NAME_SOURCE_COUNT];
 
-    /* 1. Alongside executable: <executable without extension>_image.bin
-     *
-     * This used to run only when the name ended in .exe, so a normal
-     * extensionless Linux or macOS binary such as /opt/nakagawa/bin/my-title
-     * never probed /opt/nakagawa/bin/my-title_image.bin. For a non-HST title
-     * the later hard-coded probes miss it too, so the runtime was started with
-     * no --image at all and src/rt/driver.c exited through its
-     * insufficient-arguments path.
-     *
-     * Only a dot in the FINAL path component can be an extension:
-     * /opt/nakagawa.d/bin/my-title has a dot but no extension, and a leading
-     * dot (.hidden) names the file rather than separating an extension. */
+    if (!out_path || max_len == 0) return false;
+
+    /* 1. Alongside executable: <executable without extension><IMAGE_SUFFIX> */
     if (executable_path && *executable_path) {
         snprintf(cand, sizeof(cand), "%s", executable_path);
         char *base = strrchr(cand, '/');
@@ -516,57 +635,38 @@ static bool find_candidate_image(
             suffix_at = cand + strlen(cand);
         }
         size_t used = (size_t)(suffix_at - cand);
-        if (used + sizeof("_image.bin") <= sizeof(cand)) {
-            snprintf(suffix_at, sizeof(cand) - used, "_image.bin");
+        if (used + sizeof(NK_LAUNCH_IMAGE_SUFFIX) <= sizeof(cand)) {
+            snprintf(suffix_at, sizeof(cand) - used, NK_LAUNCH_IMAGE_SUFFIX);
             if (nk_platform_file_exists(cand)) {
-                snprintf(out_path, max_len, "%s", cand);
-                return true;
-            }
-        }
-        /* Or <dir>/hst_image.bin */
-        char dir[NK_MAX_PATH];
-        snprintf(dir, sizeof(dir), "%s", executable_path);
-        char *last_slash = strrchr(dir, '/');
-        if (!last_slash) last_slash = strrchr(dir, '\\');
-        if (last_slash) {
-            *last_slash = '\0';
-            snprintf(cand, sizeof(cand), "%s%chst_image.bin", dir, sep);
-            if (nk_platform_file_exists(cand)) {
+                if (strlen(cand) >= max_len) return false;
                 snprintf(out_path, max_len, "%s", cand);
                 return true;
             }
         }
     }
 
-    /* 2. <working_dir>/build/hst/hst_image.bin */
-    snprintf(cand, sizeof(cand), "%s%cbuild%chst%chst_image.bin", working_dir, sep, sep, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-
-    /* 3. <working_dir>/runtime/hst_image.bin */
-    snprintf(cand, sizeof(cand), "%s%cruntime%chst_image.bin", working_dir, sep, sep);
-    if (nk_platform_file_exists(cand)) {
-        snprintf(out_path, max_len, "%s", cand);
-        return true;
-    }
-
-    /* 4. <working_dir>/build/<game_name>/<game_name>_image.bin */
-    if (game_name && *game_name) {
-        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s_image.bin", working_dir, sep, sep, game_name, sep, game_name);
-        if (nk_platform_file_exists(cand)) {
-            snprintf(out_path, max_len, "%s", cand);
-            return true;
-        }
-    }
-
-    /* 5. <working_dir>/build/<title_id>/<title_id>_image.bin */
-    if (title_id && *title_id) {
-        snprintf(cand, sizeof(cand), "%s%cbuild%c%s%c%s_image.bin", working_dir, sep, sep, title_id, sep, title_id);
-        if (nk_platform_file_exists(cand)) {
-            snprintf(out_path, max_len, "%s", cand);
-            return true;
+    /* 2. Identity-derived build layouts from the shared contract. */
+    if (working_dir && working_dir[0]) {
+        launch_bind_name_sources(game_name, title_id, names);
+        for (size_t ni = 0; ni < NK_LAUNCH_NAME_SOURCE_COUNT; ni++) {
+            const char *name = names[ni];
+            if (!name || !name[0]) continue;
+            for (int ci = 0; ci < NK_LAUNCH_IMAGE_CANDIDATE_COUNT; ci++) {
+                int rw = snprintf(rel, sizeof(rel),
+                                  nk_launch_image_candidates[ci], name, name);
+                if (rw <= 0 || (size_t)rw >= sizeof(rel)) continue;
+                for (int k = 0; k < rw; k++) {
+                    if (rel[k] == '/') rel[k] = sep;
+                }
+                int w = snprintf(cand, sizeof(cand), "%s%c%s", working_dir,
+                                 sep, rel);
+                if (w > 0 && (size_t)w < sizeof(cand) &&
+                    nk_platform_file_exists(cand)) {
+                    if ((size_t)w >= max_len) return false;
+                    snprintf(out_path, max_len, "%s", cand);
+                    return true;
+                }
+            }
         }
     }
 
@@ -582,42 +682,13 @@ NkResult nk_launch_prepare_session(
     memset(session, 0, sizeof(*session));
 
     const char *root = (repo_or_install_root && *repo_or_install_root) ? repo_or_install_root : ".";
+    /* #366: `root` is a directory by contract. A direct file path is not an
+       escape hatch in the generic API: handing the launcher an exact legacy
+       binary path does not make it a validated runtime for this title, and
+       deriving the working directory from a file root only existed to
+       support that path. Assets resolve relative to the root the caller
+       named. */
     snprintf(session->working_directory, sizeof(session->working_directory), "%s", root);
-    if (nk_platform_file_exists(root) && !nk_platform_dir_exists(root)) {
-        /* If root is a file, derive working directory from its parent */
-        char *last_sep = strrchr(session->working_directory, '/');
-        if (!last_sep) last_sep = strrchr(session->working_directory, '\\');
-        if (last_sep) {
-            *last_sep = '\0';
-            /* If the parent is build/<title>, move up to the repository root so
-               assets are found.
-               Only an EXACT "build" component counts. strstr matched any
-               component merely beginning with those five letters, so a directly
-               supplied executable under a path such as /opt/build-tools/runtime
-               truncated the working directory to /opt, and the runtime then
-               resolved its data root, fonts, VFPU tables and filesystem from the
-               wrong place. Scan for the last exact match so the deepest
-               build/<title> layout wins. */
-            char wd_sep = nk_platform_path_separator();
-            char *scan = session->working_directory;
-            char *build_at = NULL;
-            for (;;) {
-                char *hit = strstr(scan, "build");
-                if (!hit) break;
-                char after = hit[5];
-                bool starts_component = (hit == session->working_directory)
-                                     || hit[-1] == '/' || hit[-1] == wd_sep;
-                bool ends_component = (after == '\0') || after == '/' || after == wd_sep;
-                if (starts_component && ends_component) {
-                    build_at = hit;
-                }
-                scan = hit + 5;
-            }
-            if (build_at && build_at > session->working_directory) {
-                build_at[-1] = '\0';
-            }
-        }
-    }
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
     snprintf(session->prepared_root, sizeof(session->prepared_root), "%s", game->prepared_root);
@@ -630,33 +701,55 @@ NkResult nk_launch_prepare_session(
     session->config.diagnostic_mode = false;
     session->config.gui_mode = false;
 
-    /* Resolve the catalog entry before executable discovery so the native
-     * launch route uses the same manifest-selected game_name as the manager. */
-    const NkTitleEntry *entry = nk_title_catalog_find_by_disc_id(session->disc_id);
-    if (!entry) entry = nk_title_catalog_find_by_id(session->title_id);
-    const char *game_name = entry ? entry->game_name : NULL;
+    /* Resolve the ONE validated catalog entry this session identity names,
+       BEFORE executable discovery (#366). The native launch route uses the
+       same manifest-selected game_name as the manager, bound to the same
+       validated identity: disc_id and title_id must agree, and an identity
+       the catalog does not describe fails closed here -- with the historic
+       unknown-title diagnostic -- rather than after probing paths. */
+    char identity_error[256];
+    const NkTitleEntry *entry = launch_select_entry(game, identity_error,
+                                                    sizeof(identity_error));
+    if (!entry) {
+        snprintf(session->last_error, sizeof(session->last_error), "%s",
+                 identity_error);
+        return NK_ERROR_UNSUPPORTED_TITLE;
+    }
+    const char *game_name = entry->game_name;
 
-    /* 1. Resolve executable */
-    if (!find_candidate_executable(root, game->title_id, game_name, session->executable_path, sizeof(session->executable_path))) {
-        snprintf(session->last_error, sizeof(session->last_error), "Runtime binary not found under root: %s", root);
+    /* 1. Resolve executable: the selected title's own build only. Candidates
+       come from the shared generated contract; a stale build of another
+       title in this workspace is irrelevant, and a missing runtime is an
+       honest error rather than a wrong-title rescue. */
+    if (!find_candidate_executable(root, game_name, entry->id,
+                                   session->executable_path,
+                                   sizeof(session->executable_path))) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "Runtime binary not found for title %.64s under root: %.120s",
+                 entry->id, root);
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
-    /* 2. Resolve image.bin */
-    find_candidate_image(session->working_directory, session->executable_path, game->title_id, game_name, session->image_path, sizeof(session->image_path));
-
-    /* 3. Resolve title catalog entry & addresses */
-    /* No catalog entry means no known load address. The previous fallback started
-       the runtime at a hard-coded 0x0029a060 with a zero base -- an address that
-       belongs to no title in this tree, so the guest was loaded at 0 and executed
-       from a constant, which is a fabricated launch rather than a refusal. A title
-       the catalog does not describe is exactly the fail-closed case. */
-    if (!entry || !entry->executable_entry) {
+    /* 2. Resolve the selected title's own image.bin. A session without one is
+       not a launch plan: spawning would only reach src/rt/driver.c's usage
+       exit, so this fails closed exactly like the Python planner. */
+    if (!find_candidate_image(session->working_directory,
+                              session->executable_path, game_name, entry->id,
+                              session->image_path,
+                              sizeof(session->image_path))) {
         snprintf(session->last_error, sizeof(session->last_error),
-                 "No catalog entry describes this title (disc_id=%.16s title_id=%.32s)",
-                 session->disc_id, session->title_id);
-        return NK_ERROR_UNSUPPORTED_TITLE;
+                 "Runtime image not found for title %.64s under root: %.120s",
+                 entry->id, session->working_directory);
+        return NK_ERROR_FILE_NOT_FOUND;
     }
+
+    /* 3. Addresses from the same validated entry that supplied the identity.
+       Catalog membership is the validation: an undescribed title already
+       failed in launch_select_entry (this is where the old hard-coded
+       0x0029a060 fallback fabricated a launch instead). A declared zero
+       base/entry is the manifest's own launch value -- legacy retail titles
+       launch at 0 0 as documented -- not an unknown-address guess, and the
+       Python planner reads the same fields identically. */
     session->base_address = entry->executable_base;
     session->entry_point = entry->executable_entry;
 
@@ -832,6 +925,37 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     if (session->is_running) {
         if (nk_launch_is_running(session)) {
             return NK_ERROR_ALREADY_EXISTS;
+        }
+    }
+
+    /* Identity binding immediately before spawn (#366): the session must
+       still name a catalog-resolved title, and the resolved executable must
+       BE that title's own identity-shaped build. A runtime produced for
+       title A must not launch as title B merely because its path exists, and
+       a session whose executable or identity was swapped after preparation
+       is refused here rather than spawned. */
+    {
+        NkGameEntry identity;
+        char gate_error[256];
+        memset(&identity, 0, sizeof(identity));
+        snprintf(identity.disc_id, sizeof(identity.disc_id), "%s",
+                 session->disc_id);
+        snprintf(identity.title_id, sizeof(identity.title_id), "%s",
+                 session->title_id);
+        const NkTitleEntry *bound_entry = launch_select_entry(
+            &identity, gate_error, sizeof(gate_error));
+        if (!bound_entry) {
+            snprintf(session->last_error, sizeof(session->last_error), "%s",
+                     gate_error);
+            return NK_ERROR_UNSUPPORTED_TITLE;
+        }
+        if (!launch_executable_bound_to_entry(session->executable_path,
+                                              bound_entry)) {
+            snprintf(session->last_error, sizeof(session->last_error),
+                     "Resolved executable does not match the selected title "
+                     "'%.48s': %.140s",
+                     bound_entry->id, session->executable_path);
+            return NK_ERROR_INVALID_EXECUTABLE;
         }
     }
 

@@ -31,10 +31,116 @@ sys.path.insert(0, str(ROOT / "tools"))
 import publication_policy
 import title_manifest
 from nk_core import synthetic_disc_ids
+from nk_core.launcher import (
+    EXE_CANDIDATES,
+    IMAGE_CANDIDATES,
+    IMAGE_SUFFIX,
+    NAME_SOURCES,
+)
 
 # Re-exported from the single home so this module and
 # tools/nk_core/title_registry.py cannot drift apart again.
 SYNTHETIC_DISC_ID_MAP = synthetic_disc_ids.SYNTHETIC_DISC_IDS
+
+
+def _launch_c_pattern(pattern: str) -> str:
+    """Project a planner candidate pattern onto its C printf form.
+
+    The Python planner instantiates ``{name}`` with the selected title's
+    validated identity; the generated C formats the same pattern with ``%s``.
+    Patterns are layout-only, so anything outside portable path characters is
+    refused here rather than emitted into a format string.
+    """
+    if pattern.count("{name}") != 2:
+        raise ValueError(
+            f"launch candidate pattern {pattern!r} must contain exactly two "
+            "{name} placeholders (directory and file stem)"
+        )
+    if re.fullmatch(r"[a-z0-9._/{}-]+", pattern) is None:
+        raise ValueError(
+            f"launch candidate pattern {pattern!r} contains characters that "
+            "are not portable path layout"
+        )
+    return pattern.replace("{name}", "%s")
+
+
+def _launch_contract_header_lines() -> List[str]:
+    """Shared generic launch-resolution contract block for the header (#366).
+
+    Projected from the Python planner's single source of truth
+    (tools/nk_core/launcher.py) so src/core/nk_launch.c and the Python
+    RuntimeLauncher consume one ordered candidate contract instead of two
+    hard-coded lists; ``--verify`` fails closed on drift.
+    """
+    if '"' in IMAGE_SUFFIX or chr(92) in IMAGE_SUFFIX:
+        raise ValueError(f"IMAGE_SUFFIX {IMAGE_SUFFIX!r} is not C-literal safe")
+    # Fail closed on a contract native cannot bind mechanically: a source
+    # that is not a macro-safe identifier could not produce a
+    # NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX macro, and a duplicate would
+    # silently alias two names onto one generated slot.
+    seen_sources = set()
+    for source in NAME_SOURCES:
+        if re.fullmatch(r"[a-z][a-z0-9_]*", source) is None:
+            raise ValueError(
+                f"name source {source!r} must be a lowercase macro-safe "
+                "identifier to emit NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX"
+            )
+        if source in seen_sources:
+            raise ValueError(f"duplicate name source {source!r} in NAME_SOURCES")
+        seen_sources.add(source)
+    return [
+        "",
+        "/* Generic launch-resolution candidate contract (#366).",
+        " *",
+        " * Projected from the Python planner's single source of truth",
+        " * (tools/nk_core/launcher.py: NAME_SOURCES / EXE_CANDIDATES /",
+        " * IMAGE_CANDIDATES / IMAGE_SUFFIX) so src/core/nk_launch.c and the",
+        " * Python RuntimeLauncher consume one ordered candidate contract",
+        " * instead of two hard-coded lists. title_catalog_codegen.py --verify",
+        " * fails closed on drift; tools/test_nk_core.py proves machine parity",
+        " * of the selected title/runtime/image/base/entry outcome.",
+        " *",
+        " * Contract: name sources are consulted in array order (currently",
+        " * manager-selected game_name first, then the title id), and for each",
+        " * name the candidate patterns are probed in array order. Each source",
+        " * also gets a generated NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX macro so",
+        " * src/core/nk_launch.c binds its native name array through generated",
+        " * indices only: a planner-side NAME_SOURCES reorder changes the",
+        " * indices and native follows mechanically, while --verify fails",
+        " * closed on drift. Patterns are instantiated with strings from the",
+        " * validated catalog entry only; no retail title name, disc id, or",
+        " * title-specific path belongs here. */",
+        f"#define NK_LAUNCH_NAME_SOURCE_COUNT {len(NAME_SOURCES)}",
+        *[
+            f"#define NK_LAUNCH_NAME_SOURCE_{source.upper()}_INDEX {index}"
+            for index, source in enumerate(NAME_SOURCES)
+        ],
+        f"#define NK_LAUNCH_EXE_CANDIDATE_COUNT {len(EXE_CANDIDATES)}",
+        f"#define NK_LAUNCH_IMAGE_CANDIDATE_COUNT {len(IMAGE_CANDIDATES)}",
+        f'#define NK_LAUNCH_IMAGE_SUFFIX "{IMAGE_SUFFIX}"',
+        "extern const char *const nk_launch_name_sources[NK_LAUNCH_NAME_SOURCE_COUNT];",
+        "extern const char *const nk_launch_exe_candidates[NK_LAUNCH_EXE_CANDIDATE_COUNT];",
+        "extern const char *const nk_launch_image_candidates[NK_LAUNCH_IMAGE_CANDIDATE_COUNT];",
+        "",
+    ]
+
+
+def _launch_contract_source_lines() -> List[str]:
+    """Definitions for the shared launch-resolution contract arrays (#366)."""
+    return [
+        "/* Generic launch-resolution candidate contract (#366): see the header",
+        " * block; these values are projected from tools/nk_core/launcher.py. */",
+        "const char *const nk_launch_name_sources[NK_LAUNCH_NAME_SOURCE_COUNT] = { "
+        + ", ".join(f'\"{name}\"' for name in NAME_SOURCES)
+        + " };",
+        "const char *const nk_launch_exe_candidates[NK_LAUNCH_EXE_CANDIDATE_COUNT] = { "
+        + ", ".join(f'\"{_launch_c_pattern(p)}\"' for p in EXE_CANDIDATES)
+        + " };",
+        "const char *const nk_launch_image_candidates[NK_LAUNCH_IMAGE_CANDIDATE_COUNT] = { "
+        + ", ".join(f'\"{_launch_c_pattern(p)}\"' for p in IMAGE_CANDIDATES)
+        + " };",
+        "",
+    ]
 
 
 def _c_string_escape(value: str) -> str:
@@ -221,6 +327,7 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "void nk_title_catalog_clear_overlay(void);",
         "const NkTitleEntry *nk_title_catalog_get_overlay(void);",
         "",
+        *_launch_contract_header_lines(),
         "#endif /* NK_TITLE_CATALOG_H */",
         "",
     ]
@@ -440,6 +547,8 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
         "}",
         "",
     ])
+
+    lines += _launch_contract_source_lines()
 
     return "\n".join(lines)
 

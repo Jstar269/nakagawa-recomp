@@ -11,83 +11,194 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+# ---------------------------------------------------------------------------
+# Generic launch-resolution candidate contract (#366) -- the single source of
+# truth for BOTH launch planners.
+#
+# tools/title_catalog_codegen.py projects these constants into
+# src/core/generated/nk_title_catalog.h so src/core/nk_launch.c consumes the
+# same ordered candidate contract (title_catalog_codegen.py --verify fails
+# closed on drift), and tools/test_nk_core.py proves machine parity: native
+# and Python must select the same title/runtime/image/base/entry outcome for
+# identical source-owned fixtures.
+#
+# Candidates are pure layout patterns keyed ONLY by the selected title's
+# validated identity (its registry/catalog game_name and title id). No retail
+# title name, disc id, or title-specific path may appear here: generic
+# resolution has no default title and no wrong-title rescue path. A selected
+# title launches its own validated runtime/package or fails closed.
+# ---------------------------------------------------------------------------
+
+#: Identity sources consulted in order: the manager-selected build name
+#: first, then the versioned title id. Both come from validated title data.
+NAME_SOURCES: Tuple[str, ...] = ("game_name", "title_id")
+
+#: Runtime executable layouts, probed for EACH name source in NAME_SOURCES
+#: order. The Windows spelling is probed before the extensionless one.
+EXE_CANDIDATES: Tuple[str, ...] = (
+    "build/{name}/{name}.exe",
+    "build/{name}/{name}",
+)
+
+#: Runtime image layouts, probed for each name source AFTER the sibling image
+#: of the resolved executable.
+IMAGE_CANDIDATES: Tuple[str, ...] = (
+    "build/{name}/{name}_image.bin",
+)
+
+#: Sibling image name transform: <executable stem> + IMAGE_SUFFIX.
+IMAGE_SUFFIX: str = "_image.bin"
+
+#: Portable build-name shape for every identity-derived path component.
+_BUILD_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
 
 class RuntimeLaunchError(RuntimeError):
     """Raised when runtime parameters or binaries are invalid."""
 
 
 class RuntimeLauncher:
-    """Constructs explicit, fail-closed runtime launch sessions."""
+    """Constructs explicit, fail-closed runtime launch sessions.
 
-    def __init__(self, repo_root: Optional[Path] = None) -> None:
+    Identity rule: title_id/disc_id come only from the validated session
+    manifest and the canonical title registry, and when both are present they
+    must agree on exactly one validated profile. Missing, malformed, or
+    disagreeing identity is an actionable validation error -- there is no
+    default identity and no retail-title fallback of any kind.
+    """
+
+    def __init__(
+        self,
+        repo_root: Optional[Path] = None,
+        registry: Optional[Any] = None,
+    ) -> None:
         self.repo_root = Path(repo_root or Path.cwd()).resolve()
+        # An explicit registry injection keeps private-title routes (and
+        # tests) from mutating the process-wide default registry; the
+        # default remains the canonical public registry.
+        self._registry = registry
+
+    def _get_registry(self) -> Any:
+        if self._registry is not None:
+            return self._registry
+        from .title_registry import get_default_registry
+
+        return get_default_registry()
+
+    def _identity_names(self, title_profile: Any) -> Dict[str, str]:
+        """Identity-derived path components, validated as portable names."""
+        names = {
+            "game_name": title_profile.game_name or "",
+            "title_id": title_profile.id or "",
+        }
+        for source in NAME_SOURCES:
+            name = names.get(source) or ""
+            if name and not _BUILD_NAME_RE.fullmatch(name):
+                raise RuntimeLaunchError(
+                    f"Game name '{name}' is not a portable build identifier."
+                )
+        return names
+
+    def _resolve_identity(self, manifest: Dict[str, Any]) -> Any:
+        """Bind the session manifest to exactly one validated title profile.
+
+        Fail closed rather than guessing: a wrong or missing identity does not
+        produce a readable error, it produces a runtime paired with another
+        title's session data.
+        """
+        title_id = manifest.get("title_id")
+        disc_id = manifest.get("disc_id")
+        for field, value in (("title_id", title_id), ("disc_id", disc_id)):
+            if value is not None and not isinstance(value, str):
+                raise RuntimeLaunchError(
+                    f"Manifest identity field '{field}' must be a string."
+                )
+        title = title_id.strip() if isinstance(title_id, str) else ""
+        disc = disc_id.strip() if isinstance(disc_id, str) else ""
+
+        if not title and not disc:
+            raise RuntimeLaunchError(
+                "Manifest declares no title identity: 'title_id' and/or "
+                "'disc_id' is required. Generic launch resolution derives the "
+                "runtime, image, base and entry only from validated title "
+                "identity and has no default title."
+            )
+
+        registry = self._get_registry()
+        by_disc = registry.lookup_by_disc_id(disc) if disc else None
+        by_title = registry.lookup_by_id(title) if title else None
+
+        if disc and title:
+            if by_disc is not None and by_title is not None:
+                if by_disc.id != by_title.id:
+                    raise RuntimeLaunchError(
+                        f"Session identity disagreement: disc_id '{disc}' "
+                        f"resolves to title '{by_disc.id}' but title_id "
+                        f"'{title}' resolves to title '{by_title.id}'."
+                    )
+                return by_disc
+            if by_disc is not None:
+                raise RuntimeLaunchError(
+                    f"Session identity disagreement: disc_id '{disc}' resolves "
+                    f"to title '{by_disc.id}' but title_id '{title}' is not a "
+                    "validated title."
+                )
+            if by_title is not None:
+                raise RuntimeLaunchError(
+                    f"Session identity disagreement: disc_id '{disc}' is not a "
+                    f"validated disc for title '{by_title.id}' declared by "
+                    f"title_id '{title}'."
+                )
+            raise RuntimeLaunchError(
+                f"No title profile for disc '{disc}' / title '{title}', so the "
+                "runtime base and entry addresses are unknown."
+            )
+        if disc:
+            if by_disc is None:
+                raise RuntimeLaunchError(
+                    f"No title profile for disc '{disc}', so the runtime base "
+                    "and entry addresses are unknown."
+                )
+            return by_disc
+        if by_title is None:
+            raise RuntimeLaunchError(
+                f"No title profile for title '{title}', so the runtime base "
+                "and entry addresses are unknown."
+            )
+        return by_title
+
+    def _exe_candidates(self, names: Dict[str, str]) -> List[Path]:
+        """Executable candidates from the shared contract, identity-keyed."""
+        candidates: List[Path] = []
+        for source in NAME_SOURCES:
+            name = names.get(source) or ""
+            if not name:
+                continue
+            for pattern in EXE_CANDIDATES:
+                candidates.append(self.repo_root / pattern.format(name=name))
+        return candidates
 
     def _resolve_image(
-        self, exe_path: Path, title_id: str, game_name: str
+        self, exe_path: Path, names: Dict[str, str]
     ) -> Optional[Path]:
-        """Locate the runtime image, in the same order as find_candidate_image."""
-        candidates = [
-            exe_path.with_name(exe_path.stem + "_image.bin"),
-            exe_path.parent / "hst_image.bin",
-            self.repo_root / "build" / "hst" / "hst_image.bin",
-            self.repo_root / "runtime" / "hst_image.bin",
-        ]
-        if game_name:
-            candidates.append(
-                self.repo_root / "build" / game_name / f"{game_name}_image.bin"
-            )
-        if title_id:
-            candidates.append(
-                self.repo_root / "build" / title_id / f"{title_id}_image.bin"
-            )
+        """Locate the runtime image, in the same order as nk_launch.c.
+
+        The sibling image of the resolved executable comes first, then the
+        shared build/<name> image layouts. There is no sibling-title or
+        title-specific image fallback: a selected title without its own image
+        fails closed.
+        """
+        candidates = [exe_path.with_name(exe_path.stem + IMAGE_SUFFIX)]
+        for source in NAME_SOURCES:
+            name = names.get(source) or ""
+            if not name:
+                continue
+            for pattern in IMAGE_CANDIDATES:
+                candidates.append(self.repo_root / pattern.format(name=name))
         for cand in candidates:
             if cand.is_file():
                 return cand
         return None
-
-    def _resolve_game_name(
-        self, title_id: str, disc_id: str, manifest: Dict[str, Any]
-    ) -> str:
-        """Resolve the same portable build name used by manager/native launch."""
-        game_name = manifest.get("game_name")
-        if not game_name:
-            from .title_registry import get_default_registry
-
-            registry = get_default_registry()
-            profile = registry.lookup_by_disc_id(disc_id) if disc_id else None
-            if profile is None and title_id:
-                profile = registry.lookup_by_id(title_id)
-            game_name = profile.game_name if profile and profile.game_name else None
-        if not game_name:
-            game_name = re.sub(r"-v\d+$", "", title_id) or title_id
-        if not isinstance(game_name, str) or not re.fullmatch(
-            r"[a-z0-9][a-z0-9._-]{0,63}", game_name
-        ):
-            raise RuntimeLaunchError(
-                f"Game name '{game_name}' is not a portable build identifier."
-            )
-        return game_name
-
-    def _resolve_addresses(self, title_id: str, disc_id: str) -> Tuple[int, int]:
-        """Base and entry for the title, from the canonical registry.
-
-        Fail closed rather than guessing: a wrong entry point does not produce a
-        readable error, it produces a runtime that executes the wrong bytes.
-        """
-        from .title_registry import get_default_registry
-
-        registry = get_default_registry()
-        profile = None
-        if disc_id:
-            profile = registry.lookup_by_disc_id(disc_id)
-        if profile is None and title_id:
-            profile = registry.lookup_by_id(title_id)
-        if profile is None:
-            raise RuntimeLaunchError(
-                f"No title profile for disc '{disc_id}' / title '{title_id}', so the "
-                "runtime base and entry addresses are unknown."
-            )
-        return profile.executable_base, profile.executable_entry
 
     def build_launch_plan(
         self,
@@ -106,23 +217,40 @@ class RuntimeLauncher:
 
         with open(manifest_file, "r", encoding="utf-8") as f:
             manifest = json.load(f)
+        if not isinstance(manifest, dict):
+            raise RuntimeLaunchError(
+                f"Game manifest must be a JSON object: {manifest_file}"
+            )
 
-        title_id = manifest.get("title_id", "hst")
-        disc_id = manifest.get("disc_id", "UCUS98701")
+        # Identity first: title_id/disc_id from the manifest, bound to exactly
+        # one validated registry profile. No default identity exists, so a
+        # malformed or underspecified manifest fails closed here -- before any
+        # path is probed -- instead of inheriting some other title.
+        title_profile = self._resolve_identity(manifest)
+        title_id = title_profile.id
+        names = self._identity_names(title_profile)
+
+        # The session manifest may only restate the validated build name;
+        # a disagreement means the package and the selected title differ.
+        declared_name = manifest.get("game_name")
+        if declared_name not in (None, ""):
+            if declared_name != names["game_name"]:
+                raise RuntimeLaunchError(
+                    f"Session identity disagreement: manifest game_name "
+                    f"'{declared_name}' does not match the validated title "
+                    f"game name '{names['game_name']}' for '{title_id}'."
+                )
+
         iso_path = manifest.get("iso_path", "")
-        game_name = self._resolve_game_name(title_id, disc_id, manifest)
+        if iso_path is None:
+            iso_path = ""
+        if iso_path and not isinstance(iso_path, str):
+            raise RuntimeLaunchError("Manifest field 'iso_path' must be a string.")
 
-        # Resolve binary path. Both the extensioned and extensionless names are
-        # probed: the runtime has no .exe suffix on Linux or macOS.
-        exe_candidates: List[Path] = []
-        for stem in (
-            self.repo_root / "build" / "hst" / "hst",
-            self.repo_root / "build" / game_name / game_name,
-            self.repo_root / "build" / title_id / title_id,
-            self.repo_root / "hst",
-        ):
-            exe_candidates.append(stem.with_name(stem.name + ".exe"))
-            exe_candidates.append(stem)
+        # Resolve binary path from the shared, identity-keyed contract. Both
+        # the extensioned and extensionless names are probed: the runtime has
+        # no .exe suffix on Linux or macOS.
+        exe_candidates = self._exe_candidates(names)
 
         exe_path: Optional[Path] = None
         for cand in exe_candidates:
@@ -131,9 +259,10 @@ class RuntimeLauncher:
                 break
 
         if not exe_path:
+            looked = [str(c) for c in exe_candidates] or ["(no identity-derived candidates)"]
             raise RuntimeLaunchError(
-                f"Runtime binary not found. Looked in: {[str(c) for c in exe_candidates]}. "
-                "Build the runtime executable first."
+                f"Runtime binary not found for title '{title_id}'. "
+                f"Looked in: {looked}. Build the runtime executable first."
             )
 
         # Environment variables configured strictly for this execution session
@@ -168,7 +297,7 @@ class RuntimeLauncher:
         # the executable alone was therefore never runnable, whatever else it
         # resolved correctly. The native launcher in src/core/nk_launch.c
         # builds exactly this argv, and the two must not drift apart.
-        image_path = self._resolve_image(exe_path, title_id, game_name)
+        image_path = self._resolve_image(exe_path, names)
         if image_path is None:
             raise RuntimeLaunchError(
                 f"Runtime image not found for '{title_id}'. Looked beside "
@@ -176,7 +305,11 @@ class RuntimeLauncher:
                 "returning a command that exits on usage would not be a launch plan."
             )
 
-        base, entry = self._resolve_addresses(title_id, disc_id)
+        # Addresses come from the same validated profile that supplied the
+        # identity: a wrong entry point does not produce a readable error, it
+        # produces a runtime that executes the wrong bytes.
+        base = title_profile.executable_base
+        entry = title_profile.executable_entry
 
         cmd = [
             str(exe_path),

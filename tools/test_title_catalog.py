@@ -177,8 +177,13 @@ class TitleCatalogTests(unittest.TestCase):
         cat_c = ROOT / "src" / "core" / "generated" / "nk_title_catalog.c"
 
         # Derived from the manifests, not a literal: adding a public title
-        # should not require editing a number in a test harness.
-        expected_titles = len(sorted((ROOT / "assets" / "titles").glob("*.json")))
+        # should not require editing a number in a test harness.  Ask the same
+        # policy-aware collector the catalog generator uses instead of listing
+        # the directory: assets/titles/ also holds the operator's
+        # publication-excluded retail manifest, which is never catalogued.
+        expected_titles = len(
+            title_catalog_codegen.collect_public_manifests(ROOT / "assets" / "titles")[0]
+        )
 
         test_c_source = f"""#include <stdio.h>
 #include <stdlib.h>

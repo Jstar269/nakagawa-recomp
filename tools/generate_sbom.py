@@ -20,11 +20,286 @@ DATA_LICENSE = "CC0-1.0"
 DOCUMENT_NAME = "nakagawa-recomp-sbom"
 DOCUMENT_NAMESPACE_BASE = "https://spdx.org/spdxdocs/nakagawa-recomp"
 
+# npm package-lock.json schema this tool knows how to inventory. Anything
+# outside the supported set is a hard parse error (issue #375): guessing at an
+# unknown schema silently drops dependencies and manufactures a plausible but
+# incomplete SBOM.
+# lockfileVersion 1 records its inventory in the legacy `dependencies` map only
+# and is explicitly rejected: this tool implements the `packages` representation
+# (lockfileVersion 2/3), never best-effort guesses at an unimplemented schema.
+SUPPORTED_NPM_LOCKFILE_VERSIONS = (2, 3)
+SUPPORTED_NPM_PACKAGES_FORMATS = (2, 3)
 
-def parse_npm_lockfile(lock_path: Path) -> list[dict]:
-    packages: list[dict] = []
-    if not lock_path.is_file():
-        return packages
+
+class LockfileParseError(Exception):
+    """A declared dependency lockfile could not be parsed completely.
+
+    Raised on unreadable files, malformed JSON, unsupported schema/version,
+    missing or invalid required records, and requirement lines that do not
+    conform to the repository's declared lockfile format. Callers must abort
+    rather than treat the failure as "no dependencies" (issue #375).
+    """
+
+
+#: Schema version of the generated lockfile evidence binding.
+LOCKFILE_EVIDENCE_SCHEMA_VERSION = 1
+
+# Canonical repo-relative identities of the declared dependency lockfiles.
+# These are the only identities release evidence may carry: machine-local
+# absolute or temp paths must never reach a published SBOM.
+NPM_LOCKFILE_IDENTITY = "interface/package-lock.json"
+PYTHON_LOCKFILE_IDENTITY = "tools/requirements-lock.txt"
+
+
+class LockfileSnapshot:
+    """One immutable byte snapshot of a lockfile, read exactly once.
+
+    Parsing, checksum computation, and evidence all derive from the same
+    captured bytes, so a lockfile changing between accesses can never make the
+    dependency inventory describe bytes A while recorded evidence describes
+    bytes B (issue #375 revision 3).
+    """
+
+    __slots__ = ("path", "raw", "sha256", "lockfile_identity")
+
+    def __init__(self, path: Path, raw: bytes, lockfile_identity: str | None) -> None:
+        self.path = path
+        self.raw = raw
+        self.sha256 = hashlib.sha256(raw).hexdigest()
+        self.lockfile_identity = lockfile_identity
+
+    @property
+    def size(self) -> int:
+        return len(self.raw)
+
+    @property
+    def text(self) -> str:
+        """UTF-8 decode of the snapshot; raises LockfileParseError on bad bytes."""
+        try:
+            return self.raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise LockfileParseError(
+                f"lockfile is not valid UTF-8: {self.path}: {exc}"
+            ) from exc
+
+
+def _repo_relative_identity(path: Path, repo_root: Path | None) -> str | None:
+    """Canonical repo-relative identity for release evidence, or None.
+
+    Paths outside the repository root have no canonical repo-relative identity
+    and record None rather than leaking a machine-local absolute path.
+    """
+    if repo_root is None:
+        return None
+    try:
+        resolved = path.resolve()
+        root = repo_root.resolve()
+    except OSError:
+        return None
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def snapshot_lockfile(lock_path: Path, kind: str, repo_root: Path | None = None) -> LockfileSnapshot:
+    """Read a lockfile's bytes exactly once and capture its immutable snapshot."""
+    try:
+        if not lock_path.is_file():
+            raise LockfileParseError(f"{kind} lockfile is not an existing regular file: {lock_path}")
+        raw = lock_path.read_bytes()
+    except LockfileParseError:
+        raise
+    except OSError as exc:
+        raise LockfileParseError(f"cannot read {kind} lockfile {lock_path}: {exc}") from exc
+    return LockfileSnapshot(lock_path, raw, _repo_relative_identity(lock_path, repo_root))
+
+
+def _lock_evidence_entry(snap: LockfileSnapshot) -> dict:
+    """Evidence summary for one snapshot; identity is repo-relative or None.
+
+    This is the internal evidence record derived from the byte snapshot (used
+    for reporting and tests); the SBOM itself carries the standards-conformant
+    `files` checksum binding built by build_lock_file_entries().
+    """
+    return {
+        "lockfile": snap.lockfile_identity,
+        "sha256": snap.sha256,
+        "size": snap.size,
+    }
+
+
+def resolve_declared_lockfiles(manifest_data: object, manifest_path: Path) -> tuple[Path, Path, dict]:
+    """Resolve the lockfiles declared by the release manifest, fail closed.
+
+    Release evidence may only be generated from the exact lockfiles the
+    manifest declares. Missing/non-string declarations, declarations that
+    escape the repository root, and declarations pointing outside the repo
+    are all rejected. Returns (npm_lock_path, py_lock_path, lockfiles_map).
+    """
+    if not isinstance(manifest_data, dict):
+        raise LockfileParseError(
+            f"release manifest {manifest_path} must contain a JSON object"
+        )
+    lockfiles = manifest_data.get("lockfiles")
+    if not isinstance(lockfiles, dict):
+        raise LockfileParseError(
+            f"release manifest {manifest_path} has no `lockfiles` object"
+        )
+    repo_root = manifest_path.parent.parent
+    resolved: dict[str, Path] = {}
+    for ecosystem in ("npm", "python"):
+        rel_path = lockfiles.get(ecosystem)
+        if not isinstance(rel_path, str) or not rel_path:
+            raise LockfileParseError(
+                f"release manifest {manifest_path}: {ecosystem} lockfiles entry is "
+                f"missing or not a non-empty string ({rel_path!r})"
+            )
+        declared = (repo_root / rel_path).resolve()
+        try:
+            declared.relative_to(repo_root)
+        except ValueError:
+            raise LockfileParseError(
+                f"release manifest {manifest_path}: {ecosystem} lockfiles entry "
+                f"{rel_path!r} escapes the repository root"
+            ) from None
+        if not declared.is_file():
+            raise LockfileParseError(
+                f"release manifest {manifest_path}: declared {ecosystem} lockfile "
+                f"{rel_path!r} is missing ({declared})"
+            )
+        resolved[ecosystem] = declared
+    return resolved["npm"], resolved["python"], lockfiles
+
+
+def parse_lockfiles(npm_lock_path: Path, py_lock_path: Path,
+                    repo_root: Path | None = None) -> dict:
+    """Parse both lockfiles from single snapshots and derive all binding data.
+
+    Returns the dependency inventories, the lock evidence, and the
+    standards-conformant SPDX 2.3 `files` entries plus
+    `DEPENDENCY_MANIFEST_OF` relationships for the two lockfiles. Parsing and
+    evidence share one byte snapshot per lockfile, closing the read-before /
+    read-after TOCTOU gap (issue #375 revision 3).
+    """
+    npm_snap = snapshot_lockfile(npm_lock_path, "npm", repo_root)
+    py_snap = snapshot_lockfile(py_lock_path, "Python", repo_root)
+    npm_packages = _parse_npm_lock_text(npm_snap, npm_lock_path)
+    py_packages = _parse_python_lock_text(py_snap, py_lock_path)
+    lock_files = build_lock_file_entries(npm_snap, py_snap)
+    lock_relationships = build_lock_relationship_entries(lock_files)
+    return {
+        "npm_packages": npm_packages,
+        "py_packages": py_packages,
+        "lock_evidence": {
+            "schema_version": LOCKFILE_EVIDENCE_SCHEMA_VERSION,
+            "npm": _lock_evidence_entry(npm_snap),
+            "python": _lock_evidence_entry(py_snap),
+        },
+        "lock_files": lock_files,
+        "lock_relationships": lock_relationships,
+    }
+
+
+def build_lock_file_entries(npm_snap: LockfileSnapshot,
+                            py_snap: LockfileSnapshot) -> list[dict]:
+    """SPDX 2.3 `files` entries for the declared dependency lockfiles.
+
+    Standards-conformant lock binding: each lockfile is a normal SPDX file with
+    a stable repo-relative fileName and a SHA256 checksum over the exact lock
+    bytes, instead of a custom non-schema document property.
+    """
+    entries: list[dict] = []
+    for snap, spdx_id in (
+        (npm_snap, "SPDXRef-File-npm-package-lock"),
+        (py_snap, "SPDXRef-File-python-requirements-lock"),
+    ):
+        if snap.lockfile_identity is None:
+            raise LockfileParseError(
+                f"lockfile {snap.path} is outside the repository root; release evidence "
+                "requires the canonical repo-relative lockfile identity "
+                f"({NPM_LOCKFILE_IDENTITY} / {PYTHON_LOCKFILE_IDENTITY})"
+            )
+        entries.append({
+            "SPDXID": spdx_id,
+            "fileName": snap.lockfile_identity,
+            "checksums": [{"algorithm": "SHA256", "checksumValue": snap.sha256}],
+            "copyrightText": "NOASSERTION",
+            "licenseConcluded": "NOASSERTION",
+            "licenseInfoInFiles": ["NOASSERTION"],
+            "comment": (
+                "Declared dependency lockfile; binding evidence for the generated "
+                "dependency inventory (sha256 over the exact lockfile bytes)."
+            ),
+        })
+    return entries
+
+
+def build_lock_relationship_entries(lock_files: list[dict]) -> list[dict]:
+    """Relate each lockfile to the root package (manifest -> package)."""
+    root_pkg_id = "SPDXRef-Package-nakagawa-recomp"
+    return [
+        {
+            "spdxElementId": entry["SPDXID"],
+            "relationshipType": "DEPENDENCY_MANIFEST_OF",
+            "relatedSpdxElement": root_pkg_id,
+            "comment": "Declared dependency lockfile binding evidence.",
+        }
+        for entry in lock_files
+    ]
+
+
+def _parse_npm_lock_text(snap: LockfileSnapshot, lock_path: Path) -> list[dict]:
+    """Parse the snapshotted npm package-lock text into package records.
+
+    Fails closed (raises LockfileParseError) on malformed JSON, an unsupported
+    lockfile shape/version, or any package record that is missing required
+    metadata. A lockfile whose `packages` map is genuinely empty is valid and
+    yields an empty inventory.
+    """
+    text = snap.text
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} is not valid JSON (line {exc.lineno}, column {exc.colno}): {exc.msg}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} must contain a JSON object, got {type(data).__name__}"
+        )
+
+    raw_version = data.get("lockfileVersion")
+    if not isinstance(raw_version, int) or isinstance(raw_version, bool):
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} has missing or invalid lockfileVersion {raw_version!r}; "
+            f"supported versions: {', '.join(str(v) for v in SUPPORTED_NPM_LOCKFILE_VERSIONS)}"
+        )
+    if raw_version not in SUPPORTED_NPM_LOCKFILE_VERSIONS:
+        hint = ""
+        if raw_version == 1:
+            hint = (
+                " lockfileVersion 1 records its inventory in the legacy `dependencies` map, "
+                "which this tool does not implement; regenerate with a current npm version"
+            )
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} uses unsupported lockfileVersion {raw_version}; "
+            f"supported versions: {', '.join(str(v) for v in SUPPORTED_NPM_LOCKFILE_VERSIONS)}.{hint}"
+        )
+
+    raw_packages = data.get("packages")
+    if raw_packages is None:
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} (lockfileVersion {raw_version}) has no `packages` map; "
+            "this tool requires a lockfile that records dependencies under `packages` "
+            f"(lockfileVersions {', '.join(str(v) for v in SUPPORTED_NPM_PACKAGES_FORMATS)}); "
+            "regenerate with a current npm version"
+        )
+    if not isinstance(raw_packages, dict):
+        raise LockfileParseError(
+            f"npm lockfile {lock_path} has a non-object `packages` member "
+            f"({type(raw_packages).__name__})"
+        )
 
     # A package can be installed at multiple lockfile paths (e.g. a nested
     # node_modules copy with the same name+version). SPDX element IDs must be
@@ -39,67 +314,124 @@ def parse_npm_lockfile(lock_path: Path) -> list[dict]:
         suffix = hashlib.sha256(pkg_path.encode("utf-8")).hexdigest()[:10]
         return f"{base}-{suffix}"
 
-    try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
-        raw_packages = data.get("packages", {})
-        if isinstance(raw_packages, dict):
-            for pkg_path, meta in sorted(raw_packages.items()):
-                if not pkg_path or not isinstance(meta, dict):
-                    continue
-                name = meta.get("name") or pkg_path.split("node_modules/")[-1]
-                version = meta.get("version", "0.0.0")
-                license_exp = meta.get("license", "NOASSERTION")
-                integrity = meta.get("integrity", "")
-                resolved = meta.get("resolved", "")
-                spdx_id = unique_spdx_id(
-                    f"SPDXRef-npm-{name.replace('/', '-')}-{version}", pkg_path
-                )
-                packages.append({
-                    "name": name,
-                    "version": version,
-                    "spdx_id": spdx_id,
-                    "license": license_exp,
-                    "integrity": integrity,
-                    "resolved": resolved,
-                    "purl": f"pkg:npm/{name}@{version}",
-                    "ecosystem": "npm",
-                })
-    except Exception:
-        pass
+    packages: list[dict] = []
+    for pkg_path, meta in sorted(raw_packages.items()):
+        if not isinstance(pkg_path, str):
+            raise LockfileParseError(
+                f"npm lockfile {lock_path} has an invalid `packages` key {pkg_path!r}; "
+                "keys must be install-path strings"
+            )
+        if not pkg_path:
+            # The root entry ("" in npm's packages map) is the project itself,
+            # which generate_spdx23 already emits from the release manifest; it
+            # is not a lockfile dependency and needs no name/version.
+            continue
+        if not isinstance(meta, dict):
+            raise LockfileParseError(
+                f"npm lockfile {lock_path}: package record {pkg_path!r} must be an object, "
+                f"got {type(meta).__name__}"
+            )
+        name = meta.get("name")
+        if name is None:
+            name = pkg_path.split("node_modules/")[-1]
+        if not isinstance(name, str) or not name:
+            raise LockfileParseError(
+                f"npm lockfile {lock_path}: package record {pkg_path!r} has invalid name {name!r}"
+            )
+        version = meta.get("version")
+        if not isinstance(version, str) or not version:
+            raise LockfileParseError(
+                f"npm lockfile {lock_path}: package record {pkg_path!r} ({name}) is missing "
+                "required version metadata"
+            )
+        license_exp = meta.get("license", "NOASSERTION")
+        integrity = meta.get("integrity", "")
+        resolved = meta.get("resolved", "")
+        spdx_id = unique_spdx_id(
+            f"SPDXRef-npm-{name.replace('/', '-')}-{version}", pkg_path
+        )
+        packages.append({
+            "name": name,
+            "version": version,
+            "spdx_id": spdx_id,
+            "license": license_exp,
+            "integrity": integrity,
+            "resolved": resolved,
+            "purl": f"pkg:npm/{name}@{version}",
+            "ecosystem": "npm",
+        })
 
     return packages
+
+
+def parse_npm_lockfile(lock_path: Path) -> list[dict]:
+    """Parse an npm package-lock.json path from a single byte snapshot."""
+    snap = snapshot_lockfile(lock_path, "npm")
+    return _parse_npm_lock_text(snap, lock_path)
 
 
 def parse_python_lockfile(lock_path: Path) -> list[dict]:
-    packages: list[dict] = []
-    if not lock_path.is_file():
-        return packages
+    """Parse the pinned Python requirements path from a single byte snapshot."""
+    snap = snapshot_lockfile(lock_path, "Python")
+    return _parse_python_lock_text(snap, lock_path)
 
-    try:
-        text = lock_path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            match = re.match(r"^([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)(?:\s+--hash=sha256:([0-9a-fA-F]{64}))?", line)
-            if match:
-                name, version, sha256_hash = match.groups()
-                packages.append({
-                    "name": name,
-                    "version": version,
-                    "spdx_id": f"SPDXRef-pip-{name}-{version}",
-                    "license": "NOASSERTION",
-                    "sha256": sha256_hash or "",
-                    "purl": f"pkg:pypi/{name}@{version}",
-                    "ecosystem": "pypi",
-                })
-    except Exception:
-        pass
+
+def _parse_python_lock_text(snap: LockfileSnapshot, lock_path: Path) -> list[dict]:
+    """Parse the snapshotted Python requirements text into package records.
+
+    The repository's declared format is one `name==version` pin per nonblank,
+    non-comment line, with an optional single `--hash=sha256:<64 hex>` digest.
+    Every other nonblank/non-comment line is a parse error (issue #375): the
+    previous best-effort loop silently skipped requirement lines it could not
+    parse, dropping them from the release inventory. A file whose only
+    non-comment content is blank or comments is a valid empty lockfile and
+    yields an empty inventory.
+    """
+    text = snap.text
+
+    packages: list[dict] = []
+    seen_pypi: set[tuple[str, str]] = set()
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(
+            r"^([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)"
+            r"(?:\s+--hash=sha256:([0-9a-fA-F]{64}))?$",
+            line,
+        )
+        if not match:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: requirement does not match the "
+                "declared pinned format 'name==version[ --hash=sha256:<64 hex>]': "
+                f"{line!r}"
+            )
+        name, version, sha256_hash = match.groups()
+        if (name, version) in seen_pypi:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: duplicate requirement pin "
+                f"{name}=={version}"
+            )
+        seen_pypi.add((name, version))
+        packages.append({
+            "name": name,
+            "version": version,
+            "spdx_id": f"SPDXRef-pip-{name}-{version}",
+            "license": "NOASSERTION",
+            "sha256": sha256_hash or "",
+            "purl": f"pkg:pypi/{name}@{version}",
+            "ecosystem": "pypi",
+        })
 
     return packages
 
 
-def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict]) -> dict:
+def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict],
+                    lock_files: list[dict] | None = None,
+                    lock_relationships: list[dict] | None = None) -> dict:
+    """Build the SPDX 2.3 document; optionally embed standards-conformant
+    lockfile evidence (files entries + DEPENDENCY_MANIFEST_OF relationships).
+    """
     doc_id = "SPDXRef-DOCUMENT"
     root_pkg_id = "SPDXRef-Package-nakagawa-recomp"
 
@@ -221,7 +553,7 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
             "relatedSpdxElement": pkg["spdx_id"],
         })
 
-    return {
+    document: dict = {
         "spdxVersion": SPDX_VERSION,
         "dataLicense": DATA_LICENSE,
         "SPDXID": doc_id,
@@ -234,6 +566,14 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
         "packages": packages,
         "relationships": relationships,
     }
+    if lock_files is not None:
+        # Standards-conformant lock binding: schema-defined `files` entries and
+        # DEPENDENCY_MANIFEST_OF relationships instead of a custom root property
+        # (the SPDX 2.3 schema sets top-level additionalProperties: false).
+        document["files"] = list(lock_files)
+    if lock_relationships is not None:
+        document["relationships"].extend(lock_relationships)
+    return document
 
 
 def generate_spdx301(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict]) -> dict:
@@ -369,10 +709,43 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest_data = json.loads(args.manifest.read_text(encoding="utf-8"))
-    npm_packages = parse_npm_lockfile(args.npm_lock)
-    py_packages = parse_python_lockfile(args.py_lock)
+    # The repository root is the parent of the manifest's assets directory;
+    # lockfile identities in release evidence derive from the manifest, not
+    # from a hardcoded path (issue #375 revision 4).
+    manifest_repo_root = args.manifest.parent.parent
+    try:
+        # Release generation may only use the exact lockfiles declared by the
+        # release manifest; the SPDX fileNames derive from those declarations,
+        # never from an arbitrary CLI path (issue #375 revision 4).
+        declared_npm_lock, declared_py_lock, _lockfiles_map = resolve_declared_lockfiles(
+            manifest_data, args.manifest
+        )
+        for supplied, declared, label in (
+            (args.npm_lock, declared_npm_lock, "npm"),
+            (args.py_lock, declared_py_lock, "Python"),
+        ):
+            if supplied.resolve() != declared:
+                raise LockfileParseError(
+                    f"{label} lockfile {supplied} is not the lockfile declared by the "
+                    f"release manifest ({declared}); release evidence may only be "
+                    "generated from the manifest-declared dependency lockfiles"
+                )
+        parsed = parse_lockfiles(declared_npm_lock, declared_py_lock,
+                                 repo_root=manifest_repo_root)
+    except LockfileParseError as exc:
+        # Fail closed: never emit a partial/empty-inventory SBOM because a
+        # declared lockfile could not be parsed completely (issue #375).
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
-    spdx23_doc = generate_spdx23(manifest_data, npm_packages, py_packages)
+    npm_packages = parsed["npm_packages"]
+    py_packages = parsed["py_packages"]
+
+    spdx23_doc = generate_spdx23(
+        manifest_data, npm_packages, py_packages,
+        lock_files=parsed["lock_files"],
+        lock_relationships=parsed["lock_relationships"],
+    )
     spdx301_doc = generate_spdx301(manifest_data, npm_packages, py_packages)
     cyclonedx_doc = generate_cyclonedx(manifest_data, npm_packages, py_packages)
 
@@ -380,6 +753,8 @@ def main(argv: list[str] | None = None) -> int:
         args.spdx_out.parent.mkdir(parents=True, exist_ok=True)
         args.spdx_out.write_text(json.dumps(spdx23_doc, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"Wrote SPDX 2.3 SBOM to {args.spdx_out}")
+        print(f"Bound to lockfile evidence: npm {parsed['lock_evidence']['npm']['sha256'][:16]}... / "
+              f"python {parsed['lock_evidence']['python']['sha256'][:16]}...")
 
     if args.spdx3_out:
         args.spdx3_out.parent.mkdir(parents=True, exist_ok=True)

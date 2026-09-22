@@ -1,0 +1,920 @@
+{
+  "campaign_version": "psp-threading-v1",
+  "schema": 1,
+  "description": "Source-owned PSP threading oracle: CreateThread and StartThread hardware measurement matrix. Frozen design from docs/research/PSP_THREADING_SEMANTICS.md, HARDWARE_NOT_RUN until explicit authorized execution.",
+  "launch_plan": {
+    "gating": {
+      "launches": 5,
+      "unique_cases": 28,
+      "controls": 6,
+      "discriminators": 22,
+      "records_per_launch": [
+        8,
+        8,
+        3,
+        6,
+        3
+      ],
+      "repeat": {
+        "records": 56,
+        "launches": 10
+      }
+    },
+    "full": {
+      "unique_cases": 59,
+      "records": 71,
+      "launches": 13,
+      "lower_risk": 49,
+      "deferred": 3,
+      "higher_risk": 7
+    }
+  },
+  "cases": [
+    {
+      "case_id": "CT-A01",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-a01",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": null
+      },
+      "control_group": "attr_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "thread_status",
+        "effective_attr"
+      ],
+      "expected_classification": "CONTROL_EXPECTED",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-A03",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-a03",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 16384,
+        "attr_name": "VFPU",
+        "opt": null
+      },
+      "control_group": "attr_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "thread_status",
+        "effective_attr"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-A04",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-a04",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 2147483648,
+        "attr_name": "USER",
+        "opt": null
+      },
+      "control_group": "attr_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "thread_status",
+        "effective_attr"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-A05",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-a05",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 2684354560,
+        "attr_name": "USBWLAN",
+        "opt": null
+      },
+      "control_group": "attr_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "thread_status",
+        "effective_attr"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-A07",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-a07",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 3221225472,
+        "attr_name": "VSH",
+        "opt": null
+      },
+      "control_group": "attr_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "thread_status",
+        "effective_attr"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-A11",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-a11",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 32768,
+        "attr_name": "SCRATCH_SRAM",
+        "opt": null
+      },
+      "control_group": "attr_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "thread_status",
+        "effective_attr"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-A12",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-a12",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 1048576,
+        "attr_name": "NO_FILLSTACK",
+        "opt": null
+      },
+      "control_group": "attr_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "stack_probe_canary",
+        "stack_probe_window"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-D00",
+      "operation": "sceKernelReferThreadStatus",
+      "inputs": {
+        "thid": 0,
+        "probe": "stack_orientation_via_refer"
+      },
+      "control_group": "orientation_control",
+      "measurement_fields": [
+        "return_code",
+        "stack_reported",
+        "stack_orientation"
+      ],
+      "expected_classification": "CONTROL_EXPECTED",
+      "note": "thid 0 selector is preliminary control assumption; verify or use explicit current UID",
+      "launch": "L1",
+      "phase": "CT-ATTR",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3",
+        "out4",
+        "out5",
+        "out6",
+        "out7"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-B01",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-b01",
+        "entry": "safe_entry",
+        "priority": 8,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": null
+      },
+      "control_group": "priority_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-B02",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-b02",
+        "entry": "safe_entry",
+        "priority": 120,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": null
+      },
+      "control_group": "priority_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-B05",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-b05",
+        "entry": "safe_entry",
+        "priority": 16,
+        "stack_size": 512,
+        "attr": 0,
+        "opt": null
+      },
+      "control_group": "stack_size_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "stack_size_effective"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-B06",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-b06",
+        "entry": "safe_entry",
+        "priority": 16,
+        "stack_size": 262144,
+        "attr": 0,
+        "opt": null
+      },
+      "control_group": "stack_size_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-C01",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-c01",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": null,
+        "opt_ptr": "NULL"
+      },
+      "control_group": "option_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid"
+      ],
+      "expected_classification": "CONTROL_EXPECTED",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-C02",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-c02",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": {
+          "size": 4,
+          "stackMpid": 0
+        }
+      },
+      "control_group": "option_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-C03",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-c03",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": {
+          "size": 8,
+          "stackMpid": 2,
+          "stackMpid_name": "USER"
+        }
+      },
+      "control_group": "option_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "stackMpid_effective"
+      ],
+      "expected_classification": "HYPOTHESIS",
+      "note": "Primary partition-ID hypothesis (2 = USER)",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-C04",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-c04",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": {
+          "size": 8,
+          "stackMpid": 7,
+          "stackMpid_name": "invalid_7"
+        }
+      },
+      "control_group": "option_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SA01",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "new_dormant",
+        "argSize": 0,
+        "argp": null,
+        "argp_kind": "NULL"
+      },
+      "control_group": "arg_control",
+      "measurement_fields": [
+        "return_code",
+        "child_a0",
+        "child_a1",
+        "child_sp",
+        "child_gp",
+        "child_ra"
+      ],
+      "expected_classification": "CONTROL_EXPECTED",
+      "launch": "L3",
+      "phase": "ST-ARGS",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3",
+        "out4",
+        "out5"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SA02",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "new_dormant",
+        "argSize": 16,
+        "argp": "synthetic_pattern_16",
+        "pattern": "0x11,0x22,0x33,0x44 repeating"
+      },
+      "control_group": "arg_control",
+      "measurement_fields": [
+        "return_code",
+        "child_a0",
+        "child_a1",
+        "child_sp",
+        "child_arg_copy_checksum",
+        "a1_inside_stack",
+        "a1_minus_sp"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L3",
+      "phase": "ST-ARGS",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3",
+        "out4",
+        "out5",
+        "out6",
+        "out7",
+        "out8"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SA03",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "new_dormant",
+        "argSize": 64,
+        "argp": "synthetic_pattern_64",
+        "pattern": "incrementing 0x00..0x3F"
+      },
+      "control_group": "arg_control",
+      "measurement_fields": [
+        "return_code",
+        "child_a0",
+        "child_a1",
+        "child_sp",
+        "child_arg_copy_checksum",
+        "a1_inside_stack",
+        "a1_minus_sp",
+        "source_checksum",
+        "source_ptr"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L3",
+      "phase": "ST-ARGS",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2",
+        "out3",
+        "out4",
+        "out5",
+        "out6",
+        "out7",
+        "out8"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SL01",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "dormant",
+        "argSize": 0,
+        "argp": null
+      },
+      "control_group": "lifecycle_control",
+      "measurement_fields": [
+        "return_code",
+        "child_entry_count"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L4",
+      "phase": "ST-LIFE+RET",
+      "required_out_fields": [
+        "out0"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SL02",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "active",
+        "argSize": 0,
+        "argp": null
+      },
+      "control_group": "lifecycle_control",
+      "measurement_fields": [
+        "return_code",
+        "error_code"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L4",
+      "phase": "ST-LIFE+RET",
+      "required_out_fields": [
+        "out0"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SL04",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "exited",
+        "argSize": 0,
+        "argp": null
+      },
+      "control_group": "lifecycle_control",
+      "measurement_fields": [
+        "return_code",
+        "child_entry_count_after_restart"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L4",
+      "phase": "ST-LIFE+RET",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SR01",
+      "operation": "thread_return",
+      "inputs": {
+        "return_value": 119,
+        "return_hex": "0x77",
+        "exit_method": "return"
+      },
+      "control_group": "return_control",
+      "measurement_fields": [
+        "return_code",
+        "wait_return",
+        "exit_status"
+      ],
+      "expected_classification": "CONTROL_EXPECTED",
+      "launch": "L4",
+      "phase": "ST-LIFE+RET",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SR02",
+      "operation": "thread_return",
+      "inputs": {
+        "return_value": 2147617964,
+        "return_hex": "0x800201ac",
+        "exit_method": "return"
+      },
+      "control_group": "return_control",
+      "measurement_fields": [
+        "return_code",
+        "wait_return",
+        "exit_status_normalized"
+      ],
+      "expected_classification": "CONTROL_EXPECTED",
+      "launch": "L4",
+      "phase": "ST-LIFE+RET",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SR03",
+      "operation": "thread_return",
+      "inputs": {
+        "return_value": 2147483648,
+        "return_hex": "0x80000000",
+        "exit_method": "return",
+        "note": "planned threshold ST-SR03"
+      },
+      "control_group": "return_control",
+      "measurement_fields": [
+        "return_code",
+        "wait_return",
+        "exit_status_normalized"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L4",
+      "phase": "ST-LIFE+RET",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SP01",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "new_dormant",
+        "child_priority": 16,
+        "controller_priority": 32,
+        "argSize": 0,
+        "phase_probe": "PHASE before/after"
+      },
+      "control_group": "sched_control",
+      "measurement_fields": [
+        "return_code",
+        "phase_snapshot",
+        "entry_count",
+        "scheduling_order"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L5",
+      "phase": "ST-SCHED",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SP02",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "new_dormant",
+        "child_priority": 32,
+        "controller_priority": 32,
+        "argSize": 0,
+        "phase_probe": "PHASE before/after"
+      },
+      "control_group": "sched_control",
+      "measurement_fields": [
+        "return_code",
+        "phase_snapshot",
+        "entry_count"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L5",
+      "phase": "ST-SCHED",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "ST-SP03",
+      "operation": "sceKernelStartThread",
+      "inputs": {
+        "thread": "new_dormant",
+        "child_priority": 48,
+        "controller_priority": 32,
+        "argSize": 0,
+        "phase_probe": "PHASE before/after"
+      },
+      "control_group": "sched_control",
+      "measurement_fields": [
+        "return_code",
+        "phase_snapshot",
+        "entry_count"
+      ],
+      "expected_classification": "HARDWARE_TO_MEASURE",
+      "launch": "L5",
+      "phase": "ST-SCHED",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2"
+      ],
+      "optional_out_fields": [],
+      "status_semantics": "MEASURED"
+    },
+    {
+      "case_id": "CT-C05",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-c05",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": {
+          "size": 8,
+          "stackMpid": 1,
+          "stackMpid_name": "KERNEL"
+        }
+      },
+      "control_group": "option_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "stackMpid_effective"
+      ],
+      "expected_classification": "FULL_ONLY_HYPOTHESIS",
+      "note": "Kernel partition discriminator (1 = KERNEL), full campaign only, not gating minimum per frozen research",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1"
+      ],
+      "optional_out_fields": []
+    },
+    {
+      "case_id": "CT-C06",
+      "operation": "sceKernelCreateThread",
+      "inputs": {
+        "name": "oracle-ct-c06",
+        "entry": "safe_entry",
+        "priority": 32,
+        "stack_size": 4096,
+        "attr": 0,
+        "opt": {
+          "size": 8,
+          "stackMpid": "block_uid",
+          "stackMpid_name": "genuine_block_UID"
+        }
+      },
+      "control_group": "option_control",
+      "measurement_fields": [
+        "return_code",
+        "thread_uid",
+        "stackMpid_effective",
+        "block_alloc_result"
+      ],
+      "expected_classification": "FULL_ONLY_HYPOTHESIS",
+      "note": "Competing PSPSDK block-UID hypothesis: allocate partition 2 block, use returned UID, clean up, record allocation failure accurately; not collapsed with partition-ID",
+      "launch": "L2",
+      "phase": "CT-PRIO+OPT",
+      "required_out_fields": [
+        "out0",
+        "out1",
+        "out2"
+      ],
+      "optional_out_fields": []
+    }
+  ],
+  "status_semantics": {
+    "PASS": "MEASURED: experiment completed structurally and all required measurement fields were captured; raw API return code remains in result, an API error can still be PASS if measuring that outcome",
+    "FAIL": "ERROR: harness itself could not produce valid measurement (allocation failure, thread creation failure before measurement, etc.)",
+    "SKIP": "NOT_MEASURABLE_WITH_CURRENT_HARNESS: measurement not possible with current harness bounds, recorded explicitly",
+    "unknown_preserved": true,
+    "note": "Unknown PSP semantics are never encoded as expected PASS/FAIL; they are preserved as raw data"
+  },
+  "evidence_model": {
+    "parsed_capture_default": "UNVERIFIED_CAPTURE",
+    "synthetic": "SYNTHETIC_TEST_ONLY",
+    "hardware": "HARDWARE_MEASURED via explicit out-of-band HardwareCaptureContext binding raw_capture_sha256 etc., never self-asserted from stream metadata"
+  },
+  "strict_schema": {
+    "unknown_field_policy": "REJECT: arbitrary unknown hex fields silently swallowing misspellings are rejected; only future.<name> namespace allowed if explicitly whitelisted, otherwise fail-closed",
+    "version": 1
+  },
+  "run_identity": {
+    "required": [
+      "run_id",
+      "attempt",
+      "case_id"
+    ],
+    "validation": "run_id hex syntactic, attempt hex sane 0..N, duplicate run/case/attempt impossible, case belongs to expected launch group, divergent observations preserved"
+  }
+}

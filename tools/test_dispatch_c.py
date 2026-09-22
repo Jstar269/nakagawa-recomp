@@ -40,6 +40,63 @@ def _strip_comments(src: str) -> str:
 DISPATCH_H_CODE = _strip_comments(DISPATCH_H)
 
 
+def _has_retired_target_swallow(source: str) -> bool:
+    """Detect the representative broad predicate mutation from Issue #362."""
+    code = _strip_comments(source)
+    return bool(re.search(
+        r"target\s*&\s*0xff000000u?\s*\)\s*==\s*0x(?:33|44|55|88)000000u?",
+        code,
+    ))
+
+
+def _exact_hook_helpers(code: str) -> list[str]:
+    """Function identifiers referenced by the live g_exact_hooks[] table entries."""
+    m = re.search(r"static const DispatchHook g_exact_hooks\[\] = \{(.*?)\n\};", code, re.S)
+    if not m:
+        return []
+    return re.findall(r'"[^"]*"\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}', m.group(1))
+
+
+def _c_function_body(code: str, name: str) -> str | None:
+    """Comment-stripped body of `static int <name>(...) { ... }`, or None."""
+    m = re.search(r"static\s+int\s+" + re.escape(name) + r"\s*\([^)]*\)\s*\{", code)
+    if not m:
+        return None
+    depth = 0
+    for i in range(m.end() - 1, len(code)):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[m.end():i]
+    return None
+
+
+def _diagnostic_hook_violations(code: str) -> list[str]:
+    """Structural contract violations for surviving g_exact_hooks[] helpers (#362).
+
+    A surviving exact-hook helper must be diagnostic/read-only: it may log, but
+    it must not look the target up itself (self-delegation either double-runs a
+    registered body or pre-empts the authoritative lookup) and must not return 0,
+    because hook return 0 is CONSUMED -- apparent success without the ordinary
+    dispatch path, which is exactly the pre-revision HFILL/FMT defect.
+    """
+    violations: list[str] = []
+    for fn in _exact_hook_helpers(code):
+        body = _c_function_body(code, fn)
+        if body is None:
+            violations.append(f"{fn}: definition not found")
+            continue
+        if "sr_lookup" in body:
+            violations.append(f"{fn}: self-delegates through sr_lookup")
+        if re.search(r"return\s+0\s*;", body):
+            violations.append(f"{fn}: consumes the dispatch (return 0)")
+        if not re.search(r"return\s+1\s*;", body):
+            violations.append(f"{fn}: does not fall through (missing return 1)")
+    return violations
+
+
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestDispatchSelftestC(unittest.TestCase):
     @classmethod
@@ -91,18 +148,87 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertRegex(DISPATCH_H_CODE, r"pair\s*!=\s*0u")         # empty test is bias-based
         self.assertNotRegex(DISPATCH_H_CODE, r"addr\s*!=\s*0")       # the old L1 guard is gone
 
-    def test_null_call_policy_is_a_runtime_hook_not_a_table_rule(self):
-        # STRUCTURAL TRIPWIRE, not a behavioral oracle. The current-HST null-call policy is
-        # the NULL_CALL_B exact hook in dispatch() (before lookup); the table itself stays
-        # policy-free. dispatch() must call the plain sr_lookup(target), never a table-level
-        # "resolve computed" rule -- encoding "computed 0 => NULL" into the generic table
-        # would be an invalid general invariant (#45: an address-taken offset-0 pointer is
-        # indistinguishable from NULL without image identity).
-        self.assertIn("NULL_CALL_B", RECOMP_C)
-        self.assertRegex(RECOMP_C, r"0x00000000u,\s*0xFFFFFFFFu,\s*\"NULL_CALL_B\"")
-        self.assertIn("RecompFn fn = sr_lookup(target);", RECOMP_C)
+    def test_unconfigured_target_patterns_are_not_dispatch_hooks(self):
+        # Issue #362: historical HST target shapes must reach ordinary lookup/interpreter
+        # disposition. A generic build may not swallow null, data-looking, resource-handle,
+        # unresolved-PLT or module-table values as successful returns.
+        recomp_code = _strip_comments(RECOMP_C)
+        exact = re.search(r"static const DispatchHook g_exact_hooks\[\] = \{(.*?)\n\};", recomp_code, re.S)
+        ranges = re.search(r"static const DispatchHook g_range_hooks\[\] = \{(.*?)\n\};", recomp_code, re.S)
+        self.assertIsNotNone(exact)
+        self.assertIsNotNone(ranges)
+        hook_tables = (exact.group(1) if exact else "") + (ranges.group(1) if ranges else "")
+        retired_names = ("NULL_CALL_A", "NULL_CALL_B", "RESOURCE_HANDLE", "SCEDMAC",
+                         "MODTABLE_WALK", "_REENT_DATA", "MOD_STUB", "PLT_TRAMP",
+                         "INIT_LANG", "HINSERT", "hook_null_call", "hook_resource_handle",
+                         "hook_sceDmac_string", "hook_modtable_walk", "hook_mod_stub",
+                         "hook_plt_unimpl", "hook_init_lang", "hook_hash_insert_guard")
+        for name in retired_names:
+            self.assertNotIn(name, hook_tables)
+            self.assertNotIn(name, recomp_code)
         self.assertNotIn("sr_dtab_resolve_computed", DISPATCH_H)
         self.assertNotIn("sr_dtab_resolve_computed", RECOMP_C)
+        self.assertIn("RecompFn fn = sr_lookup(target);", RECOMP_C)
+
+    def test_hostile_target_matrix_is_source_owned(self):
+        isolation = (ROOT / "src" / "rt" / "dispatch_isolation_selftest.c").read_text(encoding="utf-8")
+        self.assertIn("0x33000010u", isolation)
+        self.assertIn("test_historical_target_shapes_fail_closed", isolation)
+
+    def test_broad_swallow_mutation_is_detected(self):
+        # Mutation proof: inserting one representative old-style range predicate into
+        # the runtime source must be rejected by the same structural tripwire used for
+        # the real tree. This keeps the regression sensitive to reintroducing the bug,
+        # rather than merely checking that today's table happens to be empty.
+        mutated = RECOMP_C + "\\nstatic int mutated(CpuState *s, uint32_t target) {\\n" \
+            "if ((target & 0xff000000u) == 0x33000000u) { s->r[2] = 0; return 0; }\\n" \
+            "return 1; }\\n"
+        self.assertTrue(_has_retired_target_swallow(mutated))
+        self.assertFalse(_has_retired_target_swallow(RECOMP_C))
+
+    def test_exact_hook_helpers_are_diagnostic_fallthrough_only(self):
+        # Every surviving g_exact_hooks[] helper must be diagnostic/read-only:
+        # no internal sr_lookup self-delegation and no consume (return 0), so an
+        # unregistered exact key always continues through normal dispatch and a
+        # registered one executes exactly once at the authoritative lookup.
+        code = _strip_comments(RECOMP_C)
+        helpers = set(_exact_hook_helpers(code))
+        self.assertEqual(
+            helpers,
+            {
+                "hook_log_alloc_req",
+                "hook_log_free_req",
+                "hook_hash_fill_trace",
+                "hook_fmt_trace",
+                "hook_thunk_call_trace",
+                "hook_plt_walk",
+            },
+        )
+        self.assertEqual(_diagnostic_hook_violations(code), [])
+
+    def test_self_delegating_consuming_helper_is_detected(self):
+        # Tripwire sensitivity: a reintroduced helper that looks the target up
+        # itself and consumes the dispatch -- the pre-revision HFILL/FMT shape,
+        # under any name -- must be flagged as both a live table entry and a
+        # violating helper body, while the real tree stays clean.
+        code = _strip_comments(RECOMP_C)
+        table_open = "static const DispatchHook g_exact_hooks[] = {\n"
+        self.assertIn(table_open, code)
+        mutant = code.replace(
+            table_open,
+            table_open + '    { 0x0000deadu, 0xFFFFFFFFu, "MUTANT", hook_mutant },\n',
+            1,
+        )
+        mutant += (
+            "\nstatic int hook_mutant(CpuState *s, uint32_t target) {\n"
+            "    RecompFn f = sr_lookup(target);\n"
+            "    if (f) f(s);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        violations = _diagnostic_hook_violations(mutant)
+        self.assertTrue(any(v.startswith("hook_mutant:") for v in violations), violations)
+        self.assertEqual(_diagnostic_hook_violations(code), [])
 
 
 if __name__ == "__main__":

@@ -10,6 +10,21 @@ listed in ``assets/public_source_profile.json`` (same profile consumed by
 ``tools/public_candidate.py``), records an export provenance manifest, and
 re-audits the materialized candidate tree before clearing the export.
 
+Candidate immutability invariant (#293): the export materializes the exact
+Git **index** the publication gates bind to (``git write-tree``), establishes
+``PUBLIC_EXPORT.json`` over those exact bytes, and never mutates any
+provenance-pinned candidate file afterwards. The candidate is built in a
+staging directory; the optional candidate-tree audit runs against those
+staging bytes BEFORE promotion, and the staging directory is renamed to the
+requested export path only after the snapshot is complete and (when
+requested) that audit passes. An interrupted or rejected generation therefore
+never leaves a candidate -- cleared or uncleared -- at the requested path; a
+failed audit may preserve a ``*.not-cleared`` diagnostic sibling. The export
+commit's author/committer timestamps and commit id are intentionally variable
+metadata; tracked candidate identity is the candidate tree id plus the
+recorded ``included_content_sha256``, both deterministic for a given source
+index.
+
 Usage:
   python tools/build_public_export.py --verify-only
   python tools/build_public_export.py --export-dir /path/to/public_repo --dry-run
@@ -17,13 +32,16 @@ Usage:
 """
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
-import io
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
+import shutil
+import stat
 import subprocess
 import sys
-import tarfile
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -297,47 +315,172 @@ def run_candidate_audit(candidate_root: Path, trusted_ledger: Path | None = None
     return GateResult("Candidate-Tree Audit", False, "\n".join(detail))
 
 
-def _patch_pre_commit_for_public_scope(export_dir: Path) -> None:
-    """Adapt the exported tree's own pre-commit publication-audit hook.
+def _index_snapshot(repo_root: Path) -> tuple[str, list[tuple[str, str, bytes]]]:
+    """Return the audited index as ``(tree_sha, [(path, mode, blob_bytes)])``.
 
-    The exported tree is a public-scope candidate: manifest components with
-    ``public_scope_included: false`` are absent by design, and the manifest
-    audit only treats that absence as expected when run in public scope. The
-    exported ``.pre-commit-config.yaml`` must therefore audit in public scope,
-    otherwise every contributor commit fails the publication-safety hook on
-    the excluded components (reported as ``MANIFEST_ORPHAN_PATH``). The
-    private-source hook stays as-is; this patch applies only to the export.
+    The publication gates bind to ``git write-tree`` of the index (see
+    ``publish_audit`` content-source notes: the index is what a commit would
+    publish and is the correct source for the release-export gate). Reading
+    ``HEAD`` instead would audit one tree and ship another whenever the index
+    is staged ahead of the last commit. Regular-file modes are kept so the
+    materialized candidate preserves executable bits, and non-regular index
+    entries fail closed here rather than being silently dropped.
     """
-    pre_commit_path = export_dir / ".pre-commit-config.yaml"
-    if not pre_commit_path.is_file():
-        return
-    text = pre_commit_path.read_text(encoding="utf-8")
-    public_entry = "entry: python tools/publish_audit.py --tracked-only --public-scope"
-    lines = []
-    changed = False
-    for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith("entry: python tools/publish_audit.py --tracked-only"):
-            newline = "\n" if line.endswith("\n") else ""
-            indent = line[:len(line) - len(line.lstrip())]
-            replacement = indent + public_entry + newline
-            changed = changed or line != replacement
-            lines.append(replacement)
+    tree_sha = subprocess.run(
+        ["git", "write-tree"], cwd=repo_root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    raw_ls = subprocess.run(
+        ["git", "ls-files", "-s", "-z"], cwd=repo_root, capture_output=True, check=True
+    ).stdout.decode("utf-8", errors="surrogateescape")
+
+    regular: list[tuple[str, str, str]] = []  # path, mode, blob sha
+    for item in raw_ls.split("\0"):
+        if not item:
+            continue
+        parts = item.split(None, 3)
+        if len(parts) != 4:
+            # Fail closed instead of manufacturing a partial snapshot from
+            # malformed enumeration: release tooling must never silently drop
+            # an index record it cannot parse.
+            raise RuntimeError(
+                f"malformed git ls-files -s -z record cannot be exported: {item!r}"
+            )
+        mode, sha, _stage, path = parts
+        relative = PurePosixPath(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"unsafe index path cannot be exported: {path!r}")
+        if mode not in ("100644", "100755"):
+            raise RuntimeError(
+                f"index entry {path} has non-regular mode {mode}; the export "
+                "materializes regular tracked files only and will not silently "
+                "drop symlinks or gitlinks"
+            )
+        regular.append((path, mode, sha))
+
+    proc = subprocess.Popen(
+        ["git", "cat-file", "--batch"],
+        cwd=repo_root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    assert proc.stdin and proc.stdout
+    output, _ = proc.communicate(
+        b"".join(f"{sha}\n".encode("ascii") for _, _, sha in regular)
+    )
+    if proc.returncode not in (0, None):
+        raise RuntimeError("git cat-file --batch failed while reading the index snapshot")
+
+    snapshot: list[tuple[str, str, bytes]] = []
+    position = 0
+    for path, mode, sha in regular:
+        end = output.find(b"\n", position)
+        if end < 0:
+            raise RuntimeError(f"git cat-file returned no object for index blob {sha}")
+        header = output[position:end].split()
+        position = end + 1
+        if len(header) < 3 or header[0] != sha.encode("ascii") or header[1] != b"blob":
+            raise RuntimeError(f"git cat-file did not return blob {sha} for {path}")
+        size = int(header[2])
+        blob = output[position:position + size]
+        if len(blob) != size:
+            raise RuntimeError(f"truncated git cat-file payload for {path}")
+        position += size + 1
+        snapshot.append((path, mode, blob))
+    snapshot.sort(key=lambda item: item[0])
+    return tree_sha, snapshot
+
+
+def _remove_tree_force(path: Path) -> None:
+    """Best-effort ``rmtree`` that clears read-only bits before retrying.
+
+    ``git commit`` writes ``.git/objects/pack/*`` read-only on Windows. A
+    plain ``shutil.rmtree`` cannot unlink those files, so cleanup after a
+    failed pre-promotion audit would leave staging residue even though the
+    requested export path correctly stayed absent. Clear the read-only bit and
+    retry; a genuinely locked file may still remain, but read-only attributes
+    never do. ``FileNotFoundError`` is ignored so callers may treat this as an
+    unconditional cleanup step.
+    """
+
+    def _onexc(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+        except OSError:
+            return
+        try:
+            func(target)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=_onexc)
+    except FileNotFoundError:
+        pass
+
+
+def _quarantine_failed_export(candidate: Path, export_dir: Path) -> Path | None:
+    """Move an uncleared candidate to a ``*.not-cleared`` diagnostic sibling.
+
+    *candidate* is the staging tree that failed its pre-promotion audit and
+    *export_dir* is the requested release path, which must never hold it.
+    Rename the candidate to a sibling of the REQUESTED path so the requested
+    path stays absent (fail closed for anything that consumes it) while the
+    rejected evidence stays inspectable. Rename failure returns None; the
+    caller's cleanup then removes staging, so the requested path is still
+    never created.
+    """
+    if not candidate.exists():
+        return None
+    target = export_dir.with_name(export_dir.name + ".not-cleared")
+    if target.exists():
+        if target.is_dir():
+            _remove_tree_force(target)
         else:
-            lines.append(line)
-    if changed:
-        pre_commit_path.write_text("".join(lines), encoding="utf-8", newline="\n")
+            try:
+                target.unlink()
+            except PermissionError:
+                os.chmod(target, stat.S_IWRITE)
+                target.unlink()
+    try:
+        candidate.rename(target)
+    except OSError as exc:
+        print(
+            f"ERROR: candidate audit failed and the rejected candidate could not be "
+            f"copied to '{target}' ({exc}).",
+            file=sys.stderr,
+        )
+        return None
+    return target
 
 
-def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = False, dry_run: bool = False) -> bool:
+def export_sanitized_public_tree(
+    export_dir: Path,
+    public_safe_profile: bool = False,
+    dry_run: bool = False,
+    audit_candidate: Callable[[Path], GateResult] | None = None,
+) -> bool:
     """Build a clean single-commit public repository export.
 
-    With ``public_safe_profile=True`` the export applies the exclusion profile
+    The materialized bytes come from the exact Git index the publication gates
+    audited (``_index_snapshot``), never from a different tree. With
+    ``public_safe_profile=True`` the export applies the exclusion profile
     from ``assets/public_source_profile.json`` (PGF fonts and PGF/PGD sources
     and tools) and writes ``PUBLIC_EXPORT.json`` provenance metadata into the
-    exported tree. The exhaustive candidate-tree public audit on the
-    materialized result is run separately by ``main()`` (``run_candidate_audit``)
-    so the tree mechanics remain deterministic and independent of the source
-    Git HEAD state.
+    exported tree. When *audit_candidate* is supplied (``main()`` wires
+    ``run_candidate_audit`` with ``--trusted-ledger``), the exhaustive
+    candidate-tree public audit runs against the completed staging tree
+    BEFORE promotion: the requested *export_dir* receives the snapshot only
+    after that audit passes, so an audit failure never materializes an
+    uncleared candidate at the release path (it may leave a
+    ``*.not-cleared`` diagnostic sibling instead).
+
+    Nothing mutates a candidate file after ``PUBLIC_EXPORT.json`` records its
+    identity: profile filtering and manifest generation happen while the tree
+    is still being materialized, and the staging directory is promoted to
+    *export_dir* only after the single-commit snapshot completes and (when
+    requested) the candidate-tree audit passes. An interrupted or rejected
+    generation removes the staging directory and leaves no candidate at
+    *export_dir*.
     """
     print(f"\n--- Public Export Generation ({'DRY RUN' if dry_run else 'EXECUTING'}) ---")
     print(f"Target Directory: {export_dir}")
@@ -361,44 +504,36 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
             print(f"ERROR: Export directory '{export_dir}' exists and is not empty.", file=sys.stderr)
             return False
 
-    export_dir.mkdir(parents=True, exist_ok=True)
-
-    # Export the tracked index at HEAD into the target export directory,
-    # skipping profile-excluded paths when the public-safe profile is active.
+    parent = export_dir.parent if str(export_dir.parent) else Path(".")
     try:
-        archive_proc = subprocess.run(
-            ["git", "archive", "HEAD"],
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
-            check=True,
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"ERROR: cannot create export parent directory '{parent}': {exc}", file=sys.stderr)
+        return False
+
+    staging: Path | None = None
+    try:
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{export_dir.name}.staging-", dir=str(parent))
         )
-        # Record the tree, not just the commit. A commit id is only resolvable in
-        # the repository that holds it -- the export previously pinned a commit
-        # that exists solely in the private archive, which no public reader could
-        # verify. The tree SHA is what the audit is actually bound to.
-        source_tree = subprocess.run(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, capture_output=True, text=True, check=True
-        ).stdout.strip()
+
+        # Record the index tree, not just a commit id. A commit id is only
+        # resolvable in the repository that holds it, and the tree SHA is what
+        # the publication audit is actually bound to.
+        source_tree, snapshot = _index_snapshot(ROOT)
 
         excluded_paths: list[str] = []
         exported_paths: list[str] = []
-        with tarfile.open(fileobj=io.BytesIO(archive_proc.stdout)) as tar:
-            for member in tar.getmembers():
-                if not member.isfile():
-                    continue
-                # ``str.lstrip("./")`` is not path-prefix removal: it strips
-                # the leading dot from legitimate dotfiles such as
-                # ``.clang-format``.  Remove only archive ``./`` prefixes so
-                # the exported path and the later digest refer to the same
-                # file.
-                rel = member.name
-                while rel.startswith("./"):
-                    rel = rel[2:]
-                if profile is not None and _is_excluded(rel, profile):
-                    excluded_paths.append(rel)
-                    continue
-                tar.extract(member, export_dir, filter="data")
-                exported_paths.append(rel)
+        for rel, mode, blob in snapshot:
+            if profile is not None and _is_excluded(rel, profile):
+                excluded_paths.append(rel)
+                continue
+            target = staging.joinpath(*PurePosixPath(rel).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
+            if mode == "100755":
+                os.chmod(target, 0o755)
+            exported_paths.append(rel)
 
         # PUBLIC_EXPORT.json is generated by the same authoritative implementation
         # used by policy_sync.py.  Include a placeholder for the generated file so
@@ -408,15 +543,15 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
             import publication_policy
 
             loaded_policy = publication_policy.load_policy(profile_path)
-            files = [(rel, (export_dir / rel).read_bytes()) for rel in exported_paths]
+            files = [(rel, (staging / rel).read_bytes()) for rel in exported_paths]
             # PUBLIC_EXPORT.json is normally already tracked in the source
-            # archive.  Add a placeholder only for a source tree that omits it;
+            # index.  Add a placeholder only for a source tree that omits it;
             # appending an unconditional duplicate inflated the metadata counts
             # by one and made the materialized candidate fail its own audit.
             if not any(rel == PUBLIC_EXPORT_MANIFEST for rel, _ in files):
                 files.append((PUBLIC_EXPORT_MANIFEST, b""))
-            ledger_path = export_dir / "assets" / "public_provenance_ledger.json"
-            manifest_path = export_dir / "assets" / "release_manifest.json"
+            ledger_path = staging / "assets" / "public_provenance_ledger.json"
+            manifest_path = staging / "assets" / "release_manifest.json"
             metadata = public_export.build_document(
                 loaded_policy,
                 files,
@@ -425,15 +560,14 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
                 manifest=manifest_path.read_bytes() if manifest_path.is_file() else None,
                 excluded_file_count=len(excluded_paths),
             )
-            public_export.write_document(export_dir / "PUBLIC_EXPORT.json", metadata)
-            _patch_pre_commit_for_public_scope(export_dir)
+            public_export.write_document(staging / "PUBLIC_EXPORT.json", metadata)
 
         for path in excluded_paths:
             print(f"EXCLUDED: {path}")
 
         # Initialize clean single-commit Git repository
-        subprocess.run(["git", "init"], cwd=export_dir, check=True, capture_output=True)
-        subprocess.run(["git", "add", "."], cwd=export_dir, check=True, capture_output=True)
+        subprocess.run(["git", "init"], cwd=staging, check=True, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=staging, check=True, capture_output=True)
         # The export commit is a mechanical snapshot, not a contribution, so it
         # carries a fixed tool identity supplied per-invocation. Relying on the
         # ambient Git identity makes this step fail on any host that has none
@@ -450,15 +584,57 @@ def export_sanitized_public_tree(export_dir: Path, public_safe_profile: bool = F
                 "-m",
                 "Initial sanitized public release export of Nakagawa Recomp",
             ],
-            cwd=export_dir,
+            cwd=staging,
             check=True,
             capture_output=True,
         )
 
+        # Pre-promotion gate: audit the completed staging tree before it can
+        # ever occupy the requested release path. Audit failure quarantines
+        # the staging tree to a *.not-cleared sibling of the requested path
+        # (or removes it), so the requested path stays absent.
+        if audit_candidate is not None:
+            gate = audit_candidate(staging)
+            print(f"[{'PASS' if gate.passed else 'FAIL'}] {gate.name}: {gate.detail}")
+            if not gate.passed:
+                try:
+                    quarantined = _quarantine_failed_export(staging, export_dir)
+                except OSError as exc:
+                    quarantined = None
+                    print(
+                        f"ERROR: candidate-tree audit failed and the diagnostic copy "
+                        f"could not be created ({exc}).",
+                        file=sys.stderr,
+                    )
+                if quarantined is not None:
+                    print(
+                        f"ERROR: exported candidate failed the candidate-tree public audit "
+                        f"before promotion; '{export_dir}' was never created and must not be "
+                        f"shipped. The rejected candidate is preserved at '{quarantined}'.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"ERROR: exported candidate failed the candidate-tree public audit "
+                        f"before promotion; '{export_dir}' was never created and must not be "
+                        f"shipped.",
+                        file=sys.stderr,
+                    )
+                return False
+
+        # Promote only after the snapshot is complete and (when requested) the
+        # candidate-tree audit passes, so the requested path never holds a
+        # half-written or uncleared candidate.
+        if export_dir.exists():
+            export_dir.rmdir()
+        staging.rename(export_dir)
         print(f"Successfully generated single-commit public export in '{export_dir}'!")
     except Exception as exc:
         print(f"ERROR: Export generation failed: {exc}", file=sys.stderr)
         return False
+    finally:
+        if staging is not None and staging.exists():
+            _remove_tree_force(staging)
 
     return True
 
@@ -515,24 +691,19 @@ def main() -> int:
         export_dir=args.export_dir,
         public_safe_profile=args.public_safe_profile,
         dry_run=args.dry_run,
+        # The exhaustive candidate-tree audit runs against the staging bytes
+        # BEFORE promotion (export_sanitized_public_tree promotes only on
+        # audit pass), so an uncleared candidate never occupies the release
+        # path and nothing has to be quarantined out of it afterwards.
+        audit_candidate=lambda root: run_candidate_audit(
+            root, trusted_ledger=args.trusted_ledger
+        ),
     )
     if not success:
         return 1
 
     if args.dry_run:
         return 0
-
-    # Post-export gate: the materialized tree must itself pass the exhaustive
-    # candidate public-scope manifest gate, not just the source gates above.
-    audit = run_candidate_audit(args.export_dir, trusted_ledger=args.trusted_ledger)
-    print(f"[{'PASS' if audit.passed else 'FAIL'}] {audit.name}: {audit.detail}")
-    if not audit.passed:
-        print(
-            "ERROR: exported candidate failed the candidate-tree public audit; "
-            "export is not cleared for use.",
-            file=sys.stderr,
-        )
-        return 1
 
     print("\n[EXPORT CLEARED] Sanitized public export passed the candidate-tree audit.")
     return 0
