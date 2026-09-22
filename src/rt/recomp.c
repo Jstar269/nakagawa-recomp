@@ -1283,8 +1283,8 @@ void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t dprefi
  * code address 0 -- a real function on this zero-based image -- registers and resolves like
  * any other address. The previous `addr == 0` empty-slot sentinel (and the `addr != 0` L1
  * guard) made sr_lookup(0) impossible; see the header and the selftest. Making 0
- * representable does NOT make a *computed* dispatch target of 0 execute f_00000000: that is
- * a null-pointer call, handled by NULL_CALL_B in dispatch() before any lookup runs. */
+ * representable does NOT make a *computed* dispatch target of 0 execute f_00000000: a
+ * null-pointer call is rejected by the ordinary dispatch miss path before any lookup runs. */
 
 static SrDispatchTable g_dtab;
 
@@ -1375,89 +1375,8 @@ static uint32_t sr_dispatch_call_site(const CpuState *s) {
     return s->r[31] >= 8u ? s->r[31] - 8u : 0u;
 }
 
-static int hook_null_call(CpuState *s, uint32_t target) {
-    /* Current-HST runtime null-call policy (NOT a generic PSP rule). On this title's codegen
-     * the two direct edges to offset 0 are emitted as direct f_00000000(s) calls and no
-     * constant dispatch(s, 0) is emitted, so a computed target of 0 reaching dispatch is a
-     * guest NULL pointer here, and this hook treats it as one: diagnose it (below) and return
-     * to the caller (r2=0, pc=ra).
-     *
-     * This is compatibility/runtime policy, wired as NULL_CALL_B (key 0) and run BEFORE
-     * sr_lookup in dispatch(). The dispatch TABLE is policy-free (dispatch_table.h):
-     * sr_lookup(0) legitimately returns the offset-0 function, and this hook -- not the table
-     * -- is what keeps a null indirect call from executing it. The GENERAL question (an
-     * address-taken offset-0 pointer carried through guest data also arrives as integer 0,
-     * and is not distinguishable from NULL without image/module identity) is unresolved under
-     * #45 and its policy generalization is tracked by #20/#45. Do not move this decision into
-     * the table, and do not remove this hook and let sr_lookup(0) resolve -- that would turn
-     * a null call into a silent execution of the offset-0 function on this title. */
-    static int null_call_n = 0;
-    if (null_call_n < 5) {
-        fprintf(stderr, "NULL_CALL[%d]: dispatch(target=0x%x) call_site~0x%08x ra=0x%08x "
-                        "last_yield_pc=0x%08x uid=0x%x\n",
-                null_call_n++, target, sr_dispatch_call_site(s), s->r[31],
-                s->pc, sched_current_uid());
-        fprintf(stderr, "  v0=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x\n",
-                s->r[2], s->r[4], s->r[5], s->r[6], s->r[7]);
-        fprintf(stderr, "  s0=0x%08x s1=0x%08x gp=0x%08x sp=0x%08x\n",
-                s->r[16], s->r[17], s->r[28], s->r[29]);
-        /* F3D disambiguator: distinguish "vtable slot genuinely zeroed in guest memory"
-         * from "object/vptr pointer corrupted so the dispatch read the wrong slot".
-         * a0 is the object; its +0 is the reloaded vptr; the constructors that fault here
-         * (f_000649c0 / f_00064bf4) dispatch MEM[vptr+0xc]. Dump the object header, the
-         * reloaded vptr, and the whole 0x3070c0 method-table window (image-valid:
-         * +4=0x65888 +8=0x652e8 +0x14=0x64a08 +0x18=0x64a88). If those read 0 here, memory
-         * was zeroed; if they're intact but a0/MEM[a0] is wrong, it's pointer corruption. */
-        {
-            uint32_t obj = s->r[4];
-            uint32_t vptr = (obj && obj < 0x0c000000u) ? MEM_R32(obj) : 0xBADBAD00u;
-            fprintf(stderr, "  F3D: obj=0x%08x MEM[obj+0]=0x%08x MEM[obj+4]=0x%08x  vptr_slot+0xc(disp_tgt)=0x%08x\n",
-                    obj, vptr,
-                    (obj && obj < 0x0c000000u) ? MEM_R32(obj + 4u) : 0xBADBAD00u,
-                    (vptr < 0x0c000000u) ? MEM_R32(vptr + 0xcu) : 0xBADBAD00u);
-            fprintf(stderr, "  F3D: table 0x3070c0: %08x %08x %08x %08x %08x %08x %08x %08x\n",
-                    MEM_R32(0x3070c0u), MEM_R32(0x3070c4u), MEM_R32(0x3070c8u), MEM_R32(0x3070ccu),
-                    MEM_R32(0x3070d0u), MEM_R32(0x3070d4u), MEM_R32(0x3070d8u), MEM_R32(0x3070dcu));
-        }
-        fflush(stderr);
-    }
-    /* SR_NULLTRACE: dump the table singleton used by f_0006517c/f_00065104.
-     * Its callers use `lui 0x35; lw -0x57b4`, which resolves to 0x0034a84c.
-     * 0x34FFA84C is not a cached alias and does not occur in the guest code. */
-    if (getenv("SR_NULLTRACE")) {
-        static int nulltrace_n = 0;
-        if (nulltrace_n < 5) {
-            nulltrace_n++;
-            fprintf(stderr, "SR_NULLTRACE[%d]: pc=0x%08x ra=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x\n",
-                    nulltrace_n, s->pc, s->r[31], s->r[4], s->r[5], s->r[6]);
-            uint32_t table = MEM_R32(0x0034a84cu);
-            fprintf(stderr, "  singleton[0x0034a84c]=0x%08x\n", table);
-            if (table && table < 0x0c000000u) {
-                for (uint32_t off = 0; off < 0x10u; off += 4u)
-                    fprintf(stderr, "    [table+0x%02x] = 0x%08x\n", off, MEM_R32(table + off));
-            }
-            /* HLE pre-seed region for libfont (Task 2 Defensive seed) */
-            fprintf(stderr, "  0x00333168 path (HLE seed region):\n");
-            for (uint32_t off = 0; off < 0x28u; off += 4u) {
-                fprintf(stderr, "    [+0x%02x] = 0x%08x\n", off, MEM_R32(0x00333168u + off));
-            }
-            /* The callers at ra=0x00293dd4 / 0x00293f10 pass that singleton as a0. */
-            if (s->r[4]) {
-                fprintf(stderr, "  a0-deref (caller's table ptr):\n");
-                for (uint32_t off = 0; off < 0x20u; off += 4u) {
-                    uint32_t v = MEM_R32(s->r[4] + off);
-                    fprintf(stderr, "    [a0+0x%02x] = 0x%08x\n", off, v);
-                }
-            }
-            fflush(stderr);
-        }
-    }
-    s->r[2] = 0; s->pc = s->r[31]; return 0;
-}
-
-/* Module-table/data-pointer misses deliberately use the ordinary miss path.  The
- * former _REENT_DATA/MODTABLE_WALK success hook was an HST-era compatibility swallow;
- * it is intentionally absent so data cannot become a successful call target. */
+/* Module-table/data-pointer misses deliberately use the ordinary miss path so
+ * data cannot become a successful call target. */
 /* The libfont fake-vtable dispatch path (0x0B0002xx trampolines + the 0x5fc4cb66 "garbage"
  * hook) was removed in F2: F1 proved it never fires (0 hits) — the sceFont library layer is now
  * HLE'd natively in src/rt/hle.c (real FontLibrary/Font structs from the game's allocator), so

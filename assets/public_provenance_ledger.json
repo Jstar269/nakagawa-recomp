@@ -801,7 +801,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "70c4eb36e41270f8191b3797fc50cd3efa86e127dc9bdc5ddf9f79500b730f73"
+      "sha256": "c0e55b924d7a8cdc290438983f72b297c43dfc3e3043419203e8ecaa794fded2"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
@@ -6059,7 +6059,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "7553412fd87d9715d5c77b9b75a7eadffe4e012437be50be5c0900fa5b415d24"
+      "sha256": "1fccd980e42d2fc01492f3a5bbc07dc09f3490858d4f6df9736cf56cc74df3ac"
     },
     {
       "path": "src/rt/recomp.h",
@@ -8189,7 +8189,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7cc44ce3f307ec3c6fe05410f11da99da0b4ce38284a0cf3597844d1146ec4a9"
+      "sha256": "f626fa8ce7e925169cca62a971d5a17e560a1b2803616bc633b1b558bd2846b0"
     },
     {
       "path": "tools/test_dispatch_call_boundary.py",

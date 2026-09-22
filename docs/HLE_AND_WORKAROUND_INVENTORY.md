@@ -37,10 +37,19 @@ Import Registrations Audited (import_audit_gate):   380 NIDs
   - Controlled Unsupported:                          7 NIDs (Fail-closed)
 
 Dispatch Hooks & Walkers (src/rt/recomp.c):
-  - Exact-Match Dispatch Hooks:                     17 sites (Tiers 4 & 5)
-  - Address-Range Hooks:                             1 site  (Tier 4)
+  - Exact-Match Dispatch Hooks:                      8 sites (Tier 5, diagnostic only)
+  - Address-Range Hooks:                             0 sites (retired by issue #362)
   - Inline Dispatch Guard (INIT_WALKER_GUARD):        1 site  (Tier 5)
   - WALKER_CAP:                                      historical comment, not an active cap
+
+  Every surviving g_exact_hooks[] entry is a read-only trace that always falls
+  through to normal dispatch, and g_range_hooks[] is empty: generic dispatch no
+  longer turns any target shape into a success. Issue #362 removed the last
+  behavior-changing target predicates (see 3.1 and 3.4).
+  `tools/compat_overrides.py` (DISPATCH_HOOKS / DISPATCH_RANGE_HOOKS) is the
+  maintained census for these tables; `tools/test_compat_manifest.py` and
+  `tools/test_dispatch_c.py` fail if a source address or a retired hook name
+  reappears without being inventoried.
 
 Title Configuration Overrides (src/rt/title_config.c):
   - Hardcoded Entry Points & Addresses:              0 (generated header/manifest bindings)
@@ -72,21 +81,77 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 #### 3. `INIT_LANG` Hardcoded Japanese Language Injection
 
-- **Location:** `src/rt/recomp.c` (`g_exact_hooks[]`, address `0x00304290`).
-- **Mechanism:** Hook intercepts dispatch to `0x00304290` and writes `1` (Japanese language ID) directly into guest memory.
-- **Root Cause:** Game reads system language without going through the documented `sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_LANGUAGE)`.
-- **Lower-Level Solution:** Move this into a generic PSP registry/system configuration provider (`sceReg` / `sceUtility`) that initializes the system parameter partition accurately in guest memory before execution begins.
+- **Location:** was `src/rt/recomp.c` (`g_exact_hooks[]`).
+- **Status:** **RETIRED (issue #362).** The hook and its table entry are gone; the
+  address no longer exists in generic runtime source. Language now reaches the
+  guest through the ordinary system-parameter path, and dispatch to that address
+  follows the generic contract: registered body, interpreter, or fail-closed
+  rejection.
+- **Mechanism (historical):** the hook intercepted dispatch to the address and
+  wrote the Japanese language ID directly into guest memory.
+- **Root Cause:** the game read the system language without going through the
+  documented `sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_LANGUAGE)`.
+- **Lower-Level Solution (applied):** the language value is supplied through the
+  generic PSP registry/system-parameter provider, so no dispatch site needs a
+  title-derived write.
 
 #### 4. Module Table Walker Bypass (`MODTABLE_WALK`)
 
-- **Location:** `src/rt/recomp.c` (`hook_modtable_walk` at `0x0000ef40` and `0x002cf338`).
-- **Mechanism:** Intercepts table iteration over reentrancy structures.
-- **Root Cause:** Table entries point to data addresses that generated false dispatch misses.
-- **Lower-Level Solution:** Distinguish code pointers from data pointers in the analyzer so data structures are never routed to the dynamic execution dispatcher.
+- **Location:** was `src/rt/recomp.c` (`hook_modtable_walk`).
+- **Status:** **RETIRED (issue #362).** The hook, its table entry and its
+  compatibility-census record are gone. Reentrancy/module-table targets now take
+  the ordinary miss path and cannot be reported as successful calls.
+- **Mechanism (historical):** intercepted table iteration over reentrancy
+  structures and swallowed the resulting lookups.
+- **Root Cause:** table entries point at data addresses that produced false
+  dispatch misses.
+- **Lower-Level Solution:** the analyzer's pointer classification (code vs data)
+  was corrected, so data words are no longer routed to the dynamic execution
+  dispatcher; anything that still misses fails closed instead of succeeding.
+
+#### 5. Retired target-pattern swallows (issue #362)
+
+The following former behaviors were removed from `src/rt/recomp.c` because each
+one converted an invalid or unknown target into a successful return:
+
+| Former hook | Shape it swallowed |
+| :--- | :--- |
+| `RESOURCE_HANDLE` (range) | any target whose top byte was `0x33`, `0x44`, `0x55` or `0x88` |
+| `NULL_CALL_A` / `NULL_CALL_B` | a computed target of `0` |
+| `SCEDMAC` | the ASCII-looking target `0x32305f34` |
+| `_REENT_DATA` / `MODTABLE_WALK` | reentrancy/module-table data words |
+| `MOD_STUB` | unresolved module stubs |
+| `PLT_TRAMP` | the unresolved PLT trampoline target `0x0000100c` |
+| `HINSERT` | zero-capacity hash-insert bypass |
+| `INIT_LANG` | forced guest language write (3 above) |
+
+**Generic dispatch contract after #362.** A dispatch target is resolved only by
+(1) a registered recompiled body, (2) the relocation/segment normalization or
+late-import bridge, (3) a configured title alias, or (4) the fail-closed
+guest interpreter floor. Nothing else returns success. If a target is unknown,
+corrupt, data-looking, null, or unresolved, the poisoned register state and
+caller PC are preserved and the request is rejected (which the public
+`dispatch()` wrapper turns into process termination) rather than swallowed.
+
+`src/rt/dispatch_isolation_selftest.c` carries the source-owned hostile matrix
+(one target from each former range, every retained magic value, null,
+unresolved PLT, module-table and data-looking shapes, plus legitimate
+configured-alias and terminator controls) and is built for the generic and both
+public fixture configurations, so a title cannot inherit any of these shapes and
+a broad pattern reintroduced into `recomp.c` fails the build immediately.
+
+No title-scoped recovery remains for these shapes, and no generic replacement
+was introduced: an unconfigured build treats every one of them as ordinary
+traffic. Evidence tiers stay separate -- the removal itself is proven by the
+public source-owned matrix above, while the private title's post-removal
+progression is private acceptance evidence (boot stages through module and
+SGX/audio bring-up with no dispatch-miss or fatal-dispatch event) and is not
+reproduced here.
 
 ---
 
 ### 3.2 Register Clobber Guards and Loop Caps (Tier 5)
+
 
 #### 1. `INIT_WALKER_GUARD` (Callee-Saved `$s0` / `$r16` Preservation)
 

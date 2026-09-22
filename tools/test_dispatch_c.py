@@ -40,6 +40,15 @@ def _strip_comments(src: str) -> str:
 DISPATCH_H_CODE = _strip_comments(DISPATCH_H)
 
 
+def _has_retired_target_swallow(source: str) -> bool:
+    """Detect the representative broad predicate mutation from Issue #362."""
+    code = _strip_comments(source)
+    return bool(re.search(
+        r"target\s*&\s*0xff000000u?\s*\)\s*==\s*0x(?:33|44|55|88)000000u?",
+        code,
+    ))
+
+
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestDispatchSelftestC(unittest.TestCase):
     @classmethod
@@ -101,9 +110,14 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertIsNotNone(exact)
         self.assertIsNotNone(ranges)
         hook_tables = (exact.group(1) if exact else "") + (ranges.group(1) if ranges else "")
-        for name in ("NULL_CALL_A", "NULL_CALL_B", "RESOURCE_HANDLE", "SCEDMAC",
-                     "MODTABLE_WALK", "_REENT_DATA", "MOD_STUB", "PLT_TRAMP"):
+        retired_names = ("NULL_CALL_A", "NULL_CALL_B", "RESOURCE_HANDLE", "SCEDMAC",
+                         "MODTABLE_WALK", "_REENT_DATA", "MOD_STUB", "PLT_TRAMP",
+                         "INIT_LANG", "HINSERT", "hook_null_call", "hook_resource_handle",
+                         "hook_sceDmac_string", "hook_modtable_walk", "hook_mod_stub",
+                         "hook_plt_unimpl", "hook_init_lang", "hook_hash_insert_guard")
+        for name in retired_names:
             self.assertNotIn(name, hook_tables)
+            self.assertNotIn(name, recomp_code)
         self.assertNotIn("sr_dtab_resolve_computed", DISPATCH_H)
         self.assertNotIn("sr_dtab_resolve_computed", RECOMP_C)
         self.assertIn("RecompFn fn = sr_lookup(target);", RECOMP_C)
@@ -112,6 +126,17 @@ class TestDispatchWiring(unittest.TestCase):
         isolation = (ROOT / "src" / "rt" / "dispatch_isolation_selftest.c").read_text(encoding="utf-8")
         self.assertIn("0x33000010u", isolation)
         self.assertIn("test_historical_target_shapes_fail_closed", isolation)
+
+    def test_broad_swallow_mutation_is_detected(self):
+        # Mutation proof: inserting one representative old-style range predicate into
+        # the runtime source must be rejected by the same structural tripwire used for
+        # the real tree. This keeps the regression sensitive to reintroducing the bug,
+        # rather than merely checking that today's table happens to be empty.
+        mutated = RECOMP_C + "\\nstatic int mutated(CpuState *s, uint32_t target) {\\n" \
+            "if ((target & 0xff000000u) == 0x33000000u) { s->r[2] = 0; return 0; }\\n" \
+            "return 1; }\\n"
+        self.assertTrue(_has_retired_target_swallow(mutated))
+        self.assertFalse(_has_retired_target_swallow(RECOMP_C))
 
 
 if __name__ == "__main__":
