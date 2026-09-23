@@ -52,6 +52,8 @@ typedef struct {
     uint64_t audio_pes;
     uint64_t video_aus;
     uint64_t audio_aus;
+    /* Candidate four-byte start positions examined while locating video AUDs. */
+    uint64_t video_aud_scan_candidates;
     uint64_t parser_failures;
     uint64_t source_failures;
     /* Access units that carried no PES presentation time; the consumer extrapolates

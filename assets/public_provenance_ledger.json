@@ -6183,7 +6183,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd77d91aba8ef562a7e5af5a9ce960397e21bfc663380ec9c336e64e933a0d27"
+      "sha256": "bc76a4e1a69297fe2d972322b6621745dd9266d95307bfba5767269b28834c7b"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -6195,7 +6195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd0b9ee7f3bd503a2e8cbdca7c68e25eb4dcd828b13783364e7b805433cb20b4"
+      "sha256": "2b522a9c76d7e6fe1d4e5b6662018b2bf92bd78767102478ebc88a341b2fa433"
     },
     {
       "path": "src/rt/psmf_producer_selftest.c",
@@ -6207,7 +6207,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31f4429caeaacf096de71827b7994b26b1646fdb80e740a87613f80611ecedd3"
+      "sha256": "dc01285f74fccd6b0569480487812c68ba38a9f0bf33f5f0e053bb9a29c19768"
     },
     {
       "path": "src/rt/recomp.c",
@@ -9917,14 +9917,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "7561dea8330cfc3ab22896fbaee0bab77d0d178d",
-    "candidate_tree": "b1ac10fbdd4ca52d4db9393ed86db7e17639c4d1",
+    "trusted_tree": "afb9b8c75b48e13df9e9dda38e496fc4bd148a81",
+    "candidate_tree": "2eaf8b70d8812897e802039920cfffa9b16dfc73",
     "refreshed_paths": [
-      "docs/TITLE_PROFILE_ARCHITECTURE.md",
-      "src/core/nk_launch.c",
-      "tests/native/test_launch_resolution.c",
-      "tools/nk_core/launcher.py",
-      "tools/test_nk_core.py"
+      "src/rt/psmf_producer.c",
+      "src/rt/psmf_producer.h",
+      "src/rt/psmf_producer_selftest.c"
     ]
   }
 }
