@@ -2633,6 +2633,9 @@ static void run_model_profile(int emulated) {
                          model_code < 0 ? "ERROR" : "PASS",
                          (uint32_t)model_code, out,
                          sizeof(out) / sizeof(out[0]));
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_LATE
 /* D1 -- what does a LATE display wait do?
  *
