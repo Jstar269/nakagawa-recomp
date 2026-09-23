@@ -1302,7 +1302,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "3c1dcf6ca390fb2e0908d12ecf9e47c67139383c5e3141f5cf088022d2ffd53d"
+      "sha256": "bc1582042e4919f233a660f69f55fb81d7a145d9a7a04e5b5407ca19bc817b84"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1311,7 +1311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e447376773f886e532a889893d4c5d950819d82562a07cce5402b645e4cfd670"
+      "sha256": "9efbc91331cb0c0053d3f94823dcbdd7a26ad282995b49dbefdcea1f32a70a72"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -1329,7 +1329,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b50c6676c86c3bc7876094fa7bea0ee986fe10a975bb3d779675905434012266"
+      "sha256": "8b5f17774bcb3056e7434c27cb14dcae29571641d1fce58fd25ed332490089b7"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -7931,7 +7931,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "61e3a6b81a94da2ce4e80f1a5c012339cdd9e00c9ec0e8a1e4abad211ef356ee"
+      "sha256": "5e789d1b68ddbf4a935cc0feb8c689788c5013fa9181554fd9fe7a54e3bc3f7d"
     },
     {
       "path": "tools/psp_oracle/run_nakagawa.py",
@@ -9185,7 +9185,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "892d54f6c68adb0f7bffd65fae629194dce24d0e07f5e456a5796eb302b6cc23"
+      "sha256": "4fcc80fc8763b99c3f31b66ef97a78ae17dd1da94710cf33eaf36555079947a6"
     },
     {
       "path": "tools/test_psp_parsers.py",
@@ -9917,10 +9917,13 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "72efda43a024fe31ddb618949a3507fa3c548608",
-    "candidate_tree": "f2381aa5ea0921823a12a0c23ba16986d2653571",
+    "trusted_tree": "4ec802c36e90eea6a19e974de5f2e8b13f20d585",
+    "candidate_tree": "90c119790e3275a769180b735e87a34030f9159c",
     "refreshed_paths": [
+      "fixtures/psp_oracle/Makefile",
+      "fixtures/psp_oracle/README.md",
       "fixtures/psp_oracle/probe.c",
+      "tools/psp_oracle/protocol.py",
       "tools/test_psp_oracle.py"
     ]
   }

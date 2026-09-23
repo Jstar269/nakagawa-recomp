@@ -3,7 +3,7 @@
 
 BUILD_DIR ?= build
 TARGET = $(BUILD_DIR)/nakagawa_psp_oracle
-OBJS = $(BUILD_DIR)/probe.o $(BUILD_DIR)/mutex_imports.o
+OBJS = $(BUILD_DIR)/probe.o
 PSP_EBOOT = $(BUILD_DIR)/EBOOT.PBP
 PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 
@@ -16,6 +16,14 @@ $(shell mkdir -p "$(BUILD_DIR)")
 # unexpected firmware response could terminate the probe before it emits a
 # record.
 CASE ?= smoke
+# The hand-authored mutex imports are needed only by the mutex probes. Linking
+# them into unrelated PRXs leaves PSP SDK import stubs out of order.
+MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta \
+              mutex-priority-inheritance mutex-interrupt-context
+ifneq ($(filter $(MUTEX_CASES),$(CASE)),)
+OBJS += $(BUILD_DIR)/mutex_imports.o
+endif
+
 ifeq ($(CASE),smoke)
 CASE_ID = 0
 else ifeq ($(CASE),callback-notify-check)

@@ -58,7 +58,7 @@ def dmac_matrix_stream() -> str:
                 f"case_id=size-matrix-{api_name}-0x{size:08x} status=PASS "
                 f"result=0x0 out0=0x{size:x} out1=0x{size:x} out2=0x0 "
                 f"out3=0x1 out4=0x10 out5=0x{api:x} "
-                f"out6=0x{DMAC_SIZE_MATRIX_TRIALS:x} out7=0x0 out8=0x0\n"
+                f"out6=0x{DMAC_SIZE_MATRIX_TRIALS:x} out7=0x0 out8=0x0 out9=0x0\n"
             )
     return "".join(lines)
 
@@ -118,6 +118,16 @@ class PspDmacProtocolTests(unittest.TestCase):
             "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
             "case_id=size-matrix-try-0x0000c001", "# removed", 1
         )
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix(text)
+
+    def test_size_matrix_validator_rejects_changed_post_request_guard(self) -> None:
+        text = dmac_matrix_stream().replace("out9=0x0", "out9=0x1", 1)
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix(text)
+
+    def test_size_matrix_validator_requires_post_request_guard(self) -> None:
+        text = dmac_matrix_stream().replace(" out9=0x0", "", 1)
         with self.assertRaises(ProtocolError):
             validate_dmac_size_matrix(text)
 
@@ -359,6 +369,17 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
 
+    def test_mutex_import_block_is_limited_to_mutex_cases(self) -> None:
+        self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
+        self.assertIn("MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta", self.makefile)
+        self.assertIn("mutex-priority-inheritance mutex-interrupt-context", self.makefile)
+        self.assertIn("ifneq ($(filter $(MUTEX_CASES),$(CASE)),)\n", self.makefile)
+        self.assertIn("OBJS += $(BUILD_DIR)/mutex_imports.o\n", self.makefile)
+        self.assertNotIn(
+            "OBJS = $(BUILD_DIR)/probe.o $(BUILD_DIR)/mutex_imports.o",
+            self.makefile,
+        )
+
     def test_kernel_object_routes_use_shared_threadman_import_block(self) -> None:
         for case, source, macro in (("kobj-b1", "psp_b1.c", "B1"), ("wait-b2", "psp_b2.c", "B2"), ("kernel-b3", "psp_b3.c", "B3")):
             start = self.makefile.rfind(f"else ifeq ($(CASE),{case})")
@@ -442,6 +463,11 @@ class PspDmacProbeTests(unittest.TestCase):
             self.assertIn(size, self.probe)
         self.assertIn("sceKernelDcacheWritebackRange", self.probe)
         self.assertIn("sceKernelDcacheInvalidateRange", self.probe)
+        self.assertIn("memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, DMAC_SIZE_BYTES)", self.probe)
+        self.assertIn("dmac_size_cache_sync(DMAC_SIZE_DST, DMAC_SIZE_BYTES)", self.probe)
+        self.assertIn("sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, DMAC_SIZE_BYTES)", self.probe)
+        self.assertIn("for (uint32_t offset = requested; offset < DMAC_SIZE_BYTES; ++offset)", self.probe)
+        self.assertIn("dmac_size_tail_mutations(requested)", self.probe)
         self.assertIn("dmac_size_source_mutations", self.probe)
         self.assertIn('PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"', self.probe)
         self.assertIn('"size-matrix-%s-0x%08x"', self.probe)

@@ -798,6 +798,14 @@ static uint32_t dmac_size_non_sentinel(uint32_t offset, uint32_t requested) {
     return count;
 }
 
+static uint32_t dmac_size_tail_mutations(uint32_t requested) {
+    uint32_t count = 0;
+    for (uint32_t offset = requested; offset < DMAC_SIZE_BYTES; ++offset) {
+        if (DMAC_SIZE_DST[offset] != DMAC_SIZE_SENTINEL) ++count;
+    }
+    return count;
+}
+
 static uint32_t dmac_size_source_mutations(void) {
     uint32_t count = 0;
     for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
@@ -822,30 +830,35 @@ static void run_dmac_size_matrix(int emulated) {
             uint32_t max_prefix = 0;
             uint32_t max_stray = 0;
             uint32_t max_source_mutations = 0;
+            uint32_t max_tail_mutations = 0;
             uint32_t max_elapsed_us = 0;
             uint32_t last_result = 0;
             for (uint32_t trial = 0; trial < DMAC_SIZE_TRIALS; ++trial) {
-                memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, requested);
-                dmac_size_cache_sync(DMAC_SIZE_DST, requested);
+                memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, DMAC_SIZE_BYTES);
+                dmac_size_cache_sync(DMAC_SIZE_DST, DMAC_SIZE_BYTES);
                 const uint64_t start_us = sceKernelGetSystemTimeWide();
                 last_result = (uint32_t)dmac_call(
                     api, DMAC_SIZE_DST, DMAC_SIZE_SRC, requested);
                 const uint64_t end_us = sceKernelGetSystemTimeWide();
-                sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, requested);
+                sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, DMAC_SIZE_BYTES);
                 sceKernelDcacheInvalidateRange(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
 
                 const uint32_t prefix = dmac_size_prefix(requested);
                 const uint32_t stray = dmac_size_non_sentinel(prefix, requested);
+                const uint32_t tail_mutations = dmac_size_tail_mutations(requested);
                 const uint32_t source_mutations = dmac_size_source_mutations();
                 const uint32_t elapsed_us = dmac_elapsed_us(start_us, end_us);
                 if (prefix > max_prefix) max_prefix = prefix;
                 if (stray > max_stray) max_stray = stray;
+                if (tail_mutations > max_tail_mutations) {
+                    max_tail_mutations = tail_mutations;
+                }
                 if (source_mutations > max_source_mutations) {
                     max_source_mutations = source_mutations;
                 }
                 if (elapsed_us > max_elapsed_us) max_elapsed_us = elapsed_us;
                 if (last_result != 0u || prefix != requested || stray != 0u ||
-                    source_mutations != 0u) {
+                    source_mutations != 0u || tail_mutations != 0u) {
                     ++failed_trials;
                 }
             }
@@ -863,6 +876,7 @@ static void run_dmac_size_matrix(int emulated) {
                 DMAC_SIZE_TRIALS,
                 failed_trials,
                 max_source_mutations,
+                max_tail_mutations,
             };
             emit_record_extended(emulated, "PSP-DMAC-001", case_id,
                                  failed_trials == 0u ? "PASS" : "FAIL",

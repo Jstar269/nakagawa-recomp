@@ -165,16 +165,20 @@ for the last DMAC return and these outputs: `out0` requested bytes, `out1`
 maximum contiguous copied prefix, `out2` maximum non-sentinel bytes after that
 prefix, `out3` full-source integrity flag, `out4` maximum elapsed microseconds,
 `out5` API (`0` blocking, `1` try), `out6` trial count, `out7` failed-trial
-count, and `out8` maximum mutation count in the adjacent source guard. Before
-each call the probe writes back and invalidates both spans; after the call it
-invalidates both spans before inspection. A PASS record requires every trial to
-return zero, copy the complete requested prefix, leave sentinels and the full
-source/guard unchanged, and emit all 16 matrix records. These fully in-VRAM
+count, `out8` maximum mutation count in the adjacent source guard, and `out9`
+maximum mutation count in the destination redzone after the request. Before
+each call the probe initializes and cache-syncs the full 1 MiB destination
+reservation and syncs the full source span; after the call it invalidates both
+full spans before inspection. The destination redzone is empty for the 1 MiB
+request, where the adjacent source span remains the guard. A PASS record
+requires every trial to return zero, copy the complete requested prefix, leave
+the requested tail, post-request redzone, and full source/guard unchanged, and
+emit all 16 matrix records. These fully in-VRAM
 spans are the control for separating transfer size from allocator-boundary
-truncation. A current local PSP-3000/6.61 capture passed all 16 records, but
-it remains local diagnostic evidence until the trusted provenance/publication
-record is refreshed; the probe itself does not promote results to public
-hardware evidence.
+truncation. An earlier local PSP-3000/6.61 capture passed the old 16-record
+contract, but it lacks `out9` and cannot qualify under this stricter validator.
+It remains local diagnostic evidence; the probe itself does not promote results
+to public hardware evidence.
 
 The existing runner can retain and validate the host0 stream after launching the
 PRX. Supply the local path that `usbhostfs_pc` exposes as `host0:`:
