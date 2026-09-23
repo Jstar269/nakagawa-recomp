@@ -25,6 +25,46 @@ static bool player_view_is_library(PlayerView view) {
     return view == VIEW_LIBRARY || view == PLAYER_VIEW_READY_LIBRARY;
 }
 
+static bool player_populate_inspected_game(PlayerApp *app, const char *iso_path,
+                                           const IsoInspectResult *result,
+                                           char *error, size_t error_len) {
+    if (!app || !iso_path || !result) return false;
+    GameRecord *game = &app->inspecting_game;
+    memset(game, 0, sizeof(*game));
+    snprintf(game->disc_id, sizeof(game->disc_id), "%s", result->disc_id);
+    snprintf(game->title_name, sizeof(game->title_name), "%s", result->title_name);
+    snprintf(game->disc_version, sizeof(game->disc_version), "%s", result->disc_version);
+    snprintf(game->iso_path, sizeof(game->iso_path), "%s", iso_path);
+    snprintf(game->title_id, sizeof(game->title_id), "%s", result->matched_title_id);
+    game->iso_size_bytes = result->file_size;
+    game->status = (NkGameSupportStatus)result->status;
+    game->executable_eboot_kind = (uint32_t)result->executables.eboot.kind;
+    game->executable_boot_kind = (uint32_t)result->executables.boot.kind;
+    game->executable_selection = (uint32_t)result->executables.selected;
+    game->executable_boot_fallback = result->executables.boot_fallback;
+    snprintf(game->selected_executable, sizeof(game->selected_executable), "%s",
+             result->executables.selected_path);
+
+    if (!result->is_supported && result->param_sfo_parsed) {
+        char user_data_root[NK_MAX_PATH];
+        char profile_id[64];
+        if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root)) ||
+            !nk_title_manifest_write_experimental_profile(
+                iso_path, result->param_sfo_parsed, result->disc_id,
+                result->title_name, result->executables.selected_path,
+                user_data_root, profile_id, sizeof(profile_id), error, error_len)) {
+            if (error && error_len && !error[0]) {
+                snprintf(error, error_len, "Could not create the local experimental title profile.");
+            }
+            return false;
+        }
+        snprintf(game->title_id, sizeof(game->title_id), "%s", profile_id);
+        game->is_experimental = true;
+        game->status = NK_STATUS_IDENTIFIED;
+    }
+    return true;
+}
+
 static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
     (void)filter;
     PlayerApp *app = (PlayerApp *)userdata;
@@ -41,15 +81,25 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
 
     IsoInspectResult res;
     if (iso_inspect_file(selected_path, &res)) {
-        snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "%s", res.disc_id);
-        snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "%s", res.title_name);
-        snprintf(app->inspecting_game.disc_version, sizeof(app->inspecting_game.disc_version), "%s", res.disc_version);
-        snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "%s", selected_path);
-        if (res.matched_title_id[0]) {
-            snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id), "%s", res.matched_title_id);
+        char profile_error[256] = "";
+        if (!player_populate_inspected_game(app, selected_path, &res,
+                                            profile_error, sizeof(profile_error))) {
+            if (app->active_view == VIEW_SETUP_WIZARD) {
+                player_app_wizard_reset_extraction(app);
+                app->wizard.iso_selected = false;
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "%s", profile_error[0] ? profile_error : "Experimental profile could not be saved.");
+            } else {
+                player_app_set_error(app, "EXPERIMENTAL_PROFILE_FAILED",
+                                     "Could Not Save Experimental Profile",
+                                     profile_error[0] ? profile_error : "Experimental profile could not be saved.",
+                                     "Return to Library", VIEW_LIBRARY);
+            }
+            return;
         }
-        app->inspecting_game.iso_size_bytes = res.file_size;
-        app->inspecting_game.status = (NkGameSupportStatus)res.status;
+        player_app_build_compatibility_preflight(app, res.success,
+                                                  res.param_sfo_parsed,
+                                                  &res.executables);
         app->inspecting_game.is_prepared = false;
         app->inspecting_game.prepared_root[0] = '\0';
 
@@ -57,9 +107,17 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
             player_app_wizard_reset_extraction(app);
             app->wizard.iso_selected = true;
             app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
-            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                     "%s (%s) verified successfully.", res.title_name, res.disc_id);
+            if (app->inspecting_game.is_experimental) {
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "Experimental: this game has not been verified. Compatibility is unknown. Review the missing preflight checks below.");
+            } else {
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "Disc image inspected: %s (%s). Review the preflight checks below.",
+                         res.title_name, res.disc_id);
+            }
             app->focus_index = 0;
+        } else if (app->inspecting_game.is_experimental) {
+            player_app_set_view(app, VIEW_EXPERIMENTAL_TITLE);
         } else if (res.is_supported) {
             player_app_set_view(app, VIEW_SUPPORTED_TITLE);
         } else {
@@ -258,7 +316,7 @@ static bool adopt_existing_staged_root(PlayerApp *app, const char *final_root) {
                            sizeof(app->inspecting_game.prepared_root),
                            final_root)) return false;
     app->inspecting_game.assets_staged = true;
-    app->inspecting_game.is_prepared = nk_launch_runtime_available(
+    app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
         app->runtime_root[0] ? app->runtime_root : NULL,
         app->inspecting_game.title_id);
     app->inspecting_game.status = app->inspecting_game.is_prepared
@@ -392,7 +450,7 @@ static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
            available recompiled runtime may make this entry launch-ready; a
            staged retail source without that runtime remains actionable but
            fail-closed when PLAY/LAUNCH PREPARED is activated. */
-        app->inspecting_game.is_prepared = nk_launch_runtime_available(
+        app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
             app->runtime_root[0] ? app->runtime_root : NULL,
             app->inspecting_game.title_id);
         app->inspecting_game.status = app->inspecting_game.is_prepared
@@ -483,7 +541,7 @@ static int stage_iso_synchronously(PlayerApp *app) {
     app->inspecting_game.extracted_audio_count = summary.extracted_audio_count;
     app->inspecting_game.extracted_visual_count = summary.extracted_visual_count;
     app->inspecting_game.extracted_layout_count = summary.extracted_layout_count;
-    app->inspecting_game.is_prepared = nk_launch_runtime_available(
+    app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
         app->runtime_root[0] ? app->runtime_root : NULL,
         app->inspecting_game.title_id);
     app->inspecting_game.status = app->inspecting_game.is_prepared
@@ -631,15 +689,16 @@ int main(int argc, char *argv[]) {
         if (iso_inspect_file(initial_iso_path, &res)) {
             printf("[PLAYER] Inspected ISO %s -> Disc ID: %s, Title: %s, Supported: %d\n",
                    initial_iso_path, res.disc_id, res.title_name, res.is_supported ? 1 : 0);
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "%s", res.disc_id);
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "%s", res.title_name);
-            snprintf(app.inspecting_game.disc_version, sizeof(app.inspecting_game.disc_version), "%s", res.disc_version);
-            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path), "%s", initial_iso_path);
-            if (res.matched_title_id[0]) {
-                snprintf(app.inspecting_game.title_id, sizeof(app.inspecting_game.title_id), "%s", res.matched_title_id);
+            char profile_error[256] = "";
+            if (!player_populate_inspected_game(&app, initial_iso_path, &res,
+                                                profile_error, sizeof(profile_error))) {
+                fprintf(stderr, "[PLAYER] Could not create experimental profile: %s\n",
+                        profile_error[0] ? profile_error : "unspecified profile error");
+                return 4;
             }
-            app.inspecting_game.iso_size_bytes = res.file_size;
-            app.inspecting_game.status = (NkGameSupportStatus)res.status;
+            player_app_build_compatibility_preflight(&app, res.success,
+                                                      res.param_sfo_parsed,
+                                                      &res.executables);
             /* is_prepared intentionally NOT set: no preparation has run in this
              * build; the entry keeps the inspection-reported status. */
 
@@ -656,6 +715,9 @@ int main(int argc, char *argv[]) {
                 player_app_start_setup_wizard(&app);
                 app.wizard.iso_selected = true;
                 app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+                player_app_build_compatibility_preflight(&app, res.success,
+                                                          res.param_sfo_parsed,
+                                                          &res.executables);
                 if (stage_only) {
                     return stage_iso_synchronously(&app);
                 }
@@ -664,14 +726,13 @@ int main(int argc, char *argv[]) {
                 snprintf(app.wizard.status_message, sizeof(app.wizard.status_message),
                          "Extracting game assets into local application data...");
             } else {
-            /* Persist only a qualified title. The interactive flow offers ADD
-               TO LIBRARY solely on the supported-title screen, so opening an
-               unsupported image through --iso or a file association used to
-               add it to the library permanently while the very next view said
-               the title was not qualified. */
-            bool stored = res.is_supported && player_app_add_game(&app, &app.inspecting_game);
+            /* Catalogued titles and structurally identified experimental discs
+               are useful library entries. Images without parsed PARAM.SFO
+               remain refused on the unsupported view. */
+            bool should_store = res.is_supported || app.inspecting_game.is_experimental;
+            bool stored = should_store && player_app_add_game(&app, &app.inspecting_game);
 
-            if (res.is_supported && !stored) {
+            if (should_store && !stored) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
                         app.inspecting_game.disc_id);
                 player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
@@ -679,8 +740,9 @@ int main(int argc, char *argv[]) {
                                      "or the user data directory is not writable.",
                                      "Return to Library", VIEW_LIBRARY);
             } else if (stored) {
-                player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
-                if (launch_now) {
+                player_app_set_view(&app, app.inspecting_game.is_experimental
+                    ? VIEW_EXPERIMENTAL_TITLE : VIEW_SUPPORTED_TITLE);
+                if (launch_now && !app.inspecting_game.is_experimental) {
                     printf("[PLAYER] Launching supported title now...\n");
                     const char *target_root = app.runtime_root[0] ? app.runtime_root : NULL;
                     /* nk_library_add_or_update updates an existing record in

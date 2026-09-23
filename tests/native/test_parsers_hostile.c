@@ -413,6 +413,7 @@ static void test_hostile_iso_parser(const char *test_dir) {
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_scan, &meta) == NK_OK);
     assert(strcmp(meta.disc_id, "TEST00001") == 0);   /* still reported */
+    assert(meta.param_sfo_parsed == false);
     assert(meta.is_supported == false);               /* but never trusted */
     assert(meta.status != NK_STATUS_VERIFIED);
     assert(meta.matched_title == NULL);
@@ -456,6 +457,7 @@ static void test_hostile_iso_parser(const char *test_dir) {
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_embed, &meta) == NK_OK);
     assert(strcmp(meta.disc_id, "TEST00001") == 0);   /* parsed, so reported */
+    assert(meta.param_sfo_parsed == false);
     assert(meta.is_supported == false);               /* but never trusted   */
     assert(meta.status != NK_STATUS_VERIFIED);
     assert(meta.matched_title == NULL);
@@ -527,6 +529,196 @@ static void test_hostile_iso_parser(const char *test_dir) {
     assert(strcmp(meta.disc_id, "TEST00001") == 0);
 
     printf("[HOSTILE_TEST] ISO parser tests PASSED!\n");
+}
+
+static void write_le16_test(uint8_t *dst, uint16_t value) {
+    dst[0] = (uint8_t)value;
+    dst[1] = (uint8_t)(value >> 8);
+}
+
+static void write_le32_test(uint8_t *dst, uint32_t value) {
+    dst[0] = (uint8_t)value;
+    dst[1] = (uint8_t)(value >> 8);
+    dst[2] = (uint8_t)(value >> 16);
+    dst[3] = (uint8_t)(value >> 24);
+}
+
+static void write_both_endian_test(uint8_t *dst, uint32_t value) {
+    write_le32_test(dst, value);
+    dst[4] = (uint8_t)(value >> 24);
+    dst[5] = (uint8_t)(value >> 16);
+    dst[6] = (uint8_t)(value >> 8);
+    dst[7] = (uint8_t)value;
+}
+
+static size_t append_iso_record_test(uint8_t *directory, size_t offset,
+                                     const uint8_t *name, uint8_t name_size,
+                                     uint32_t lba, uint32_t size, bool is_dir) {
+    size_t record_size = 33u + name_size;
+    if ((record_size & 1u) != 0) record_size++;
+    uint8_t *record = directory + offset;
+    memset(record, 0, record_size);
+    record[0] = (uint8_t)record_size;
+    write_both_endian_test(record + 2, lba);
+    write_both_endian_test(record + 10, size);
+    record[25] = is_dir ? 2u : 0u;
+    record[28] = 1u;
+    record[31] = 1u;
+    record[32] = name_size;
+    memcpy(record + 33, name, name_size);
+    return offset + record_size;
+}
+
+static void build_executable_iso_test(const char *path,
+                                      const void *eboot, size_t eboot_size,
+                                      const void *boot, size_t boot_size) {
+    const size_t sector_size = 2048;
+    const size_t image_size = 22u * sector_size;
+    uint8_t *image = (uint8_t *)calloc(image_size, 1);
+    assert(image != NULL);
+    assert(eboot_size <= sector_size && boot_size <= sector_size);
+
+    uint8_t *pvd = image + 16u * sector_size;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    write_both_endian_test(pvd + 158, 17);
+    write_both_endian_test(pvd + 166, (uint32_t)sector_size);
+    {
+        const uint8_t dot[] = { 0 };
+        append_iso_record_test(pvd + 156, 0, dot, 1, 17,
+                               (uint32_t)sector_size, true);
+    }
+
+    uint8_t *root = image + 17u * sector_size;
+    uint8_t *game = image + 18u * sector_size;
+    uint8_t *sysdir = image + 19u * sector_size;
+    const uint8_t dot[] = { 0 }, dotdot[] = { 1 };
+    size_t used = 0;
+    used = append_iso_record_test(root, used, dot, 1, 17, (uint32_t)sector_size, true);
+    used = append_iso_record_test(root, used, dotdot, 1, 17, (uint32_t)sector_size, true);
+    used = append_iso_record_test(root, used, (const uint8_t *)"PSP_GAME", 8,
+                                  18, (uint32_t)sector_size, true);
+    (void)used;
+
+    used = 0;
+    used = append_iso_record_test(game, used, dot, 1, 18, (uint32_t)sector_size, true);
+    used = append_iso_record_test(game, used, dotdot, 1, 17, (uint32_t)sector_size, true);
+    used = append_iso_record_test(game, used, (const uint8_t *)"SYSDIR", 6,
+                                  19, (uint32_t)sector_size, true);
+    (void)used;
+
+    used = 0;
+    used = append_iso_record_test(sysdir, used, dot, 1, 19, (uint32_t)sector_size, true);
+    used = append_iso_record_test(sysdir, used, dotdot, 1, 18, (uint32_t)sector_size, true);
+    used = append_iso_record_test(sysdir, used, (const uint8_t *)"EBOOT.BIN;1", 11,
+                                  20, (uint32_t)eboot_size, false);
+    append_iso_record_test(sysdir, used, (const uint8_t *)"BOOT.BIN;1", 10,
+                           21, (uint32_t)boot_size, false);
+    if (eboot_size) memcpy(image + 20u * sector_size, eboot, eboot_size);
+    if (boot_size) memcpy(image + 21u * sector_size, boot, boot_size);
+    write_test_file(path, image, image_size);
+    free(image);
+}
+
+static void make_plain_mips_elf_test(uint8_t elf[88]) {
+    memset(elf, 0, 88);
+    memcpy(elf, "\x7f" "ELF", 4);
+    elf[4] = 1; /* ELF32 */
+    elf[5] = 1; /* little-endian */
+    elf[6] = 1;
+    write_le16_test(elf + 16, 2); /* ET_EXEC */
+    write_le16_test(elf + 18, 8); /* EM_MIPS */
+    write_le32_test(elf + 20, 1);
+    write_le32_test(elf + 24, 0x08800000u);
+    write_le32_test(elf + 28, 52);
+    write_le16_test(elf + 40, 52);
+    write_le16_test(elf + 42, 32);
+    write_le16_test(elf + 44, 1);
+    write_le32_test(elf + 52, 1); /* PT_LOAD */
+    write_le32_test(elf + 56, 84);
+    write_le32_test(elf + 60, 0x08800000u);
+    write_le32_test(elf + 64, 0x08800000u);
+    write_le32_test(elf + 68, 4);
+    write_le32_test(elf + 72, 4);
+    write_le32_test(elf + 76, 5); /* PF_R | PF_X */
+    write_le32_test(elf + 80, 4);
+    elf[84] = 0x34; elf[85] = 0x12; elf[86] = 0x00; elf[87] = 0x00;
+}
+
+static NkIsoExecutableReport classify_executable_fixture(
+    const char *test_dir, const char *name,
+    const void *eboot, size_t eboot_size, const void *boot, size_t boot_size) {
+    char path[600];
+    NkIsoExecutableReport report;
+    snprintf(path, sizeof(path), "%s%c%s.iso", test_dir,
+             nk_platform_path_separator(), name);
+    build_executable_iso_test(path, eboot, eboot_size, boot, boot_size);
+    assert(nk_iso_classify_executables(path, &report) == NK_OK);
+    return report;
+}
+
+static void test_iso_executable_classification(const char *test_dir) {
+    uint8_t elf[88], encrypted[0x80] = { 0 }, wrapper[32] = { 0 };
+    uint8_t pbp[32] = { 0 }, zeros[64] = { 0 }, unknown[16] = { 1 };
+    uint8_t hostile_elf[88] = { 0 }, truncated_psp[16] = { 0 };
+    make_plain_mips_elf_test(elf);
+    memcpy(encrypted, "~PSP", 4);
+    encrypted[0x27] = 1;
+    write_le32_test(encrypted + 0x54, 0x1000);
+    memcpy(wrapper, "~SCE", 4);
+    memcpy(pbp, "\0PBP", 4);
+    memcpy(hostile_elf, "\x7f" "ELF", 4);
+    hostile_elf[4] = 1; hostile_elf[5] = 1; hostile_elf[6] = 1;
+    write_le16_test(hostile_elf + 16, 2);
+    write_le16_test(hostile_elf + 18, 8);
+    write_le32_test(hostile_elf + 20, 1);
+    write_le32_test(hostile_elf + 28, UINT32_MAX - 3u);
+    write_le16_test(hostile_elf + 40, 52);
+    write_le16_test(hostile_elf + 42, 32);
+    write_le16_test(hostile_elf + 44, 2);
+    memcpy(truncated_psp, "~PSP", 4);
+
+    printf("[HOSTILE_TEST] Testing ISO executable classification and BOOT fallback...\n");
+    NkIsoExecutableReport report = classify_executable_fixture(
+        test_dir, "exec_plain_elf", elf, sizeof(elf), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_MIPS_ELF32);
+    assert(report.selected == NK_ISO_EXEC_SELECTION_EBOOT);
+    assert(strcmp(report.selected_path, "EBOOT.BIN") == 0);
+
+    report = classify_executable_fixture(test_dir, "exec_boot_fallback",
+                                         encrypted, sizeof(encrypted), elf, sizeof(elf));
+    assert(report.eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED);
+    assert(report.boot.kind == NK_ISO_EXEC_MIPS_ELF32);
+    assert(report.selected == NK_ISO_EXEC_SELECTION_BOOT && report.boot_fallback);
+    assert(strcmp(report.selected_path, "BOOT.BIN") == 0);
+
+    report = classify_executable_fixture(test_dir, "exec_encrypted",
+                                         encrypted, sizeof(encrypted), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED);
+    assert(report.selected == NK_ISO_EXEC_SELECTION_NONE);
+
+    report = classify_executable_fixture(test_dir, "exec_sce_wrapper",
+                                         wrapper, sizeof(wrapper), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_SCE_WRAPPER);
+    report = classify_executable_fixture(test_dir, "exec_empty",
+                                         NULL, 0, NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_EMPTY_OR_ZERO);
+    report = classify_executable_fixture(test_dir, "exec_zero_filled",
+                                         zeros, sizeof(zeros), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_EMPTY_OR_ZERO);
+    report = classify_executable_fixture(test_dir, "exec_pbp",
+                                         pbp, sizeof(pbp), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_PBP);
+    report = classify_executable_fixture(test_dir, "exec_unknown",
+                                         unknown, sizeof(unknown), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_UNKNOWN);
+    report = classify_executable_fixture(test_dir, "exec_hostile_elf",
+                                         hostile_elf, sizeof(hostile_elf), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_UNKNOWN);
+    report = classify_executable_fixture(test_dir, "exec_truncated_psp",
+                                         truncated_psp, sizeof(truncated_psp), NULL, 0);
+    assert(report.eboot.kind == NK_ISO_EXEC_UNKNOWN);
 }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -608,6 +800,7 @@ int main(void) {
 
     test_hostile_library_json(hostile_dir);
     test_hostile_iso_parser(hostile_dir);
+    test_iso_executable_classification(hostile_dir);
 #if defined(_WIN32) || defined(_WIN64)
     test_invalid_utf8_path_is_refused(hostile_dir);
 #endif
