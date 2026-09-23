@@ -1035,7 +1035,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b54b5e846f7b3fee2c558fae7f4ba61dbe373a15d81d0d262148f57ec1b0b625"
+      "sha256": "09b754fee6eccf497c99d4ef3954f45db3f4ed46fb65276897655529571dcafb"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -3633,7 +3633,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a8f2edaadd505dc3441d30c22bea7b23899590e89403901371c8a8ec3767168"
+      "sha256": "26cc3427ab44270271edba9a5a75c5a42a8d93cc8134abe3c2a9e9eb3eada51d"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -6673,7 +6673,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "de86479c74196d51a8ea39d49330c8a5f000e76a0e22076166aef409dee9f64f"
+      "sha256": "afac9c92c3f79dc648de9841ce80fdddde02fbb4d9c3d336912df1736ab8c587"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -7532,7 +7532,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bc5958ad288c951474ce1e9c101ea0b67efe1c244cde1ef2def2fb57c43b1c6d"
+      "sha256": "c4a64c7e095790b17a7c9702664ebdab0b7c58dfd857b1b9f2cedb546f0142e7"
     },
     {
       "path": "tools/nk_core/library.py",
@@ -8993,7 +8993,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "919a2fdb5022ef199c493f8bfa6c7a7c75c4ab70224eaad74f6768df7c0a1e0b"
+      "sha256": "9887c97185a0950f3949aff065fc89ca1839d8de3db4951a79057f2c3ebfcb80"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -9917,10 +9917,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "b0f1a32861181fa1f6ad7a29de68e7f1fa1809de",
-    "candidate_tree": "09fc9186774b89016cbbdd0cd2c6f2ebf2ac56ce",
+    "trusted_tree": "7561dea8330cfc3ab22896fbaee0bab77d0d178d",
+    "candidate_tree": "b1ac10fbdd4ca52d4db9393ed86db7e17639c4d1",
     "refreshed_paths": [
-      "docs/TITLE_PROFILE_ARCHITECTURE.md"
+      "docs/TITLE_PROFILE_ARCHITECTURE.md",
+      "src/core/nk_launch.c",
+      "tests/native/test_launch_resolution.c",
+      "tools/nk_core/launcher.py",
+      "tools/test_nk_core.py"
     ]
   }
 }

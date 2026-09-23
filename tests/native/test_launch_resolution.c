@@ -17,6 +17,10 @@
  * particular separator or on an executable carrying an extension.
  */
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "nk_launch.h"
 #include "nk_platform.h"
 #include "nk_title_manifest.h"
@@ -24,12 +28,14 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #define test_rmdir _rmdir
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #define test_rmdir rmdir
 #endif
@@ -41,6 +47,193 @@ static void write_file(const char *path, const char *data) {
         assert(fwrite(data, 1, strlen(data), f) == strlen(data));
     }
     fclose(f);
+}
+
+static void set_environment_value(const char *name, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, value) == 0);
+#else
+    assert(setenv(name, value, 1) == 0);
+#endif
+}
+
+static void restore_environment_value(const char *name, const char *value,
+                                      bool was_set) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, was_set ? value : "") == 0);
+#else
+    if (was_set) assert(setenv(name, value, 1) == 0);
+    else assert(unsetenv(name) == 0);
+#endif
+}
+
+static char *capture_environment_value(const char *name, bool *was_set) {
+    const char *current = getenv(name);
+    *was_set = current != NULL;
+    if (!current) return NULL;
+
+    size_t length = strlen(current);
+    char *copy = (char *)malloc(length + 1);
+    assert(copy != NULL);
+    memcpy(copy, current, length + 1);
+    return copy;
+}
+
+static void copy_executable(const char *source_path, const char *destination_path) {
+    FILE *source = fopen(source_path, "rb");
+    FILE *destination = fopen(destination_path, "wb");
+    assert(source != NULL);
+    assert(destination != NULL);
+
+    uint8_t buffer[16384];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) != 0) {
+        assert(fwrite(buffer, 1, count, destination) == count);
+    }
+    assert(!ferror(source));
+#if !defined(_WIN32) && !defined(_WIN64)
+    assert(fchmod(fileno(destination), S_IRUSR | S_IWUSR | S_IXUSR) == 0);
+#endif
+    assert(fclose(destination) == 0);
+    assert(fclose(source) == 0);
+}
+
+static int write_launch_environment_probe(void) {
+    const char *report_path = getenv("NK_LAUNCH_TEST_REPORT_FILE");
+    if (!report_path || !*report_path) return 2;
+
+    FILE *f = fopen(report_path, "wb");
+    if (!f) return 3;
+    const char *iso = getenv("PSP_ISO");
+    const char *unrelated = getenv("NK_LAUNCH_TEST_UNRELATED");
+    int ok = fprintf(f, "PSP_ISO=%s\nNK_LAUNCH_TEST_UNRELATED=%s\n",
+                     iso ? iso : "<unset>",
+                     unrelated ? unrelated : "<unset>") >= 0;
+    if (fclose(f) != 0) ok = 0;
+    return ok ? 0 : 4;
+}
+
+static void write_valid_elf(const char *path, uint32_t base, uint32_t entry);
+static bool ends_with(const char *s, const char *suffix);
+static void make_game(NkGameEntry *game, const char *iso_path);
+
+static void test_no_iso_child_environment(const char *test_executable,
+                                          const char *base, char sep) {
+    printf("[LAUNCH_TEST] Subtest 18: no-ISO child environment isolation\n");
+    fflush(stdout);
+
+    char root[800];
+    char runtime_dir[900];
+    char runtime_path[1000];
+    char image_path[1000];
+    char stage_root[900];
+    char staged_eboot[1000];
+    char staged_xbdata[1000];
+    char report_path[1000];
+    char absolute_test_executable[1000];
+    snprintf(root, sizeof(root), "%s%cno_iso_environment", base, sep);
+    snprintf(runtime_dir, sizeof(runtime_dir), "%s%cbuild%cdisplay-smoke",
+             root, sep, sep);
+#if defined(_WIN32) || defined(_WIN64)
+    snprintf(runtime_path, sizeof(runtime_path), "%s%cdisplay-smoke.exe",
+             runtime_dir, sep);
+#else
+    snprintf(runtime_path, sizeof(runtime_path), "%s%cdisplay-smoke",
+             runtime_dir, sep);
+#endif
+    snprintf(image_path, sizeof(image_path), "%s%cdisplay-smoke_image.bin",
+             runtime_dir, sep);
+    snprintf(stage_root, sizeof(stage_root), "%s%cprepared", root, sep);
+    snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN",
+             stage_root, sep);
+    snprintf(staged_xbdata, sizeof(staged_xbdata), "%s%cxbdata",
+             stage_root, sep);
+    snprintf(report_path, sizeof(report_path), "%s%creport.txt", root, sep);
+
+    assert(nk_platform_mkdir_p(root));
+    assert(nk_platform_mkdir_p(runtime_dir));
+    assert(nk_platform_mkdir_p(staged_xbdata));
+    assert(nk_platform_absolute_path(test_executable, absolute_test_executable,
+                                     sizeof(absolute_test_executable)));
+    copy_executable(absolute_test_executable, runtime_path);
+    write_file(image_path, "synthetic image");
+    write_valid_elf(staged_eboot, 0x08810000u, 0x08810000u);
+
+    NkGameEntry game;
+    NkLaunchSession session;
+    make_game(&game, "");
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
+    snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    assert(strlen(stage_root) < sizeof(game.prepared_root));
+    memcpy(game.prepared_root, stage_root, strlen(stage_root) + 1);
+    game.assets_staged = true;
+
+    bool had_iso;
+    bool had_report;
+    bool had_unrelated;
+    char *old_iso = capture_environment_value("PSP_ISO", &had_iso);
+    char *old_report = capture_environment_value("NK_LAUNCH_TEST_REPORT_FILE",
+                                                 &had_report);
+    char *old_unrelated = capture_environment_value("NK_LAUNCH_TEST_UNRELATED",
+                                                   &had_unrelated);
+    set_environment_value("PSP_ISO", "poisoned-parent.iso");
+    set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
+    set_environment_value("NK_LAUNCH_TEST_UNRELATED", "preserve-me");
+
+    assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
+    assert(session.iso_path[0] == '\0');
+    assert(session.staged_executable_checked);
+    assert(ends_with(session.executable_path, "display-smoke") ||
+           ends_with(session.executable_path, "display-smoke.exe"));
+    assert(nk_launch_start(&session) == NK_OK);
+
+    int child_exit = nk_launch_wait(&session, -1);
+    nk_launch_stop(&session);
+    assert(child_exit == 0);
+    assert(getenv("PSP_ISO") != NULL);
+    assert(strcmp(getenv("PSP_ISO"), "poisoned-parent.iso") == 0);
+    assert(getenv("NK_LAUNCH_TEST_UNRELATED") != NULL);
+    assert(strcmp(getenv("NK_LAUNCH_TEST_UNRELATED"), "preserve-me") == 0);
+
+    FILE *report = fopen(report_path, "rb");
+    assert(report != NULL);
+    char observed[512];
+    size_t observed_size = fread(observed, 1, sizeof(observed) - 1, report);
+    observed[observed_size] = '\0';
+    assert(!ferror(report));
+    assert(fclose(report) == 0);
+    assert(strstr(observed, "PSP_ISO=\n") != NULL);
+    assert(strstr(observed,
+                  "NK_LAUNCH_TEST_UNRELATED=preserve-me\n") != NULL);
+
+    restore_environment_value("PSP_ISO", old_iso, had_iso);
+    restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
+                              had_report);
+    restore_environment_value("NK_LAUNCH_TEST_UNRELATED", old_unrelated,
+                              had_unrelated);
+    free(old_iso);
+    free(old_report);
+    free(old_unrelated);
+
+    remove(report_path);
+    remove(runtime_path);
+    remove(image_path);
+    remove(staged_eboot);
+    {
+        char stage_memstick[1000];
+        snprintf(stage_memstick, sizeof(stage_memstick), "%s%cmemstick",
+                 stage_root, sep);
+        test_rmdir(stage_memstick);
+    }
+    test_rmdir(staged_xbdata);
+    test_rmdir(stage_root);
+    test_rmdir(runtime_dir);
+    {
+        char build_dir[900];
+        snprintf(build_dir, sizeof(build_dir), "%s%cbuild", root, sep);
+        test_rmdir(build_dir);
+    }
+    test_rmdir(root);
 }
 
 static void write_le16(uint8_t *p, uint16_t value) {
@@ -114,7 +307,11 @@ static void make_game(NkGameEntry *game, const char *iso_path) {
     snprintf(game->iso_path, sizeof(game->iso_path), "%s", iso_path);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--image") == 0) {
+        return write_launch_environment_probe();
+    }
+
     char cache_dir[512];
     assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
 
@@ -819,6 +1016,11 @@ int main(void) {
     }
     test_rmdir(legacy_dir);
     test_rmdir(root17);
+
+    /* 18. A staged session without an ISO must clear an inherited PSP_ISO
+     * when the runtime is actually spawned. The sentinel verifies that the
+     * child still receives unrelated parent environment values. */
+    test_no_iso_child_environment(argv[0], base, sep);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     return 0;

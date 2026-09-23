@@ -267,6 +267,7 @@ class RuntimeLauncher:
 
         # Environment variables configured strictly for this execution session
         env = dict(os.environ)
+        env.pop("PSP_ISO", None)
         if iso_path:
             iso_file = Path(iso_path)
             if not iso_file.is_file():
