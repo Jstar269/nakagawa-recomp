@@ -6673,7 +6673,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "34b6a27480f6583dd69248819b8aa4d742132373d2e00006b588a9f8b78a901a"
+      "sha256": "afac9c92c3f79dc648de9841ce80fdddde02fbb4d9c3d336912df1736ab8c587"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -9918,7 +9918,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "7561dea8330cfc3ab22896fbaee0bab77d0d178d",
-    "candidate_tree": "08fc0ae554a51bf37b2eb99df97341df7e2eb32f",
+    "candidate_tree": "b1ac10fbdd4ca52d4db9393ed86db7e17639c4d1",
     "refreshed_paths": [
       "docs/TITLE_PROFILE_ARCHITECTURE.md",
       "src/core/nk_launch.c",

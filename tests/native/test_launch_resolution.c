@@ -91,11 +91,11 @@ static void copy_executable(const char *source_path, const char *destination_pat
         assert(fwrite(buffer, 1, count, destination) == count);
     }
     assert(!ferror(source));
+#if !defined(_WIN32) && !defined(_WIN64)
+    assert(fchmod(fileno(destination), S_IRUSR | S_IWUSR | S_IXUSR) == 0);
+#endif
     assert(fclose(destination) == 0);
     assert(fclose(source) == 0);
-#if !defined(_WIN32) && !defined(_WIN64)
-    assert(chmod(destination_path, S_IRUSR | S_IWUSR | S_IXUSR) == 0);
-#endif
 }
 
 static int write_launch_environment_probe(void) {
