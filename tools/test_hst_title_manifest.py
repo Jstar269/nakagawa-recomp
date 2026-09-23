@@ -11,6 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import test_public_title_isolation
 import title_manifest
 
 
@@ -18,9 +19,13 @@ class HstTitleManifestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.path = ROOT / "assets" / "titles" / "hst-ucus98701.json"
-        if not cls.path.is_file():
+        # Opt-in by *tracked bytes*, never by directory presence (#335): an
+        # ignored developer lookalike must not silently stand in for the
+        # private fixture.
+        if not test_public_title_isolation.private_title_tests_enabled("assets/titles/hst-ucus98701.json"):
             raise unittest.SkipTest(
-                "private HST title manifest is unavailable in the sanitized public tree"
+                "private HST title manifest is unavailable (set NK_PRIVATE_TITLE_TESTS=1 to "
+                "opt in with a local ignored manifest)"
             )
 
     def setUp(self) -> None:

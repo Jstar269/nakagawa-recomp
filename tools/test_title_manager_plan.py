@@ -15,14 +15,18 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import title_codegen_plan
 import title_manifest
+import test_public_title_isolation
 
 
 class TitleManagerPlanTests(unittest.TestCase):
     def setUp(self) -> None:
         self.hst_path = ROOT / "assets" / "titles" / "hst-ucus98701.json"
+        # Opt-in by *tracked bytes*, never by directory presence (#335): a
+        # developer's gitignored lookalike must not silently stand in for the
+        # private fixture and flip this suite's public/private expectations.
         self.hst = (
             title_manifest.load_manifest(self.hst_path)
-            if self.hst_path.is_file()
+            if test_public_title_isolation.is_tracked("assets/titles/hst-ucus98701.json")
             else None
         )
         self.synthetic = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
