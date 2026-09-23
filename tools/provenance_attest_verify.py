@@ -146,6 +146,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -925,6 +926,82 @@ def _generate_ephemeral_ledger(
     return output, protected, trusted_scope
 
 
+def _reconcile_refresh_audit(
+    *,
+    generated: dict,
+    candidate_blobs: dict[str, bytes],
+    base_blobs: dict[str, bytes],
+    base_tree: str,
+    authorized_policy_delta: dict | None,
+) -> dict:
+    """Accept canonical refresh audit metadata without trusting its claims.
+
+    ``refresh-reviewed`` replaces the previous audit block and drops an old
+    admission block.  Neither block grants path or content authority.  The
+    generated entries and all other top-level fields must still match the
+    trusted integration-time generation exactly; the audit block may only
+    describe the changed, existing public paths of this candidate.  The
+    pre-refresh candidate tree can be unreachable after a PR is pushed, so its
+    SHA is checked for syntax only.  The verdict binds the actual candidate
+    tree independently through Git blobs and content hashes.
+    """
+
+    raw = candidate_blobs.get(LEDGER_PATH)
+    if raw is None:
+        return generated
+    try:
+        declared = strict_json(raw, code="CANDIDATE_LEDGER_INVALID", label="legacy candidate ledger")
+    except VerifyError:
+        return generated
+    if not isinstance(declared, dict):
+        return generated
+    refresh = declared.get("refresh")
+    expected_fields = {"workflow", "trusted_tree", "candidate_tree", "refreshed_paths"}
+    if authorized_policy_delta is not None:
+        expected_fields |= {"policy_delta", "blessed_candidate_policy_sha256"}
+    if not isinstance(refresh, dict) or set(refresh) != expected_fields:
+        return generated
+    if refresh["workflow"] != "refresh-reviewed" or refresh["trusted_tree"] != base_tree:
+        return generated
+    if authorized_policy_delta is not None:
+        if refresh["policy_delta"] != authorized_policy_delta:
+            return generated
+        if refresh["blessed_candidate_policy_sha256"] != hashlib.sha256(
+            candidate_blobs[POLICY_PATH]
+        ).hexdigest():
+            return generated
+    candidate_tree = refresh["candidate_tree"]
+    if not isinstance(candidate_tree, str) or re.fullmatch(r"[0-9a-f]{40}", candidate_tree) is None:
+        return generated
+
+    changed = sorted(
+        path for path in set(base_blobs) | set(candidate_blobs)
+        if path not in CONTROL_PATHS | {POLICY_PATH}
+        and base_blobs.get(path) != candidate_blobs.get(path)
+    )
+    if not changed or any(path not in base_blobs or path not in candidate_blobs for path in changed):
+        return generated
+    if not set(changed) <= {entry["path"] for entry in generated["entries"]}:
+        return generated
+    if refresh["refreshed_paths"] != changed:
+        return generated
+
+    expected_claims = dict(generated)
+    declared_claims = dict(declared)
+    for document in (expected_claims, declared_claims):
+        document.pop("refresh", None)
+        document.pop("admission", None)
+    if declared_claims != expected_claims:
+        return generated
+
+    reconciled = dict(generated)
+    reconciled.pop("admission", None)
+    reconciled["refresh"] = refresh
+    if _canonical_json_bytes(reconciled) != raw:
+        return generated
+    return reconciled
+
+
 def _generate_ephemeral_export(
     *,
     candidate_blobs: dict[str, bytes],
@@ -1384,6 +1461,13 @@ def verify_ephemeral(
         trusted_policy=trusted_policy,
         candidate_policy=candidate_policy,
         exact_records=exact_records,
+    )
+    generated_ledger = _reconcile_refresh_audit(
+        generated=generated_ledger,
+        candidate_blobs=candidate_blobs,
+        base_blobs=base_blobs,
+        base_tree=base_tree,
+        authorized_policy_delta=policy_delta,
     )
     generated_ledger_bytes = _canonical_json_bytes(generated_ledger)
     generated_export = _generate_ephemeral_export(
