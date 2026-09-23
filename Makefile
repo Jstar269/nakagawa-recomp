@@ -565,6 +565,7 @@ PUBLIC_TARGETS := \
 	check \
 	test \
 	native-core-tests \
+	fuzz-parsers \
 	readiness \
 	provenance-refresh \
 	all \
@@ -659,6 +660,7 @@ HELP_DESCRIPTION_help := list every public Make target and its purpose
 HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
 HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
+HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
 HELP_DESCRIPTION_readiness := run the strict pre-PR gate with external authority
 HELP_DESCRIPTION_provenance-refresh := refresh controls with an external ledger and stage them
 HELP_DESCRIPTION_all := generate and compile the current title runtime
@@ -1937,6 +1939,10 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c \
 		tests/native/test_xb_parser.c -o build/test_xb_parser$(EXE_EXT)
 	./build/test_xb_parser$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
+	./build/test_fuzz_parsers$(EXE_EXT) 100
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
@@ -1949,3 +1955,17 @@ else
 		tests/native/test_posix_process.c -o build/test_posix_process$(EXE_EXT)
 	./build/test_posix_process$(EXE_EXT)
 endif
+
+FUZZ_ITERS ?= 5000
+ifeq ($(OS),Windows_NT)
+FUZZ_SAN_FLAGS :=
+else
+FUZZ_SAN_FLAGS := -fsanitize=address,undefined
+endif
+
+fuzz-parsers:
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
+	./build/test_fuzz_parsers$(EXE_EXT) $(FUZZ_ITERS)

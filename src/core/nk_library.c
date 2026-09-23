@@ -386,11 +386,15 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
     }
     p++;
 
-    while (*p && lib->count < NK_MAX_GAMES) {
+    while (p && *p && lib->count < NK_MAX_GAMES) {
         p = skip_whitespace(p);
+        if (!p || !*p) break;
         if (*p == ']') break;
         if (*p == ',') { p++; continue; }
-        if (*p != '{') { p++; continue; }
+        if (*p != '{') {
+            free(buf);
+            return NK_ERROR_GENERIC;
+        }
         p++;
 
         NkGameEntry entry;
@@ -502,7 +506,8 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                     }
                 }
             } else {
-                p++;
+                entry_failed = true;
+                break;
             }
         }
 

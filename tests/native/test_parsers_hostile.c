@@ -104,6 +104,14 @@ static void test_hostile_library_json(const char *test_dir) {
     write_test_file(fpath, json_garbage, strlen(json_garbage));
     assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
 
+    /* 5b. Truncated games array EOF without closing bracket (regression test for ASan heap-buffer-overflow) */
+    printf("[HOSTILE_TEST] Subtest 5b: truncated games array EOF\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%ctruncated_array_eof.json", test_dir, nk_platform_path_separator());
+    const char json_truncated_eof[] = "{\n  \"schema_version\": 1,\n  \"games\": [";
+    write_test_file(fpath, json_truncated_eof, strlen(json_truncated_eof));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
+    assert(nk_library_count(&lib) == 0);
+
     /* 6. Valid library save & roundtrip */
     printf("[HOSTILE_TEST] Subtest 6: valid roundtrip\n"); fflush(stdout);
     snprintf(fpath, sizeof(fpath), "%s%cvalid_roundtrip.json", test_dir, nk_platform_path_separator());
