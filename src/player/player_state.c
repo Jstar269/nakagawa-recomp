@@ -126,7 +126,11 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                if (game && (game->is_prepared || app->is_game_running)) count++;
+                bool game_has_package = game && game->is_experimental &&
+                    nk_launch_runtime_package_available(player_runtime_root(app),
+                                                        game->title_id);
+                if (game && ((game->is_experimental ? game_has_package : game->is_prepared) ||
+                             app->is_game_running)) count++;
                 count += 2; /* add + remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
@@ -134,6 +138,7 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_INSPECTING:
             return 1;
         case VIEW_SUPPORTED_TITLE:
+        case VIEW_EXPERIMENTAL_TITLE:
             return 2;
         case VIEW_UNSUPPORTED_TITLE:
             return 1;
@@ -373,6 +378,14 @@ void player_app_populate_sample_games(PlayerApp *app) {
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
+
+    if (game->is_experimental &&
+        !nk_launch_runtime_package_available(player_runtime_root(app), game->title_id)) {
+        player_app_set_error(app, "EXPERIMENTAL_RUNTIME_MISSING", "Runtime Package Missing",
+                             "Experimental title runtime package is missing; generation is in the works (#296/#297).",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
 
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
@@ -695,6 +708,14 @@ void player_app_build_compatibility_preflight(
     if (!app) return;
     PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
     memset(preflight, 0, sizeof(*preflight));
+    const char *runtime_root = app->runtime_root[0] ? app->runtime_root : ".";
+
+    if (app->inspecting_game.is_experimental) {
+        static const unsigned int issues[] = { 285, 308 };
+        player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
+                             "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
+                             issues, 2);
+    }
 
     if (!disc_readable) {
         player_preflight_add(preflight, "DISC_SFO", PREFLIGHT_UNSUPPORTED,
@@ -743,8 +764,17 @@ void player_app_build_compatibility_preflight(
                              issues, 1);
     }
 
-    const char *runtime_root = app->runtime_root[0] ? app->runtime_root : ".";
-    if (!app->inspecting_game.title_id[0]) {
+    if (app->inspecting_game.is_experimental &&
+        nk_launch_runtime_package_available(runtime_root,
+                                            app->inspecting_game.title_id)) {
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_OK,
+                             "Matching generated experimental runtime package is present.", NULL, 0);
+    } else if (app->inspecting_game.is_experimental) {
+        static const unsigned int issues[] = { 296, 297 };
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_MISSING,
+                             "Experimental title runtime package is missing; generation is in the works (#296/#297).",
+                             issues, 2);
+    } else if (!app->inspecting_game.title_id[0]) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_UNSUPPORTED,
                              "Title profile missing; generic title support is in the works (#308).",

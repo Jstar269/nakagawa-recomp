@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from pathlib import Path
 import struct
 from typing import Dict, Optional
 
+import title_manifest
 from .title_registry import TitleRegistry, get_default_registry
 from .types import IsoMetadata
 
@@ -19,6 +23,7 @@ ISO_MAGIC = b"\x01CD001\x01"
 SFO_MAGIC = b"\x00PSF\x01\x01\x00\x00"
 MAX_DIRECTORY_BYTES = 512 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
+EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
 
 
 class IsoInspectionError(ValueError):
@@ -199,6 +204,128 @@ def inspect_iso(
             size_bytes=size_bytes,
             matched_profile=matched,
         )
+
+
+def write_experimental_profile(
+    iso_path: Path | str,
+    user_data_dir: Path | str,
+    *,
+    metadata: Optional[IsoMetadata] = None,
+) -> Path:
+    """Write a validated generic profile and local executable identity for an unknown PSP disc.
+
+    The canonical manifest is validated by ``tools/title_manifest.py`` and
+    contains no title bindings. Executable hashes and the selected ISO path are
+    stored only below the caller's per-user data directory.
+    """
+    path = Path(iso_path)
+    info = metadata or inspect_iso(path)
+    if info.matched_profile is not None:
+        raise IsoInspectionError("catalogued titles do not need an experimental profile")
+    if not title_manifest.DISC_ID_RE.fullmatch(info.disc_id):
+        raise IsoInspectionError("PARAM.SFO does not contain a valid PSP disc ID")
+
+    user_root = Path(user_data_dir).expanduser()
+    try:
+        user_root = user_root.resolve(strict=False)
+        repository_root = Path(__file__).resolve().parents[2]
+        if user_root == repository_root or repository_root in user_root.parents:
+            raise IsoInspectionError("experimental profiles must be stored outside the repository")
+    except OSError as exc:
+        raise IsoInspectionError("user data directory could not be resolved") from exc
+
+    report = inspect_compatibility_preflight(
+        path, metadata=info, runtime_root=user_root
+    )
+    disc_check = next(check for check in report["checks"] if check["code"] == "DISC_SFO")
+    if disc_check["status"] != "OK":
+        raise IsoInspectionError("experimental import requires PARAM.SFO reached through the disc directory tree")
+
+    disc_id = info.disc_id.upper()
+    profile_id = f"experimental-{disc_id.lower()}"
+    region = info.region if info.region in {"JP", "NA", "EU", "KR", "ASIA", "OTHER"} else "OTHER"
+    display_name = info.title.strip() if info.title and info.title.strip() else f"PSP Title ({disc_id})"
+    if any(ord(char) < 0x20 for char in display_name):
+        display_name = f"PSP Title ({disc_id})"
+    manifest = title_manifest.validate_manifest({
+        "schema_version": 1,
+        "id": profile_id,
+        "game_name": profile_id,
+        "display_name": display_name,
+        "kind": "retail",
+        "disc": {
+            "id": disc_id,
+            "region": region,
+            "revision_policy": "exact-disc-id",
+        },
+        "executable": {
+            "base": 0,
+            "entry": 0,
+            "bss_metadata_source": "none",
+            "extra_executable_spans": [],
+        },
+        "modules": [],
+        "filesystem": {
+            "data_root": "data",
+            "memory_stick_root": "savedata",
+            "device_prefixes": ["disc0:", "ms0:"],
+        },
+        "hle_profile": "generic",
+        "feature_requirements": [],
+        "verification_profile": "experimental-unverified",
+    })
+
+    selected = report["selected_executable"]
+    selected_path = ""
+    executable_sha256: str | None = None
+    elf_sha256: str | None = None
+    if selected is not None:
+        selected_path = f"PSP_GAME/SYSDIR/{selected}"
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            file_size = path.stat().st_size
+            extent = _lookup_iso_file(
+                stream, file_size, ("PSP_GAME", "SYSDIR", selected)
+            )
+            if extent is None:
+                raise IsoInspectionError("selected executable disappeared from the ISO directory tree")
+            lba, size = extent
+            if size <= 0 or size > MAX_EXECUTABLE_BYTES:
+                raise IsoInspectionError("selected executable is outside the supported hashing bound")
+            offset = 0
+            while offset < size:
+                count = min(64 * 1024, size - offset)
+                chunk = _read_iso_extent(stream, file_size, lba, size, offset, count)
+                if len(chunk) != count:
+                    raise IsoInspectionError("selected executable could not be read completely")
+                digest.update(chunk)
+                offset += count
+        executable_sha256 = digest.hexdigest()
+        elf_sha256 = executable_sha256
+
+    profile = {
+        "schema_version": EXPERIMENTAL_PROFILE_SCHEMA_VERSION,
+        "manifest": manifest,
+        "input_identity": {
+            "disc_id": disc_id,
+            "selected_executable": selected_path,
+            "executable_sha256": executable_sha256,
+            "elf_sha256": elf_sha256,
+        },
+    }
+    profile_dir = user_root / "experimental" / disc_id
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    resolved_dir = profile_dir.resolve(strict=True)
+    if user_root != resolved_dir and user_root not in resolved_dir.parents:
+        raise IsoInspectionError("experimental profile path escaped the user data directory")
+    profile_path = resolved_dir / "profile.json"
+    temporary_path = resolved_dir / "profile.json.tmp"
+    temporary_path.write_text(
+        json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, profile_path)
+    return profile_path
 
 
 def _extent_from_record(record: bytes, file_size: int) -> tuple[int, int, bool]:
@@ -482,7 +609,24 @@ def inspect_compatibility_preflight(
     package_present = RuntimeLauncher(repo_root=root).runtime_package_available(
         metadata.matched_profile
     )
-    if metadata.matched_profile is None:
+    is_experimental = (
+        metadata.matched_profile is None and disc_check["status"] == "OK" and
+        title_manifest.DISC_ID_RE.fullmatch(metadata.disc_id.upper()) is not None
+    )
+    experimental_check = {
+        "code": "EXPERIMENTAL",
+        "status": "IN_PROGRESS",
+        "message": "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
+        "issues": [285, 308],
+    } if is_experimental else None
+
+    if is_experimental:
+        runtime_check = {
+            "code": "RUNTIME_PACKAGE", "status": "MISSING",
+            "message": "Experimental title runtime package is missing; generation is in the works (#296/#297).",
+            "issues": [296, 297],
+        }
+    elif metadata.matched_profile is None:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "UNSUPPORTED",
             "message": "Title profile missing; generic title support is in the works (#308).",
@@ -515,9 +659,13 @@ def inspect_compatibility_preflight(
         "code": "AUDIO_OUTPUT", "status": "IN_PROGRESS",
         "message": "Audio output is in the works (#301).", "issues": [301],
     }
+    checks = [disc_check, executable_check, runtime_check, fonts_check, audio_check]
+    if experimental_check is not None:
+        checks.insert(0, experimental_check)
     return {
+        "is_experimental": is_experimental,
         "selected_executable": selected,
         "boot_fallback": fallback,
         "executables": executables,
-        "checks": [disc_check, executable_check, runtime_check, fonts_check, audio_check],
+        "checks": checks,
     }

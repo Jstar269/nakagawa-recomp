@@ -147,10 +147,12 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         char esc_title[NK_MAX_TITLE_LEN * 2];
         char esc_iso[NK_MAX_PATH * 2];
         char esc_prep[NK_MAX_PATH * 2];
+        char esc_executable[NK_MAX_EXECUTABLE_PATH * 2];
 
         escape_json_string(esc_title, sizeof(esc_title), g->title_name);
         escape_json_string(esc_iso, sizeof(esc_iso), g->iso_path);
         escape_json_string(esc_prep, sizeof(esc_prep), g->prepared_root);
+        escape_json_string(esc_executable, sizeof(esc_executable), g->selected_executable);
 
         fprintf(f, "    {\n");
         fprintf(f, "      \"disc_id\": \"%s\",\n", g->disc_id);
@@ -161,6 +163,13 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"title_id\": \"%s\",\n", g->title_id);
         fprintf(f, "      \"iso_size_bytes\": %llu,\n", (unsigned long long)g->iso_size_bytes);
         fprintf(f, "      \"status\": %d,\n", (int)g->status);
+        fprintf(f, "      \"is_experimental\": %s,\n", g->is_experimental ? "true" : "false");
+        fprintf(f, "      \"executable_eboot_kind\": %u,\n", (unsigned)g->executable_eboot_kind);
+        fprintf(f, "      \"executable_boot_kind\": %u,\n", (unsigned)g->executable_boot_kind);
+        fprintf(f, "      \"executable_selection\": %u,\n", (unsigned)g->executable_selection);
+        fprintf(f, "      \"executable_boot_fallback\": %s,\n",
+                g->executable_boot_fallback ? "true" : "false");
+        fprintf(f, "      \"selected_executable\": \"%s\",\n", esc_executable);
         fprintf(f, "      \"is_prepared\": %s,\n", g->is_prepared ? "true" : "false");
         fprintf(f, "      \"assets_staged\": %s,\n", g->assets_staged ? "true" : "false");
         fprintf(f, "      \"extracted_asset_count\": %u,\n", (unsigned)g->extracted_asset_count);
@@ -434,6 +443,11 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                     next_p = parse_string_val(p, entry.title_id, sizeof(entry.title_id));
                     if (!next_p) { entry_failed = true; break; }
                     p = next_p;
+                } else if (strcmp(key, "selected_executable") == 0) {
+                    next_p = parse_string_val(p, entry.selected_executable,
+                                              sizeof(entry.selected_executable));
+                    if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
                 } else if (strcmp(key, "last_played") == 0) {
                     next_p = parse_string_val(p, entry.last_played, sizeof(entry.last_played));
                     if (!next_p) { entry_failed = true; break; }
@@ -459,6 +473,24 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                         entry_failed = true;
                         break;
                     }
+                } else if (strcmp(key, "is_experimental") == 0 ||
+                           strcmp(key, "executable_boot_fallback") == 0) {
+                    bool value;
+                    if (strncmp(p, "true", 4) == 0) {
+                        value = true;
+                        p += 4;
+                    } else if (strncmp(p, "false", 5) == 0) {
+                        value = false;
+                        p += 5;
+                    } else {
+                        entry_failed = true;
+                        break;
+                    }
+                    if (strcmp(key, "is_experimental") == 0) {
+                        entry.is_experimental = value;
+                    } else {
+                        entry.executable_boot_fallback = value;
+                    }
                 } else if (strcmp(key, "assets_staged") == 0) {
                     if (strncmp(p, "true", 4) == 0) {
                         entry.assets_staged = true;
@@ -473,14 +505,27 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                 } else if (strcmp(key, "extracted_asset_count") == 0 ||
                            strcmp(key, "extracted_audio_count") == 0 ||
                            strcmp(key, "extracted_visual_count") == 0 ||
-                           strcmp(key, "extracted_layout_count") == 0) {
+                           strcmp(key, "extracted_layout_count") == 0 ||
+                           strcmp(key, "executable_eboot_kind") == 0 ||
+                           strcmp(key, "executable_boot_kind") == 0 ||
+                           strcmp(key, "executable_selection") == 0) {
                     char *endptr = NULL;
                     unsigned long value = strtoul(p, &endptr, 10);
-                    if (endptr == p || value > UINT32_MAX) {
+                    unsigned long maximum = UINT32_MAX;
+                    if (strcmp(key, "executable_eboot_kind") == 0 ||
+                        strcmp(key, "executable_boot_kind") == 0) maximum = 5;
+                    if (strcmp(key, "executable_selection") == 0) maximum = 2;
+                    if (endptr == p || value > maximum) {
                         entry_failed = true;
                         break;
                     }
-                    if (strcmp(key, "extracted_asset_count") == 0) {
+                    if (strcmp(key, "executable_eboot_kind") == 0) {
+                        entry.executable_eboot_kind = (uint32_t)value;
+                    } else if (strcmp(key, "executable_boot_kind") == 0) {
+                        entry.executable_boot_kind = (uint32_t)value;
+                    } else if (strcmp(key, "executable_selection") == 0) {
+                        entry.executable_selection = (uint32_t)value;
+                    } else if (strcmp(key, "extracted_asset_count") == 0) {
                         entry.extracted_asset_count = (uint32_t)value;
                     } else if (strcmp(key, "extracted_audio_count") == 0) {
                         entry.extracted_audio_count = (uint32_t)value;

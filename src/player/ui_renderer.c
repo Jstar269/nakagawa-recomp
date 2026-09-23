@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "ui_renderer.h"
+#include <SDL3/SDL_misc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -755,6 +756,25 @@ static bool draw_button(SDL_Renderer *ren, float x, float y, float w, float h, c
     return draw_button_focused(ren, x, y, w, h, label, is_accent, in, false);
 }
 
+static float draw_issue_links(SDL_Renderer *ren, float x, float y,
+                              const unsigned int *issues, size_t issue_count,
+                              const UiInput *in) {
+    for (size_t i = 0; issues && i < issue_count; i++) {
+        char label[16];
+        char url[128];
+        snprintf(label, sizeof(label), "#%u", issues[i]);
+        float width = 48.0f;
+        if (draw_button(ren, x, y, width, 22.0f, label, false, in)) {
+            snprintf(url, sizeof(url),
+                     "https://github.com/Jstar269/nakagawa-recomp/issues/%u",
+                     issues[i]);
+            (void)SDL_OpenURL(url);
+        }
+        x += width + 6.0f;
+    }
+    return x;
+}
+
 /* Non-interactive status pill drawn where a button could be misread as one.
  * Uses the same geometry so cards keep alignment, but never hovers and is
  * never a focus stop. */
@@ -1081,9 +1101,11 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     /* Status Pills: a successful staging transaction is distinct from runtime
      * preparation. The card must expose that useful intermediate state without
      * claiming that a recompiled child is already available. */
-    const char *card_status = (game->assets_staged && !game->is_prepared)
-        ? "ASSETS STAGED" : status_label(game->status);
-    draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status, COLOR_EMERALD);
+    const char *card_status = game->is_experimental ? "EXPERIMENTAL"
+        : ((game->assets_staged && !game->is_prepared)
+            ? "ASSETS STAGED" : status_label(game->status));
+    draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
+               game->is_experimental ? COLOR_AMBER : COLOR_EMERALD);
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
@@ -1099,7 +1121,48 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     /* Game Title */
     draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 72.0f, game->title_name,
                          2.5f, hero_w - 64.0f, COLOR_TEXT_WHITE);
-    if (hero_h >= 300.0f) {
+    if (game->is_experimental) {
+        char experimental_reason[224];
+        if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
+            snprintf(experimental_reason, sizeof(experimental_reason),
+                     "Executable decryption is in the works (#295). Runtime package is missing (#296/#297).");
+        } else if (game->selected_executable[0]) {
+            snprintf(experimental_reason, sizeof(experimental_reason),
+                     "%s selected. Runtime package is missing (#296/#297).",
+                     game->selected_executable);
+        } else {
+            snprintf(experimental_reason, sizeof(experimental_reason),
+                     "No analyzable executable selected. Runtime package is missing (#296/#297).");
+        }
+        unsigned int issues[5] = { 285, 308, 296, 297, 0 };
+        size_t issue_count = 4;
+        if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
+            issues[4] = 295;
+            issue_count++;
+        }
+        if (hero_h <= 215.0f) {
+            char compact_summary[400];
+            snprintf(compact_summary, sizeof(compact_summary),
+                     "Experimental: this game has not been verified. Compatibility is unknown.\n%s",
+                     experimental_reason);
+            draw_text_wrapped(ren, hero_x + 32.0f, hero_y + 112.0f,
+                              hero_w - 64.0f, compact_summary, 0.9f,
+                              COLOR_AMBER, 3);
+        } else {
+            draw_text_wrapped(ren, hero_x + 32.0f, hero_y + 120.0f,
+                              hero_w - 64.0f,
+                              "Experimental: this game has not been verified. Compatibility is unknown.",
+                              1.05f, COLOR_AMBER, 2);
+            draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 156.0f,
+                                 experimental_reason, 0.95f, hero_w - 64.0f,
+                                 COLOR_TEXT_MUTED);
+            draw_issue_links(ren, hero_x + 32.0f,
+                             hero_y + (hero_h >= 300.0f ? 184.0f : 174.0f),
+                             issues, issue_count, in);
+        }
+    } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
                              "PlayStation Portable Classic · High-Definition Modern PC Recompilation",
                              1.2f, hero_w - 64.0f, COLOR_TEXT_MUTED);
@@ -1107,7 +1170,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
 
     /* Quick Specs Rail: three columns on wide heroes, stacked on narrow.
      * Skipped entirely on compact heroes (see above). */
-    if (!compact_hero) {
+    if (!compact_hero && !game->is_experimental) {
     float rail_y = hero_y + (hero_h >= 300.0f ? 160.0f : 128.0f);
     float rail_h = 60.0f;
     bool stacked_specs = hero_w < 700.0f;
@@ -1191,11 +1254,23 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             player_app_stop_game(app);
         }
         focus++;
-    } else if (game->is_prepared) {
+    } else if (game->is_experimental &&
+               nk_launch_runtime_package_available(
+                   app->runtime_root[0] ? app->runtime_root : NULL,
+                   game->title_id)) {
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "PLAY NOW", true, in, primary_focused)) {
+            player_app_launch_game(app, app->selected_game_index);
+        }
+        focus++;
+    } else if (!game->is_experimental && game->is_prepared) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f, "PLAY NOW", true, in, primary_focused)) {
             player_app_launch_game(app, app->selected_game_index);
         }
         focus++;
+    } else if (game->is_experimental) {
+        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                         "RUNTIME MISSING (#296/#297)");
     } else if (game->assets_staged) {
         /* Disc extraction is useful progress, but it is not a runnable
          * recompiled title. Keep this state visible without exposing a
@@ -1445,6 +1520,85 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     float back_x = stacked_actions ? card_x + 32.0f : card_x + 310.0f;
     float back_y = stacked_actions ? card_y + 330.0f : card_y + 260.0f;
     if (draw_button_focused(ren, back_x, back_y, 140.0f, 50.0f, "BACK", false, in, back_focused)) {
+        player_app_set_view(app, VIEW_LIBRARY);
+    }
+}
+
+static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
+                                     const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = dialog_card_w(w, 760.0f);
+    float card_h = h < 620.0f ? 390.0f : 430.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    if (card_y < 64.0f) card_y = 64.0f;
+    if (card_y + card_h > h - 20.0f && h > 460.0f) card_y = h - 20.0f - card_h;
+
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_AMBER);
+    draw_badge(ren, card_x + 32.0f, card_y + 26.0f, "EXPERIMENTAL", COLOR_AMBER);
+    if (card_w >= 560.0f) {
+        draw_badge(ren, card_x + 210.0f, card_y + 26.0f,
+                   app->inspecting_game.disc_id, COLOR_BLUE);
+    }
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 66.0f,
+                         app->inspecting_game.title_name[0]
+                             ? app->inspecting_game.title_name
+                             : "PlayStation Portable Title",
+                         2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
+    float rows_y = draw_text_wrapped(
+        ren, card_x + 32.0f, card_y + 106.0f, card_w - 64.0f,
+        "Experimental: this game has not been verified. Compatibility is unknown.",
+        1.05f, COLOR_AMBER, 2);
+    rows_y += 8.0f;
+
+    for (size_t i = 0; i < app->wizard.preflight.count; i++) {
+        const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+        if (strcmp(check->code, "DISC_SFO") == 0 ||
+            strcmp(check->code, "EXPERIMENTAL") == 0) continue;
+        const char *status_text = "UNKNOWN";
+        SDL_Color status_color = COLOR_TEXT_DIM;
+        switch (check->status) {
+            case PREFLIGHT_OK: status_text = "OK"; status_color = COLOR_EMERALD; break;
+            case PREFLIGHT_MISSING: status_text = "MISSING"; status_color = COLOR_AMBER; break;
+            case PREFLIGHT_UNSUPPORTED: status_text = "UNSUPPORTED"; status_color = COLOR_RED; break;
+            case PREFLIGHT_IN_PROGRESS: status_text = "IN PROGRESS"; status_color = COLOR_AMBER; break;
+        }
+        float row_y = rows_y + 27.0f * (float)i;
+        draw_text_ellipsized(ren, card_x + 32.0f, row_y,
+                             status_text, 0.82f, 82.0f, status_color);
+        draw_text_ellipsized(ren, card_x + 120.0f, row_y,
+                             check->code, 0.82f, 116.0f, COLOR_TEXT_WHITE);
+        float issue_width = (float)check->issue_count * 54.0f;
+        float message_width = card_w - 300.0f - issue_width;
+        if (message_width < 120.0f) message_width = 120.0f;
+        draw_text_ellipsized(ren, card_x + 244.0f, row_y,
+                             check->message, 0.78f, message_width,
+                             COLOR_TEXT_MUTED);
+        if (check->issue_count) {
+            draw_issue_links(ren, card_x + card_w - 32.0f - issue_width,
+                             row_y - 2.0f, check->issue_numbers,
+                             check->issue_count, in);
+        }
+    }
+
+    float button_y = card_y + card_h - 60.0f;
+    bool add_focused = app->focus_index == 0;
+    if (draw_button_focused(ren, card_x + 32.0f, button_y, 250.0f, 46.0f,
+                            "ADD TO LIBRARY", true, in, add_focused)) {
+        if (player_app_add_game(app, &app->inspecting_game)) {
+            player_app_set_view(app, VIEW_LIBRARY);
+        } else {
+            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                 "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
+                                 "Return to Library", VIEW_LIBRARY);
+        }
+    }
+    bool back_focused = app->focus_index == 1;
+    if (draw_button_focused(ren, card_x + 300.0f, button_y, 140.0f, 46.0f,
+                            "BACK", false, in, back_focused)) {
         player_app_set_view(app, VIEW_LIBRARY);
     }
 }
@@ -1991,8 +2145,10 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
         }
 
         case WIZARD_STEP_INSPECT_VERIFY: {
-            bool supported = app->wizard.extraction_complete ||
-                             app->inspecting_game.status == NK_STATUS_VERIFIED;
+            bool experimental = app->inspecting_game.is_experimental;
+            bool supported = !experimental &&
+                             (app->wizard.extraction_complete ||
+                              app->inspecting_game.status == NK_STATUS_VERIFIED);
             draw_text(ren, card_x + 32.0f, content_y,
                       app->wizard.is_extracting ? "Extracting Game Assets" : "Compatibility Preflight & Asset Staging",
                       2.0f, COLOR_TEXT_WHITE);
@@ -2003,8 +2159,10 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             draw_rounded_outline(ren, card_x + 32.0f, panel_y, card_w - 64.0f, panel_h, 8.0f,
                                  app->wizard.is_extracting ? COLOR_AMBER : (supported ? COLOR_EMERALD : COLOR_RED));
 
-            const char *verification_badge = supported ? "TITLE PROFILED" : "PROFILE MISSING";
-            SDL_Color verification_color = supported ? COLOR_EMERALD : COLOR_RED;
+            const char *verification_badge = experimental ? "EXPERIMENTAL"
+                : (supported ? "TITLE PROFILED" : "PROFILE MISSING");
+            SDL_Color verification_color = experimental ? COLOR_AMBER
+                : (supported ? COLOR_EMERALD : COLOR_RED);
             if (app->wizard.is_extracting) {
                 verification_badge = "EXTRACTING ASSETS";
                 verification_color = COLOR_AMBER;
@@ -2025,6 +2183,10 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
                           "The ISO is being copied into an isolated local staging tree.",
                           1.0f, COLOR_TEXT_MUTED);
+            } else if (experimental) {
+                draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
+                          "Experimental: this game has not been verified. Compatibility is unknown.",
+                          0.95f, COLOR_AMBER);
             } else if (supported) {
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
                           "Disc identity is listed in the native title catalog.",
@@ -2063,9 +2225,15 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                                          status_text, 0.8f, 80.0f, status_color);
                     draw_text_ellipsized(ren, card_x + 132.0f, row_y,
                                          check->code, 0.8f, 122.0f, COLOR_TEXT_WHITE);
+                    float issue_width = (float)check->issue_count * 54.0f;
                     draw_text_ellipsized(ren, card_x + 260.0f, row_y,
-                                         check->message, 0.78f, card_w - 308.0f,
+                                         check->message, 0.78f, card_w - 308.0f - issue_width,
                                          COLOR_TEXT_MUTED);
+                    if (check->issue_count) {
+                        draw_issue_links(ren, card_x + card_w - 48.0f - issue_width,
+                                         row_y - 2.0f, check->issue_numbers,
+                                         check->issue_count, in);
+                    }
                 }
             }
 
@@ -2088,6 +2256,29 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                 bool cancel_foc = (app->focus_index == focus++);
                 if (draw_button_focused(ren, card_x + 32.0f, btn_y, 140.0f, 44.0f,
                                         "CANCEL EXTRACTION", false, in, cancel_foc)) {
+                    player_app_wizard_cancel(app);
+                }
+            } else if (experimental) {
+                bool add_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 32.0f, btn_y, 220.0f, 44.0f,
+                                        "ADD TO LIBRARY", true, in, add_foc)) {
+                    if (player_app_add_game(app, &app->inspecting_game)) {
+                        player_app_set_view(app, VIEW_LIBRARY);
+                    } else {
+                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                             "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
+                                             "Return to Library", VIEW_LIBRARY);
+                    }
+                }
+                bool diff_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 268.0f, btn_y, 200.0f, 44.0f,
+                                        "CHOOSE DIFFERENT ISO", false, in, diff_foc)) {
+                    app->wizard.step = WIZARD_STEP_SELECT_GAME;
+                    app->request_file_picker = true;
+                }
+                bool cancel_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 484.0f, btn_y, 100.0f, 44.0f,
+                                        "CANCEL", false, in, cancel_foc)) {
                     player_app_wizard_cancel(app);
                 }
             } else if (supported) {
@@ -2291,6 +2482,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_SUPPORTED_TITLE:
             render_supported_title(renderer, app, input);
+            break;
+        case VIEW_EXPERIMENTAL_TITLE:
+            render_experimental_title(renderer, app, input);
             break;
         case VIEW_UNSUPPORTED_TITLE:
             render_unsupported_title(renderer, app, input);

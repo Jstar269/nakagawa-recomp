@@ -22,6 +22,7 @@ typedef enum {
     VIEW_LIBRARY = 0,
     VIEW_INSPECTING,
     VIEW_SUPPORTED_TITLE,
+    VIEW_EXPERIMENTAL_TITLE,
     VIEW_UNSUPPORTED_TITLE,
     VIEW_PREPARING,
     VIEW_SETTINGS,
@@ -113,7 +114,7 @@ typedef struct {
 } PlayerPreflightCheck;
 
 typedef struct {
-    PlayerPreflightCheck checks[5];
+    PlayerPreflightCheck checks[6];
     size_t count;
 } PlayerCompatibilityPreflight;
 

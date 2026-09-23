@@ -611,6 +611,34 @@ int main(void) {
                       "Encrypted executable. Decryption support is in the works (#295).") == 0);
         assert(check->issue_count == 1 && check->issue_numbers[0] == 295);
 
+        wiz->inspecting_game.is_experimental = true;
+        snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
+                 "experimental-ulus99998");
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        assert(wiz->wizard.preflight.count == 6);
+        check = find_preflight_check(&wiz->wizard.preflight, "EXPERIMENTAL");
+        assert(check && check->status == PREFLIGHT_IN_PROGRESS);
+        assert(strstr(check->message,
+                      "Experimental: this game has not been verified. Compatibility is unknown.") != NULL);
+        assert(check->issue_count == 2 && check->issue_numbers[0] == 285 &&
+               check->issue_numbers[1] == 308);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_MISSING);
+        assert(check->issue_count == 2 && check->issue_numbers[0] == 296 &&
+               check->issue_numbers[1] == 297);
+
+        memset(&wiz->games[0], 0, sizeof(wiz->games[0]));
+        snprintf(wiz->games[0].disc_id, sizeof(wiz->games[0].disc_id), "ULUS99998");
+        snprintf(wiz->games[0].title_id, sizeof(wiz->games[0].title_id),
+                 "experimental-ulus99998");
+        wiz->games[0].is_experimental = true;
+        wiz->game_count = 1;
+        assert(!player_app_launch_game(wiz, 0));
+        assert(strcmp(wiz->last_error.error_code, "EXPERIMENTAL_RUNTIME_MISSING") == 0);
+        assert(strstr(wiz->last_error.message, "#296/#297") != NULL);
+        player_app_set_view(wiz, VIEW_EXPERIMENTAL_TITLE);
+        assert(player_app_focus_count(wiz) == 2);
+
         remove(runtime_exe);
         remove(runtime_image);
         remove(font_path);

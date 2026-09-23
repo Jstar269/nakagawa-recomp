@@ -61,6 +61,24 @@ bool nk_title_manifest_load_overlay_ext(
     size_t error_buf_len
 );
 
+/* Create a generic, user-local experimental profile for an uncatalogued PSP
+ * disc. The profile is written below <user_data_root>/experimental/<DISC_ID>,
+ * its embedded canonical manifest is validated by the native manifest parser,
+ * and executable hashes are retained only in that user data directory.
+ */
+bool nk_title_manifest_write_experimental_profile(
+    const char *iso_path,
+    bool param_sfo_parsed,
+    const char *disc_id,
+    const char *title,
+    const char *selected_executable,
+    const char *user_data_root,
+    char *out_profile_id,
+    size_t out_profile_id_len,
+    char *error_buf,
+    size_t error_buf_len
+);
+
 #ifdef __cplusplus
 }
 #endif
