@@ -981,7 +981,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6ceb3bb54d0a97b23512c282bba889b515c53e3c9b86852416573e664dff0031"
+      "sha256": "81ea349b858eb63ecd96a3edf0c2252e726927888657f365571373531d3ca7ba"
     },
     {
       "path": "docs/SETUP.md",
