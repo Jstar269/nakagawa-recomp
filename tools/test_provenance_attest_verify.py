@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import provenance_attest_verify as verifier  # noqa: E402
+import provenance_ledger  # noqa: E402
 import public_export  # noqa: E402
 from publication_policy import load_policy  # noqa: E402
 
@@ -2253,6 +2254,60 @@ def _canonical(document: dict) -> bytes:
 
 
 class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
+    def _commit_canonical_document_refresh(self) -> str:
+        entries = json.loads(self.baseline().read_text(encoding="utf-8"))["entries"]
+        for entry in entries:
+            if entry["path"] == "docs/notes.md":
+                entry["classification"] = "reviewed_documentation"
+                entry["evidence"] = {"source": "public documentation review"}
+        self.write_ledger(entries)
+        self.base = self.repo.commit("base with reviewed documentation")
+        self.repo.branch("reviewed-document-refresh", self.base)
+        self.repo.write("docs/notes.md", "# revised fixture notes\n")
+        pre_refresh = self.repo.commit("edit reviewed documentation")
+
+        refreshed = provenance_ledger._refresh_document(
+            trusted_document=json.loads(self.baseline().read_text(encoding="utf-8")),
+            candidate=provenance_ledger._resolve_tree_selector(
+                pre_refresh, default_repo=self.repo.root, role="candidate"
+            ),
+            trusted=provenance_ledger._resolve_tree_selector(
+                self.base, default_repo=self.repo.root, role="trusted"
+            ),
+            policy=load_policy(self.repo.root / verifier.POLICY_PATH),
+            refreshed_paths=["docs/notes.md"],
+            detailed_records=None,
+        )
+        self.repo.write(verifier.LEDGER_PATH, provenance_ledger._canonical_json_bytes(refreshed))
+        return self.repo.commit("commit canonical refreshed controls")
+
+    def test_canonical_refresh_round_trip_passes_ephemeral_attestation(self) -> None:
+        head = self._commit_canonical_document_refresh()
+        verdict = self.run_ephemeral(head)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+
+    def test_refresh_audit_cannot_hide_unreviewed_metadata_or_claims(self) -> None:
+        head = self._commit_canonical_document_refresh()
+        ledger_path = self.repo.root / verifier.LEDGER_PATH
+        canonical = json.loads(ledger_path.read_text(encoding="utf-8"))
+        cases = {
+            "wrong trusted tree": lambda doc: doc["refresh"].update({"trusted_tree": "0" * 40}),
+            "undeclared changed path": lambda doc: doc["refresh"].update({"refreshed_paths": []}),
+            "extra audit field": lambda doc: doc["refresh"].update({"approved": True}),
+            "altered provenance claim": lambda doc: doc["entries"][0].update({"evidence": {"source": "candidate"}}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                self.repo.branch("forged-refresh", head)
+                forged = json.loads(json.dumps(canonical))
+                mutate(forged)
+                self.repo.write(verifier.LEDGER_PATH, provenance_ledger._canonical_json_bytes(forged))
+                forged_head = self.repo.commit(name)
+                verdict = self.run_ephemeral(forged_head)
+                self.assertIn("LEGACY_CONTROL_MISMATCH", {
+                    finding["code"] for finding in verdict["findings"] if finding["fatal"]
+                })
+
     def test_controls_are_generated_outside_the_candidate_tree(self) -> None:
         self.repo.branch("without-legacy-controls", self.base)
         self.repo.remove(verifier.LEDGER_PATH)
