@@ -96,13 +96,13 @@ The planner can run the existing analyzer, code generator, and two-phase Make
 pipeline for a plaintext executable ELF. Run it from the repository root with the
 documented UCRT64 toolchain:
 
-```powershell
+~~~powershell
 $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
 python tools/title_codegen_plan.py assets/titles/my-title.json `
   --package `
   --game-elf place_game_here/EBOOT.elf `
   --output-dir build/my-title
-```
+~~~
 
 When the manifest requires PSP-header BSS metadata, also pass
 `--psp-header <path>`. Guest PRXs are resolved by their manifest names beneath
