@@ -554,7 +554,7 @@ int main(int argc, char **argv) {{
         by_code = {check["code"]: check for check in checks}
         self.assertEqual(by_code["RUNTIME_PACKAGE"]["status"], "MISSING")
         self.assertEqual(by_code["SYSTEM_FONTS"]["status"], "MISSING")
-        self.assertEqual(by_code["AUDIO_OUTPUT"]["status"], "IN_PROGRESS")
+        self.assertEqual(by_code["AUDIO_OUTPUT"]["status"], "OK")
 
         meta = inspect_iso(iso_file)
         assert meta.matched_profile is not None

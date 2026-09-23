@@ -585,7 +585,7 @@ int main(void) {
         check = find_preflight_check(&wiz->wizard.preflight, "SYSTEM_FONTS");
         assert(check && check->status == PREFLIGHT_MISSING);
         check = find_preflight_check(&wiz->wizard.preflight, "AUDIO_OUTPUT");
-        assert(check && check->status == PREFLIGHT_IN_PROGRESS);
+        assert(check && check->status == PREFLIGHT_OK);
 
         assert(nk_platform_mkdir_p(build_dir));
         write_file(runtime_exe);

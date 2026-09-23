@@ -656,8 +656,10 @@ def inspect_compatibility_preflight(
             "issues": [300],
         }
     audio_check = {
-        "code": "AUDIO_OUTPUT", "status": "IN_PROGRESS",
-        "message": "Audio output is in the works (#301).", "issues": [301],
+        "code": "AUDIO_OUTPUT", "status": "OK",
+        "message": "Sound plays through your default audio device. "
+                   "With no device, the game runs silently.",
+        "issues": [],
     }
     checks = [disc_check, executable_check, runtime_check, fonts_check, audio_check]
     if experimental_check is not None:

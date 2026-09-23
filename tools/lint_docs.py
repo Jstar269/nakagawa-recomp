@@ -73,15 +73,13 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 # the moment the next object is opened, and the dangerous direction is a frontier that is
 # too LOW, because that is what lets a soon-to-be-live number sit in the denylist unnoticed.
 # Raise it whenever this file is touched during a sweep. The public sequence had allocated
-# at least through 197 as of 2026-09-13 (including PR #197, #195, #194, and issue #196),
-# so 98-197 are live public objects.
-PUBLIC_ISSUE_NUMBER_FRONTIER = 197
+# at least through 410 as of 2026-09-23 (issues #278-#400 and PRs through #410), so every
+# number up to 410 is a live public object.
+PUBLIC_ISSUE_NUMBER_FRONTIER = 410
 
-RETIRED_PRIVATE_ISSUE_NUMBERS = (
-    234, 247, 248, 249,
-    253, 286, 293, 294, 296, 298, 299, 300, 301, 303,
-    304, 339, 346,
-)
+# Every former private-era number is now at or below the frontier, i.e. reallocated to a
+# live public issue or PR, so none may be flagged any more.
+RETIRED_PRIVATE_ISSUE_NUMBERS: tuple[int, ...] = ()
 
 _reallocated = sorted(n for n in RETIRED_PRIVATE_ISSUE_NUMBERS
                       if n <= PUBLIC_ISSUE_NUMBER_FRONTIER)
@@ -94,11 +92,19 @@ if _reallocated:
         "rather than flagging a live object"
     )
 
-RETIRED_PRIVATE_ISSUE_URLS = re.compile(
-    r"github\.com/Jstar269/nakagawa-recomp/(?:issues|pull)/(?:"
-    + "|".join(str(n) for n in RETIRED_PRIVATE_ISSUE_NUMBERS)
-    + r")\b"
-)
+def _retired_issue_url_pattern(numbers: tuple[int, ...]) -> re.Pattern[str]:
+    # An empty alternation would match every issue URL, so an empty denylist must
+    # compile to a pattern that never matches.
+    if not numbers:
+        return re.compile(r"(?!)")
+    return re.compile(
+        r"github\.com/Jstar269/nakagawa-recomp/(?:issues|pull)/(?:"
+        + "|".join(str(n) for n in numbers)
+        + r")\b"
+    )
+
+
+RETIRED_PRIVATE_ISSUE_URLS = _retired_issue_url_pattern(RETIRED_PRIVATE_ISSUE_NUMBERS)
 
 HISTORICAL_EVIDENCE_DOCS = {
     "docs/STATUS_HISTORY.md",

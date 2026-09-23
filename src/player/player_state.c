@@ -805,7 +805,10 @@ void player_app_build_compatibility_preflight(
                              issues, 1);
     }
 
-    static const unsigned int audio_issue[] = { 301 };
-    player_preflight_add(preflight, "AUDIO_OUTPUT", PREFLIGHT_IN_PROGRESS,
-                         "Audio output is in the works (#301).", audio_issue, 1);
+    /* The public runtime drives the default device through SDL3 (#301). Whether a
+       device exists is only known when the runtime starts; without one the game
+       keeps running silently and says so once. */
+    player_preflight_add(preflight, "AUDIO_OUTPUT", PREFLIGHT_OK,
+                         "Sound plays through your default audio device. With no device, the game runs silently.",
+                         NULL, 0);
 }
