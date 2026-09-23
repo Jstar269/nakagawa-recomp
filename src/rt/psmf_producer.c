@@ -80,6 +80,8 @@ typedef struct {
 typedef struct {
     uint8_t *buf;                    /* allocation; live bytes are [head, tail) */
     uint32_t cap, head, tail;
+    uint32_t video_scan_pos;         /* next absolute candidate in buf */
+    int video_have_aud;              /* a first AUD is buffered, awaiting the next */
     PtsMark mark[SR_PSMF_MAX_MARKS];
     int nmarks;
     uint8_t stream_id;
@@ -194,6 +196,8 @@ static void track_compact(Track *t) {
     if (t->head == 0) return;
     uint32_t live = track_len(t);
     if (live) memmove(t->buf, t->buf + t->head, live);
+    t->video_scan_pos = t->video_scan_pos > t->head
+                            ? t->video_scan_pos - t->head : 0;
     for (int i = 0; i < t->nmarks; i++) {
         t->mark[i].start = t->mark[i].start > t->head ? t->mark[i].start - t->head : 0;
         t->mark[i].end -= t->head;
@@ -205,6 +209,8 @@ static void track_compact(Track *t) {
 static void track_consume(Track *t, uint32_t n) {
     if (n > track_len(t)) n = track_len(t);
     t->head += n;
+    if (t->video_scan_pos < t->head) t->video_scan_pos = t->head;
+    if (t->head == t->tail) t->video_have_aud = 0;
     track_drop_marks(t);
     if (t->head >= PSMF_COMPACT_BYTES && t->head >= track_len(t)) track_compact(t);
 }
@@ -267,12 +273,31 @@ static const PtsMark *track_head_mark(Track *t) {
 }
 
 /* Index of the next access-unit delimiter start code at or after `from`, or -1. */
-static int find_aud(const uint8_t *b, uint32_t len, uint32_t from) {
+static int find_aud(const uint8_t *b, uint32_t len, uint32_t from,
+                    uint64_t *scan_candidates) {
     if (from >= len) return -1;
     for (uint32_t i = from; i + 3u < len; i++) {
+        (*scan_candidates)++;
         if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1 && (b[i + 3] & 0x1Fu) == H264_NAL_AUD)
             return (int)i;
     }
+    return -1;
+}
+
+/* A start code may straddle appends. The last three positions cannot form a
+ * four-byte candidate yet, so resume there when more bytes arrive. Once a
+ * delimiter is found, skip its four bytes just as the original second search
+ * did. Positions are absolute within buf and move with track compaction. */
+static int find_next_video_aud(SrPsmfProducer *p, Track *t) {
+    int found = find_aud(t->buf, t->tail, t->video_scan_pos,
+                         &p->stats.video_aud_scan_candidates);
+    if (found >= 0) {
+        t->video_scan_pos = (uint32_t)found + 4u;
+        return found;
+    }
+    uint32_t resume = t->tail >= 3u ? t->tail - 3u : t->head;
+    if (resume < t->head) resume = t->head;
+    if (t->video_scan_pos < resume) t->video_scan_pos = resume;
     return -1;
 }
 
@@ -358,13 +383,14 @@ static int extract_track(SrPsmfProducer *p, SrPsmfAuKind kind) {
         if (q->count >= SR_PSMF_QUEUE_DEPTH) return emitted;
         uint32_t au_len = 0;
         if (kind == SR_PSMF_AU_VIDEO) {
-            const uint8_t *b = track_ptr(t);
-            uint32_t len = track_len(t);
-            int a0 = find_aud(b, len, 0);
-            if (a0 < 0) return emitted;             /* no picture delimiter yet */
-            int a1 = find_aud(b, len, (uint32_t)a0 + 4u);
+            if (!t->video_have_aud) {
+                if (find_next_video_aud(p, t) < 0) return emitted;
+                t->video_have_aud = 1;
+            }
+            int a1 = find_next_video_aud(p, t);
             if (a1 < 0) return emitted;             /* picture still open */
-            au_len = (b[a1 - 1] == 0) ? (uint32_t)(a1 - 1) : (uint32_t)a1;
+            uint32_t rel = (uint32_t)a1 - t->head;
+            au_len = (t->buf[a1 - 1] == 0) ? rel - 1u : rel;
         } else {
             uint32_t skip = 0, len = 0;
             int rc = audio_frame_at_head(t, &skip, &len);
@@ -543,6 +569,8 @@ void sr_psmf_producer_reset(SrPsmfProducer *p) {
     for (int i = 0; i < 2; i++) {
         p->track[i].head = p->track[i].tail = 0;
         p->track[i].nmarks = 0;
+        p->track[i].video_scan_pos = 0;
+        p->track[i].video_have_aud = 0;
     }
     p->cursor = p->stream_start; p->eof = p->failed = 0;
     memset(&p->stats, 0, sizeof(p->stats));

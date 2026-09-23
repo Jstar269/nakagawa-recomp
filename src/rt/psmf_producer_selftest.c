@@ -209,7 +209,7 @@ static const uint8_t k_sps[6] = {0, 0, 1, 0x67, 0x4d, 0x40};
  * ATRAC frames spread over two audio PES packets. */
 static uint8_t *fixture(uint32_t *size_out, int variant) {
     Buf b;
-    b.cap = 65536;
+    b.cap = variant == 7 ? 131072u : 65536u;
     b.d = (uint8_t *)calloc(1, b.cap);
     b.at = 2048;
     b.overflow = 0;
@@ -226,6 +226,42 @@ static uint8_t *fixture(uint32_t *size_out, int variant) {
         be32(b.d + 12, b.at - 2048);
         *size_out = b.at;
         CHECK(!b.overflow, "fixture stream fits its buffer");
+        return b.d;
+    }
+
+    if (variant == 5) {                     /* many tiny video PES, no AUD */
+        uint8_t payload[16];
+        memset(payload, 0x55, sizeof(payload));
+        for (int i = 0; i < 1024; i++)
+            add_pes(&b, 0xe0, 0, 0, payload, sizeof(payload));
+        be32(b.d + 12, b.at - 2048);
+        *size_out = b.at;
+        CHECK(!b.overflow, "no-AUD fixture stream fits its buffer");
+        return b.d;
+    }
+
+    if (variant == 6) {                     /* both AUDs cross PES cuts */
+        static const uint8_t first[] = {0x67, 0x11, 0, 0};
+        static const uint8_t second[] = {1, 9, 0x21, 0x22, 0};
+        static const uint8_t third[] = {0, 1, 9, 0x33};
+        add_pes(&b, 0xe0, 1, 90000, first, sizeof(first));
+        add_pes(&b, 0xe0, 0, 0, second, sizeof(second));
+        add_pes(&b, 0xe0, 0, 0, third, sizeof(third));
+        be32(b.d + 12, b.at - 2048);
+        *size_out = b.at;
+        CHECK(!b.overflow, "split-AUD fixture stream fits its buffer");
+        return b.d;
+    }
+
+    if (variant == 7) {                     /* emit enough AUs to compact */
+        uint8_t payload[128];
+        memset(payload, 0x55, sizeof(payload));
+        memcpy(payload, k_aud, sizeof(k_aud));
+        for (int i = 0; i < 600; i++)
+            add_pes(&b, 0xe0, 0, 0, payload, sizeof(payload));
+        be32(b.d + 12, b.at - 2048);
+        *size_out = b.at;
+        CHECK(!b.overflow, "compaction fixture stream fits its buffer");
         return b.d;
     }
 
@@ -384,6 +420,158 @@ static void test_backpressure_keeps_order(void) {
         sr_psmf_producer_close(p);
     }
     free(bytes);
+}
+
+static void test_no_aud_scan_work_bound(void) {
+    uint32_t size = 0;
+    uint8_t *bytes = fixture(&size, 5);
+    CHECK(bytes != NULL, "many-small-PES fixture allocates");
+    if (!bytes) return;
+    MemSource mem = {bytes, size, 0, 0};
+    SrPsmfSource source = {mem_read, &mem, size};
+    SrPsmfProducer *p = sr_psmf_producer_open(&source, 0);
+    CHECK(p != NULL, "many-small-PES fixture opens");
+    if (p) {
+        for (int i = 0; i < 128 && !sr_psmf_producer_eof(p); i++)
+            sr_psmf_producer_pump(p, 32);
+        SrPsmfProducerStats st;
+        sr_psmf_producer_stats(p, &st);
+        CHECK(st.eof && !st.failed && st.video_pes == 1024,
+              "every no-AUD PES reaches EOF without parser failure");
+        CHECK(st.video_aud_scan_candidates <= 2u * 1024u * 16u,
+              "AUD candidate work stays linear in appended video bytes");
+        SrPsmfAu au;
+        memset(&au, 0, sizeof(au));
+        int got = sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au);
+        CHECK(got,
+              "EOF drains the single no-AUD video access unit");
+        CHECK(got && au.size == 1024u * 16u,
+              "EOF preserves every no-AUD video byte");
+        if (got) sr_psmf_au_release(&au);
+        CHECK(!sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au),
+              "no-AUD stream emits exactly once");
+        sr_psmf_producer_close(p);
+    }
+    free(bytes);
+}
+
+static void test_aud_split_across_pes(void) {
+    uint32_t size = 0;
+    uint8_t *bytes = fixture(&size, 6);
+    CHECK(bytes != NULL, "split-AUD fixture allocates");
+    if (!bytes) return;
+    MemSource mem = {bytes, size, 2, 0};
+    SrPsmfSource source = {mem_read, &mem, size};
+    SrPsmfProducer *p = sr_psmf_producer_open(&source, 90000);
+    CHECK(p != NULL, "split-AUD fixture opens");
+    if (p) {
+        for (int i = 0; i < 32 && !sr_psmf_producer_eof(p); i++)
+            sr_psmf_producer_pump(p, 1);
+        SrPsmfProducerStats st;
+        sr_psmf_producer_stats(p, &st);
+        CHECK(st.eof && !st.failed && st.video_pes == 3 && st.video_aus == 2,
+              "two split AUDs form exactly two video access units");
+        SrPsmfAu au;
+        memset(&au, 0, sizeof(au));
+        int got = sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au);
+        CHECK(got && au.size == 8u && au.has_pts && au.raw_pts == 90000,
+              "first split-AUD unit preserves prefix and first PES time");
+        if (got) sr_psmf_au_release(&au);
+        got = sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au);
+        CHECK(got && au.size == 5u && au.data &&
+              memcmp(au.data, k_aud, sizeof(k_aud)) == 0 && !au.has_pts,
+              "trailing split-AUD unit preserves its delimiter and missing PTS");
+        if (got) sr_psmf_au_release(&au);
+        CHECK(!sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au),
+              "split-AUD stream emits no duplicate unit");
+        sr_psmf_producer_close(p);
+    }
+    free(bytes);
+}
+
+static void test_aud_scan_survives_compaction(void) {
+    uint32_t size = 0;
+    uint8_t *bytes = fixture(&size, 7);
+    CHECK(bytes != NULL, "compaction fixture allocates");
+    if (!bytes) return;
+    MemSource mem = {bytes, size, 0, 0};
+    SrPsmfSource source = {mem_read, &mem, size};
+    SrPsmfProducer *p = sr_psmf_producer_open(&source, 0);
+    CHECK(p != NULL, "compaction fixture opens");
+    if (p) {
+        int seen = 0;
+        for (int i = 0; i < 1024 && !sr_psmf_producer_eof(p); i++) {
+            sr_psmf_producer_pump(p, 1);
+            SrPsmfAu au;
+            while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) {
+                CHECK(au.size == 128u, "compacted scan preserves AU boundaries");
+                seen++;
+                sr_psmf_au_release(&au);
+            }
+        }
+        SrPsmfProducerStats st;
+        sr_psmf_producer_stats(p, &st);
+        CHECK(st.eof && !st.failed && st.video_aus == 600 && seen == 600,
+              "all pictures survive a live-buffer compaction");
+        CHECK(st.video_aud_scan_candidates <= 2u * 600u * 128u,
+              "compacted video scan remains linear");
+        sr_psmf_producer_close(p);
+    }
+    free(bytes);
+}
+
+static void test_no_aud_at_buffer_limit(void) {
+    uint8_t payload[65000];
+    memset(payload, 0x55, sizeof(payload));
+    for (uint32_t extra = 0; extra <= 1; extra++) {
+        uint32_t payload_total = SR_PSMF_MAX_AU_BYTES + extra;
+        Buf b;
+        b.cap = payload_total + 2048u + 8192u;
+        b.d = (uint8_t *)calloc(1, b.cap);
+        CHECK(b.d != NULL, "near-limit no-AUD fixture allocates");
+        if (!b.d) continue;
+        b.at = 2048u;
+        b.overflow = 0;
+        b.d[0] = 'P'; b.d[1] = 'S'; b.d[2] = 'M'; b.d[3] = 'F';
+        be32(b.d + 8, 2048u);
+        uint32_t remaining = payload_total;
+        while (remaining) {
+            uint32_t n = remaining < sizeof(payload) ? remaining : sizeof(payload);
+            add_pes(&b, 0xe0, 0, 0, payload, n);
+            remaining -= n;
+        }
+        CHECK(!b.overflow, "near-limit no-AUD fixture fits its buffer");
+        be32(b.d + 12, b.at - 2048u);
+        MemSource mem = {b.d, b.at, 0, 0};
+        SrPsmfSource source = {mem_read, &mem, b.at};
+        SrPsmfProducer *p = sr_psmf_producer_open(&source, 0);
+        CHECK(p != NULL, "near-limit no-AUD fixture opens");
+        if (p) {
+            for (int i = 0; i < 16; i++) {
+                SrPsmfProducerStats st;
+                sr_psmf_producer_stats(p, &st);
+                if (st.eof || st.failed) break;
+                sr_psmf_producer_pump(p, 16);
+            }
+            SrPsmfProducerStats st;
+            sr_psmf_producer_stats(p, &st);
+            CHECK(st.video_aud_scan_candidates <= 2u * payload_total,
+                  "near-limit AUD scan work remains linear");
+            SrPsmfAu au;
+            memset(&au, 0, sizeof(au));
+            int got = sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au);
+            if (extra == 0) {
+                CHECK(st.eof && !st.failed && got && au.size == payload_total,
+                      "exact buffer limit emits one intact AU at EOF");
+            } else {
+                CHECK(st.failed && st.parser_failures && !got,
+                      "one byte beyond the buffer limit fails closed");
+            }
+            if (got) sr_psmf_au_release(&au);
+            sr_psmf_producer_close(p);
+        }
+        free(b.d);
+    }
 }
 
 static void test_lifecycle_and_source_failure(void) {
@@ -559,6 +747,10 @@ static void test_timestamp_flags(void) {
 int main(void) {
     test_access_unit_formation();
     test_backpressure_keeps_order();
+    test_no_aud_scan_work_bound();
+    test_aud_split_across_pes();
+    test_aud_scan_survives_compaction();
+    test_no_aud_at_buffer_limit();
     test_lifecycle_and_source_failure();
     test_malformed();
     test_rejects_bad_containers();
