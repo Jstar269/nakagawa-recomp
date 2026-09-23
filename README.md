@@ -24,7 +24,51 @@ Public development and automated continuous integration verify the recompiler th
 
 The public source boundary deliberately makes no claim of retail title playability. Active development focuses on HLE completeness, timing, scheduler edge cases, and graphics/audio fidelity. Active defect tracking is maintained on [GitHub Issues](https://github.com/Jstar269/nakagawa-recomp/issues); see [`ISSUES.md`](ISSUES.md) for the project status dashboard.
 
-## Quick start
+## Playing a PSP game: what works today
+
+Nakagawa Recomp is an experimental static recompiler, not a finished consumer emulator. No commercial PSP game is currently claimed to be playable out of the box from an ISO image alone ([`ISSUES.md`](ISSUES.md)). However, the project includes a standalone desktop player (`build/nakagawa_player.exe`) designed to eventually deliver a seamless "point at ISO and play" experience ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+
+### What you need
+
+- **Operating system:** Windows 11 x64 with a Vulkan-capable graphics card and current GPU drivers.
+- **Game image:** A lawfully owned PSP game disc image in uncompressed standard `.iso` format.
+- **PSP system fonts (optional but recommended for text):** Authentic in-game typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped from a real PSP console (`flash0:/font/`). These proprietary files cannot legally be bundled.
+- **Expectation:** Running a commercial title currently requires developer tools, pre-decrypted binaries, and manual staging. Dragging an ISO into the player will inspect and identify the disc, but will not yet automatically compile and boot the game.
+
+### What happens when you add an ISO in the player
+
+1. **Launch the player:** Run `build/nakagawa_player.exe` to open the native desktop interface.
+2. **Add your disc image:** Drag and drop an `.iso` file into the player window, or click **Add Game** to select it using the Windows file picker.
+3. **Identification:** The player reads the ISO9660 filesystem header and parses `PSP_GAME/PARAM.SFO` directly in C to extract the title and Disc ID (such as `UCUS-98701`), checking it against supported title profiles.
+4. **Asset inspection and staging:** For supported titles, the player can inspect disc assets and unpack internal game archives (such as `.xb` archives) into a local staging directory.
+5. **The recompilation boundary:** Retail PSP executables (`EBOOT.BIN` and dynamic `.prx` modules) are encrypted with Sony KIRK cryptography. Because automated in-engine decryption and the end-user recompilation pipeline are still in active development, the player cannot yet convert the encrypted game code into a playable native Windows application on the fly.
+
+### What you will see if something is not supported yet
+
+Nakagawa Recomp strictly follows a **fail-closed** engineering policy: when something is unsupported, missing, or unimplemented, the software halts cleanly at a named semantic boundary and tells you why. It will never fake success, simulate a phantom state, or silently crash:
+
+- **Unrecognized disc image:** If you load an ISO that has no matching profile in the catalog, the player displays an **Unsupported Title** screen with the detected disc ID, explaining that the game is not yet registered.
+- **Encrypted executable detected:** When the player encounters an encrypted `~PSP` container, it reports that encrypted retail binaries cannot yet be ingested without manual pre-decryption ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+- **Missing compiled runtime:** If a game has been identified and staged but has not been compiled into a native package, the card shows a clear preparation status rather than an active **Play Now** button ([#297](https://github.com/Jstar269/nakagawa-recomp/issues/297)).
+- **Missing firmware fonts:** If in-game fonts cannot be found, the player notes the missing PGF font dump requirement instead of substituting mismatched system fonts that cause text clipping ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+
+### Feature status
+
+| Capability | Status | What that means for you | Tracking issue |
+| :--- | :--- | :--- | :--- |
+| ISO import and identification | Works | Drag-and-drop and native file picking inspect ISO9660 headers and parse `PARAM.SFO` metadata (`DISC_ID`, title) natively via C without external tools (`src/player/iso_reader.c`). | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| executable decryption | In the works | Retail `EBOOT.BIN` and PRX modules use Sony KIRK encryption. An independent decryption boundary is in development; manual pre-decryption is currently required. | [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) |
+| recompilation / package build | In the works | Ahead-of-time MIPS-to-C translation and compilation work for synthetic workloads and manual developer routes; an automated one-click end-user build route is still being built. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) (#296) |
+| one-click launch | Partial | The native player can resolve, provision, and spawn pre-built runtime packages (verified with `display-smoke`), but launching games directly from raw ISOs is not yet connected. | [#297](https://github.com/Jstar269/nakagawa-recomp/issues/297) |
+| graphics | Partial | SDL3 and Vulkan hardware rendering (with software rasterizer fallback) present frames and in-game scenes, but known visual defects exist (e.g. transient model corruption) and independent GE work is ongoing. | [#69](https://github.com/Jstar269/nakagawa-recomp/issues/69), [#353](https://github.com/Jstar269/nakagawa-recomp/issues/353) |
+| audio output | In the works | Guest SAS and ATRAC3plus audio decoding and mixing logic function internally, but public-safe release builds intentionally omit host audio output and run silent until a redistributable backend lands. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) (#301) |
+| FMV/video | Partial | Host-HLE PSMF video playback (MPEG-4 AVC / H.264 via Media Foundation and standalone decoders) plays cutscenes in tested titles, but native guest PRX execution and a portable video backend remain in progress. | [#283](https://github.com/Jstar269/nakagawa-recomp/issues/283), [#279](https://github.com/Jstar269/nakagawa-recomp/issues/279) (#286) |
+| system fonts | Partial | Authentic typography requires Sony PSP firmware PGF fonts (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/`. Automated user font provisioning and a clean-room public PGF reader are being developed. | [#349](https://github.com/Jstar269/nakagawa-recomp/issues/349), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) (#300) |
+| save data | Partial | `sceUtilitySavedata` writes and reads save files in a local memory-stick folder, but ordinary guest file I/O (`ms0:`) and savedata currently use separate directory trees and must be unified under one namespace. | [#334](https://github.com/Jstar269/nakagawa-recomp/issues/334) |
+| controller input/remapping | Partial | SDL3 detects connected gamepads and navigates the player library, but in-app button remapping, analog stick calibration, and deadzone configuration UI have not yet been built. | [#357](https://github.com/Jstar269/nakagawa-recomp/issues/357) |
+| Linux/macOS/Android | In the works | Only Windows 11 x64 is supported today. Linux is the first planned non-Windows platform once host seams are portable, followed by macOS (Apple Silicon) and Android ARM64. | [#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329), [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360) |
+
+## Developer quick start
 
 ### Prerequisites
 
