@@ -162,6 +162,39 @@ class NativeHostBackendTests(unittest.TestCase):
         )
         self.assertIn("ALL POSIX PROCESS TESTS PASSED", stdout)
 
+    def test_audio_host_backend(self) -> None:
+        """Public SDL3 host audio output backend: dummy driver handoff and no-device safety."""
+        check_sdl = subprocess.run(
+            ["gcc", "-E", "-x", "c", "-", "-o", os.devnull],
+            input="#include <SDL3/SDL.h>\n",
+            capture_output=True,
+            text=True,
+        )
+        if check_sdl.returncode != 0:
+            raise unittest.SkipTest("SDL3 headers not available on this host")
+
+        tmp = self.enterContext(tempfile.TemporaryDirectory(prefix="nk_backend_audio_"))
+        out = Path(tmp) / f"audio_selftest{EXE_EXT}"
+        cmd = [
+            "gcc", "-std=c99", "-Wall", "-Wextra",
+            "-Isrc/rt", "-DSR_AUDIO_SELFTEST",
+            "src/rt/audio_unavailable.c",
+            "-lSDL3", "-lm",
+            "-o", str(out),
+        ]
+        build = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(
+            build.returncode, 0,
+            f"compiling audio selftest failed:\n{build.stdout}\n{build.stderr}",
+        )
+
+        run = subprocess.run([str(out)], cwd=ROOT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(
+            run.returncode, 0,
+            f"audio selftest failed:\n{run.stdout}\n{run.stderr}",
+        )
+        self.assertIn("ALL AUDIO HOST TESTS PASSED", run.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
