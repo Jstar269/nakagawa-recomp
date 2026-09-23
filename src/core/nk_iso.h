@@ -74,6 +74,11 @@ typedef struct {
  */
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta);
 
+/* Parse an in-memory PARAM.SFO buffer and extract metadata.
+ * Returns true if valid, false if malformed or duplicate conflict.
+ */
+bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta);
+
 /* Extract a file from an ISO9660 disc image to the host filesystem.
  * disc_rel_path: path inside ISO (e.g. "PSP_GAME/PARAM.SFO" or "PSP_GAME/ICON0.PNG")
  * host_dest_path: destination file path on host

@@ -504,8 +504,9 @@ static bool sfo_key_is_identity(const char *key) {
         || strcmp(key, "DISC_VERSION") == 0;
 }
 
+
 /* Parse SFO buffer and extract DISC_ID, TITLE, DISC_VERSION with rigorous bounds checking */
-static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
+bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
     if (!sfo || sfo_size < 20 || !meta) return false;
 
     if (memcmp(sfo, SFO_MAGIC, 4) != 0) {
@@ -537,6 +538,7 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         uint32_t data_off = read_le32(sfo + entry_off + 12);
 
         /* Validate key offset and ensure null termination */
+        if (key_off >= data_table_off || (size_t)key_off >= data_table_off - key_table_off) continue;
         size_t abs_key_off = (size_t)key_table_off + key_off;
         if (abs_key_off >= data_table_off) continue;
         const char *key = (const char *)&sfo[abs_key_off];
@@ -551,6 +553,9 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         }
 
         /* Validate data offset and length bounds */
+        if (data_off > sfo_size || (size_t)data_off > sfo_size - data_table_off) {
+            continue;
+        }
         size_t abs_data_off = (size_t)data_table_off + data_off;
         if (abs_data_off > sfo_size || (size_t)data_len > sfo_size - abs_data_off) {
             continue;
@@ -575,11 +580,11 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         }
 
         char val_buf[256];
-        int copy_len = (int)data_len;
-        if (copy_len >= (int)sizeof(val_buf)) {
-            copy_len = (int)sizeof(val_buf) - 1;
+        size_t copy_len = (size_t)data_len;
+        if (copy_len >= sizeof(val_buf)) {
+            copy_len = sizeof(val_buf) - 1;
         }
-        snprintf(val_buf, sizeof(val_buf), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
+        snprintf(val_buf, sizeof(val_buf), "%.*s", (int)copy_len, (const char *)&sfo[abs_data_off]);
 
         if (strcmp(key, "DISC_ID") == 0 || strcmp(key, "TITLE_ID") == 0) {
             if (meta->disc_id[0] != '\0') {
@@ -656,7 +661,7 @@ static bool scan_disc_id_in_buffer(const uint8_t *buf, size_t buf_size, char *ou
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     if (!iso_path || !out_meta) return NK_ERROR_GENERIC;
     memset(out_meta, 0, sizeof(*out_meta));
-    /* disc_version is deliberately left empty here. parse_sfo_buffer treats a
+    /* disc_version is deliberately left empty here. nk_iso_parse_sfo_buffer treats a
        non-empty value as evidence that a DISC_VERSION key was already seen, so
        pre-seeding a default made the first genuine entry look like a
        conflicting duplicate and rejected every disc whose version was not
@@ -875,7 +880,7 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             if (sfo_buf) {
                 nk_fseek64(f, (int64_t)sfo_offset, SEEK_SET);
                 if (fread(sfo_buf, 1, sfo_size, f) == sfo_size) {
-                    if (parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
+                    if (nk_iso_parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
                         if (out_meta->disc_id[0] != 0) identity_structured = true;
                     } else {
                         if (out_meta->error_message[0] != '\0') {
@@ -900,7 +905,7 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             /* Search for SFO magic */
             for (size_t i = 0; i + 20 <= bytes_read; i++) {
                 if (memcmp(scan_buf + i, SFO_MAGIC, 4) == 0) {
-                    if (parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
+                    if (nk_iso_parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
                         /* Deliberately does NOT set identity_structured. An SFO
                            found by scanning raw bytes has no filesystem
                            provenance: any image can embed a valid SFO blob

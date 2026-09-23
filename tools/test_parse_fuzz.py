@@ -31,9 +31,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import analyze  # noqa: E402
+import elf_bounds  # noqa: E402
 import imports  # noqa: E402
 import prxload  # noqa: E402
+import title_manifest  # noqa: E402
+from nk_core.iso_inspect import parse_param_sfo, IsoInspectionError  # noqa: E402
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
+from test_iso_parity import build_param_sfo  # noqa: E402
+from test_xb_probe import _make_archive, XBCompression  # noqa: E402
+from xb_probe import XBArchiveReader, XBProbeError  # noqa: E402
 
 
 SEED_BASE = 0x08804000
@@ -106,6 +112,32 @@ def exercise(data: bytes, base: int, path: Path) -> dict[str, object]:
     if status == "accepted":
         report["import_count"] = len(parsed)
     return report
+
+
+def _mutate_bytes(data: bytes, rng: random.Random, max_cap: int = 4096) -> bytes:
+    d = bytearray(data)
+    for _ in range(rng.randint(1, 8)):
+        op = rng.randrange(6)
+        if op == 0 and d:
+            d[rng.randrange(len(d))] ^= (1 << rng.randrange(8))
+        elif op == 1 and len(d) < max_cap:
+            d.insert(rng.randrange(len(d) + 1), rng.randrange(256))
+        elif op == 2 and len(d) > 4:
+            if rng.randrange(4) == 0:
+                del d[rng.randrange(len(d)):]
+            else:
+                del d[rng.randrange(len(d))]
+        elif op == 3 and d:
+            d[rng.randrange(len(d))] = rng.randrange(256)
+        elif op == 4 and len(d) >= 4:
+            pos = rng.randrange(len(d) - 3)
+            val = rng.choice([0, 1, 2, 0xFFFF, 0x10000, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, len(d)])
+            struct.pack_into("<I", d, pos, val)
+        elif op == 5 and len(d) >= 2:
+            pos = rng.randrange(len(d) - 1)
+            val = rng.choice([0, 1, 0x7FFF, 0x8000, 0xFFFF])
+            struct.pack_into("<H", d, pos, val)
+    return bytes(d)
 
 
 def describe(data: bytes) -> str:
@@ -198,6 +230,106 @@ class TestParseFuzz(unittest.TestCase):
                 exercise(valid_seed_prx(), SEED_BASE, self.path)
         finally:
             imports.parse_imports = original
+
+    def test_param_sfo_fuzz(self) -> None:
+        rng = random.Random(0x5F0)
+        seed = build_param_sfo("ULES00123", "Test Title", "1.00")
+        accepted = 0
+        for _ in range(500):
+            if rng.random() < 0.5:
+                data = _mutate_bytes(seed, rng)
+            else:
+                data = rng.randbytes(rng.randint(0, 1024))
+            try:
+                res = parse_param_sfo(data)
+                self.assertIsInstance(res, dict)
+                accepted += 1
+            except (IsoInspectionError, ValueError):
+                pass
+        self.assertGreater(accepted, 0)
+
+    def test_xb_archive_fuzz(self) -> None:
+        rng = random.Random(0x8B)
+        seed = _make_archive([
+            ("data/file1.bin", b"hello world", XBCompression.NONE),
+            ("data/file2.bin", b"synthetic content for lzs compression", XBCompression.LZS),
+        ])
+        accepted = 0
+        for _ in range(500):
+            if rng.random() < 0.5:
+                data = _mutate_bytes(seed, rng)
+            else:
+                data = rng.randbytes(rng.randint(0, 1024))
+            try:
+                reader = XBArchiveReader.from_bytes(data)
+                accepted += 1
+                if reader.entries:
+                    try:
+                        reader.read_entry(reader.entries[0])
+                    except (XBProbeError, ValueError):
+                        pass
+            except (XBProbeError, ValueError):
+                pass
+        self.assertGreater(accepted, 0)
+
+    def test_elf_bounds_fuzz(self) -> None:
+        rng = random.Random(0x31F)
+        seed = valid_seed_prx()
+        accepted = 0
+        for _ in range(500):
+            if rng.random() < 0.5:
+                data = _mutate_bytes(seed, rng)
+            else:
+                data = rng.randbytes(rng.randint(0, 1024))
+            try:
+                res = elf_bounds.validate_elf32_envelope(data)
+                self.assertIsInstance(res, dict)
+                accepted += 1
+            except ValueError:
+                pass
+        self.assertGreater(accepted, 0)
+
+    def test_title_manifest_fuzz(self) -> None:
+        rng = random.Random(0x7171)
+        fixture_path = ROOT / "assets" / "titles" / "synthetic.json"
+        seed_text = fixture_path.read_text(encoding="utf-8")
+        accepted = 0
+        for _ in range(500):
+            if rng.random() < 0.5:
+                mutated = _mutate_bytes(seed_text.encode("utf-8"), rng).decode("utf-8", errors="ignore")
+            else:
+                mutated = rng.randbytes(rng.randint(0, 1024)).decode("utf-8", errors="ignore")
+            try:
+                raw_obj = title_manifest.loads_manifest(mutated)
+                title_manifest.validate_manifest(raw_obj)
+                accepted += 1
+            except (title_manifest.TitleManifestError, ValueError):
+                pass
+        self.assertGreater(accepted, 0)
+
+    def test_psp_segment_sizes_fuzz(self) -> None:
+        rng = random.Random(0x5E6)
+        seed = bytearray(0x80)
+        seed[:4] = b"~PSP"
+        seed[0x27] = 2
+        struct.pack_into("<I", seed, 0x38, 0x1000)
+        struct.pack_into("<4I", seed, 0x54, 0x2000, 0x3000, 0, 0)
+        seed_bytes = bytes(seed)
+        accepted = 0
+        for _ in range(500):
+            if rng.random() < 0.5:
+                data = _mutate_bytes(seed_bytes, rng)
+            else:
+                data = rng.randbytes(rng.randint(0, 256))
+            self.path.write_bytes(data)
+            try:
+                sizes, bss = prxload.read_psp_segment_sizes(str(self.path), 2)
+                self.assertIsInstance(sizes, list)
+                self.assertIsInstance(bss, int)
+                accepted += 1
+            except ValueError:
+                pass
+        self.assertGreater(accepted, 0)
 
 
 if __name__ == "__main__":

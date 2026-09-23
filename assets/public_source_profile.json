@@ -661,6 +661,7 @@
     "src/rt/watchpoints_file_selftest.c",
     "tests/native/argv_echo_helper.c",
     "tests/native/test_core_catalog.c",
+    "tests/native/test_fuzz_parsers.c",
     "tests/native/test_launch_resolution.c",
     "tests/native/test_manifest_parser.c",
     "tests/native/test_parsers_hostile.c",
