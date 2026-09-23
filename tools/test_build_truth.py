@@ -1718,6 +1718,32 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         self.assertEqual(values["SDL3_INC_FLAGS"], "-IC:/msys64/ucrt64/include")
         self.assertEqual(values["SDL3_LDFLAGS"], "-LC:/msys64/ucrt64/lib")
 
+    def test_msys2_provider_with_a_foreign_compiler_fails_closed_without_flags(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+        provider = self._provider("msys2_ucrt64", "C:/msys64/ucrt64/include",
+                                  "C:/msys64/ucrt64/lib/libSDL3.dll.a")
+        with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider), \
+             mock.patch.object(ndc.shutil, "which", return_value="C:/other/mingw64/bin/gcc.exe"):
+            text = ndc.sdl3_make_fragment(compiler="gcc")
+        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        self.assertEqual(values["SDL3_INC_FLAGS"], "")
+        self.assertEqual(values["SDL3_LDFLAGS"], "")
+        self.assertIn("sdl3 dependency is missing", values["SDL3_ERROR"].lower())
+        self.assertIn("first on PATH", values["SDL3_ERROR"])
+
+    def test_msys2_provider_with_its_own_compiler_emits_flags(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+        provider = self._provider("msys2_ucrt64", "C:/msys64/ucrt64/include",
+                                  "C:/msys64/ucrt64/lib/libSDL3.dll.a")
+        with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider), \
+             mock.patch.object(ndc.shutil, "which", return_value="C:/msys64/ucrt64/bin/gcc.exe"):
+            text = ndc.sdl3_make_fragment(compiler="gcc")
+        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        self.assertEqual(values["SDL3_ERROR"], "")
+        self.assertEqual(values["SDL3_LDFLAGS"], "-LC:/msys64/ucrt64/lib")
+
     def test_makefile_discovers_sdl3_once_per_parse(self) -> None:
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertEqual(sum("write_sdl3_make_fragment" in line for line in makefile_text.splitlines()), 1)

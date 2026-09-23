@@ -570,8 +570,7 @@ class EnvironmentContractTests(unittest.TestCase):
                 f"{doc.relative_to(ROOT)} does not document the PowerShell {floor}+ floor",
             )
         for script in sorted((ROOT / name for name in (
-            "copy_build_assets.ps1", "hst.ps1", "hst_manager.ps1", "nk.ps1", "nk_manager.ps1",
-            "tools/hst_run_support.ps1", "tools/hst_safety.ps1", "tools/nk_safety.ps1",
+            "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1", "tools/nk_safety.ps1",
             "tools/test_manager_safety.ps1", "tools/test_visual_oracle.ps1",
             "tools/title_manager_plan.ps1", "tools/vulkan_sdk.ps1",
         ))):

@@ -540,7 +540,7 @@ def _pkg_config_flags(flag: str) -> str:
     return res.stdout.strip() if res.returncode == 0 else ""
 
 
-def sdl3_make_fragment(explicit: str | None = None) -> str:
+def sdl3_make_fragment(explicit: str | None = None, compiler: str | None = None) -> str:
     """Every SDL3 Make variable from one discovery pass.
 
     The Makefile evaluates this once per parse; separate queries cost one
@@ -561,7 +561,12 @@ def sdl3_make_fragment(explicit: str | None = None) -> str:
         values["SDL3_PROVIDER"] = p.provider
         values["SDL3_VERSION"] = p.version
         values["SDL3_DLL"] = p.runtime_dll.as_posix() if p.runtime_dll else ""
-        if p.provider == "pkg_config":
+        mismatch = _compiler_toolchain_mismatch(p, compiler)
+        if mismatch:
+            # Adding this provider's -I/-L to a different MinGW links its C runtime
+            # against the wrong one. Stop the SDL3-linking targets with the remedy.
+            values["SDL3_ERROR"] = mismatch
+        elif p.provider == "pkg_config":
             values["SDL3_INC_FLAGS"] = _pkg_config_flags("--cflags")
             values["SDL3_LDFLAGS"] = " ".join(
                 f for f in _pkg_config_flags("--libs-only-L").split())
@@ -575,10 +580,36 @@ def sdl3_make_fragment(explicit: str | None = None) -> str:
     return "".join(f"{k} := {_make_escape(v)}\n" for k, v in values.items())
 
 
-def write_sdl3_make_fragment(path: str, explicit: str | None = None) -> None:
+def _compiler_toolchain_mismatch(provider: "Sdl3Provider", compiler: str | None) -> str:
+    """Name a compiler that does not belong to the MSYS2 UCRT64 SDL3 provider.
+
+    Only the MSYS2 provider is tied to one toolchain; other providers are left alone.
+    """
+    if provider.provider != "msys2_ucrt64" or not compiler:
+        return ""
+    resolved = shutil.which(compiler)
+    if not resolved:
+        return ""
+    toolchain_bin = (provider.root_dir / "bin").resolve()
+    try:
+        in_toolchain = Path(resolved).resolve().parent == toolchain_bin
+    except OSError:
+        in_toolchain = False
+    if in_toolchain:
+        return ""
+    return (
+        f"SDL3 dependency is missing from the compiler's toolchain: {compiler} resolves to "
+        f"{Path(resolved).as_posix()}, not the MSYS2 UCRT64 toolchain that provides SDL3 at "
+        f"{provider.root_dir.as_posix()}. Put {toolchain_bin.as_posix()} first on PATH "
+        "(see docs/SETUP.md)."
+    )
+
+
+def write_sdl3_make_fragment(path: str, explicit: str | None = None,
+                             compiler: str | None = None) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    text = sdl3_make_fragment(explicit)
+    text = sdl3_make_fragment(explicit, compiler)
     if not out.is_file() or out.read_text(encoding="utf-8") != text:
         out.write_text(text, encoding="utf-8")
 

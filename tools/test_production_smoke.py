@@ -397,6 +397,15 @@ class TestProductionSmokePackage(unittest.TestCase):
             json.dumps(self.manifest, sort_keys=True) + "\n", encoding="utf-8"
         )
 
+    def skip_if_toolchain_unusable(self, run):
+        """The package route links SDL3; a host without the supported toolchain is a
+        SKIP with the Makefile's own remedy, not a failure of the route."""
+        output = (run.stdout + run.stderr)
+        if run.returncode != 0 and "sdl3 dependency is missing" in output.lower():
+            reason = next(line for line in output.splitlines()
+                          if "sdl3 dependency is missing" in line.lower())
+            self.skipTest(reason.strip())
+
     def package_command(self, *, executable=None, output_dir=None):
         return [
             sys.executable,
@@ -472,6 +481,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         shutil.copyfile(self.fixture_dir / "guest.psp", spaced / "guest.psp")
         command[header_at] = str(spaced / "guest.psp")
         run = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+        self.skip_if_toolchain_unusable(run)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         package = json.loads((self.build_dir / "package.json").read_bytes())
         self.assertEqual(
@@ -488,6 +498,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         first = subprocess.run(
             self.package_command(), cwd=ROOT, env=env, capture_output=True, text=True
         )
+        self.skip_if_toolchain_unusable(first)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         package_path = self.build_dir / "package.json"
         report_path = self.build_dir / "build-report.json"
