@@ -9914,5 +9914,14 @@
       },
       "sha256": "95fcf133de78520b9d09830b8f7f3d5719cecabde8030bd040d7535e753a6106"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "72efda43a024fe31ddb618949a3507fa3c548608",
+    "candidate_tree": "f2381aa5ea0921823a12a0c23ba16986d2653571",
+    "refreshed_paths": [
+      "fixtures/psp_oracle/probe.c",
+      "tools/test_psp_oracle.py"
+    ]
+  }
 }
