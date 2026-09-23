@@ -986,10 +986,9 @@ NkResult nk_launch_start(NkLaunchSession *session) {
 
     const char *envp[24];
     int env_count = 0;
-    if (session->iso_path[0]) {
-        snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
-        envp[env_count++] = env_iso;
-    }
+    /* An empty value masks an inherited ISO for staged sessions with no ISO. */
+    snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
+    envp[env_count++] = env_iso;
     envp[env_count++] = env_fps;
     envp[env_count++] = env_ge;
     envp[env_count++] = env_scale;

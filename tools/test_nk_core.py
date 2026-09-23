@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -411,6 +412,42 @@ class NkCoreTests(unittest.TestCase):
         profile = registry.lookup_by_disc_id("TEST00001")
         self.assertEqual(int(cmd[3], 16), profile.executable_base)
         self.assertEqual(int(cmd[4], 16), profile.executable_entry)
+
+    def test_runtime_launcher_does_not_inherit_parent_iso_without_session_iso(self) -> None:
+        game_dir = self.temp_dir / "TEST00001"
+        game_dir.mkdir()
+        _write_title_runtime(self.temp_dir, "synthetic", exe_ext=".exe")
+        manifest_file = game_dir / "manifest.json"
+        launcher = RuntimeLauncher(repo_root=self.temp_dir)
+
+        for iso_field in ({}, {"iso_path": ""}, {"iso_path": None}):
+            with self.subTest(iso_field=iso_field):
+                manifest_file.write_text(
+                    json.dumps({
+                        "title_id": "synthetic-allegrex-v1",
+                        "disc_id": "TEST00001",
+                        **iso_field,
+                    }),
+                    encoding="utf-8",
+                )
+                with patch.dict(os.environ, {
+                    "PSP_ISO": "poisoned-parent.iso",
+                    "NK_UNRELATED_SENTINEL": "preserved",
+                }):
+                    _, env = launcher.build_launch_plan(game_dir)
+                self.assertIsNone(env.get("PSP_ISO"))
+                self.assertEqual(env["NK_UNRELATED_SENTINEL"], "preserved")
+
+        resolved_iso = self.temp_dir / "resolved.iso"
+        resolved_iso.write_bytes(b"synthetic")
+        manifest_file.write_text(json.dumps({
+            "title_id": "synthetic-allegrex-v1",
+            "disc_id": "TEST00001",
+            "iso_path": str(resolved_iso),
+        }), encoding="utf-8")
+        with patch.dict(os.environ, {"PSP_ISO": "poisoned-parent.iso"}):
+            _, env = launcher.build_launch_plan(game_dir)
+        self.assertEqual(env["PSP_ISO"], str(resolved_iso))
 
     def test_runtime_launcher_missing_image_fails_closed(self) -> None:
         """No image means no runnable plan, and saying so beats a usage exit."""
