@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
-#requires -Version 7.6
+#requires -Version 7.4
 
 <#
     Strict PowerShell adapter for the versioned title_codegen_plan.py manager plan.

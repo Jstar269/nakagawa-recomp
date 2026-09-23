@@ -408,7 +408,9 @@ class CliTests(unittest.TestCase):
 
 class EnvironmentContractTests(unittest.TestCase):
     def test_powerShell_accepts_current_core_line(self) -> None:
-        for version in ("7.6.4", "7.6.5", "7.7.0"):
+        # Still-supported lines per the Microsoft lifecycle table cited in
+        # docs/SETUP.md (7.4 LTS and 7.5 until 2026-11-10; 7.6 LTS beyond).
+        for version in ("7.4.0", "7.4.20", "7.5.10", "7.6.6", "7.7.0"):
             with self.subTest(version=version), mock.patch.object(
                 _CHECKS_MODULE,
                 "_probe_powershell",
@@ -435,9 +437,7 @@ class EnvironmentContractTests(unittest.TestCase):
         for edition, version in (
             ("Desktop", "5.1.22621"),
             ("Desktop", "8.0.0"),
-            ("Core", "7.5.3"),
-            ("Core", "7.5.10"),
-            ("Core", "7.4.19"),
+            ("Core", "7.3.0"),
             ("Core", "6.2.0"),
         ):
             with self.subTest(edition=edition, version=version), mock.patch.object(
@@ -468,6 +468,32 @@ class EnvironmentContractTests(unittest.TestCase):
                 _CHECKS_MODULE.check_powershell(report)
                 result = next(item for item in report.results if item.code == "POWERSHELL_VERSION")
                 self.assertEqual(result.status, "FAIL")
+
+    def test_powershell_floor_is_pinned_to_the_documented_minimum(self) -> None:
+        # Issue #337: one floor, four surfaces. The static feature inventory
+        # proves no tracked .ps1 needs anything above $IsWindows (6.0); the
+        # enforced value is the oldest still-supported line, pinned here so the
+        # doctor check, docs, and #requires headers cannot drift apart.
+        self.assertEqual(_CHECKS_MODULE.MINIMUM_POWERSHELL, (7, 4))
+        floor = _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT
+        for doc in (ROOT / "docs" / "SETUP.md", ROOT / "README.md"):
+            text = doc.read_text(encoding="utf-8")
+            self.assertIn(
+                f"PowerShell {floor}+",
+                text,
+                f"{doc.relative_to(ROOT)} does not document the PowerShell {floor}+ floor",
+            )
+        for script in sorted((ROOT / name for name in (
+            "copy_build_assets.ps1", "hst.ps1", "hst_manager.ps1", "nk.ps1", "nk_manager.ps1",
+            "tools/hst_run_support.ps1", "tools/hst_safety.ps1", "tools/nk_safety.ps1",
+            "tools/test_manager_safety.ps1", "tools/test_visual_oracle.ps1",
+            "tools/title_manager_plan.ps1", "tools/vulkan_sdk.ps1",
+        ))):
+            self.assertIn(
+                f"#requires -Version {floor}",
+                script.read_text(encoding="utf-8-sig"),
+                f"{script.relative_to(ROOT)} does not declare '#requires -Version {floor}'",
+            )
 
     def test_windows_11_requires_workstation_product_type_and_build_floor(self) -> None:
         cases = (
@@ -572,7 +598,11 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "tools" / "title_manager_plan.ps1",
             ROOT / "tools" / "vulkan_sdk.ps1",
         ):
-            self.assertIn("#requires -Version 7.6", script.read_text(encoding="utf-8-sig"), script.name)
+            self.assertIn(
+                f"#requires -Version {_CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT}",
+                script.read_text(encoding="utf-8-sig"),
+                script.name,
+            )
         self.assertIn("pwsh -NoProfile", self.makefile)
         self.assertNotIn("powershell -NoProfile", self.makefile)
         for action in ("Doctor", "Build", "Rebuild", "Play", "Verify", "Manager"):
@@ -644,10 +674,11 @@ class SimpleFrontEndTests(unittest.TestCase):
         self.assertEqual(discovered_scripts, expected_scripts)
         for script in discovered_scripts:
             content = script.read_text(encoding="utf-8-sig")
+            expected_header = f"#requires -Version {_CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT}"
             self.assertIn(
-                "#requires -Version 7.6",
+                expected_header,
                 content,
-                f"{script.relative_to(ROOT)} does not contain expected '#requires -Version 7.6' header",
+                f"{script.relative_to(ROOT)} does not contain expected '{expected_header}' header",
             )
 
 

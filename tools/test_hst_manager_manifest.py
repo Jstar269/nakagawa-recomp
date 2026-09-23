@@ -30,7 +30,7 @@ class HstManagerManifestTests(unittest.TestCase):
         cls.shell = shutil.which("pwsh")
         cls.make = shutil.which("mingw32-make") or shutil.which("make")
         if cls.shell is None or cls.make is None:
-            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) and GNU Make are required")
+            raise unittest.SkipTest("PowerShell 7.4+ (pwsh) and GNU Make are required")
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-issue197-manager-")

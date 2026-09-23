@@ -39,6 +39,20 @@ from shader_embed import verify as verify_shader_provenance
 from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk
 
 
+# Proven minimum PowerShell floor (issue #337). A static AST inventory of every
+# tracked .ps1 shows no language or cmdlet feature newer than the automatic
+# $IsWindows variable (PowerShell 6.0): no ternary, null-coalescing/null-
+# conditional, pipeline-chain, -Parallel, -AsHashtable, Join-Path
+# -AdditionalChildPath, Test-Json, Get-Error, clean-block, or -ProgressAction
+# usage exists. 7.4 is the oldest release line Microsoft still supports (LTS,
+# end of support 2026-11-10), and 337's non-goals exclude EOL lines and Windows
+# PowerShell 5.1, so the enforced floor is 7.4 rather than the static 6.0
+# maximum. Static evidence only: the scripts have not been executed on 7.4; the
+# multi-version runtime matrix remains open in #337.
+MINIMUM_POWERSHELL: tuple[int, int] = (7, 4)
+MINIMUM_POWERSHELL_TEXT = ".".join(str(part) for part in MINIMUM_POWERSHELL)
+
+
 def _probe_powershell() -> tuple[Path | None, str | None, str | None, str | None]:
     executable = shutil.which("pwsh")
     if not executable:
@@ -74,7 +88,7 @@ def check_powershell(report: Report) -> None:
     if error:
         report.fail(
             "POWERSHELL_VERSION",
-            "PowerShell 7.6+ (`pwsh`) is required",
+            f"PowerShell {MINIMUM_POWERSHELL_TEXT}+ (`pwsh`) is required",
             path=executable,
             detail=error,
             remediation="Install the current PowerShell 7 LTS line and ensure `pwsh` is on PATH.",
@@ -88,11 +102,11 @@ def check_powershell(report: Report) -> None:
     metadata = {"edition": edition, "version": version_text}
     # The contract is a minimum supported PowerShell release, not a hard
     # maximum on the major version. Future Core releases remain compatible
-    # unless their version is below the 7.6 floor.
-    if edition != "Core" or (major, minor) < (7, 6):
+    # unless their version is below the proven floor (see MINIMUM_POWERSHELL).
+    if edition != "Core" or (major, minor) < MINIMUM_POWERSHELL:
         report.fail(
             "POWERSHELL_VERSION",
-            "PowerShell 7.6+ (`pwsh`) is required",
+            f"PowerShell {MINIMUM_POWERSHELL_TEXT}+ (`pwsh`) is required",
             path=executable,
             detail=f"detected {edition or 'unknown'} {version_text or 'unknown'}",
             remediation="Install the current PowerShell 7 LTS line and invoke scripts with `pwsh`.",
@@ -101,7 +115,7 @@ def check_powershell(report: Report) -> None:
     else:
         report.pass_(
             "POWERSHELL_VERSION",
-            "PowerShell 7.6+ is available",
+            f"PowerShell {MINIMUM_POWERSHELL_TEXT}+ is available",
             path=executable,
             detail=f"{edition} {version_text}",
             metadata=metadata,

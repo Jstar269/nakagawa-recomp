@@ -77,7 +77,7 @@ The verified native host contract is the Windows contract in
 [`docs/SETUP.md`](SETUP.md):
 
 - Windows 11 x64.
-- PowerShell 7.6 or newer; Windows PowerShell 5.1 is not supported.
+- PowerShell 7.4 or newer; Windows PowerShell 5.1 is not supported.
 - CPython 3.14.x.
 - MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 

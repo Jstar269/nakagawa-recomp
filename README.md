@@ -28,7 +28,7 @@ The public source boundary deliberately makes no claim of retail title playabili
 
 ### Prerequisites
 
-- Windows 11 x64 with PowerShell 7.6+ (`pwsh`)
+- Windows 11 x64 with PowerShell 7.4+ (`pwsh`)
 - CPython 3.14.x
 - MSYS2 UCRT64 toolchain (GCC/G++, GNU Make, SDL3, Vulkan headers & loader)
 - A current Vulkan SDK and a Vulkan-capable GPU

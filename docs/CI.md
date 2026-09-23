@@ -205,7 +205,7 @@ path.write_bytes(canonical_bytes)                        # already-canonical byt
 `CanonicalWriterTests` asserts this for the canonical writers, so the rule
 cannot quietly regress.
 
-**PowerShell.** Use PowerShell 7+, which the project already requires: in
+**PowerShell.** Use PowerShell 7.4+, which the project already requires: in
 Windows PowerShell 5.1 `-Encoding utf8` means UTF-8 **with** BOM, and in 7+ it
 means without. `Set-Content` and `Out-File` also join with the host newline. For
 anything byte-exact, bypass the text pipeline entirely:
