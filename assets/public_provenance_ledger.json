@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "cb9ce4dc7d3630a318faf443cbd2c4a82450461455a25ef9878901e8ff0bdec8"
+      "sha256": "c13ad3f18f178292b9297fd7d7797b4c50f9485001c2ede3319ef7e1160f35c1"
     },
     {
       "path": "NOTICE.md",
@@ -5191,7 +5191,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f0bc76b0d868ea79c46e812d49569acd521e4db65c2e320100ef5153547d55e7"
+      "sha256": "41a433da1b3fb29feafa58e8217a81f4a57ab0ed9201841ba641b4efcb331901"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -8957,7 +8957,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "499ea26a1a2c4ae8a6aa70ac346bf909c59742f3e5fcddf1dfa88012344e82fd"
+      "sha256": "f669ade78cb2095eb054e3c9c8751d8c66e54776d60533ecb418b98c2398ab04"
     },
     {
       "path": "tools/test_nid_name_proof.py",
