@@ -1035,7 +1035,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96c45a504805d5529ba71adbcfa9efcdc6ffffeab3cb98c4e39a689d1fc452d4"
+      "sha256": "b54b5e846f7b3fee2c558fae7f4ba61dbe373a15d81d0d262148f57ec1b0b625"
     },
     {
       "path": "docs/TOOLCHAIN_BASELINE_2026-08.md",
@@ -9918,7 +9918,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "7ca198ceeee04df635eeb4ec67e2f5a5536052b8",
-    "candidate_tree": "35db353776f12ed1448606d0cca9ffe4873dc7b5",
+    "candidate_tree": "c7bbe81b1e7d82f0c01744c6f82114cfe4d4245a",
     "refreshed_paths": [
       "docs/TITLE_PROFILE_ARCHITECTURE.md"
     ]
