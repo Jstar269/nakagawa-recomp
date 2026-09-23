@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "338d2e82cae4780771225b5cecc2f2a8d8a6581ad18f523efa612e15896371a0"
+      "sha256": "3722a8d50be8d8093f5b3651dfb8cbfaf49cccf73f338e4d273bca7c6834acb5"
     },
     {
       "path": "NOTICE.md",
@@ -8255,7 +8255,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "488b9329939e079f847881fbd4328b291743b4be25cf36b523a376074b2f0776"
+      "sha256": "c91f82cdbcd9b3677a431b4684f570ae0c4bf1ddad8840715cf4c9d89fe21bf2"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -9023,7 +9023,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "71f361c1de1338197a4a41abbdc25d334c50ed573f27e82f06036e90ecd73c81"
+      "sha256": "8e73e8d7bff393949503af98290d5ba1778e7c707679671359dbda63d3a534cd"
     },
     {
       "path": "tools/test_portability_inventory.py",
