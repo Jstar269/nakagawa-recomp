@@ -1285,6 +1285,7 @@ def _ephemeral_verdict_findings(
                 "claimed_record_id": record_id,
                 "trusted": expected_class,
                 "trusted_record_id": expected_record,
+                "backing": _backing(path, exact_records, record_patterns),
             })
     return findings, debt, blob_approved, blob_unapproved
 
