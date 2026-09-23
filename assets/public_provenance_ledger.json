@@ -1329,7 +1329,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ea3a204f3fc4314fc9c0b9c41c03cedddc095938533ca3cfa9ccc06d4b6cf645"
+      "sha256": "b50c6676c86c3bc7876094fa7bea0ee986fe10a975bb3d779675905434012266"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -9185,7 +9185,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e3a482b95cdc1506328f5a7b1a8d81602a11943a402cb4d0c8819a7d740db292"
+      "sha256": "892d54f6c68adb0f7bffd65fae629194dce24d0e07f5e456a5796eb302b6cc23"
     },
     {
       "path": "tools/test_psp_parsers.py",
@@ -9917,12 +9917,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "afb9b8c75b48e13df9e9dda38e496fc4bd148a81",
-    "candidate_tree": "2eaf8b70d8812897e802039920cfffa9b16dfc73",
+    "trusted_tree": "72efda43a024fe31ddb618949a3507fa3c548608",
+    "candidate_tree": "f2381aa5ea0921823a12a0c23ba16986d2653571",
     "refreshed_paths": [
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer.h",
-      "src/rt/psmf_producer_selftest.c"
+      "fixtures/psp_oracle/probe.c",
+      "tools/test_psp_oracle.py"
     ]
   }
 }

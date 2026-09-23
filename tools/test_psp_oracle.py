@@ -453,6 +453,19 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn('PROBE_HOST0_LOG "host0:/model_profile_log.txt"', self.probe)
         self.assertIn("-lpspkubridge", self.makefile)
 
+    def test_probe_preprocessor_guards_are_balanced(self) -> None:
+        open_guards: list[int] = []
+        for line_number, line in enumerate(self.probe.splitlines(), 1):
+            directive = re.match(r"^\s*#\s*(if|ifdef|ifndef|endif)\b", line)
+            if not directive:
+                continue
+            if directive.group(1) == "endif":
+                self.assertTrue(open_guards, f"extra #endif at line {line_number}")
+                open_guards.pop()
+            else:
+                open_guards.append(line_number)
+        self.assertEqual(open_guards, [], f"unclosed #if at lines {open_guards}")
+
     def test_system_manifest_exposes_the_model_profile_case(self) -> None:
         manifest = json.loads(
             (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
