@@ -7746,7 +7746,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "19e1703ec561d301cce5315b7282c5b70cf5febc5bd8c55a974b6df2dd4735ac"
+      "sha256": "0f6546b865115b670ac9d19ca0abd8627060c95bb02ab47f90c98dcb7481b7a8"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -9095,7 +9095,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8fcab4bb9de33782e82ad6a43b339ed84875ee739a1917afd7847193a6146944"
+      "sha256": "c5214f8512c27fa7fc21286c84db7fc6eb92f22452df05b7f4db750ffa6d167c"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
