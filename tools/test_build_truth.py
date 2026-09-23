@@ -1533,6 +1533,155 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertIn("Get-Command gcc", script_text)
         self.assertIn("SDL3.dll", script_text)
 
+    def test_sdl3_discovery_in_makefile_records_identity_and_version(self) -> None:
+        """Makefile compiler-info must discover and report SDL3_DIR, SDL3_PROVIDER, and SDL3_VERSION."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "compiler-info"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("SDL3_DIR=", proc.stdout)
+        self.assertIn("SDL3_PROVIDER=", proc.stdout)
+        self.assertIn("SDL3_VERSION=", proc.stdout)
+        if os.name == "nt" and Path(r"C:\msys64\ucrt64\include\SDL3\SDL.h").is_file():
+            self.assertIn("SDL3_PROVIDER=msys2_ucrt64", proc.stdout)
+            self.assertIn("SDL3_DIR=C:/msys64/ucrt64", proc.stdout)
+
+    def test_sdl3_search_flags_precede_vulkan_sdk_in_makefile(self) -> None:
+        """SDL3 include and library flags must precede Vulkan SDK flags in CFLAGS, PLAYER_INCLUDES, and LDFLAGS."""
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        cflags_match = re.search(r"CFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
+        self.assertIsNotNone(cflags_match, "CFLAGS must be defined")
+        cflags = cflags_match.group(1)
+        self.assertIn("$(SDL3_INC_FLAGS)", cflags)
+        sdl3_cflags_pos = cflags.index("$(SDL3_INC_FLAGS)")
+        vulkan_cflags_pos = cflags.index("-I$(VULKAN_SDK)")
+        self.assertLess(sdl3_cflags_pos, vulkan_cflags_pos, "SDL3 includes must precede Vulkan SDK in CFLAGS")
+
+        ldflags_match = re.search(r"LDFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
+        self.assertIsNotNone(ldflags_match, "LDFLAGS must be defined")
+        ldflags = ldflags_match.group(1)
+        self.assertIn("$(SDL3_LDFLAGS)", ldflags)
+        sdl3_ld_pos = ldflags.index("$(SDL3_LDFLAGS)")
+        vulkan_ld_pos = ldflags.index("-L$(VULKAN_SDK)")
+        self.assertLess(sdl3_ld_pos, vulkan_ld_pos, "SDL3 lib flags must precede Vulkan SDK in LDFLAGS")
+
+        player_inc_match = re.search(r"PLAYER_INCLUDES\s*:=\s*([^\r\n]+)", makefile_text)
+        self.assertIsNotNone(player_inc_match, "PLAYER_INCLUDES must be defined")
+        player_inc = player_inc_match.group(1)
+        self.assertIn("$(SDL3_INC_FLAGS)", player_inc)
+        sdl3_pinc_pos = player_inc.index("$(SDL3_INC_FLAGS)")
+        vulkan_pinc_pos = player_inc.index("-I$(VULKAN_SDK)")
+        self.assertLess(sdl3_pinc_pos, vulkan_pinc_pos, "SDL3 includes must precede Vulkan SDK in PLAYER_INCLUDES")
+
+    def test_sdl3_discovery_fails_closed_with_actionable_remediation(self) -> None:
+        """An invalid or absent SDL3 must stop the SDL3-linking targets with install instructions.
+
+        The guard sits on the targets that link -lSDL3 (compile, player); portable runtime
+        objects build without SDL3, so the guard itself is exercised here.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertRegex(makefile_text, r"(?m)^compile:.*\| sdl3-check$")
+        self.assertRegex(makefile_text, r"(?m)^\$\(PLAYER_EXE\): \| player-vulkan-check sdl3-check$")
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "sdl3-check", "SDL3_DIR=C:/nonexistent_sdl3_repro_test"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0, "Build must fail closed when SDL3 is absent")
+        combined_output = proc.stdout + proc.stderr
+        self.assertIn("pacman -S mingw-w64-ucrt-x86_64-sdl3", combined_output)
+        self.assertNotIn("fatal error: SDL3", combined_output, "Must fail at discovery phase before compiler execution")
+
+    def test_copy_build_assets_supports_explicit_sdl3_dll_path(self) -> None:
+        """copy_build_assets.ps1 must declare Sdl3DllPath parameter and Makefile must pass SDL3_DLL."""
+        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        self.assertIn("[string]$Sdl3DllPath", script_text)
+        self.assertIn("Copy-Item $Sdl3DllPath", script_text)
+
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("-Sdl3DllPath \"$(SDL3_DLL)\"", makefile_text)
+
+    def test_runtime_profile_records_sdl3_identity(self) -> None:
+        """runtime_profile.json must record SDL3_PROVIDER, SDL3_VERSION, and SDL3_DIR."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_build = Path(tmpdir) / "build_test"
+            proc = subprocess.run(
+                [self.make, "--no-print-directory", f"BUILD_DIR={tmp_build.as_posix()}", "compiler-info"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            manifest_file = tmp_build / "runtime_profile.json"
+            self.assertTrue(manifest_file.is_file(), "runtime_profile.json must be recorded")
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            entries = manifest.get("sections", {}).get("runtime", {}).get("entries", [])
+            self.assertTrue(any(e.startswith("SDL3_PROVIDER=") for e in entries), entries)
+            self.assertTrue(any(e.startswith("SDL3_VERSION=") for e in entries), entries)
+            self.assertTrue(any(e.startswith("SDL3_DIR=") for e in entries), entries)
+
+    def test_sdl3_competing_provider_isolation_and_precedence(self) -> None:
+        """nk_doctor_checks.discover_sdl3_provider isolates MSYS2 UCRT64 from incidental Vulkan SDK SDL3."""
+        from unittest import mock
+        import nk_doctor_checks
+        from nk_doctor_checks import discover_sdl3_provider, Sdl3ProviderError
+
+        # These are the Windows provider rules; every input is a synthetic directory,
+        # so pin the platform decision instead of depending on the host running the test.
+        with mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"),              tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            msys = tmproot / "msys64" / "ucrt64"
+            (msys / "include" / "SDL3").mkdir(parents=True)
+            (msys / "include" / "SDL3" / "SDL.h").write_text("#define SDL_MAJOR_VERSION 3\n#define SDL_MINOR_VERSION 4\n#define SDL_MICRO_VERSION 0\n", encoding="utf-8")
+            (msys / "lib").mkdir(parents=True)
+            (msys / "lib" / "libSDL3.dll.a").write_bytes(b"!<arch>\n")
+            (msys / "bin").mkdir(parents=True)
+            fake_pe = b"MZ" + b"\x00" * 58 + struct.pack("<I", 64) + b"PE\0\0" + struct.pack("<H", 0x8664)
+            (msys / "bin" / "SDL3.dll").write_bytes(fake_pe)
+
+            vulkan = tmproot / "VulkanSDK" / "1.4.357.0"
+            (vulkan / "Include" / "SDL3").mkdir(parents=True)
+            (vulkan / "Include" / "SDL3" / "SDL.h").write_text("#define SDL_MAJOR_VERSION 3\n", encoding="utf-8")
+            (vulkan / "Lib").mkdir(parents=True)
+            (vulkan / "Lib" / "SDL3.lib").write_bytes(b"!<arch>\n")
+            (vulkan / "Bin").mkdir(parents=True)
+            (vulkan / "Bin" / "SDL3.dll").write_bytes(b"MZ")
+
+            prov = discover_sdl3_provider(msys_path=msys, vulkan_sdk=vulkan)
+            self.assertEqual(prov.provider, "msys2_ucrt64")
+            self.assertEqual(prov.root_dir, msys)
+            self.assertEqual(prov.import_lib, msys / "lib" / "libSDL3.dll.a")
+
+            empty_msys = tmproot / "empty_msys"
+            (empty_msys / "bin").mkdir(parents=True)
+            with self.assertRaises(Sdl3ProviderError) as ctx:
+                discover_sdl3_provider(msys_path=empty_msys, vulkan_sdk=vulkan)
+            err_msg = str(ctx.exception)
+            self.assertIn("SDL3 dependency is missing from the supported MSYS2 UCRT64 toolchain", err_msg)
+            self.assertIn("an incidental copy exists in Vulkan SDK", err_msg)
+            self.assertIn("pacman -S mingw-w64-ucrt-x86_64-sdl3", err_msg)
+
+            explicit_dir = tmproot / "custom_sdl3"
+            (explicit_dir / "include" / "SDL3").mkdir(parents=True)
+            (explicit_dir / "include" / "SDL3" / "SDL.h").write_text("#define SDL_MAJOR_VERSION 3\n", encoding="utf-8")
+            (explicit_dir / "lib").mkdir(parents=True)
+            (explicit_dir / "lib" / "libSDL3.dll.a").write_bytes(b"!<arch>\n")
+            prov_exp = discover_sdl3_provider(explicit=str(explicit_dir), msys_path=msys, vulkan_sdk=vulkan)
+            self.assertEqual(prov_exp.root_dir, explicit_dir)
+
 
 class StrbufSafetyTests(unittest.TestCase):
     """Structural tests ensuring safe cursor-accumulation formatting across source-owned C/C++."""
@@ -1568,6 +1717,52 @@ class StrbufSafetyTests(unittest.TestCase):
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("strbuf-selftest", makefile_text)
         self.assertIn("strbuf_selftest.c", makefile_text)
+
+
+class Sdl3MakeFragmentTests(unittest.TestCase):
+    """The Makefile reads every SDL3 variable from one discovery pass."""
+
+    def _fragment(self, provider, pkg_flags=None):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import nk_doctor_checks as ndc
+        from unittest import mock
+        flags = pkg_flags or {}
+        with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider),              mock.patch.object(ndc, "_pkg_config_flags", side_effect=lambda f: flags.get(f, "")):
+            text = ndc.sdl3_make_fragment()
+        return dict(line.split(" := ", 1) for line in text.splitlines())
+
+    def _provider(self, kind, inc, lib):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import nk_doctor_checks as ndc
+        return ndc.Sdl3Provider(provider=kind, root_dir=Path(inc).parent,
+                                include_dir=Path(inc), import_lib=Path(lib),
+                                runtime_dll=None, version="3.4.0",
+                                arch="x86_64", is_supported=True)
+
+    def test_system_default_dirs_are_never_forced_onto_the_search_path(self) -> None:
+        values = self._fragment(self._provider("system", "/usr/include",
+                                               "/usr/lib/x86_64-linux-gnu/libSDL3.so"))
+        self.assertEqual(values["SDL3_INC_FLAGS"], "")
+        self.assertEqual(values["SDL3_LDFLAGS"], "")
+        self.assertEqual(values["SDL3_ERROR"], "")
+
+    def test_pkg_config_provider_uses_pkg_config_flags(self) -> None:
+        values = self._fragment(
+            self._provider("pkg_config", "/usr/include", "/usr/lib/libSDL3.so"),
+            {"--cflags": "-I/usr/include/SDL3 -D_REENTRANT", "--libs-only-L": ""})
+        self.assertEqual(values["SDL3_INC_FLAGS"], "-I/usr/include/SDL3 -D_REENTRANT")
+        self.assertNotIn("-I/usr/include ", values["SDL3_INC_FLAGS"] + " ")
+
+    def test_nonstandard_root_is_placed_on_the_search_path(self) -> None:
+        values = self._fragment(self._provider("msys2_ucrt64", "C:/msys64/ucrt64/include",
+                                               "C:/msys64/ucrt64/lib/libSDL3.dll.a"))
+        self.assertEqual(values["SDL3_INC_FLAGS"], "-IC:/msys64/ucrt64/include")
+        self.assertEqual(values["SDL3_LDFLAGS"], "-LC:/msys64/ucrt64/lib")
+
+    def test_makefile_discovers_sdl3_once_per_parse(self) -> None:
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertEqual(sum("write_sdl3_make_fragment" in line for line in makefile_text.splitlines()), 1)
+        self.assertNotIn("query_sdl3_info", makefile_text)
 
 
 if __name__ == "__main__":

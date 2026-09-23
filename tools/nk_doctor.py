@@ -107,6 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit Vulkan SDK directory (otherwise use VULKAN_SDK, then the newest valid C:\\VulkanSDK installation)",
     )
     parser.add_argument(
+        "--sdl3-path",
+        type=Path,
+        default=None,
+        help="explicit SDL3 directory (otherwise use SDL3_DIR, then the MSYS2 UCRT64 toolchain)",
+    )
+    parser.add_argument(
         "--title-manifest",
         type=Path,
         default=None,
@@ -194,7 +200,7 @@ def main(
     if args.scope in {"build", "run", "all"}:
         check_platform(report)
     if args.scope in {"build", "all"}:
-        check_toolchain(report, args.msys_path, args.vulkan_sdk, root)
+        check_toolchain(report, args.msys_path, args.vulkan_sdk, root, sdl3_path=args.sdl3_path)
     if args.scope in {"inputs", "build", "all"}:
         check_private_inputs(
             report,
