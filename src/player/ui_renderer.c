@@ -1908,12 +1908,14 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             draw_text(ren, card_x + 32.0f, content_y, "First-Time User Setup Wizard", 2.0f, COLOR_TEXT_WHITE);
             draw_text_wrapped(ren, card_x + 32.0f, content_y + 40.0f, card_w - 64.0f,
                               "Welcome to Nakagawa Recomp!\n\n"
-                              "This wizard configures your installation, verifies your game disc image, "
-                              "and tunes display and audio for native PC execution.\n\n"
+                              "This wizard inspects a PSP disc image and stages title data. Launch is available "
+                              "only for catalogued titles with a generated runtime package.\n\n"
                               "What you will need:\n"
-                              " • Lawfully obtained PlayStation Portable game ISO (e.g. Hot Shots Tennis: Get a Grip)\n"
-                              " • Gamepad (Xbox, PlayStation DualSense, Switch Pro) or keyboard controls\n"
-                              " • Modern GPU supporting Vulkan / Direct3D 12",
+                              " • Lawfully obtained PSP game ISO\n"
+                              " • Windows PC with a supported graphics driver\n"
+                              " • Keyboard and mouse; a gamepad is optional\n\n"
+                              "This build does not decrypt encrypted executables (#295) or create runtime packages "
+                              "(#296/#297). Verify also lists font (#300) and audio (#301) status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 
             bool get_started_foc = (app->focus_index == focus++);
@@ -1992,16 +1994,16 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             bool supported = app->wizard.extraction_complete ||
                              app->inspecting_game.status == NK_STATUS_VERIFIED;
             draw_text(ren, card_x + 32.0f, content_y,
-                      app->wizard.is_extracting ? "Extracting Game Assets" : "Title Verification & Asset Staging",
+                      app->wizard.is_extracting ? "Extracting Game Assets" : "Compatibility Preflight & Asset Staging",
                       2.0f, COLOR_TEXT_WHITE);
 
             float panel_y = content_y + 40.0f;
-            float panel_h = app->wizard.is_extracting ? 190.0f : 160.0f;
+            float panel_h = app->wizard.is_extracting ? 190.0f : 244.0f;
             draw_rounded_fill(ren, card_x + 32.0f, panel_y, card_w - 64.0f, panel_h, 8.0f, (SDL_Color){ 16, 21, 26, 255 });
             draw_rounded_outline(ren, card_x + 32.0f, panel_y, card_w - 64.0f, panel_h, 8.0f,
                                  app->wizard.is_extracting ? COLOR_AMBER : (supported ? COLOR_EMERALD : COLOR_RED));
 
-            const char *verification_badge = supported ? "VERIFIED RELEASE" : "UNSUPPORTED TITLE";
+            const char *verification_badge = supported ? "TITLE PROFILED" : "PROFILE MISSING";
             SDL_Color verification_color = supported ? COLOR_EMERALD : COLOR_RED;
             if (app->wizard.is_extracting) {
                 verification_badge = "EXTRACTING ASSETS";
@@ -2024,15 +2026,47 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                           "The ISO is being copied into an isolated local staging tree.",
                           1.0f, COLOR_TEXT_MUTED);
             } else if (supported) {
-                draw_text_wrapped(ren, card_x + 48.0f, panel_y + 92.0f, card_w - 96.0f,
-                                  "Qualified in Nakagawa Title Catalog (Hot Shots Tennis / Minna no Tennis series).\n"
-                                  "Recompilation metadata, geometry mappings, and audio tables match this disc.",
-                                  1.0f, COLOR_TEXT_MUTED, 3);
+                draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
+                          "Disc identity is listed in the native title catalog.",
+                          0.95f, COLOR_TEXT_MUTED);
             } else {
-                draw_text_wrapped(ren, card_x + 48.0f, panel_y + 92.0f, card_w - 96.0f,
-                                  "This title is not registered in the native recompilation catalog.\n"
-                                  "Supported games include Hot Shots Tennis: Get a Grip (UCUS98701 / UCJS10103).",
-                                  1.0f, COLOR_AMBER, 3);
+                draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
+                          "Disc identity is not listed in the native title catalog.",
+                          0.95f, COLOR_AMBER);
+            }
+
+            if (!app->wizard.is_extracting) {
+                for (size_t i = 0; i < app->wizard.preflight.count; i++) {
+                    const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+                    const char *status_text = "UNKNOWN";
+                    SDL_Color status_color = COLOR_TEXT_DIM;
+                    switch (check->status) {
+                        case PREFLIGHT_OK:
+                            status_text = "OK";
+                            status_color = COLOR_EMERALD;
+                            break;
+                        case PREFLIGHT_MISSING:
+                            status_text = "MISSING";
+                            status_color = COLOR_AMBER;
+                            break;
+                        case PREFLIGHT_UNSUPPORTED:
+                            status_text = "UNSUPPORTED";
+                            status_color = COLOR_RED;
+                            break;
+                        case PREFLIGHT_IN_PROGRESS:
+                            status_text = "IN PROGRESS";
+                            status_color = COLOR_AMBER;
+                            break;
+                    }
+                    float row_y = panel_y + 100.0f + (float)i * 25.0f;
+                    draw_text_ellipsized(ren, card_x + 48.0f, row_y,
+                                         status_text, 0.8f, 80.0f, status_color);
+                    draw_text_ellipsized(ren, card_x + 132.0f, row_y,
+                                         check->code, 0.8f, 122.0f, COLOR_TEXT_WHITE);
+                    draw_text_ellipsized(ren, card_x + 260.0f, row_y,
+                                         check->message, 0.78f, card_w - 308.0f,
+                                         COLOR_TEXT_MUTED);
+                }
             }
 
             if (app->wizard.is_extracting) {
@@ -2111,13 +2145,13 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
 
             draw_text(ren, card_x + 48.0f, spec_y + 66.0f, "Open-Source Typography Defaults (SIL Open Font License):", 1.0f, COLOR_TEXT_DIM);
             draw_text(ren, card_x + 48.0f, spec_y + 88.0f,
-                      " • In-Game UI: M PLUS Rounded 1c / Rubik (Hot Shots Tennis aesthetic)", 1.0f, COLOR_TEXT_MUTED);
+                      " • In-Game UI: M PLUS Rounded 1c / Rubik defaults", 1.0f, COLOR_TEXT_MUTED);
             draw_text(ren, card_x + 48.0f, spec_y + 108.0f,
                       " • Native Menus & Setup: Inter / Roboto Flex / Rubik", 1.0f, COLOR_TEXT_MUTED);
             draw_text(ren, card_x + 48.0f, spec_y + 128.0f,
                       " • Japanese Kana/Kanji: Kosugi Maru / Zen Maru Gothic", 1.0f, COLOR_TEXT_MUTED);
             draw_text(ren, card_x + 48.0f, spec_y + 148.0f,
-                      " • Optional Sony PSP font (jpn0.pgf): Loaded from system/font/ if installed", 0.9f, COLOR_AMBER);
+                      " • Optional user-owned PSP font (jpn0.pgf): Loaded from font/ if installed", 0.9f, COLOR_AMBER);
 
             bool accept_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "ACCEPT & CONTINUE", true, in, accept_foc)) {
@@ -2159,7 +2193,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                 draw_badge(ren, card_x + 200.0f, rdy_y + 16.0f, app->inspecting_game.disc_id, COLOR_BLUE);
             }
             draw_text_ellipsized(ren, card_x + 48.0f, rdy_y + 54.0f,
-                                 app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "Hot Shots Tennis: Get a Grip",
+                                 app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "PlayStation Portable title",
                                  2.2f, card_w - 96.0f, COLOR_TEXT_WHITE);
 
             char sum_line[192];

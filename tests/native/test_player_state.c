@@ -41,6 +41,15 @@ static void write_file(const char *path) {
     assert(fclose(file) == 0);
 }
 
+static const PlayerPreflightCheck *find_preflight_check(
+    const PlayerCompatibilityPreflight *preflight, const char *code) {
+    if (!preflight || !code) return NULL;
+    for (size_t i = 0; i < preflight->count; i++) {
+        if (strcmp(preflight->checks[i].code, code) == 0) return &preflight->checks[i];
+    }
+    return NULL;
+}
+
 int main(void) {
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
@@ -176,11 +185,12 @@ int main(void) {
 
     /* Point the same probe at a disposable fixture root. A real display-smoke
        build is not a prerequisite of native-core-tests, but the entry must be
-       marked prepared when the launcher's candidate binary is actually there. */
+       marked prepared when its executable and generated image are present. */
     char cache_dir[512];
     char fixture_root[700];
     char fixture_dir[800];
     char fixture_exe[900];
+    char fixture_image[900];
     assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
     snprintf(fixture_root, sizeof(fixture_root), "%s%cpr177_player_state_root",
              cache_dir, nk_platform_path_separator());
@@ -194,8 +204,11 @@ int main(void) {
              ""
 #endif
     );
+    snprintf(fixture_image, sizeof(fixture_image), "%s%cdisplay-smoke-v1_image.bin",
+             fixture_dir, nk_platform_path_separator());
     assert(nk_platform_mkdir_p(fixture_dir));
     write_file(fixture_exe);
+    write_file(fixture_image);
     player_app_set_runtime_root(fresh, fixture_root);
 
     player_app_populate_sample_games(fresh);
@@ -210,6 +223,7 @@ int main(void) {
     player_app_populate_sample_games(fresh);
     assert(fresh->game_count == before);
     assert(remove(fixture_exe) == 0);
+    assert(remove(fixture_image) == 0);
     free(fresh);
 
     /* 8. A launch started from the player requests a window. */
@@ -520,6 +534,86 @@ int main(void) {
         assert(wiz->active_view == VIEW_SETUP_WIZARD);
         player_app_wizard_cancel(wiz);
         assert(wiz->active_view == VIEW_LIBRARY);
+
+        /* The compatibility report exposes the selected plaintext BOOT
+           fallback and every current pre-launch boundary without touching a
+           real title or runtime package. */
+        char preflight_root[640], font_dir[720], font_path[800];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(preflight_root, sizeof(preflight_root), "%s%cplayer-preflight-synthetic",
+                 cache_dir, nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(preflight_root));
+        snprintf(font_dir, sizeof(font_dir), "%s%cfont", preflight_root,
+                 nk_platform_path_separator());
+        snprintf(font_path, sizeof(font_path), "%s%cjpn0.pgf", font_dir,
+                 nk_platform_path_separator());
+        const NkTitleEntry *synthetic = nk_title_catalog_find_by_id(
+            "synthetic-allegrex-v1");
+        assert(synthetic != NULL && synthetic->game_name != NULL);
+        char build_dir[760], runtime_exe[900], runtime_image[900];
+        snprintf(build_dir, sizeof(build_dir), "%s%cbuild%c%s", preflight_root,
+                 nk_platform_path_separator(), nk_platform_path_separator(),
+                 synthetic->game_name);
+        snprintf(runtime_exe, sizeof(runtime_exe), "%s%c%s.exe", build_dir,
+                 nk_platform_path_separator(), synthetic->game_name);
+        snprintf(runtime_image, sizeof(runtime_image), "%s%c%s_image.bin", build_dir,
+                 nk_platform_path_separator(), synthetic->game_name);
+        remove(runtime_exe);
+        remove(runtime_image);
+        remove(font_path);
+        player_app_set_runtime_root(wiz, preflight_root);
+        snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
+                 "synthetic-allegrex-v1");
+        NkIsoExecutableReport executable_report;
+        memset(&executable_report, 0, sizeof(executable_report));
+        executable_report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        executable_report.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+        executable_report.selected = NK_ISO_EXEC_SELECTION_BOOT;
+        executable_report.boot_fallback = true;
+        snprintf(executable_report.selected_path, sizeof(executable_report.selected_path),
+                 "BOOT.BIN");
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        assert(wiz->wizard.preflight.count == 5);
+        const PlayerPreflightCheck *check = find_preflight_check(
+            &wiz->wizard.preflight, "DISC_SFO");
+        assert(check && check->status == PREFLIGHT_OK);
+        check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+        assert(check && check->status == PREFLIGHT_OK);
+        assert(strstr(check->message, "BOOT.BIN selected for analysis") != NULL);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_MISSING);
+        check = find_preflight_check(&wiz->wizard.preflight, "SYSTEM_FONTS");
+        assert(check && check->status == PREFLIGHT_MISSING);
+        check = find_preflight_check(&wiz->wizard.preflight, "AUDIO_OUTPUT");
+        assert(check && check->status == PREFLIGHT_IN_PROGRESS);
+
+        assert(nk_platform_mkdir_p(build_dir));
+        write_file(runtime_exe);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_MISSING);
+        write_file(runtime_image);
+        assert(nk_platform_mkdir_p(font_dir));
+        write_file(font_path);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_OK);
+        check = find_preflight_check(&wiz->wizard.preflight, "SYSTEM_FONTS");
+        assert(check && check->status == PREFLIGHT_OK);
+
+        executable_report.selected = NK_ISO_EXEC_SELECTION_NONE;
+        executable_report.boot_fallback = false;
+        executable_report.boot.kind = NK_ISO_EXEC_UNKNOWN;
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+        assert(check && check->status == PREFLIGHT_UNSUPPORTED);
+        assert(strcmp(check->message,
+                      "Encrypted executable. Decryption support is in the works (#295).") == 0);
+        assert(check->issue_count == 1 && check->issue_numbers[0] == 295);
+
+        remove(runtime_exe);
+        remove(runtime_image);
+        remove(font_path);
 
         free(wiz);
     }

@@ -17,6 +17,7 @@ from nk_core import (
     RuntimeLauncher,
     inspect_iso,
 )
+from nk_core.iso_inspect import inspect_compatibility_preflight
 
 
 def print_progress(event: ProgressEvent) -> None:
@@ -28,6 +29,9 @@ def print_progress(event: ProgressEvent) -> None:
 def cmd_inspect(args: argparse.Namespace) -> int:
     try:
         meta = inspect_iso(args.iso)
+        preflight = inspect_compatibility_preflight(
+            args.iso, metadata=meta, runtime_root=Path(args.root)
+        )
     except Exception as exc:
         sys.stderr.write(f"Error inspecting ISO: {exc}\n")
         return 1
@@ -41,6 +45,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "size_bytes": meta.size_bytes,
         "supported": meta.is_supported,
         "matched_profile": meta.matched_profile.id if meta.matched_profile else None,
+        "compatibility_preflight": preflight,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -48,9 +53,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         print(f"Disc ID:    {meta.disc_id}")
         print(f"Title:      {meta.title}")
         print(f"Region:     {meta.region}")
-        print(f"Supported:  {'YES' if meta.is_supported else 'NO'}")
+        print(f"Catalogued: {'YES' if meta.is_supported else 'NO'}")
         if meta.matched_profile:
             print(f"Profile:    {meta.matched_profile.name} ({meta.matched_profile.id})")
+        print(f"Executable: {preflight['selected_executable'] or 'none'}")
+        print("Compatibility preflight:")
+        for check in preflight["checks"]:
+            print(f"  {check['status']}: {check['message']}")
     return 0 if meta.is_supported else 2
 
 
@@ -96,6 +105,7 @@ def main() -> int:
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")
     p_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_inspect.add_argument("--root", default=".", help="Runtime/install root for package checks")
     p_inspect.set_defaults(func=cmd_inspect)
 
     p_prep = subparsers.add_parser("prepare", help="Prepare an ISO for native execution")

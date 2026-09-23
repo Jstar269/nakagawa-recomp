@@ -45,11 +45,15 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
         snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "%s", res.title_name);
         snprintf(app->inspecting_game.disc_version, sizeof(app->inspecting_game.disc_version), "%s", res.disc_version);
         snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "%s", selected_path);
+        app->inspecting_game.title_id[0] = '\0';
         if (res.matched_title_id[0]) {
             snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id), "%s", res.matched_title_id);
         }
         app->inspecting_game.iso_size_bytes = res.file_size;
         app->inspecting_game.status = (NkGameSupportStatus)res.status;
+        player_app_build_compatibility_preflight(app, res.success,
+                                                  res.param_sfo_parsed,
+                                                  &res.executables);
         app->inspecting_game.is_prepared = false;
         app->inspecting_game.prepared_root[0] = '\0';
 
@@ -58,7 +62,8 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
             app->wizard.iso_selected = true;
             app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
             snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                     "%s (%s) verified successfully.", res.title_name, res.disc_id);
+                     "Disc image inspected: %s (%s). Review the preflight checks below.",
+                     res.title_name, res.disc_id);
             app->focus_index = 0;
         } else if (res.is_supported) {
             player_app_set_view(app, VIEW_SUPPORTED_TITLE);
@@ -258,7 +263,7 @@ static bool adopt_existing_staged_root(PlayerApp *app, const char *final_root) {
                            sizeof(app->inspecting_game.prepared_root),
                            final_root)) return false;
     app->inspecting_game.assets_staged = true;
-    app->inspecting_game.is_prepared = nk_launch_runtime_available(
+    app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
         app->runtime_root[0] ? app->runtime_root : NULL,
         app->inspecting_game.title_id);
     app->inspecting_game.status = app->inspecting_game.is_prepared
@@ -392,7 +397,7 @@ static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
            available recompiled runtime may make this entry launch-ready; a
            staged retail source without that runtime remains actionable but
            fail-closed when PLAY/LAUNCH PREPARED is activated. */
-        app->inspecting_game.is_prepared = nk_launch_runtime_available(
+        app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
             app->runtime_root[0] ? app->runtime_root : NULL,
             app->inspecting_game.title_id);
         app->inspecting_game.status = app->inspecting_game.is_prepared
@@ -483,7 +488,7 @@ static int stage_iso_synchronously(PlayerApp *app) {
     app->inspecting_game.extracted_audio_count = summary.extracted_audio_count;
     app->inspecting_game.extracted_visual_count = summary.extracted_visual_count;
     app->inspecting_game.extracted_layout_count = summary.extracted_layout_count;
-    app->inspecting_game.is_prepared = nk_launch_runtime_available(
+    app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
         app->runtime_root[0] ? app->runtime_root : NULL,
         app->inspecting_game.title_id);
     app->inspecting_game.status = app->inspecting_game.is_prepared
@@ -640,6 +645,9 @@ int main(int argc, char *argv[]) {
             }
             app.inspecting_game.iso_size_bytes = res.file_size;
             app.inspecting_game.status = (NkGameSupportStatus)res.status;
+            player_app_build_compatibility_preflight(&app, res.success,
+                                                      res.param_sfo_parsed,
+                                                      &res.executables);
             /* is_prepared intentionally NOT set: no preparation has run in this
              * build; the entry keeps the inspection-reported status. */
 
@@ -656,6 +664,9 @@ int main(int argc, char *argv[]) {
                 player_app_start_setup_wizard(&app);
                 app.wizard.iso_selected = true;
                 app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+                player_app_build_compatibility_preflight(&app, res.success,
+                                                          res.param_sfo_parsed,
+                                                          &res.executables);
                 if (stage_only) {
                     return stage_iso_synchronously(&app);
                 }

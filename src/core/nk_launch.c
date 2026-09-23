@@ -673,6 +673,20 @@ static bool find_candidate_image(
     return false;
 }
 
+bool nk_launch_runtime_package_available(const char *root, const char *title_id) {
+    const char *effective_root = (root && *root) ? root : ".";
+    const NkTitleEntry *entry =
+        (title_id && *title_id) ? nk_title_catalog_find_by_id(title_id) : NULL;
+    char executable[NK_MAX_PATH], image[NK_MAX_PATH];
+    if (!entry ||
+        !find_candidate_executable(effective_root, entry->game_name, entry->id,
+                                   executable, sizeof(executable))) {
+        return false;
+    }
+    return find_candidate_image(effective_root, executable, entry->game_name,
+                                entry->id, image, sizeof(image));
+}
+
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,
     const NkGameEntry *game,
