@@ -213,6 +213,11 @@ CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt $(SDL3_INC_FLAGS) -I$
 # (expected_data_file_count) validated from the title manifest. See
 # tools/title_manifest.py, tools/title_runtime_config.py and docs/PORTING.md C-2.
 LDFLAGS ?= $(SDL3_LDFLAGS) -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
+# Optional per-package linker map. Kept separate from LDFLAGS so package builds
+# can request it without replacing the SDK/library search paths.
+LINK_MAP ?=
+LINK_MAP_VALUE = -Wl,-Map,$(LINK_MAP)
+LINK_MAP_ARG = $(if $(strip $(LINK_MAP)),$(LINK_MAP_VALUE),)
 # DirectInput (-ldinput8 -ldxguid) removed: gui.c controller input is now handled entirely by
 # the SDL3 gamepad subsystem (src/rt/gpu_sdl3vk). -lole32 stays (Media Foundation, h264_mf.c);
 # -lwinmm stays (sched.c timeBeginPeriod); -lgdi32 stays (GDI fallback presenter).
@@ -1362,7 +1367,7 @@ endif
 -include $(DEP_FILES)
 
 compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
-	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--no-insert-timestamp -o $(BUILD_DIR)/$(GAME_NAME).exe \
+	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) -Wl,--no-insert-timestamp -o $(BUILD_DIR)/$(GAME_NAME).exe \
 		$(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(CHUNK_OBJS) \
 		$(RT_GE_O) \

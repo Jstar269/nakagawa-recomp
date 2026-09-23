@@ -250,6 +250,30 @@ Direct Make does not perform SDK discovery; export `VULKAN_SDK` or pass it as a 
 using this form. HST requires both address values to be zero. The Makefile's generic defaults are
 intentionally not HST defaults.
 
+To build a local AOT package from a validated title manifest and plaintext executable ELF, use
+the planner's package action. It runs the same two-phase Make pipeline and writes the executable,
+generated objects, `package.json`, and `build-report.json` under one dedicated untracked directory:
+
+```powershell
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+python tools/title_codegen_plan.py assets/titles/my-title.json `
+  --package `
+  --game-elf place_game_here/EBOOT.elf `
+  --output-dir build/my-title
+```
+
+For manifests with guest PRXs, add `--module-dir <directory>`; every required manifest module must
+exist there, and optional modules are included only when named with
+`--include-optional-module <manifest-name>`. Add `--psp-header <path>` when the manifest selects
+`bss_metadata_source: "psp-header"`. `--public-safe` is available for synthetic fixture builds.
+The output directory must be untracked and dedicated. The package schema and explicit unsupported
+semantic-boundary records are defined in
+[`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#5-local-aot-package-contract-v1).
+Inputs whose paths contain spaces or shell-sensitive characters (common under a Windows profile
+directory) are copied into `<output-dir>/staged-inputs/` so the Make recipes can use them. The
+output directory itself must not contain such characters; otherwise the route stops with the
+named `PACKAGE_UNSUPPORTED_PATH` boundary tracked by #296.
+
 `assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
 The local manifest must also declare its build name (`"game_name": "hst"`). Generic launch

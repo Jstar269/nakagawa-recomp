@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -26,6 +27,7 @@ if str(TOOLS) not in sys.path:
 import analyze  # noqa: E402
 import imports as imports_tool  # noqa: E402
 import prxload  # noqa: E402
+import title_codegen_plan  # noqa: E402
 
 
 SPEC = importlib.util.spec_from_file_location("production_smoke_generator", GENERATOR_PATH)
@@ -357,6 +359,197 @@ class TestProductionSmoke(unittest.TestCase):
             "mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap",
             gap_step,
         )
+
+
+class TestProductionSmokePackage(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="nk-package-smoke-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.build_dir = self.root / "package"
+        self.fixture_dir = self.build_dir / "fixture"
+        self.assertEqual(generator.generate(self.fixture_dir), 0)
+        self.manifest_path = self.root / "title.json"
+        self.manifest = {
+            "schema_version": 1,
+            "id": "production-smoke-package-v1",
+            "display_name": "Synthetic production smoke package",
+            "kind": "synthetic",
+            "game_name": "production_smoke",
+            "executable": {
+                "base": generator.BASE,
+                "entry": generator.ENTRY,
+                "bss_metadata_source": "psp-header",
+                "extra_executable_spans": [],
+            },
+            "modules": [],
+            "filesystem": {
+                "data_root": "fixtures/production_smoke/data",
+                "memory_stick_root": "build/production_smoke/memstick",
+                "device_prefixes": ["host0:", "ms0:"],
+            },
+            "hle_profile": "synthetic-minimal",
+            "codegen_profile": "none",
+            "feature_requirements": ["allegrex-core"],
+            "verification_profile": "synthetic-public",
+        }
+        self.manifest_path.write_text(
+            json.dumps(self.manifest, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    def package_command(self, *, executable=None, output_dir=None):
+        return [
+            sys.executable,
+            str(ROOT / "tools" / "title_codegen_plan.py"),
+            str(self.manifest_path),
+            "--package",
+            "--game-elf",
+            str(executable or (self.fixture_dir / "guest.prx")),
+            "--psp-header",
+            str(self.fixture_dir / "guest.psp"),
+            "--output-dir",
+            str(output_dir or self.build_dir),
+            "--funcs-per-chunk",
+            "1",
+            "--public-safe",
+        ]
+
+    def test_translation_fallback_keeps_a_named_semantic_boundary(self):
+        elf = analyze.Elf(self.fixture_dir / "guest.prx", base=generator.BASE)
+        instruction_address = generator.HELPER + 4
+        report_path = self.root / "synthetic-stubs.txt"
+        report_path.write_text(
+            f"0x{generator.HELPER:08x} opcode 0x3f at 0x{instruction_address:08x}\n",
+            encoding="ascii",
+        )
+        regions, instructions = title_codegen_plan._read_codegen_fallbacks(
+            report_path,
+            [{"name": "guest.prx", "ranges": analyze.exec_ranges(elf), "elf": elf}],
+        )
+        self.assertEqual(regions[0]["boundary"], f"AOT function at 0x{generator.HELPER:08x}")
+        self.assertEqual(regions[0]["status"], "in the works")
+        self.assertEqual(regions[0]["tracking_issue"], 118)
+        self.assertEqual(instructions[0]["address"], f"0x{instruction_address:08x}")
+        self.assertTrue(instructions[0]["word"].startswith("0x"))
+        self.assertEqual(instructions[0]["status"], "in the works")
+
+    def test_make_unsafe_inputs_are_staged_not_refused(self):
+        spaced = self.root / "My Games" / "disc input"
+        spaced.mkdir(parents=True)
+        source = spaced / "guest file.prx"
+        source.write_bytes(b"synthetic bytes")
+        stage = self.build_dir / "staged-inputs"
+        staged = title_codegen_plan._stage_for_make(source, stage, "executable ELF")
+        self.assertEqual(staged.parent, stage)
+        self.assertFalse(title_codegen_plan._make_unsafe(staged.as_posix()))
+        self.assertEqual(staged.read_bytes(), source.read_bytes())
+        safe = self.fixture_dir / "guest.prx"
+        self.assertEqual(title_codegen_plan._stage_for_make(safe, stage, "x"), safe)
+
+    def test_make_unsafe_output_directory_is_refused_with_remedy(self):
+        with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
+            title_codegen_plan.build_package(
+                self.manifest,
+                manifest_path=self.manifest_path,
+                game_elf=self.fixture_dir / "guest.prx",
+                psp_header=self.fixture_dir / "guest.psp",
+                output_dir=self.root / "out dir",
+                public_safe=True,
+            )
+        self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
+        self.assertIn("choose a location without them", str(caught.exception))
+
+    def test_package_builds_from_inputs_under_a_path_with_spaces(self):
+        required = ("mingw32-make", "gcc", "pwsh")
+        if not all(shutil.which(name) for name in required):
+            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+        spaced = self.root / "User Name" / "Downloads"
+        spaced.mkdir(parents=True)
+        executable = spaced / "guest.prx"
+        shutil.copyfile(self.fixture_dir / "guest.prx", executable)
+        command = self.package_command(executable=executable)
+        header_at = command.index("--psp-header") + 1
+        shutil.copyfile(self.fixture_dir / "guest.psp", spaced / "guest.psp")
+        command[header_at] = str(spaced / "guest.psp")
+        run = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        package = json.loads((self.build_dir / "package.json").read_bytes())
+        self.assertEqual(
+            package["inputs"]["executable"]["sha256"],
+            hashlib.sha256(executable.read_bytes()).hexdigest(),
+        )
+
+    def test_package_action_runs_production_smoke_and_emits_deterministic_contract(self):
+        required = ("mingw32-make", "gcc", "pwsh")
+        if not all(shutil.which(name) for name in required):
+            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+
+        env = os.environ.copy()
+        first = subprocess.run(
+            self.package_command(), cwd=ROOT, env=env, capture_output=True, text=True
+        )
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        package_path = self.build_dir / "package.json"
+        report_path = self.build_dir / "build-report.json"
+        package_bytes = package_path.read_bytes()
+        report_bytes = report_path.read_bytes()
+        package = json.loads(package_bytes)
+        report = json.loads(report_bytes)
+
+        self.assertEqual(package["format"], "nakagawa-aot-package")
+        self.assertEqual(package["schema_version"], 1)
+        self.assertEqual(package["title"]["id"], self.manifest["id"])
+        self.assertEqual(package["runtime"]["abi"], "CpuState")
+        self.assertEqual(package["runtime"]["abi_version"], 2)
+        self.assertEqual(package["executable"]["path"], "production_smoke.exe")
+        self.assertTrue((self.build_dir / package["executable"]["path"]).is_file())
+        self.assertEqual(
+            package["inputs"]["executable"]["sha256"],
+            hashlib.sha256((self.fixture_dir / "guest.prx").read_bytes()).hexdigest(),
+        )
+        self.assertTrue(package["generated_objects"])
+        for obj in package["generated_objects"]:
+            self.assertTrue(obj["path"].endswith(".o"))
+            self.assertTrue((self.build_dir / obj["path"]).is_file())
+        self.assertTrue(package["required_local_assets"])
+
+        self.assertEqual(report["format"], "nakagawa-build-report")
+        self.assertEqual(report["schema_version"], 1)
+        self.assertTrue(report["tools"]["compiler"]["identity"])
+        for field in (
+            "analyzed_functions",
+            "aot_entries",
+            "fallback_entries",
+            "unsupported_import_count",
+        ):
+            self.assertIsInstance(report["coverage"][field], int)
+        self.assertEqual(
+            set(report["unsupported"]), {"imports", "instructions", "regions"}
+        )
+
+        second = subprocess.run(
+            self.package_command(), cwd=ROOT, env=env, capture_output=True, text=True
+        )
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(package_path.read_bytes(), package_bytes)
+        self.assertEqual(report_path.read_bytes(), report_bytes)
+        self.assertEqual(generator.verify(self.build_dir, mode="aot"), 0)
+        self.assertEqual(generator.run(self.build_dir, mode="aot"), 0)
+
+    def test_bad_executable_is_rejected_with_a_named_reason(self):
+        bad_elf = self.root / "bad.elf"
+        bad_elf.write_bytes(b"not-an-ELF")
+        bad_output = self.root / "bad-package"
+        completed = subprocess.run(
+            self.package_command(executable=bad_elf, output_dir=bad_output),
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("PACKAGE_INVALID_ELF:", completed.stderr)
+        self.assertFalse((bad_output / "package.json").exists())
+        self.assertFalse((bad_output / "build-report.json").exists())
 
 
 if __name__ == "__main__":
