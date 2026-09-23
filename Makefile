@@ -541,11 +541,11 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies it.
 SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c
 
-$(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
+$(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
+$(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(DEPFLAGS) -c $< -o $@
 
@@ -1161,7 +1161,7 @@ RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(o
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
-$(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
+$(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
 
 # Optimization and memory-saving flags for massive machine-generated files.
@@ -1197,16 +1197,16 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp.o: $(BUILD_DIR)/$(GAME_NAME)_recomp.c src/rt/re
 	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
 
 # Compile runtime sources.
-$(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
+$(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
+$(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
 # generated include path stops here rather than leaking into CFLAGS.
-$(BUILD_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER) $(RUNTIME_PROFILE_STAMP) | sdl3-check
+$(BUILD_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER) $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) -I$(TITLE_CONFIG_DIR) $(DEPFLAGS) -c $< -o $@
 
 $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER)
@@ -1219,7 +1219,7 @@ $(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/pgf_api.h src/rt/at
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_unavailable.o: src/rt/pgf_unavailable.c src/rt/pgf_api.h
 
-runtime-objects: shader-verify $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o | sdl3-check
+runtime-objects: shader-verify $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 
 $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 	$(CC) $(PORTABLE_CORE_CFLAGS) $(DEPFLAGS) -c $< -o $@
@@ -1259,7 +1259,7 @@ player-vulkan-check:
 # A clear failure when SDL3 dependency is missing or invalid.
 .PHONY: sdl3-check
 sdl3-check:
-	$(if $(strip $(SDL3_ERROR)),$(error $(SDL3_ERROR)))
+	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/generated/nk_title_catalog.c
@@ -1773,7 +1773,7 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-gpu-coherence-selftest: shader-verify $(RT_GE_O) | sdl3-check
+gpu-coherence-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_coherence_selftest.exe \
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
@@ -1783,7 +1783,7 @@ gpu-coherence-selftest: shader-verify $(RT_GE_O) | sdl3-check
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
 # target-scoped synchronization closes the generation gap and rejects unsafe geometry.
-gpu-snapsync-selftest: shader-verify $(RT_GE_O) | sdl3-check
+gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
@@ -1795,7 +1795,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O) | sdl3-check
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
 # are byte-checked (header, channel order, row pitch, no trailing bytes). Exit 77 = SKIP
 # when Vulkan or the validation layer is unavailable.
-gpu-capture-selftest: shader-verify | sdl3-check
+gpu-capture-selftest: shader-verify
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_capture_selftest.exe \
 		src/rt/gpu_capture_selftest.c src/rt/perf.c \
@@ -1804,7 +1804,7 @@ gpu-capture-selftest: shader-verify | sdl3-check
 
 # Standalone seconds-scale GE fixture replay. Fixtures are private game-derived inputs and
 # stay ignored; this target builds only the generic reader/rasterizer/backend executable.
-ge-replay: shader-verify $(RT_GE_O) | sdl3-check
+ge-replay: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \

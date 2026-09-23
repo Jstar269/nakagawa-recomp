@@ -1580,11 +1580,18 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertLess(sdl3_pinc_pos, vulkan_pinc_pos, "SDL3 includes must precede Vulkan SDK in PLAYER_INCLUDES")
 
     def test_sdl3_discovery_fails_closed_with_actionable_remediation(self) -> None:
-        """Building runtime targets with an invalid or absent SDL3 must fail closed with pacman instructions."""
+        """An invalid or absent SDL3 must stop the SDL3-linking targets with install instructions.
+
+        The guard sits on the targets that link -lSDL3 (compile, player); portable runtime
+        objects build without SDL3, so the guard itself is exercised here.
+        """
         if not self.make:
             self.skipTest("GNU Make is required")
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertRegex(makefile_text, r"(?m)^compile:.*\| sdl3-check$")
+        self.assertRegex(makefile_text, r"(?m)^\$\(PLAYER_EXE\): \| player-vulkan-check sdl3-check$")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", "runtime-objects", "SDL3_DIR=C:/nonexistent_sdl3_repro_test"],
+            [self.make, "--no-print-directory", "sdl3-check", "SDL3_DIR=C:/nonexistent_sdl3_repro_test"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1628,9 +1635,13 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_sdl3_competing_provider_isolation_and_precedence(self) -> None:
         """nk_doctor_checks.discover_sdl3_provider isolates MSYS2 UCRT64 from incidental Vulkan SDK SDL3."""
+        from unittest import mock
+        import nk_doctor_checks
         from nk_doctor_checks import discover_sdl3_provider, Sdl3ProviderError
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        # These are the Windows provider rules; every input is a synthetic directory,
+        # so pin the platform decision instead of depending on the host running the test.
+        with mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"),              tempfile.TemporaryDirectory() as tmpdir:
             tmproot = Path(tmpdir)
             msys = tmproot / "msys64" / "ucrt64"
             (msys / "include" / "SDL3").mkdir(parents=True)

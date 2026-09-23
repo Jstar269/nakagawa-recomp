@@ -83,6 +83,9 @@ def _is_toolchain_missing_error(output: str) -> str | None:
         ("sdl3/" in out_lower and "no such file" in out_lower)
         or "-lsdl3" in out_lower
         or "cannot find -lsdl3" in out_lower
+        # The Makefile's own fail-closed discovery message (sdl3-check, #331).
+        or "sdl3 dependency is missing" in out_lower
+        or "explicit sdl3 directory does not exist" in out_lower
     ):
         return "SDL3 dependency (headers or library) is missing"
     if "cannot find -l" in out_lower and any(
