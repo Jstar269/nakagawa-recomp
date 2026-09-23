@@ -7,7 +7,7 @@ Two layers:
 
 * the behavioral half runs ``tools/test_visual_oracle.ps1``, which exercises the real
   helpers against real processes and directories (Windows only -- skipped elsewhere);
-* the static half pins the contract in ``hst_manager.ps1`` that those helpers exist to
+* the static half pins the contract in ``nk_manager.ps1`` that those helpers exist to
   enforce, so the manager cannot quietly go back to sleeping a whole deadline or writing
   a second run on top of a first.
 """
@@ -23,8 +23,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
-SUPPORT = ROOT / "tools" / "hst_run_support.ps1"
+MANAGER = ROOT / "nk_manager.ps1"
+SUPPORT = ROOT / "tools" / "nk_safety.ps1"
 PS_TESTS = ROOT / "tools" / "test_visual_oracle.ps1"
 HLE = ROOT / "src" / "rt" / "hle.c"
 
@@ -37,7 +37,7 @@ class VisualOracleBehaviorTests(unittest.TestCase):
     """Run the PowerShell helper tests, which need real processes to be meaningful."""
 
     @unittest.skipUnless(sys.platform == "win32", "PowerShell helpers are Windows-only")
-    def test_run_support_helpers(self) -> None:
+    def test_safety_and_run_support_helpers(self) -> None:
         shell = _powershell()
         if shell is None:
             self.skipTest("no PowerShell interpreter on PATH")
@@ -71,8 +71,8 @@ class VisualOracleContractTests(unittest.TestCase):
         )
         self.assertIn("Wait-ProcessOrKill -Process $proc", self.manager)
 
-    def test_run_support_is_dot_sourced(self) -> None:
-        self.assertIn("hst_run_support.ps1", self.manager)
+    def test_run_support_is_owned_by_the_canonical_safety_module(self) -> None:
+        self.assertIn("nk_safety.ps1", self.manager)
         for fn in ("Wait-ProcessOrKill", "Reset-OracleArchive", "Sync-SaveBase", "Get-OracleVerdict"):
             self.assertIn(f"function {fn}", self.support, f"{fn} must live in the support file")
 
@@ -102,10 +102,7 @@ class VisualOracleContractTests(unittest.TestCase):
         self.assertIn("-RunProfile", self.manager)
         oracle = self.manager[self.manager.index("function Invoke-VisualOracle") :]
         oracle = oracle[: oracle.index("function Invoke-DiffFunc")]
-        self.assertTrue(
-            "Run-NkEngine -Profile $RunProfile" in oracle or "Run-HstEngine -Profile $RunProfile" in oracle,
-            "oracle must invoke engine runner with profile",
-        )
+        self.assertIn("Run-NkEngine -Profile $RunProfile", oracle)
         self.assertNotIn(
             "Start-Process",
             oracle,

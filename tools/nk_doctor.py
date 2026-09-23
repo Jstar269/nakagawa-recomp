@@ -4,11 +4,7 @@
 
 """Fail-closed workspace diagnostics for Nakagawa Recomp.
 
-Canonical successor to tools/hst_doctor.py (which is now a deprecated forwarding
-wrapper). Identical behaviour; updated to import from nk_doctor_core and
-nk_doctor_checks instead of the legacy hst_* modules.
-
-This command validates the host toolchain, private game-input layout, runtime
+This command validates the host toolchain, manifest-declared game inputs, runtime
 assets, build products, and a small set of publication-facing repository
 contracts. It never copies, decrypts, extracts, or uploads private material.
 
@@ -66,10 +62,10 @@ def render_text(report: Report) -> str:
     return "\n".join(lines)
 
 
-def render_json(report: Report, strict: bool, *, tool_name: str = "nk_doctor") -> str:
+def render_json(report: Report, strict: bool) -> str:
     payload = {
         "schema_version": 1,
-        "tool": tool_name,
+        "tool": "nk_doctor",
         "root": str(report.root),
         "scope": report.scope,
         "strict": strict,
@@ -122,12 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(
-    argv: Sequence[str] | None = None,
-    *,
-    tool_name: str = "nk_doctor",
-    legacy_default_title: bool = False,
-) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -165,9 +156,7 @@ def main(
                     path=manifest_path,
                     remediation="Fix the title manifest syntax or schema.",
                 )
-    elif not legacy_default_title:
-        # nk.ps1 and nk_doctor default to the public synthetic title.  The
-        # deprecated HST wrapper opts into its own compatibility default.
+    else:
         default_path = root / "assets" / "titles" / "synthetic.json"
         if default_path.is_file():
             try:
@@ -185,7 +174,6 @@ def main(
         root,
         manifest_data,
         game_name=args.game_name,
-        legacy_default=legacy_default_title,
     )
 
     if args.scope in {"repo", "all"}:
@@ -220,7 +208,7 @@ def main(
         check_vfpu_assets(report)
         check_runtime_dependencies(report, args.msys_path, title_context.game_name)
 
-    output = render_json(report, args.strict, tool_name=tool_name) if args.json else render_text(report)
+    output = render_json(report, args.strict) if args.json else render_text(report)
     print(output)
     return report.exit_code(args.strict)
 

@@ -28,7 +28,7 @@ adapts that plan to a process invocation and re-derives nothing of its own: it
 checks that each build-facing projection (`make.*`, `environment.*`) follows from
 the plan's own semantic fields, then pins the selected title `nk_manager.ps1`
 orchestrates. Make consumes explicit values and contributes no title-specific
-default beyond the direct-build HST bindings at the top of the `Makefile`.
+defaults.
 A manifest-less direct Make invocation bypasses the planner and its protected
 digest entirely; it is an explicit non-canonical escape hatch, not a second
 title contract. The planner default is the single authority for the chunk-size
@@ -52,9 +52,9 @@ executable nor generated retail C to exist. See
 
 Executable spans follow the same rule. `analyze.py` has no built-in span: an extra
 executable span is title configuration and reaches the analyzer only as an explicit
-argument. The environment variable `HST_EXTRA_SPANS` is read at CLI entry points
-only, and only for the primary image, so a rebased extra guest module can never
-inherit another module's span. Make passes the span as `--extra-span=LO,HI` rather
+argument. `TITLE_EXTRA_SPANS` is read at CLI entry points only, and only for the
+primary image, so a rebased extra guest module can never inherit another module's
+span. Make passes the span as `--extra-span=LO,HI` rather
 than a recipe environment prefix, which keeps the binding working when Make falls
 back to `cmd.exe`. If both an option and an environment value are present and they
 disagree, the run fails closed.

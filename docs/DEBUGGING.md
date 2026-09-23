@@ -367,7 +367,7 @@ the ungated run. **Do not** reach for `SR_NOVBPACE=1` to speed a route up: that 
 jumps over idle delay waits, and it demonstrably changes game speed (it is the behaviour vblank
 pacing was added to fix). A faster route is worthless if it is not the same route.
 
-`tools/hst_run_support.ps1` holds the three helpers whose failure modes are silent (bounded wait,
+`tools/nk_safety.ps1` holds the helpers whose failure modes are silent (bounded wait,
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
 

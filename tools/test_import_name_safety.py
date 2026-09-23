@@ -313,7 +313,6 @@ class TestImportNameSafety(unittest.TestCase):
                     command.append(f"--extra-elf={extra_prx}@{extra_base:x}")
                 env = os.environ.copy()
                 env["GAME_BASE"] = hex(primary_base)
-                env["HST_EXTRA_SPANS"] = ""
                 generated = subprocess.run(
                     command, cwd=ROOT, env=env, capture_output=True, text=True
                 )

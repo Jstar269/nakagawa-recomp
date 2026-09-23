@@ -1112,7 +1112,7 @@ class TestPublishAudit(unittest.TestCase):
 
 
 # A tracked file whose *working-tree* bytes carry a publication finding while its staged
-# blob stays clean. This is the exact shape that let `hst_manager.ps1 -Action Verify`
+# blob stays clean. This is the exact shape that let `nk_manager.ps1 -Action Verify`
 # report every gate PASS while the publication audit read different bytes: the audit
 # enumerated paths from the Git index and then read each path's staged blob, so an
 # unstaged edit was invisible to it.
@@ -1184,16 +1184,11 @@ def _make_publication_fixture_repo(repo: Path) -> Path:
 def _verify_suite_audit_invocations() -> list[list[str]]:
     """Extract the publish_audit argument lists that -Action Verify actually runs.
 
-    Parsed out of hst_manager.ps1 rather than restated here, so that dropping or
+    Parsed out of nk_manager.ps1 rather than restated here, so that dropping or
     weakening a content source in the manager fails this test instead of leaving the
     regression asserting a command line the canonical gate no longer uses.
     """
-    mgr_path = (
-        publish_audit.ROOT / "nk_manager.ps1"
-        if (publish_audit.ROOT / "nk_manager.ps1").exists()
-        else publish_audit.ROOT / "hst_manager.ps1"
-    )
-    manager = mgr_path.read_text(encoding="utf-8")
+    manager = (publish_audit.ROOT / "nk_manager.ps1").read_text(encoding="utf-8")
     start = manager.index("function Invoke-VerifySuite")
     rest = manager.find("\n    function ", start)
     body = manager[start : rest if rest != -1 else len(manager)]
@@ -1322,7 +1317,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
         """Run the manager's own audit command lines against a tree with an unstaged finding.
 
         Executes tools/publish_audit.py's main() the way -Action Verify invokes it, so a
-        regression that drops --worktree from hst_manager.ps1 makes this fail rather than
+        regression that drops --worktree from nk_manager.ps1 makes this fail rather than
         leaving a green Verify describing bytes nobody checked.
         """
         invocations = _verify_suite_audit_invocations()

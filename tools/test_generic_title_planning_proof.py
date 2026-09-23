@@ -399,6 +399,84 @@ class InvalidManifestsFailClosed(unittest.TestCase):
             )
 
 
+class LegacyToolingRetirementTests(unittest.TestCase):
+    RETIRED_PATHS = (
+        "hst.ps1",
+        "hst_manager.ps1",
+        "tools/hst_doctor.py",
+        "tools/hst_doctor_checks.py",
+        "tools/hst_doctor_core.py",
+        "tools/hst_safety.ps1",
+        "tools/hst_run_support.ps1",
+    )
+
+    def test_deprecated_hst_tool_paths_are_removed(self) -> None:
+        for relative in self.RETIRED_PATHS:
+            with self.subTest(path=relative):
+                self.assertFalse((ROOT / relative).exists())
+
+    def test_generic_tooling_has_no_deprecated_hst_aliases(self) -> None:
+        forbidden = (
+            "HST_EXTRA_SPANS",
+            "Assert-HstWorkspaceRoot",
+            "HstWorkspaceRoot",
+            "Get-HstRunEntry",
+            "Get-HstMakeBaseArgs",
+            "Stop-WorkspaceHst",
+            "Push-HstAnalyzerEnvironment",
+            "Pop-HstAnalyzerEnvironment",
+        )
+        for relative in (
+            "Makefile",
+            "nk_manager.ps1",
+            "tools/nk_safety.ps1",
+            "tools/title_manager_plan.ps1",
+        ):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            for token in forbidden:
+                with self.subTest(path=relative, token=token):
+                    self.assertNotIn(token, text)
+
+    def test_maintained_code_and_docs_have_no_retired_wrapper_dependencies(self) -> None:
+        retired_names = tuple(self.RETIRED_PATHS)
+        paths = [
+            ROOT / "Makefile",
+            ROOT / "copy_build_assets.ps1",
+            ROOT / "nk.ps1",
+            ROOT / "nk_manager.ps1",
+            ROOT / "assets" / "titles" / "README.md",
+        ]
+        for directory, suffixes in (
+            (ROOT / "tools", (".py", ".ps1")),
+            (ROOT / "interface" / "src", (".ts", ".tsx", ".mjs")),
+            (ROOT / ".github" / "workflows", (".yml", ".yaml")),
+            (ROOT / "docs", (".md",)),
+        ):
+            paths.extend(
+                path
+                for path in directory.rglob("*")
+                if path.is_file()
+                and path.suffix in suffixes
+                and path != pathlib.Path(__file__).resolve()
+                and path.name != "TITLE_MANAGER_DECOUPLING.md"
+            )
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for retired_name in retired_names:
+                with self.subTest(path=path.relative_to(ROOT), retired_name=retired_name):
+                    self.assertNotIn(retired_name, text)
+
+    def test_direct_make_has_no_hst_title_defaults(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertNotIn("HST_EXTRA_SPANS", makefile)
+        self.assertNotIn("0x00303194,0x00306e24", makefile)
+        self.assertNotIn("CODEGEN_PROFILE_ARG := --profile=hst", makefile)
+        self.assertEqual(
+            len(re.findall(r"ifeq\s*\(\$\(GAME_NAME\),hst\)", makefile)),
+            1,
+        )
+
+
 class NoSecondTitleConditionalInGenericCode(unittest.TestCase):
     def test_generic_code_contains_no_synthetic_title2_branch(self) -> None:
         """The generic planner must not add `if title == synthetic_title2` style code."""
@@ -426,10 +504,8 @@ class NoSecondTitleConditionalInGenericCode(unittest.TestCase):
         text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertNotIn("synthetic_title2", text)
         self.assertNotIn("synthetic-title2", text)
-        # Exactly two HST-specific conditionals exist (defaults + title-config unbound check);
-        # a second synthetic title must not add a third.
         hst_conds = [m.start() for m in re.finditer(r"ifeq\s*\(\$\(GAME_NAME\),hst\)", text)]
-        self.assertEqual(len(hst_conds), 2, "Makefile must have exactly two HST-specific GAME_NAME conditionals (defaults + config check)")
+        self.assertEqual(len(hst_conds), 1, "Makefile may only retain the manifest-unbound refusal")
 
 
 class HostPortability(unittest.TestCase):
@@ -463,140 +539,60 @@ class HostPortability(unittest.TestCase):
 
 
 class MakeSpanPrecedenceTests(unittest.TestCase):
-    """Executable Make precedence matrix using the ACTUAL candidate Makefile.
-
-    Proves the precedence contract via GNU Make introspection (harmless --eval print
-    target) not by reimplementing Make logic in Python.
-    """
-
     MAKE = shutil.which("mingw32-make") or shutil.which("make") or "make"
 
-    def _effective(self, game_name, title_val=None, hst_val=None, title_origin="cmd", hst_origin="cmd", env_overrides=None):
+    def _effective(self, game_name, title_val=None, title_origin="cmd"):
         env = os.environ.copy()
         env.pop("TITLE_EXTRA_SPANS", None)
-        env.pop("HST_EXTRA_SPANS", None)
-        if env_overrides:
-            env.update(env_overrides)
         args = [self.MAKE, "-f", str(ROOT / "Makefile"), f"GAME_NAME={game_name}"]
         if title_val is not None:
             if title_origin == "cmd":
-                args.append(f"TITLE_EXTRA_SPANS={title_val}" if title_val != "" else "TITLE_EXTRA_SPANS=")
-            elif title_origin == "env":
+                args.append(f"TITLE_EXTRA_SPANS={title_val}" if title_val else "TITLE_EXTRA_SPANS=")
+            else:
                 env["TITLE_EXTRA_SPANS"] = title_val
-        if hst_val is not None:
-            if hst_origin == "cmd":
-                args.append(f"HST_EXTRA_SPANS={hst_val}" if hst_val != "" else "HST_EXTRA_SPANS=")
-            elif hst_origin == "env":
-                env["HST_EXTRA_SPANS"] = hst_val
         args += ["--eval", "print_effective: ; @echo EFFECTIVE=$(EFFECTIVE_EXTRA_SPANS)", "print_effective"]
         proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         for line in proc.stdout.splitlines():
-            if "EFFECTIVE=" in line:
-                # line is like "EFFECTIVE=..." or "EFFECTIVE=..."
-                # The echo prints EFFECTIVE=VALUE
-                idx = line.find("EFFECTIVE=")
-                if idx != -1:
-                    return line[idx + len("EFFECTIVE="):].strip()
-        # Fallback: search in combined
-        combined = proc.stdout + proc.stderr
-        for line in combined.splitlines():
             if line.strip().startswith("EFFECTIVE="):
                 return line.strip().split("=", 1)[1].strip()
         return ""
 
-    def test_generic_G1_undefined_both_empty(self):
-        self.assertEqual(self._effective("synthetic2", None, None), "")
+    def test_undefined_is_empty(self) -> None:
+        self.assertEqual(self._effective("synthetic2"), "")
 
-    def test_generic_G2_title_only(self):
-        self.assertEqual(self._effective("synthetic2", "generic-value", None), "generic-value")
+    def test_command_line_value_is_used(self) -> None:
+        self.assertEqual(self._effective("synthetic2", "generic-value"), "generic-value")
 
-    def test_generic_G3_stale_hst_ignored(self):
-        self.assertEqual(self._effective("synthetic2", None, "stale-hst-value"), "")
+    def test_environment_value_is_used(self) -> None:
+        self.assertEqual(self._effective("synthetic2", "env-generic", title_origin="env"), "env-generic")
 
-    def test_generic_G4_both_title_wins(self):
-        self.assertEqual(self._effective("synthetic2", "generic-value", "stale-hst-value"), "generic-value")
+    def test_command_line_overrides_environment(self) -> None:
+        env = os.environ.copy()
+        env["TITLE_EXTRA_SPANS"] = "env-generic"
+        args = [
+            self.MAKE,
+            "-f",
+            str(ROOT / "Makefile"),
+            "GAME_NAME=synthetic2",
+            "TITLE_EXTRA_SPANS=cmd-generic",
+            "--eval",
+            "print_effective: ; @echo EFFECTIVE=$(EFFECTIVE_EXTRA_SPANS)",
+            "print_effective",
+        ]
+        proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("EFFECTIVE=cmd-generic", proc.stdout)
 
-    def test_generic_G5_explicit_empty_stays_empty(self):
-        self.assertEqual(self._effective("synthetic2", "", "stale-hst-value"), "")
+    def test_explicit_empty_stays_empty(self) -> None:
+        self.assertEqual(self._effective("synthetic2", ""), "")
 
-    def test_hst_H1_default(self):
-        self.assertEqual(self._effective("hst", None, None), "0x00303194,0x00306e24")
-
-    def test_hst_H2_legacy_supplied(self):
-        self.assertEqual(self._effective("hst", None, "my-hst"), "my-hst")
-
-    def test_hst_H3_title_supplied(self):
-        self.assertEqual(self._effective("hst", "my-title", None), "my-title")
-
-    def test_hst_H4_both_equal(self):
-        self.assertEqual(self._effective("hst", "same", "same"), "same")
-
-    def test_hst_H5_both_different_title_wins(self):
-        self.assertEqual(self._effective("hst", "title-val", "hst-val"), "title-val")
-
-    def test_hst_H6_explicit_empty_authoritative(self):
-        self.assertEqual(self._effective("hst", "", "non-empty"), "")
-
-    def test_origin_env_generic_value(self):
-        self.assertEqual(self._effective("synthetic2", "env-generic", None, title_origin="env"), "env-generic")
-
-    def test_origin_env_legacy_stale_ignored_for_generic(self):
-        self.assertEqual(self._effective("synthetic2", None, "stale", hst_origin="env"), "")
-
-    def test_origin_cmd_generic_overrides_env(self):
-        # env generic, cmd generic overrides
-        # Use helper with env_overrides
-        # For this test, set env generic and cmd generic
-        # Our helper's env_overrides already handles env, but we need to combine
-        # We will call with title env and title cmd: cmd should win (Make command line overrides env)
-        # To test, we need to set env generic and also pass cmd generic
-        # Our helper currently supports only one title_val with one origin. We simulate by setting env directly
-        # and passing cmd.
-        proc_env = os.environ.copy()
-        proc_env.pop("TITLE_EXTRA_SPANS", None)
-        proc_env.pop("HST_EXTRA_SPANS", None)
-        proc_env["TITLE_EXTRA_SPANS"] = "env-generic"
-        args = [self.MAKE, "-f", str(ROOT / "Makefile"), "GAME_NAME=synthetic2", "TITLE_EXTRA_SPANS=cmd-generic", "--eval", "print_effective: ; @echo EFFECTIVE=$(EFFECTIVE_EXTRA_SPANS)", "print_effective"]
-        proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, env=proc_env)
-        self.assertEqual(proc.returncode, 0)
-        eff = ""
-        for line in proc.stdout.splitlines():
-            if "EFFECTIVE=" in line:
-                eff = line.split("EFFECTIVE=", 1)[1].strip()
-        self.assertEqual(eff, "cmd-generic")
-
-    def test_origin_cmd_legacy_with_generic_undefined(self):
-        # For HST, legacy cmd with generic undefined should be used
-        self.assertEqual(self._effective("hst", None, "legacy-cmd", title_origin="cmd", hst_origin="cmd"), "legacy-cmd")
-
-    def test_precedence_table_recorded(self):
-        # Record the exact table for diagnostic output
-        table = []
-        for game, title, hst, expected in [
-            ("synthetic2", None, None, ""),
-            ("synthetic2", "generic-value", None, "generic-value"),
-            ("synthetic2", None, "stale", ""),
-            ("synthetic2", "generic-value", "stale", "generic-value"),
-            ("synthetic2", "", "stale", ""),
-            ("hst", None, None, "0x00303194,0x00306e24"),
-            ("hst", None, "my-hst", "my-hst"),
-            ("hst", "my-title", None, "my-title"),
-            ("hst", "same", "same", "same"),
-            ("hst", "title-val", "hst-val", "title-val"),
-            ("hst", "", "non-empty", ""),
-        ]:
-            eff = self._effective(game, title, hst)
-            table.append((game, repr(title), repr(hst), eff, expected))
-            self.assertEqual(eff, expected)
-        # Print table for REVIEW (not asserted as failure)
-        # Use a deterministic string so reviewer can verify
-        for row in table:
-            sys.stderr.write(f"MAKE_PRECEDENCE {row}\n")
+    def test_hst_name_does_not_infer_a_span(self) -> None:
+        self.assertEqual(self._effective("hst"), "")
 
 
-class StaleHstIsolationTests(unittest.TestCase):
-    """Strong regression: stale HST state cannot affect a generic title."""
+class RetiredHstIsolationTests(unittest.TestCase):
+    """Retired HST environment state cannot affect generic title work."""
 
     def test_generic_planner_ignores_stale_hst_env(self):
         # Stale HST env var must not leak into generic planner output
@@ -664,47 +660,6 @@ class StaleHstIsolationTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("PASS", proc.stdout)
 
-    def test_hst_adapter_still_supplies_legacy(self):
-        shell = shutil.which("pwsh")
-        if shell is None:
-            self.skipTest("pwsh required")
-        helper = ROOT / "tools" / "title_manager_plan.ps1"
-        # Build a synthetic plan with a span, then verify HST adapter synthesizes HST
-        manifest = _load(SYNTHETIC)
-        # Make a zero-based manifest with a span
-        owned = json.loads(json.dumps(manifest))
-        owned["executable"]["base"] = 0
-        owned["executable"]["entry"] = 0
-        owned["executable"]["extra_executable_spans"] = [{"start": 0x00400000, "end": 0x00400100}]
-        plan = title_codegen_plan.build_manager_plan(
-            owned,
-            game_name="synthetic",
-            game_elf=pathlib.Path("build/fixtures/synthetic.elf"),
-            build_dir=pathlib.Path("build/synthetic"),
-            funcs_per_chunk=64,
-        )
-        # Generic plan must have only TITLE
-        self.assertIn("TITLE_EXTRA_SPANS", plan["environment"])
-        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "0x00400000,0x00400100")
-        # Now check that HST adapter would synthesize HST (but generic plan shouldn't be accepted by HST adapter)
-        # Instead test that a real HST plan via adapter would have both
-        # For this we just verify the adapter's synthesis logic exists via a synthetic HST-like plan that passes HST checks
-        # Use the HST adapter's environment synthesis: it should return both keys
-        # We test via pwsh: create a minimal HST plan (using synthetic with HST-like id but will be rejected for other pins)
-        # Instead we just verify that Push-Hst sets both
-        script = "\n".join([
-            "$ErrorActionPreference='Stop'",
-            f". '{helper}'",
-            "$state = Push-HstAnalyzerEnvironment -Value '0x00400000,0x00400100'",
-            "if ($env:TITLE_EXTRA_SPANS -ne '0x00400000,0x00400100') { Write-Output 'FAIL_TITLE'; exit 1 }",
-            "if ($env:HST_EXTRA_SPANS -ne '0x00400000,0x00400100') { Write-Output 'FAIL_HST'; exit 1 }",
-            "Pop-HstAnalyzerEnvironment -State $state",
-            "Write-Output 'PASS'",
-        ])
-        proc = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script], cwd=ROOT, capture_output=True, text=True)
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("PASS", proc.stdout)
-
 
 class PowershellGenericEnvironmentTests(unittest.TestCase):
     """PowerShell generic environment helper owns only TITLE_EXTRA_SPANS."""
@@ -730,10 +685,8 @@ class PowershellGenericEnvironmentTests(unittest.TestCase):
     def test_generic_sets_only_generic_state(self):
         proc = self._run("\n".join([
             "Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue",
-            "Remove-Item -LiteralPath 'Env:HST_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue",
             "$state = Push-TitleAnalyzerEnvironment -Value 'generic-value'",
             "if ($env:TITLE_EXTRA_SPANS -ne 'generic-value') { Write-Output 'FAIL_TITLE'; exit 1 }",
-            "if (Test-Path -LiteralPath 'Env:HST_EXTRA_SPANS') { Write-Output \"FAIL_HST_PRESENT:$env:HST_EXTRA_SPANS\"; exit 1 }",
             "Pop-TitleAnalyzerEnvironment -State $state",
             "Write-Output 'PASS'",
         ]))
@@ -750,19 +703,6 @@ class PowershellGenericEnvironmentTests(unittest.TestCase):
             "Pop-TitleAnalyzerEnvironment -State $state",
             "if (Test-Path -LiteralPath 'Env:TITLE_EXTRA_SPANS') { Write-Output 'FAIL_TITLE_AFTER'; exit 1 }",
             "if ($env:HST_EXTRA_SPANS -ne 'stale-hst-value') { Write-Output 'FAIL_HST_AFTER'; exit 1 }",
-            "Write-Output 'PASS'",
-        ]))
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("PASS", proc.stdout)
-
-    def test_hst_compatibility_can_supply_legacy(self):
-        proc = self._run("\n".join([
-            "Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue",
-            "Remove-Item -LiteralPath 'Env:HST_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue",
-            "$state = Push-HstAnalyzerEnvironment -Value 'hst-value'",
-            "if ($env:TITLE_EXTRA_SPANS -ne 'hst-value') { Write-Output 'FAIL_TITLE'; exit 1 }",
-            "if ($env:HST_EXTRA_SPANS -ne 'hst-value') { Write-Output 'FAIL_HST'; exit 1 }",
-            "Pop-HstAnalyzerEnvironment -State $state",
             "Write-Output 'PASS'",
         ]))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -838,44 +778,60 @@ class PowershellGenericEnvironmentTests(unittest.TestCase):
         self.assertIn("PASS", proc.stdout)
 
 
-class DirectHstMakeCompatibilityTests(unittest.TestCase):
-    """Pin public HST defaults via actual Makefile evaluation."""
-
+class DirectMakeRetirementTests(unittest.TestCase):
     MAKE = shutil.which("mingw32-make") or shutil.which("make") or "make"
 
-    def _get(self, var, game_name="hst"):
+    def _get(self, var, game_name="hst", *extra_args):
         env = os.environ.copy()
         env.pop("TITLE_EXTRA_SPANS", None)
-        env.pop("HST_EXTRA_SPANS", None)
-        args = [self.MAKE, "-f", str(ROOT / "Makefile"), f"GAME_NAME={game_name}", "--eval", f"print_var: ; @echo {var}=$({var})", "print_var"]
+        args = [
+            self.MAKE,
+            "-f",
+            str(ROOT / "Makefile"),
+            f"GAME_NAME={game_name}",
+            *extra_args,
+            "--eval",
+            f"print_var: ; @echo {var}=$({var})",
+            "print_var",
+        ]
         proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         for line in proc.stdout.splitlines():
-            # The echo we added is exactly "VAR=VALUE" at line start; ignore the
-            # build_profile record line which also contains "VAR=" as a substring
-            # inside a longer python command.
             stripped = line.strip()
             if stripped.startswith(f"{var}="):
                 return stripped.split(f"{var}=", 1)[1].strip()
         return ""
 
-    def test_hst_defaults(self):
-        # For HST, defaults must be present
-        self.assertEqual(self._get("CODEGEN_PROFILE_ARG", "hst"), "--profile=hst")
-        self.assertEqual(self._get("EFFECTIVE_EXTRA_SPANS", "hst"), "0x00303194,0x00306e24")
-        self.assertEqual(self._get("HST_EXTRA_SPANS", "hst"), "0x00303194,0x00306e24")
-        self.assertEqual(self._get("TITLE_EXTRA_SPANS", "hst"), "0x00303194,0x00306e24")
-        # Build dir derived from GAME_NAME
+    def test_hst_name_has_no_direct_make_title_defaults(self) -> None:
+        self.assertEqual(self._get("CODEGEN_PROFILE_ARG", "hst"), "")
+        self.assertEqual(self._get("EFFECTIVE_EXTRA_SPANS", "hst"), "")
+        self.assertEqual(self._get("TITLE_EXTRA_SPANS", "hst"), "")
         self.assertEqual(self._get("BUILD_DIR", "hst"), "build/hst")
 
-    def test_synthetic_does_not_receive_hst_defaults(self):
-        self.assertEqual(self._get("EFFECTIVE_EXTRA_SPANS", "synthetic2"), "")
-        self.assertEqual(self._get("TITLE_EXTRA_SPANS", "synthetic2"), "")
-        # HST variable may be empty for synthetic but must not be the HST default
-        hst_val = self._get("HST_EXTRA_SPANS", "synthetic2")
-        self.assertNotEqual(hst_val, "0x00303194,0x00306e24")
-        self.assertEqual(self._get("CODEGEN_PROFILE_ARG", "synthetic2"), "")
-        self.assertEqual(self._get("BUILD_DIR", "synthetic2"), "build/synthetic2")
+    def test_source_owned_second_title_does_not_inherit_hst_values(self) -> None:
+        extra = ("TITLE_MANIFEST=assets/titles/synthetic-title2.json",)
+        self.assertEqual(self._get("CODEGEN_PROFILE_ARG", "hst", *extra), "")
+        self.assertEqual(self._get("EFFECTIVE_EXTRA_SPANS", "hst", *extra), "")
+
+    def test_direct_hst_make_without_manifest_fails_named(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nakagawa-hst-make-") as temp:
+            build_dir = pathlib.Path(temp).resolve()
+            target = pathlib.Path(build_dir.as_posix()) / "sr_title_config.h"
+            proc = subprocess.run(
+                [
+                    self.MAKE,
+                    "-f",
+                    str(ROOT / "Makefile"),
+                    "GAME_NAME=hst",
+                    f"BUILD_DIR={build_dir.as_posix()}",
+                    target.as_posix(),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("needs a validated title manifest", proc.stdout + proc.stderr)
 
 
 class ArtifactFutureCompatibleTests(unittest.TestCase):

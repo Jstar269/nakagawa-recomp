@@ -4,7 +4,7 @@
 
 <#
 .SYNOPSIS
-    Behavioral regression tests for tools/hst_run_support.ps1.
+    Behavioral regression tests for the run/oracle helpers in tools/nk_safety.ps1.
 .DESCRIPTION
     Driven by tools/test_visual_oracle.py so it runs inside the standard Python suite.
     These exercise real processes and real directories -- not string matching against the
@@ -17,7 +17,7 @@
 #>
 
 $ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot "hst_run_support.ps1")
+. (Join-Path $PSScriptRoot "nk_safety.ps1")
 
 $script:Failures = 0
 function Test-Case {
@@ -198,7 +198,7 @@ try {
     }
 
     Test-Case "a completed restore leaves no swap orphan behind" {
-        # An orphan .hst_savebase_* sibling is the signal for an interrupted swap, and the
+        # An orphan .nk_savebase_* sibling is the signal for an interrupted swap, and the
         # next restore fails closed on it. A restore that ran to completion must therefore
         # leave none, or one run poisons every later run of the same baseline.
         $root = Join-Path $tmpRoot "ms4/PSP/SAVEDATA"
@@ -211,7 +211,7 @@ try {
         [void](Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot)
         $parent = [IO.Path]::GetDirectoryName((Get-CanonicalPath -Path $root))
         $orphans = @(Get-ChildItem -LiteralPath $parent -Directory -Force |
-            Where-Object { $_.Name -like ".hst_savebase_*" })
+            Where-Object { $_.Name -like ".nk_savebase_*" })
         Assert-True ($orphans.Count -eq 0) `
             "restore left $($orphans.Count) swap orphan(s), which fails every later restore closed"
         # ...and a third run must still be able to restore, not trip the orphan guard.

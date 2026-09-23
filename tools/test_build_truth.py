@@ -150,7 +150,7 @@ class BuildTruthTests(unittest.TestCase):
 
     def test_repository_rules_do_not_keep_manager_object_lists(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        manager = (ROOT / "hst_manager.ps1").read_text(encoding="utf-8")
+        manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8")
         self.assertIn("$(DEPFLAGS) -c", makefile)
         self.assertIn("$(RUNTIME_PROFILE_STAMP)", makefile)
         self.assertIn("$(RECOMP_PROFILE_STAMP)", makefile)
@@ -642,13 +642,6 @@ class OptimizationProfileContractTests(unittest.TestCase):
                 info[key.strip()] = val.strip()
         return info
 
-    def test_hst_implicit_defaults_resolve_to_o2_o1(self) -> None:
-        info = self.run_compiler_info("GAME_NAME=hst")
-        self.assertEqual(info.get("RUNTIME_OPT"), "-O2")
-        self.assertEqual(info.get("RECOMP_OPT"), "-O1")
-        self.assertTrue(info.get("CFLAGS", "").startswith("-O2 "), info.get("CFLAGS"))
-        self.assertTrue(info.get("RECOMP_FLAGS", "").startswith("-O1 "), info.get("RECOMP_FLAGS"))
-
     def test_generic_game_implicit_defaults_remain_o0_o0(self) -> None:
         info_default = self.run_compiler_info()
         self.assertEqual(info_default.get("RUNTIME_OPT"), "-O0")
@@ -661,6 +654,13 @@ class OptimizationProfileContractTests(unittest.TestCase):
         self.assertEqual(info_other.get("RECOMP_OPT"), "-O0")
         self.assertTrue(info_other.get("CFLAGS", "").startswith("-O0 "), info_other.get("CFLAGS"))
         self.assertTrue(info_other.get("RECOMP_FLAGS", "").startswith("-O0 "), info_other.get("RECOMP_FLAGS"))
+
+    def test_hst_name_does_not_change_generic_optimization_defaults(self) -> None:
+        info = self.run_compiler_info("GAME_NAME=hst")
+        self.assertEqual(info.get("RUNTIME_OPT"), "-O0")
+        self.assertEqual(info.get("RECOMP_OPT"), "-O0")
+        self.assertTrue(info.get("CFLAGS", "").startswith("-O0 "), info.get("CFLAGS"))
+        self.assertTrue(info.get("RECOMP_FLAGS", "").startswith("-O0 "), info.get("RECOMP_FLAGS"))
 
     def test_explicit_hst_overrides_still_win(self) -> None:
         info = self.run_compiler_info("GAME_NAME=hst", "RUNTIME_OPT=-O0", "RECOMP_OPT=-O0")
@@ -678,7 +678,15 @@ class OptimizationProfileContractTests(unittest.TestCase):
     def test_build_profile_manifests_record_effective_flags(self) -> None:
         hst_dir = self.build_dir / "hst_default"
         subprocess.run(
-            [self.make, "--no-print-directory", f"BUILD_DIR={hst_dir.as_posix()}", "GAME_NAME=hst", "compiler-info"],
+            [
+                self.make,
+                "--no-print-directory",
+                f"BUILD_DIR={hst_dir.as_posix()}",
+                "GAME_NAME=hst",
+                "RUNTIME_OPT=-O2",
+                "RECOMP_OPT=-O1",
+                "compiler-info",
+            ],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -725,62 +733,13 @@ class OptimizationProfileContractTests(unittest.TestCase):
         self.assertTrue(any(e.startswith("CFLAGS=-O0 ") for e in runtime_override["sections"]["runtime"]["entries"]))
         self.assertTrue(any(e.startswith("RECOMP_FLAGS=-O0 ") for e in recomp_override["sections"]["generated"]["entries"]))
 
-    def test_direct_make_and_hst_manager_agree_on_hst_effective_profile(self) -> None:
-        pwsh = shutil.which("pwsh")
-        if not pwsh:
-            self.skipTest("pwsh is required for hst_manager agreement test")
-
-        direct_info = self.run_compiler_info("GAME_NAME=hst")
-        manager_script = ROOT / "hst_manager.ps1"
-        self.assertTrue(manager_script.is_file())
-
-        ps_cmd = f"""
-        . '{ROOT / "tools" / "vulkan_sdk.ps1"}'
-        $VulkanSdk = Get-VulkanSdkPath
-        $RuntimeOpt = $null
-        $RecompOpt = $null
-        $FuncsPerChunk = 0
-        $GameElfForMake = "eboot.elf"
-        $VulkanSdkForMake = $VulkanSdk -replace "\\\\", "/"
-        $script:TitleManagerMakeArgs = $null
-        function Get-HstMakeBaseArgs {{
-            if ($null -ne $script:TitleManagerMakeArgs) {{
-                $args = @($script:TitleManagerMakeArgs)
-                if ($RuntimeOpt) {{ $args += "RUNTIME_OPT=-$RuntimeOpt" }}
-                if ($RecompOpt) {{ $args += "RECOMP_OPT=-$RecompOpt" }}
-                return $args
-            }}
-            $args = @(
-                "GAME_NAME=hst",
-                "GAME_ELF=$GameElfForMake",
-                "GAME_BASE=0",
-                "GAME_ENTRY=0",
-                "VULKAN_SDK=$VulkanSdkForMake"
-            )
-            if ($RuntimeOpt) {{ $args += "RUNTIME_OPT=-$RuntimeOpt" }}
-            if ($RecompOpt) {{ $args += "RECOMP_OPT=-$RecompOpt" }}
-            if ($FuncsPerChunk -gt 0) {{ $args += "FUNCS_PER_CHUNK=$FuncsPerChunk" }}
-            return $args
-        }}
-        $args = Get-HstMakeBaseArgs
-        $args -join ";"
-        """
-        proc = subprocess.run(
-            [pwsh, "-NoProfile", "-Command", ps_cmd],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        manager_args = [arg.strip() for arg in proc.stdout.strip().split(";") if arg.strip()]
-        self.assertIn("GAME_NAME=hst", manager_args)
-        self.assertFalse(any(a.startswith("RUNTIME_OPT=") for a in manager_args))
-        self.assertFalse(any(a.startswith("RECOMP_OPT=") for a in manager_args))
-
-        manager_resolved = self.run_compiler_info(*manager_args)
-        self.assertEqual(direct_info.get("RUNTIME_OPT"), manager_resolved.get("RUNTIME_OPT"))
-        self.assertEqual(direct_info.get("RECOMP_OPT"), manager_resolved.get("RECOMP_OPT"))
-        self.assertEqual(manager_resolved.get("RUNTIME_OPT"), "-O2")
-        self.assertEqual(manager_resolved.get("RECOMP_OPT"), "-O1")
+    def test_private_hst_profile_values_are_supplied_by_the_manifest_adapter(self) -> None:
+        adapter = (ROOT / "tools" / "title_manager_plan.ps1").read_text(encoding="utf-8")
+        manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn('"RUNTIME_OPT=-O2"', adapter)
+        self.assertIn('"RECOMP_OPT=-O1"', adapter)
+        self.assertNotIn("HST_EXTRA_SPANS", adapter)
+        self.assertIn("$boundPlan.Environment.TITLE_EXTRA_SPANS", manager)
 
     def test_profile_hashes_and_stamps_change_when_optimization_values_change(self) -> None:
         cc = os.environ.get("CC", "gcc")

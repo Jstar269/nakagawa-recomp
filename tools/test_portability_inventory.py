@@ -4,8 +4,8 @@
 """Tests for the Win32/portability inventory (tools/portability_inventory.py).
 
 Guards the classification contract: PSP semantic core files must surface as
-SEMANTIC_CORE_CONTAMINATION, host backends as BACKEND_EXPECTED, the manager as
-PRIVATE_MANAGER_ONLY, and the scan must not produce false positives from
+SEMANTIC_CORE_CONTAMINATION, host backends as BACKEND_EXPECTED, canonical manager
+files as MANAGER, and the scan must not produce false positives from
 Vulkan object handles (VK_NULL_HANDLE) or produce nondeterministic output.
 """
 
@@ -36,8 +36,8 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(pi.classify_file("src/rt/atrac3p/libavcodec/atrac.c")[1], "BACKEND_EXPECTED")
 
     def test_manager_and_build(self) -> None:
-        self.assertEqual(pi.classify_file("hst_manager.ps1")[1], "PRIVATE_MANAGER_ONLY")
-        self.assertEqual(pi.classify_file("hst.ps1")[1], "PRIVATE_MANAGER_ONLY")
+        self.assertEqual(pi.classify_file("nk_manager.ps1")[1], "CANONICAL_MANAGER")
+        self.assertEqual(pi.classify_file("nk.ps1")[1], "CANONICAL_MANAGER")
         self.assertEqual(pi.classify_file("Makefile")[1], "BUILD_TOOL_ONLY")
         self.assertEqual(pi.classify_file("tools/codegen.py")[1], "BUILD_TOOL_ONLY")
 
@@ -64,7 +64,7 @@ class ScanTests(unittest.TestCase):
         by_path = {f["path"]: f for f in files}
         self.assertEqual(by_path["src/rt/hle.c"]["class"], "semantic_core")
         self.assertEqual(by_path["src/rt/gpu_sdl3vk/sdl3vk.c"]["class"], "backend")
-        self.assertEqual(by_path["hst_manager.ps1"]["class"], "manager")
+        self.assertEqual(by_path["nk_manager.ps1"]["class"], "manager")
 
     def test_live_scan_is_deterministic(self) -> None:
         a = json.dumps(pi.scan(), sort_keys=True)

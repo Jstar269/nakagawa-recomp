@@ -150,7 +150,6 @@ class EntrySemanticsPipelineTests(unittest.TestCase):
             ))
 
             env = dict(os.environ)
-            env["HST_EXTRA_SPANS"] = ""
             result = subprocess.run(
                 [sys.executable, str(CODEGEN), str(elf), str(generated), "--profile=hst"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
@@ -318,7 +317,6 @@ int main(void) {{
             generated = work / "direct_j_semantics.c"
             elf.write_bytes(_synthetic_elf(words, owner))
             env = dict(os.environ)
-            env["HST_EXTRA_SPANS"] = ""
             result = subprocess.run(
                 [sys.executable, str(CODEGEN), str(elf), str(generated), "--profile=hst"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
@@ -433,7 +431,6 @@ int main(void) {{
             }
             elf.write_bytes(_synthetic_elf(words, owner))
             env = dict(os.environ)
-            env["HST_EXTRA_SPANS"] = ""
             result = subprocess.run(
                 [sys.executable, str(CODEGEN), str(elf), str(generated),
                  "--profile=hst", "--funcs-per-chunk=1",
@@ -571,7 +568,6 @@ int main(void) {{
             generated = work / "direct_branch_semantics.c"
             elf.write_bytes(_synthetic_elf(words, owner))
             env = dict(os.environ)
-            env["HST_EXTRA_SPANS"] = ""
             result = subprocess.run(
                 [sys.executable, str(CODEGEN), str(elf), str(generated), "--profile=hst"],
                 cwd=ROOT, env=env, capture_output=True, text=True,

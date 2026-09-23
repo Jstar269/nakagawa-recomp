@@ -232,16 +232,11 @@ For runtime-only changes:
 .\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
 ```
 
-For a direct Make build:
-
-```bash
-mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 \
-    TITLE_MANIFEST=assets/titles/hst-ucus98701.json all
-```
-
-Direct Make does not perform SDK discovery; export `VULKAN_SDK` or pass it as a Make variable when
-using this form. HST requires both address values to be zero. The Makefile's generic defaults are
-intentionally not HST defaults.
+Direct Make is title-neutral and does not run the manager planner. An HST direct-Make
+invocation must provide the validated `TITLE_MANIFEST` and every title-derived Make
+value explicitly; the supported HST workflow above uses `nk_manager.ps1` so those
+values cannot drift. Direct Make does not perform SDK discovery; export
+`VULKAN_SDK` or pass it as a Make variable when using that escape hatch.
 
 `assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
@@ -259,7 +254,7 @@ that build left behind.
 ## 4. Run and test
 
 Run `pwsh -NoProfile -File nk_manager.ps1` without an action for usage (exit code 0).
-The canonical manager accepts these actions; `hst_manager.ps1` forwards the same set:
+The canonical manager accepts these actions:
 
 | Action | Description |
 | --- | --- |

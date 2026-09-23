@@ -150,12 +150,8 @@ def _span_environment(manifest: dict[str, Any]) -> dict[str, str]:
     solely from the validated manifest's executable block.  No HST constant is
     consulted; an empty span set renders as the empty string, not an inherited HST default.
 
-    TITLE_EXTRA_SPANS is the host-portable generic key carrying the rendering.
-    The historic HST_EXTRA_SPANS legacy name is NOT emitted here; it lives only
-    in the explicit HST compatibility layer (Makefile `ifeq ($(GAME_NAME),hst)` and
-    PowerShell Get-HstManifestMakeArgs/Push-HstAnalyzerEnvironment) which derives
-    the generic TITLE_EXTRA_SPANS from the legacy variable only for GAME_NAME=hst.
-    Generic and synthetic titles never inherit an HST-named span.
+    TITLE_EXTRA_SPANS is the sole host-portable key carrying the rendering.
+    No title-specific environment alias is emitted.
     """
     executable = manifest["executable"]
     base = executable["base"]

@@ -471,12 +471,8 @@ class MakefileSpanBindingTests(unittest.TestCase):
         self.assertNotIn("HST_EXTRA_SPANS=$(HST_EXTRA_SPANS) $(PYTHON)", self.makefile)
 
     def test_span_is_empty_for_a_generic_title(self) -> None:
-        # Outside the GAME_NAME=hst block the binding must default to empty, so a
-        # generic build passes no span at all. Generic contract uses TITLE_EXTRA_SPANS.
-        generic = self.makefile.split("ifeq ($(GAME_NAME),hst)", 1)[1].split("endif", 1)[1]
-        self.assertIn("TITLE_EXTRA_SPANS ?=\n", generic)
-        # Legacy HST variable also defaults to empty but is ignored for generic titles.
-        self.assertIn("HST_EXTRA_SPANS ?=\n", generic)
+        self.assertIn("TITLE_EXTRA_SPANS ?=\n", self.makefile)
+        self.assertNotIn("HST_EXTRA_SPANS", self.makefile)
 
     def test_span_participates_in_the_codegen_profile_hash(self) -> None:
         # Changing the span must invalidate previously generated code.

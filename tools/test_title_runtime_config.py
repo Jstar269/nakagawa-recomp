@@ -1101,7 +1101,7 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
         rule = makefile.split("$(TITLE_CONFIG_HEADER): ", 1)[1].split("\n\n", 1)[0]
         self.assertIn("ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)", rule)
         self.assertIn("$(error", rule)
-        self.assertIn("TITLE_MANIFEST=$(HST_TITLE_MANIFEST)", rule)
+        self.assertIn("TITLE_MANIFEST=<path>", rule)
         # The game-input-free selftests must not be dragged into that requirement.
         self.assertIn("GENERIC_TITLE_CONFIG_HEADER", makefile)
         for target in ("hle-thread-selftest-build:", "$(PSP_ORACLE_SMOKE_EXE):"):
@@ -1240,7 +1240,7 @@ class TitleConfigIdentityIsLoadBearing(unittest.TestCase):
         unbound = self.make_header(game="hst", manifest=None)
         self.assertNotEqual(unbound.returncode, 0,
                             "an incremental unbound HST build must refuse, not succeed")
-        self.assertIn("needs a title configuration", unbound.stderr + unbound.stdout)
+        self.assertIn("needs a validated title manifest", unbound.stderr + unbound.stdout)
 
     def test_an_incremental_generic_header_is_not_reused_by_a_bound_build(self) -> None:
         """The other direction, and the one that silently ships a runtime with no
