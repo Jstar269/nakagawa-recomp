@@ -143,14 +143,19 @@ if(BUILD_PLAYER)
 
     if(TARGET SDL3::SDL3)
         target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3)
+    elseif(TARGET SDL3::SDL3-shared)
+        target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3-shared)
     elseif(SDL3_LIBRARIES)
         target_link_libraries(nakagawa_player PRIVATE ${SDL3_LIBRARIES})
         if(SDL3_INCLUDE_DIRS)
             target_include_directories(nakagawa_player PRIVATE ${SDL3_INCLUDE_DIRS})
         endif()
     else()
-        # Fallback to direct library link
-        target_link_libraries(nakagawa_player PRIVATE SDL3)
+        if(WIN32)
+            message(FATAL_ERROR "SDL3 dependency is missing. Install with: pacman -S mingw-w64-ucrt-x86_64-sdl3 (or enable -DNK_BOOTSTRAP_SDL3=ON)")
+        else()
+            message(FATAL_ERROR "SDL3 dependency is missing. Install with: sudo apt install libsdl3-dev (or enable -DNK_BOOTSTRAP_SDL3=ON)")
+        endif()
     endif()
 
     if(WIN32)
@@ -160,10 +165,13 @@ if(BUILD_PLAYER)
                 "$ENV{VULKAN_SDK}/Include"
                 "$ENV{VULKAN_SDK}/include"
             )
-            target_link_directories(nakagawa_player PRIVATE
-                "$ENV{VULKAN_SDK}/Lib"
-                "$ENV{VULKAN_SDK}/lib"
-            )
+            if(EXISTS "$ENV{VULKAN_SDK}/Lib/vulkan-1.lib")
+                target_link_libraries(nakagawa_player PRIVATE "$ENV{VULKAN_SDK}/Lib/vulkan-1.lib")
+            elseif(EXISTS "$ENV{VULKAN_SDK}/lib/vulkan-1.lib")
+                target_link_libraries(nakagawa_player PRIVATE "$ENV{VULKAN_SDK}/lib/vulkan-1.lib")
+            else()
+                target_link_libraries(nakagawa_player PRIVATE vulkan-1)
+            endif()
         endif()
     endif()
 endif()

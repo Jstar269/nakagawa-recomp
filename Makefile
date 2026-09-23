@@ -181,19 +181,38 @@ endif
 VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
 # glslc from the Vulkan SDK is used ONLY by the opt-in `shaders` target below.
 GLSLC ?= glslc
+
+# SDL3 dependency discovery and isolation (issue #331).
+# An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
+# found (MSYS2 UCRT64 on Windows, pkg-config/system elsewhere). One Python pass
+# writes every SDL3 variable to a fragment, so a parse costs one interpreter
+# start rather than one per variable. Info-only goals skip discovery entirely.
+SDL3_DIR ?=
+SDL3_MAKE_FRAGMENT := build/.sdl3-discovery.mk
+ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
+_SDL3_DISCOVERY := $(shell $(PYTHON) -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))')" 2>&1)
+ifneq ($(strip $(_SDL3_DISCOVERY)),)
+$(error SDL3 discovery failed: $(_SDL3_DISCOVERY))
+endif
+include $(SDL3_MAKE_FRAGMENT)
+else
+SDL3_PROVIDER := none
+SDL3_VERSION := none
+endif
+
 # Native runtime code is host-side C and can be tested independently.
 # HST now has measured -O2 runtime / -O1 generated defaults. Generic/unqualified
 # titles remain conservative -O0/-O0. Explicit overrides remain supported.
 # Generated -O2 is NOT being adopted; -O1's measured build cost is higher but
 # acceptable for HST.
 RUNTIME_OPT ?= -O0
-CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
+CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
 # The extracted HST archive tree has a title-specific extracted-data census
 # (HST: 56,672 files). The generic build has no census (0 = disabled); a
 # title-configured build carries the expectation via runtime_bindings
 # (expected_data_file_count) validated from the title manifest. See
 # tools/title_manifest.py, tools/title_runtime_config.py and docs/PORTING.md C-2.
-LDFLAGS ?= -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
+LDFLAGS ?= $(SDL3_LDFLAGS) -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
 # DirectInput (-ldinput8 -ldxguid) removed: gui.c controller input is now handled entirely by
 # the SDL3 gamepad subsystem (src/rt/gpu_sdl3vk). -lole32 stays (Media Foundation, h264_mf.c);
 # -lwinmm stays (sched.c timeBeginPeriod); -lgdi32 stays (GDI fallback presenter).
@@ -522,11 +541,11 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies it.
 SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c
 
-$(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+$(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+$(BUILD_DIR)/atrac3p_bridge.o: src/rt/atrac3p_bridge.c src/rt/atrac3p_bridge.h src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(DEPFLAGS) -c $< -o $@
 
@@ -652,7 +671,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check
+INTERNAL_TARGETS := FORCE player-vulkan-check sdl3-check
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -767,6 +786,9 @@ compiler-info:
 	@echo FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)
 	@echo CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 	@echo PUBLIC_SAFE=$(PUBLIC_SAFE)
+	@echo SDL3_DIR=$(SDL3_DIR)
+	@echo SDL3_PROVIDER=$(SDL3_PROVIDER)
+	@echo SDL3_VERSION=$(SDL3_VERSION)
 
 # One command for the whole pre-pull-request checklist in docs/CI.md.
 #
@@ -1132,14 +1154,14 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)")
+RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
-$(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+$(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
 
 # Optimization and memory-saving flags for massive machine-generated files.
@@ -1175,16 +1197,16 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp.o: $(BUILD_DIR)/$(GAME_NAME)_recomp.c src/rt/re
 	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
 
 # Compile runtime sources.
-$(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+$(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+$(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) | sdl3-check
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
 # generated include path stops here rather than leaking into CFLAGS.
-$(BUILD_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER) $(RUNTIME_PROFILE_STAMP)
+$(BUILD_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER) $(RUNTIME_PROFILE_STAMP) | sdl3-check
 	$(CC) $(CFLAGS) -I$(TITLE_CONFIG_DIR) $(DEPFLAGS) -c $< -o $@
 
 $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h $(TITLE_CONFIG_HEADER)
@@ -1197,7 +1219,7 @@ $(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/pgf_api.h src/rt/at
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_unavailable.o: src/rt/pgf_unavailable.c src/rt/pgf_api.h
 
-runtime-objects: shader-verify $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
+runtime-objects: shader-verify $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o | sdl3-check
 
 $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 	$(CC) $(PORTABLE_CORE_CFLAGS) $(DEPFLAGS) -c $< -o $@
@@ -1234,13 +1256,18 @@ endif
 player-vulkan-check:
 	$(if $(strip $(VULKAN_SDK)),,$(error No usable Vulkan SDK found; set VULKAN_SDK to the SDK root (e.g. mingw32-make player VULKAN_SDK=C:/path/to/VulkanSDK/<version>) or install a current SDK))
 
+# A clear failure when SDL3 dependency is missing or invalid.
+.PHONY: sdl3-check
+sdl3-check:
+	$(if $(strip $(SDL3_ERROR)),$(error $(SDL3_ERROR)))
+
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 
-$(PLAYER_EXE): | player-vulkan-check
+$(PLAYER_EXE): | player-vulkan-check sdl3-check
 
 $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
@@ -1330,7 +1357,7 @@ ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 endif
 -include $(DEP_FILES)
 
-compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--no-insert-timestamp -o $(BUILD_DIR)/$(GAME_NAME).exe \
 		$(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(CHUNK_OBJS) \
@@ -1339,7 +1366,7 @@ compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUI
 		$(ATRAC3P_OBJS) \
 		$(BUILD_DIR)/atrac3p_bridge.o \
 		$(LIBS)
-	pwsh -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" $(ASSET_COPY_ARGS)
+	pwsh -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME).exe')"
 
 clean:
@@ -1746,7 +1773,7 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-gpu-coherence-selftest: shader-verify $(RT_GE_O)
+gpu-coherence-selftest: shader-verify $(RT_GE_O) | sdl3-check
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_coherence_selftest.exe \
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
@@ -1756,7 +1783,7 @@ gpu-coherence-selftest: shader-verify $(RT_GE_O)
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
 # target-scoped synchronization closes the generation gap and rejects unsafe geometry.
-gpu-snapsync-selftest: shader-verify $(RT_GE_O)
+gpu-snapsync-selftest: shader-verify $(RT_GE_O) | sdl3-check
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
@@ -1768,7 +1795,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
 # are byte-checked (header, channel order, row pitch, no trailing bytes). Exit 77 = SKIP
 # when Vulkan or the validation layer is unavailable.
-gpu-capture-selftest: shader-verify
+gpu-capture-selftest: shader-verify | sdl3-check
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_capture_selftest.exe \
 		src/rt/gpu_capture_selftest.c src/rt/perf.c \
@@ -1777,7 +1804,7 @@ gpu-capture-selftest: shader-verify
 
 # Standalone seconds-scale GE fixture replay. Fixtures are private game-derived inputs and
 # stay ignored; this target builds only the generic reader/rasterizer/backend executable.
-ge-replay: shader-verify $(RT_GE_O)
+ge-replay: shader-verify $(RT_GE_O) | sdl3-check
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
