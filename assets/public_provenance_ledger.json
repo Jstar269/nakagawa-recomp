@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b7c75106adebc218032b9b3538256864984c20e49c0ac89b5a5caa5e8fcabce1"
+      "sha256": "2a52851597e3e4fadbb9c9e1beadd6d2c6c55e708a783ebfbd5cb5774fc28385"
     },
     {
       "path": "NOTICE.md",
@@ -7544,7 +7544,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "de742be9e6b748c26612773a72667452af61fc71e83e23d308910621b1c926aa"
+      "sha256": "84e88170ea75bee4fe24276ce809e77c64f5400edc490f794affe64a6710c87b"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -8183,7 +8183,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9de32729fbca80c392cf9debce131a19906a6eb4b1e68ef5ba0ff1f9e8a87104"
+      "sha256": "18d9407508c98c17603f320b6f138e893e9332cdb59972648938b942bccfe4a8"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -8678,7 +8678,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7a806c6bdbd177eaebc30a685e26373d8f142b97230b66c078b042e7b1216a29"
+      "sha256": "a3583fede5a0f84e8bc79be3ab9b5a3c00eb2d1ee2de43d55a4760c6f7b3c7ae"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -8996,7 +8996,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "5d35f154367838209af4c0639b44265ae8f28edde92ed3fdca8faba61ab89cd6"
+      "sha256": "605f17287bb48dcef11c547cd0a448dd5c4a6df7eb458c721d3292ab34175bfb"
     },
     {
       "path": "tools/test_progress_evidence.py",
