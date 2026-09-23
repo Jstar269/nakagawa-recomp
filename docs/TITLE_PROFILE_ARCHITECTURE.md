@@ -1,159 +1,66 @@
-# Data-Driven Title Profile Architecture
+# Title Profile and Launch Session Architecture
 
-## 1. Principle: Decoupling Titles from Core UI
+> **Status: CURRENT.** This page describes the public title-manifest and launch contracts visible in source. Private title manifests, game-derived bindings, and acceptance evidence stay outside the public repository.
 
-Nakagawa Recomp was initially developed focusing on *Hot Shots Tennis: Get a Grip* (UCUS98701). To achieve long-term success and scale across multiple PSP titles:
-**Zero title-specific addresses, filenames, disc IDs, memory offsets, or compatibility hacks may be hardcoded into generic UI or engine code.**
+## 1. Goal and current evidence
 
-Titles are modeled as **declarative title profiles** managed by a portable **Title Registry**.
+The architecture goal is to keep title identity and title-specific inputs out of generic UI and runtime defaults. Source-owned title data is validated before it reaches the registry, build planner, or launch path.
+
+The current source proves a narrower claim than complete multi-title acceptance: Python and native launch resolution bind a session to a validated title identity, and the test suite covers fail-closed identity/path selection and parity on synthetic fixtures. A real second-title bring-up remains open in [issue #285](https://github.com/Jstar269/nakagawa-recomp/issues/285). The project does not claim that every title can be supported without presentation or integration work.
 
 ```text
-┌────────────────────────────────────────────────────────┐
-│                   GENERIC NAKAGAWA CORE                │
-│    (Title Registry · ISO Inspector · Prep Engine)      │
-└───────────▲────────────────────────────────▲───────────┘
-            │                                │
-┌───────────┴──────────┐         ┌───────────┴──────────┐
-│ HST Title Profile    │         │ Future Title Profile │
-│  - UCUS98701 (US)    │         │  - ULUS10xxx         │
-│  (Private local)     │         │  - Genuine modules   │
-└──────────────────────┘         └──────────────────────┘
+public title manifest
+        │
+        ▼
+tools/title_manifest.py ──► validated catalog ──► registry / build planner
+                                                       │
+selected source ──► preparation ──► local manifest ──┤
+                                                       ▼
+                                      validated launch session
+                                                       │
+                                                       ▼
+                                      child runtime + launch inputs
 ```
 
----
+The title catalog, per-user preparation output, and child-process environment are separate contracts. A value may pass from one to another only through the corresponding validator or launch-session builder.
 
-## 2. The Multi-Title Design Principle
+## 2. Public title catalog contract
 
-> [!IMPORTANT]
-> **TITLE PROFILES DESCRIBE TITLES, NOT COMPATIBILITY PATCHES.**
->
-> A title profile is a structural manifest describing what a game disc contains. It is **never** a vehicle for injecting hacks, register patches, fake return values, or module replacements into the runtime.
->
-> **Regional Independence Note:** Regional releases (e.g. EU vs US) are distinct binaries. Different regional releases may have different code layouts, relocation offsets, and function entry points. They cannot be assumed binary-compatible without individual verification.
+The authoritative public shape is [`assets/title_manifest.schema.json`](../assets/title_manifest.schema.json), enforced and normalized by [`tools/title_manifest.py`](../tools/title_manifest.py). The source-owned [`display-smoke.json` fixture](../assets/titles/display-smoke.json) is an actual synthetic manifest checked by the manifest tests; it is a better example of the current format than an independent schema sketch in this document. The format rejects unknown fields and separates retail disc identity from the shared synthetic/homebrew shape.
 
-### 2.1 Good Profile Data (Declarative Structural Metadata)
+The schema covers manifest identity and kind, retail disc identity, executable layout, module inventory, filesystem roots, game/HLE/code-generation identifiers, feature requirements, compatibility-manifest and verification references, and notes. Optional `runtime_contract` and `profile_zero` blocks have additional machine-checked constraints; `profile_zero` is limited to synthetic manifests. Their exact required fields belong to the schema and validator, not to a second prose-defined schema.
 
-- **Disc Identity:** Disc ID (e.g. `TEST00001`, `UCUS98701`), region, disc version, disc title.
-- **Executable Inventory:** Executable paths on disc (`SYSDIR/EBOOT.BIN`, `BOOT.BIN`).
-- **Module Inventory:** Required PRX module filenames and dependencies (`libfont.prx`, `scePsmf_library.prx`).
-- **Container Metadata:** Archive format (`claphanz_xb`, `raw`) and container location on disc.
-- **Filesystem & Save Namespaces:** Expected save directory names and unique partition identifiers.
-- **Preparation & Runtime Version:** Versioned toolchain markers and verification digests.
+### Temporary compatibility configuration
 
-### 2.2 Prohibited Profile Fields (Compatibility Hacks)
+The current schema also permits an optional, typed `runtime_bindings` block for specific compatibility seams. These bindings are not structural facts about a disc and do not establish generic PSP semantics. They are bounded configuration consumed by the runtime; `required_runtime_bindings` names the binding families the selected profile depends on so a missing required family fails validation. These mechanisms remain compatibility debt and are expected to retire as the underlying generic behavior becomes correct. [Issue #363](https://github.com/Jstar269/nakagawa-recomp/issues/363) tracks that work; [`TITLE_CODEGEN_PLAN.md`](TITLE_CODEGEN_PLAN.md) documents validation and runtime consumption, and [`PORTING.md`](PORTING.md) inventories the remaining title coupling.
 
-Title profiles must **never** contain fields equivalent to:
+The target remains a generic core that does not require title-specific patches. The current contract records the temporary bindings honestly rather than describing the target state as already achieved. Public schema fields do not authorize private paths, retail bytes, captures, or derived evidence.
 
-- `patch_x` / `hook_address_y`
-- `fake_return_z`
-- `replace_module_with_hle`
-- `clobber_guard_register`
-- `force_walker_exit`
+## 3. Catalog identity and generic launch resolution
 
-When a new PSP game fails to boot or encounters an issue on Nakagawa, the problem must be resolved by fixing the generic CPU recompiler, the LLE loader, or the generic kernel implementation. This ensures that every engine improvement benefits all current and future titles.
+The registry maps validated manifest identity to title metadata. Preparation and launch use that mapping rather than a default title or a title-shaped path guess. The Python launcher in `tools/nk_core/launcher.py` and native launcher in `src/core/nk_launch.c` resolve the selected runtime and image from validated identity and fail closed when identity or a matching artifact is missing.
 
----
+The launcher contract and its synthetic cross-title regressions are tracked by [issue #366](https://github.com/Jstar269/nakagawa-recomp/issues/366). This source-level result does not replace the second-title production route in #285, nor does it prove private retail acceptance.
 
-## 3. Title Profile Schema Specification
+## 4. Local prepared-game metadata
 
-```json
-{
-  "$schema": "./title_profile.schema.json",
-  "id": "hst-ucus98701",
-  "name": "Hot Shots Tennis: Get a Grip! (North America)",
-  "disc_ids": ["UCUS98701", "UCUS-98701"],
-  "regions": ["NA"],
-  "executable": {
-    "path": "PSP_GAME/SYSDIR/EBOOT.BIN",
-    "base": 0,
-    "entry": 0
-  },
-  "required_modules": [
-    "PSP_GAME/USRDIR/module/libfont.prx",
-    "PSP_GAME/USRDIR/module/scePsmf_library.prx",
-    "PSP_GAME/USRDIR/module/scePsmfP_library.prx"
-  ],
-  "archive": {
-    "format": "claphanz_xb",
-    "path": "PSP_GAME/USRDIR/data.xb",
-    "mount_vfs": true
-  },
-  "runtime": {
-    "profile": "hst",
-    "save_namespace": "UCUS98701"
-  }
-}
-```
+Preparation writes a local `manifest.json` beside the staged game. This is operational metadata for one prepared copy, not a public catalog manifest. The current preparation code records the schema and engine versions, validated title and disc identities, display metadata, the source ISO path and size, creation time, and the runtime/archive/save settings derived from the selected profile. Because it can contain a user-supplied source path, keep it in local application state and do not copy it into public source or evidence.
 
----
+The preparation manifest's `engine_version` is currently emitted from `PREP_ENGINE_VERSION` in `tools/nk_core/prep_engine.py`. Its relationship to the release and package version authorities is still being reconciled under [issue #333](https://github.com/Jstar269/nakagawa-recomp/issues/333); this page therefore does not assign it a version value.
 
-## 4. Title Agnosticism in the User Interface
+## 5. Launch-session transport
 
-The desktop UI and player frontend are 100% title-agnostic:
+Both launchers turn validated session data into runtime inputs for a child process. The native path uses the typed `NkLaunchSession` in `src/core/nk_launch.h`; the Python path validates the local manifest and resolves its title against the registry. The launchers derive runtime values such as `PSP_ISO`, `SR_DATAROOT`, frame-rate and graphics settings, and diagnostic flags from that session and its configuration, then pass them through the child environment.
 
-1. The UI interacts solely with the `TitleRegistry` and `IsoInspector`.
-2. When the user drops an ISO, the ISO inspector reads `PARAM.SFO` directly from the raw disc bytes and queries `TitleRegistry.find_by_disc_id(disc_id)`.
-3. If matched, the UI displays the title's official metadata and launches the generic preparation engine.
-4. Supporting a new title in the UI requires zero code changes to presentation components—only registering a new valid profile.
+Environment variables are the process transport; they are not the source of title identity. The Python launcher starts with a copy of the host environment and sets its session-owned runtime keys from validated state. The native launcher constructs the child environment from the prepared session and runtime settings. The runtime's data-root and ISO inputs therefore remain explicit launch inputs even though the final OS boundary uses environment entries.
 
----
+For the native player’s current implementation boundary and process lifecycle, see [`NATIVE_PLAYER_ARCHITECTURE.md`](NATIVE_PLAYER_ARCHITECTURE.md) and [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md). Those pages describe a prepared-runtime launch path; they do not claim arbitrary-ISO package provisioning is complete.
 
-## 5. Local Title Manifest (`manifest.json`)
+## 6. Evidence and remaining boundaries
 
-When an ISO is prepared for the first time, the preparation engine writes a private, local manifest into the game's local application data folder (`%LOCALAPPDATA%/nakagawa/titles/<disc_id>/manifest.json`):
-
-```json
-{
-  "schema_version": 1,
-  "engine_version": "0.3.0",
-  "title_id": "hst-ucus98701",
-  "disc_id": "UCUS98701",
-  "title_name": "Hot Shots Tennis: Get a Grip! (North America)",
-  "iso_path": "C:\\Games\\PSP\\HotShotsTennis.iso",
-  "iso_size": 1288765440,
-  "created_at": 1757123456.78,
-  "runtime_profile": "hst",
-  "archive_format": "claphanz_xb",
-  "save_namespace": "UCUS98701",
-  "status": "READY"
-}
-```
-
-This manifest provides an explicit, deterministic session contract for the runtime launcher, completely removing reliance on ambient environment variables (`PSP_ISO`, `SR_DATAROOT`).
-
----
-
-## 6. Generic Launch Resolution Identity Contract (issue #366)
-
-Both launchers — `tools/nk_core/launcher.py` (Python) and `src/core/nk_launch.c`
-(native) — resolve identity, runtime, image, base, and entry **only** from
-validated title/catalog/manifest/session data:
-
-1. **No retail defaults.** There is no default title id, no default disc id,
-   no retail-title path candidate, and no wrong-title rescue path in generic
-   resolution. A missing or unvalidated identity is an actionable
-   validation/planning error (Python) or a fail-closed session error (native).
-2. **One candidate contract.** The ordered name sources
-   (`game_name`, `title_id`) and the executable/image candidate patterns are
-   declared once in `tools/nk_core/launcher.py`, projected into
-   `src/core/generated/nk_title_catalog.[ch]` by
-   `tools/title_catalog_codegen.py`, and consumed by both planners.
-   Native binds name-source *order* only through the generated
-   `NK_LAUNCH_NAME_SOURCE_<SOURCE>_INDEX` macros, so a planner-side reorder
-   propagates mechanically and a missing/unsupported/duplicated source fails
-   compilation instead of inventing an ordering.
-   `title_catalog_codegen.py --verify` fails closed on drift, and
-   `tools/test_nk_core.py` proves machine parity of the selected
-   title/runtime/image/base/entry outcome for identical fixtures, including
-   a two-valid-candidate precedence case and a reorder tripwire.
-3. **Pre-spawn identity binding.** Before any process is created, the native
-   launcher re-derives the selected entry from the session's own disc/title
-   identity and requires the resolved executable's final two path components
-   to be that entry's own name (`<name>/<name>[.exe]`). A runtime produced for
-   title A can never launch as title B merely because its path exists.
-4. **Legacy HST support is identity-driven, not defaulted.** The private HST
-   title keeps working because its validated manifest identifies it (and its
-   manager builds the `hst` name it declares) — never because generic code
-   prefers it. Any historical fallback wrapper stays outside the generic API
-   and is tracked for retirement by issue #338; private HST literals never
-   enter the generic contracts above.
+- Manifest structure is enforced by the shared schema/validator and public fixture tests.
+- Python/native identity and path resolution have source-owned parity and fail-closed regression coverage under #366.
+- A real second-title bring-up remains pending under #285.
+- Temporary profile-owned compatibility bindings remain visible debt under #363.
+- Release and preparation version authority remains unresolved under #333.
+- Private title inputs and private acceptance remain separate from public schema and synthetic-fixture results.
