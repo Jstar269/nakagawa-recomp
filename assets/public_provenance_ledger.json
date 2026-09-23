@@ -9914,14 +9914,5 @@
       },
       "sha256": "95fcf133de78520b9d09830b8f7f3d5719cecabde8030bd040d7535e753a6106"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "7ca198ceeee04df635eeb4ec67e2f5a5536052b8",
-    "candidate_tree": "5caa7618d7a53d0f9f7790bb5578eec6cffa2a26",
-    "refreshed_paths": [
-      "tools/provenance_attest_verify.py",
-      "tools/test_provenance_attest_verify.py"
-    ]
-  }
+  ]
 }
