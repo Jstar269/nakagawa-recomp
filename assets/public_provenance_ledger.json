@@ -1414,13 +1414,10 @@
     },
     {
       "path": "fixtures/psp_phaseb/Makefile",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "b976ed540742c65efc1b180519882718c584213413c07dad6a844c9e6aaa3d52"
     },
@@ -1435,49 +1432,37 @@
     },
     {
       "path": "fixtures/psp_phaseb/phaseb.c",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "ffd3edfed7d2b0618f240652910f9d06eb7066f040c471af5fd6f7e5f07107d9"
     },
     {
       "path": "fixtures/psp_runner/Makefile",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e6186369d2b634a9301196049b76dc271a4281ddb5d72dd1f37bbcfa86916c6c"
     },
     {
       "path": "fixtures/psp_runner/runner.c",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "d9a9e290952bdd5e17163e1aba6dfd1ec5ec9fa60a1d86fcc1b872a57a22d924"
     },
     {
       "path": "fixtures/psp_threading_oracle/Makefile",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "521fb3004a85d23feee704e01538eb7c04238a2cc0c4144012bc79bda81ce5a0"
     },
@@ -1501,13 +1486,10 @@
     },
     {
       "path": "fixtures/psp_threading_oracle/thread_oracle.c",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "1fe8d28b7eb188185567fa874901146e8d0159cdc909a6190fddaa04116d7b9a"
     },
@@ -1522,13 +1504,10 @@
     },
     {
       "path": "fixtures/psp_threading_oracle/thread_shim.h",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "517f8aa1909ec1e54b9799649bf22f335559f38a869cac5299c488e0bf740cfe"
     },
@@ -8768,7 +8747,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "2bff25c89a6c6e7d3b565e113a5da36f5a44cc6940d451a3f57693e0e4e796a4"
+      "sha256": "8e896e663053b74572939afb3a87838dd6f1b729396ed471daa1829c4cae1819"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
@@ -8777,7 +8756,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "f0f92c5642b31f8b5b0ad4f563e7170975967760945dfea6deee4336d68c956b"
+      "sha256": "011df909cc331e57699d95eb8673467c886f56e8a4df932cf62595887d2f649d"
     },
     {
       "path": "tools/test_import_audit.py",
@@ -9039,25 +9018,19 @@
     },
     {
       "path": "tools/test_ppmdiff_coverage.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "ppmdiff-coverage-fail-closed-382",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "afe172e94f24f235a7b0c1594a963e1f146c27a5cb9c5eb96ced8f8cd43564fe"
     },
     {
       "path": "tools/test_prep_fail_closed.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "prep-fail-closed-374",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "8a7e90f2416e2f747c0569a2fbe99356f7d0e25bfa5d9f399046643d07e82646"
     },
@@ -9168,13 +9141,10 @@
     },
     {
       "path": "tools/test_psp_leaf_parsers.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a53bc34293df4b9935fedfd54958de5696b8fcf4d5ae45c44a9e716705877331"
     },
@@ -9189,13 +9159,10 @@
     },
     {
       "path": "tools/test_psp_parsers.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "892436aaa43385e7f2f0b2c27119352849f02ae4b95f3202c0619ea3dc76f361"
     },
@@ -9210,13 +9177,10 @@
     },
     {
       "path": "tools/test_psp_threading_oracle.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f7205850bc56da3893cbc54e12a395f23fc6a0d5a8d0037979e2193b3aa8b7e9"
     },
@@ -9284,7 +9248,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee98d37e87c1a2d123ebd5feb294bf71a82d638ff92f10c99f76005d617ba8f5"
+      "sha256": "fb4f9cbbce97fcafd9e0884905db968394f181f63e5e047305b47c2082fbf36c"
     },
     {
       "path": "tools/test_publication_policy_gate.py",
@@ -9461,7 +9425,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "40a551784e326e6dc881bd62e877bf2054d5bac84b80a84f3f246d8fa0c99720"
+      "sha256": "6c12b627ba9d2f469d8a806d00a0747098b789e40c225c1ed9b8fec0927110d9"
     },
     {
       "path": "tools/test_title_codegen_plan.py",
@@ -9470,7 +9434,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8b61a6398691d4d2fc16bfd9da38d904cdd285a7206bf72d6a8323407376d3a5"
+      "sha256": "5edef706bd5298849599a956c0128c9e1d668a09c5eaefe02d9bb83499b2cda9"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -9497,7 +9461,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "40ae793c9186bf49cb5311f0d0e943369e247176ecec66e6b4381aa9bcc8d4b7"
+      "sha256": "311a7742284c6f9e7779039f21ceabbc85f24bd58cab006522a240d000428b98"
     },
     {
       "path": "tools/test_title_manifest.py",
@@ -9518,7 +9482,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f657913f40a90ae33e2114a3bc011c158eeb8bde54314f8ab20269bcc6b55dc1"
+      "sha256": "e65ded146bf6a359d0402c7457b1423d7bf6a4a82c150e82f58bc71f468010a0"
     },
     {
       "path": "tools/test_title_protected_digest.py",
@@ -9914,14 +9878,5 @@
       },
       "sha256": "95fcf133de78520b9d09830b8f7f3d5719cecabde8030bd040d7535e753a6106"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "72efda43a024fe31ddb618949a3507fa3c548608",
-    "candidate_tree": "f2381aa5ea0921823a12a0c23ba16986d2653571",
-    "refreshed_paths": [
-      "fixtures/psp_oracle/probe.c",
-      "tools/test_psp_oracle.py"
-    ]
-  }
+  ]
 }

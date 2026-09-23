@@ -17,6 +17,9 @@ import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
+import test_public_title_isolation
 MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
 MANIFEST = ROOT / "assets" / "titles" / "hst-ucus98701.json"
 SYNTHETIC_MANIFEST = ROOT / "assets" / "titles" / "synthetic.json"
@@ -339,9 +342,13 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertEqual(self.records(), [])
 
     def require_hst_manifest(self) -> None:
-        if not MANIFEST.is_file():
+        # Opt-in by *tracked bytes*, never by directory presence (#335): an
+        # ignored developer lookalike must not silently stand in for the
+        # private fixture.
+        if not test_public_title_isolation.private_title_tests_enabled("assets/titles/hst-ucus98701.json"):
             self.skipTest(
-                "private HST title manifest is unavailable in the sanitized public tree"
+                "private HST title manifest is unavailable (set NK_PRIVATE_TITLE_TESTS=1 to "
+                "opt in with a local ignored manifest)"
             )
 
     def test_buildfull_legacy_and_manifest_modes_have_equal_effective_hst_values(self) -> None:
