@@ -5,7 +5,7 @@ This is an optional Next.js 16/TypeScript dashboard for inspecting and driving a
 ## Current scope
 
 The visible dashboard controls operate on the local workspace: builds and tests invoke
-the workspace manager (via `hst_manager.ps1` delegating to `nk_manager.ps1`), runs use the
+`nk_manager.ps1`, runs use the
 required image/base/entry contract, debug views attach to the live `hst.exe`, and boot health
 is parsed from native `BOOT_EVENT` milestones. There is no simulated fallback and the dashboard
 does not manufacture a substitute game binary.

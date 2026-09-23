@@ -190,7 +190,6 @@ if (-not $Action) {
 try {
     # ---------------------------------------------------------------------
     # Repository-root identity (#183, #196). Anchored to the manager script root.
-    # nk_safety.ps1 is the canonical helper (Phase 3); hst_safety.ps1 is a forwarding wrapper.
     # ---------------------------------------------------------------------
     $script:OriginalLocation = (Get-Location).Path
     $SafetySupport = Join-Path $PSScriptRoot "tools\nk_safety.ps1"
@@ -254,9 +253,7 @@ try {
         # then the manifest's own game_name declaration, then a portable
         # derivation from the manifest id. No manifest-id prefix ever mints a
         # built-in title name: the manager cannot know what a title wants to be
-        # called, and a prefix rule is title coupling in generic tooling. The
-        # deprecated hst_manager.ps1 wrapper declares -GameName hst explicitly
-        # for the legacy default route.
+        # called, and a prefix rule is title coupling in generic tooling.
         if ([string]::IsNullOrWhiteSpace($GameName)) {
             $manifestProps = @($manifestJson.PSObject.Properties.Name)
             if (($manifestProps -contains 'game_name') -and -not [string]::IsNullOrWhiteSpace($manifestJson.game_name)) {
@@ -273,11 +270,7 @@ try {
         $script:ActiveGameName = $GameName
 
         # Title input layout (issue #196 Phase 4): a manifest DECLARES where its
-        # private inputs live; generic code paths never assume a layout. The
-        # legacy input layout is consulted only for retail manifests (the HST
-        # adapter compatibility surface) and only where the manifest did not
-        # declare the location.
-        $script:LegacyInputLayout = ($manifestJson.kind -eq "retail")
+        # private inputs live; generic code paths never assume a layout.
         $script:TitleDataRoot = $null
         $script:TitleModuleDir = $null
         $script:TitlePspHeader = $null
@@ -307,54 +300,31 @@ try {
         $ImagePath = Join-Path $BuildDir "$($GameName)_image.bin"
 
         # Private input discovery (issue #196 Phase 4): manifest declarations
-        # first, then (retail/legacy-layout only) the legacy layout. Generic and
-        # synthetic titles get no implicit input location.
+        # first, then source-owned fixture paths. No title gets an implicit
+        # private input location.
         $GameElfPath = $null
-        if ($script:IsRetail) {
-            foreach ($candidate in @("place_game_here\EBOOT.elf", "eboot.elf")) {
-                if (Test-Path -LiteralPath $candidate) { $GameElfPath = $candidate; break }
-            }
-        } else {
-            $candidates = @()
-            if ($manifestJson.executable -and $manifestJson.executable.path) {
-                $candidates += $manifestJson.executable.path
-            }
-            $candidates += @(
-                "build\fixtures\$GameName.elf",
-                "fixtures\$GameName.elf",
-                "eboot.elf"
-            )
-            foreach ($candidate in $candidates) {
-                if (Test-Path -LiteralPath $candidate) { $GameElfPath = $candidate; break }
-            }
+        $candidates = @()
+        if ($manifestJson.executable -and $manifestJson.executable.path) {
+            $candidates += $manifestJson.executable.path
+        }
+        $candidates += @(
+            "build\fixtures\$GameName.elf",
+            "fixtures\$GameName.elf",
+            "eboot.elf"
+        )
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate) { $GameElfPath = $candidate; break }
         }
 
         $GameIsoPath = $null
-        if ($script:TitleDiscImage) {
-            if (Test-Path -LiteralPath $script:TitleDiscImage -PathType Leaf) { $GameIsoPath = $script:TitleDiscImage }
-        } elseif (Test-Path -LiteralPath "game.iso") {
-            $GameIsoPath = "game.iso"
-        } elseif ($script:LegacyInputLayout) {
-            $isoCandidates = @(Get-ChildItem -LiteralPath "place_game_here\ISO" -File -Filter "*.iso" -ErrorAction SilentlyContinue)
-            if ($isoCandidates.Count -eq 1) {
-                $GameIsoPath = $isoCandidates[0].FullName
-            }
+        if ($script:TitleDiscImage -and (Test-Path -LiteralPath $script:TitleDiscImage -PathType Leaf)) {
+            $GameIsoPath = $script:TitleDiscImage
         }
 
         $GameElfForMake = if ($GameElfPath) { $GameElfPath -replace "\\", "/" } else { "eboot.elf" }
-        $ModuleDirPath = $null
-        if ($script:TitleModuleDir) {
-            $ModuleDirPath = $script:TitleModuleDir
-        } elseif ($script:LegacyInputLayout -and (Test-Path -LiteralPath "place_game_here\EXTRACTED\decrypted" -PathType Container)) {
-            $ModuleDirPath = "place_game_here\EXTRACTED\decrypted"
-        }
+        $ModuleDirPath = $script:TitleModuleDir
         $ModuleDirForMake = if ($ModuleDirPath) { $ModuleDirPath -replace "\\", "/" } else { $null }
-        $PspHeaderPath = $null
-        if ($script:TitlePspHeader) {
-            $PspHeaderPath = $script:TitlePspHeader
-        } elseif ($script:LegacyInputLayout -and (Test-Path -LiteralPath "place_game_here\EXTRACTED\PSP_GAME\SYSDIR\EBOOT.BIN" -PathType Leaf)) {
-            $PspHeaderPath = "place_game_here\EXTRACTED\PSP_GAME\SYSDIR\EBOOT.BIN"
-        }
+        $PspHeaderPath = $script:TitlePspHeader
         $PspHeaderForMake = if ($PspHeaderPath) { $PspHeaderPath -replace "\\", "/" } else { $null }
 
         # Title planning via title_codegen_plan.py
@@ -413,7 +383,7 @@ try {
                 -FuncsPerChunk $effectiveFuncsPerChunk `
                 -TitleManifestForMake $TitleManifest
             $script:TitleManagerMakeArgs = @($boundPlan.MakeArgs)
-            $script:TitleManagerSpans = $boundPlan.Environment.HST_EXTRA_SPANS
+            $script:TitleManagerSpans = $boundPlan.Environment.TITLE_EXTRA_SPANS
             $script:TitleManagerRunEntry = $boundPlan.RunEntry
         } else {
             $modules = @($script:TitleManagerPlan.required_guest_modules)
@@ -446,18 +416,12 @@ try {
         throw "No run entry point resolved by the active title manifest."
     }
 
-    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
-    function Get-HstRunEntry { return Get-NkRunEntry }
-
     function Get-NkMakeBaseArgs {
         $args = @($script:TitleManagerMakeArgs)
         if ($RuntimeOpt) { $args += "RUNTIME_OPT=-$RuntimeOpt" }
         if ($RecompOpt) { $args += "RECOMP_OPT=-$RecompOpt" }
         return $args
     }
-
-    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
-    function Get-HstMakeBaseArgs { return Get-NkMakeBaseArgs }
 
     # Log directory
     $LogDir = Join-Path $script:RepoRoot "logs"
@@ -469,12 +433,6 @@ try {
         "make", "mingw32-make", "gcc", "g++", "c++", "cc1", "cc1plus",
         "collect2", "as", "ld", "ld.lld", "lld", "lld-link", "cpp", "windres", "ar"
     )
-
-    $RunSupport = Join-Path $PSScriptRoot "tools\hst_run_support.ps1"
-    if (-not (Test-Path -LiteralPath $RunSupport)) {
-        throw "Missing required helper: $RunSupport"
-    }
-    . $RunSupport
 
     function Register-BuildProcess {
         param([int]$ProcessId)
@@ -544,9 +502,6 @@ try {
             } catch { }
         }
     }
-
-    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
-    function Stop-WorkspaceHst { Stop-WorkspaceTarget }
 
     function Stop-BuildProcesses {
         Write-Host "Clearing this workspace's stale build/runtime processes..." -ForegroundColor Yellow
@@ -619,12 +574,7 @@ try {
             if (-not $GameIsoPath) {
                 $missing += "a disc image (declare filesystem.disc_image in the title manifest, or provide game.iso)"
             }
-            $dataRoot = $null
-            if ($script:TitleDataRoot) {
-                $dataRoot = $script:TitleDataRoot
-            } elseif ($script:LegacyInputLayout) {
-                $dataRoot = "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted"
-            }
+            $dataRoot = $script:TitleDataRoot
             if (-not $dataRoot) {
                 $missing += "filesystem.data_root declaration in the title manifest (required for retail runtime)"
             } elseif (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
@@ -1165,12 +1115,6 @@ try {
         return $true
     }
 
-    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
-    function Invoke-HstBuild {
-        param([string]$Mode)
-        return Invoke-NkBuild -Mode $Mode
-    }
-
     function Write-NkBuildManifest {
         param([string]$Mode, [int]$ExitCode)
         try {
@@ -1189,12 +1133,6 @@ try {
             $manifest | ConvertTo-Json -Depth 4 |
                 Out-File -FilePath (Join-Path $script:LogDir "build_manifest.json") -Encoding utf8 -ErrorAction SilentlyContinue
         } catch { }
-    }
-
-    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
-    function Write-HstBuildManifest {
-        param([string]$Mode, [int]$ExitCode)
-        Write-NkBuildManifest -Mode $Mode -ExitCode $ExitCode
     }
 
     function Run-NkEngine {
@@ -1216,12 +1154,7 @@ try {
             return
         }
 
-        $effectiveDataRoot = $null
-        if ($script:TitleDataRoot) {
-            $effectiveDataRoot = $script:TitleDataRoot
-        } elseif ($script:IsRetail -and $script:LegacyInputLayout) {
-            $effectiveDataRoot = "place_game_here\EXTRACTED\PSP_GAME\USRDIR\xbdata_extracted"
-        }
+        $effectiveDataRoot = $script:TitleDataRoot
         $resolvedDataRoot = $null
         if ($effectiveDataRoot) {
             $resolvedDataRoot = Resolve-Path -LiteralPath $effectiveDataRoot -ErrorAction SilentlyContinue
@@ -1401,12 +1334,6 @@ try {
         }
 
         Analyze-RunLogs "$LogDir/stderr_run.log"
-    }
-
-    # Backward compatibility alias (deprecated; remove in the Phase 5 sweep, #196)
-    function Run-HstEngine {
-        param([string]$Profile = "Standard", [int]$RunDuration = 0, [switch]$NoGui)
-        Run-NkEngine -Profile $Profile -RunDuration $RunDuration -NoGui:$NoGui
     }
 
     function Analyze-RunLogs {

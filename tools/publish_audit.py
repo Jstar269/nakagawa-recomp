@@ -157,9 +157,8 @@ DEBT_BUDGETS: dict[str, int] = {
 
 POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
     "copy_build_assets.ps1": 1,
-    "hst_manager.ps1": 25,
-    "tools/hst_run_support.ps1": 4,
-    "tools/hst_safety.ps1": 7,
+    "nk_manager.ps1": 25,
+    "tools/nk_safety.ps1": 11,
     "tools/test_manager_safety.ps1": 3,
     "tools/test_visual_oracle.ps1": 3,
     "tools/title_manager_plan.ps1": 9,
@@ -1293,7 +1292,7 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
     ceiling = DEBT_BUDGETS["powershell_silently_continue"]
     if ps_count > ceiling:
         findings.append(
-            Finding("DEBT_BUDGET", "hst_manager.ps1",
+            Finding("DEBT_BUDGET", "nk_manager.ps1",
                     f"PowerShell SilentlyContinue count {ps_count} exceeds debt ceiling {ceiling}")
         )
 
@@ -1556,7 +1555,7 @@ def _default_provenance(
     if rel_path.startswith(".github/") or rel_path.startswith(".") or rel_path in (".gitignore", ".gitattributes", ".clang-format", ".editorconfig", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml"):
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", "configuration", "included", policy_public
 
-    if rel_path.startswith(("src/", "tools/", "interface/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "copy_build_assets.ps1", "hst.ps1", "hst_manager.ps1"):
+    if rel_path.startswith(("src/", "tools/", "interface/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1"):
         gen_kind = "documentation" if (rel_path.startswith("docs/") or ext == ".md") else ("data" if ext in (".json", ".jsonc", ".dat") else ("script" if ext in (".ps1", ".sh") else "source"))
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", gen_kind, "included", policy_public
 

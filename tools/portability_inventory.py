@@ -86,12 +86,14 @@ def classify_file(path: str) -> tuple[str, str]:
         return "BACKEND", "BACKEND_EXPECTED"
     if parts[:2] == ("src", "ref"):
         return "REF", "TEST_ONLY" if name == "selftest.cpp" else "BACKEND_EXPECTED"
+    if parts[0] == "tools" and name == "nk_safety.ps1":
+        return "MANAGER", "CANONICAL_MANAGER"
     if parts[0] == "tools" and name.endswith(".ps1"):
-        return "MANAGER", "PRIVATE_MANAGER_ONLY" if name.startswith("hst") else "BUILD_TOOL_ONLY"
+        return "MANAGER", "BUILD_TOOL_ONLY"
     if parts[0] == "tools":
         return "TOOLS", "BUILD_TOOL_ONLY"
-    if p.name in ("hst_manager.ps1", "hst.ps1"):
-        return "MANAGER", "PRIVATE_MANAGER_ONLY"
+    if p.name in ("nk_manager.ps1", "nk.ps1"):
+        return "MANAGER", "CANONICAL_MANAGER"
     if p.name in ("Makefile", "copy_build_assets.ps1"):
         return "TOOLS", "BUILD_TOOL_ONLY"
     if parts[:2] == ("mk",):
@@ -204,8 +206,8 @@ def scan() -> list[dict]:
     ]
     extra_files = [
         ROOT / "Makefile",
-        ROOT / "hst_manager.ps1",
-        ROOT / "hst.ps1",
+        ROOT / "nk_manager.ps1",
+        ROOT / "nk.ps1",
         ROOT / "copy_build_assets.ps1",
     ]
     for root in roots:
@@ -230,6 +232,7 @@ def scan() -> list[dict]:
         "BUILD_TOOL_ONLY": "build",
         "TEST_ONLY": "tests",
         "PRIVATE_MANAGER_ONLY": "manager",
+        "CANONICAL_MANAGER": "manager",
     }
     for rec in out:
         rec["class"] = class_to_key.get(rec["class"], "other")

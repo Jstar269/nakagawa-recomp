@@ -66,10 +66,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(plan["game_base"], 0)
         self.assertEqual(plan["game_entry"], 0)
         self.assertEqual(plan["codegen_profile"], "hst")
-        # Generic contract now emits only TITLE_EXTRA_SPANS (host-portable).
-        # HST_EXTRA_SPANS is legacy and lives only in the HST compatibility layer
-        # (Makefile and PowerShell adapter), not in the generic planner. For HST,
-        # the planner emits TITLE only; the adapter synthesizes HST for legacy consumers.
+        # TITLE_EXTRA_SPANS is the sole host-portable planner projection.
         self.assertEqual(plan["environment"]["GAME_BASE"], "0x00000000")
         self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x00000000")
         self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "0x00303194,0x00306e24")

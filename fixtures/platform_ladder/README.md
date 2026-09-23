@@ -16,7 +16,7 @@ mingw32-make platform-ladder-clean
 ```
 
 Every workload builds with `PUBLIC_SAFE=1`, an empty `TITLE_MANIFEST`, no
-`HST_EXTRA_SPANS`, no `GAME_EXTRA_ELFS`, and (at runtime) an explicitly empty
+`TITLE_EXTRA_SPANS`, no `GAME_EXTRA_ELFS`, and (at runtime) an explicitly empty
 `SR_DATAROOT`, so nothing can inherit any retail title's data tree or
 compatibility behavior.
 

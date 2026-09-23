@@ -1,9 +1,9 @@
 # Decoupling the Generic Build Orchestrator (`nk_manager`)
 
-This document outlines the architectural plan for decoupling Nakagawa Recomp's
-primary build, test, and verification manager (`hst_manager.ps1`) from legacy
-title-specific coupling (*Hot Shots Tennis: Get a Grip!*, UCUS98701) and transitioning
-to the project's canonical orchestrator: `nk_manager.ps1`.
+This document records the completed decoupling of Nakagawa Recomp's build,
+test, and verification manager from legacy title-specific coupling (*Hot Shots
+Tennis: Get a Grip!*, UCUS98701). The canonical orchestrator is `nk_manager.ps1`;
+the HST-prefixed compatibility entry points were retired under issue #338.
 
 This work was tracked under [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196)
 as part of the broader Title-#2 readiness roadmap ([issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98)).
@@ -13,9 +13,8 @@ Both issues are now closed; see the linked live records.
 
 ## 1. Context & Motivation
 
-At 1,499 lines (`wc -l`), `nk_manager.ps1` is the canonical orchestration layer for
-developer workflows in Nakagawa Recomp; `hst_manager.ps1` is now a deprecated
-forwarding wrapper (178 lines by `wc -l`). The manager provides **generic recompiler infrastructure**:
+`nk_manager.ps1` is the canonical orchestration layer for developer workflows in
+Nakagawa Recomp. The manager provides **generic recompiler infrastructure**:
 
 - **Build Orchestration**: Invoking Make with toolchain detection, parallel jobs, and profile compilation flags.
 - **Run Profiles**: Managing runtime presets (`Standard`, `Performance`, `Benchmark`, `Diagnostics`, `Software`).
@@ -24,10 +23,11 @@ forwarding wrapper (178 lines by `wc -l`). The manager provides **generic recomp
 - **Process Lifecycle & Environment**: Window persistence, Vulkan SDK path normalization, MSYS2 toolchain configuration, and log rotation.
 - **Title Manifest Planning**: Integration with `tools/title_manager_plan.ps1` and `tools/title_codegen_plan.py` when `-TitleManifest` is passed.
 
-The name `hst_manager.ps1` is a historical artifact from the single-title origin of the
-project. Now that data-driven title profiles ([`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md))
-and title-manifest runtime bindings ([`TITLE_CODEGEN_PLAN.md`](TITLE_CODEGEN_PLAN.md)) exist,
-the manager must reflect the same multi-title genericity.
+The old `hst_manager.ps1` name was a historical artifact from the single-title
+origin of the project. Data-driven title profiles
+([`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md)) and title-manifest
+runtime bindings ([`TITLE_CODEGEN_PLAN.md`](TITLE_CODEGEN_PLAN.md)) now own that
+variation, so the compatibility entry points are removed.
 
 ---
 
@@ -35,7 +35,7 @@ the manager must reflect the same multi-title genericity.
 
 This historical census describes the pre-decoupling `hst_manager.ps1`, before
 PR #198: approximately 56 lines out of its then 1,662 lines. The locations and
-quotation below refer to that version, not the current forwarding wrapper:
+quotation below refer to that version, not the removed wrapper:
 
 | Coupled Surface | Location in `hst_manager.ps1` | Description / Issue |
 | --- | --- | --- |
@@ -73,48 +73,44 @@ legacy values with validated, canonical plan projections.
 - Document the decoupling strategy and register [issue #196](https://github.com/Jstar269/nakagawa-recomp/issues/196).
 - Define the transition interface and backward-compatibility rules.
 
-### Phase 2: Introduction of `nk_manager.ps1` & Forwarding Shim (Complete)
+### Phase 2: Introduction of `nk_manager.ps1` (Complete)
 
 - Create `nk_manager.ps1` as the canonical build manager.
 - Implement title-agnostic parameter handling:
-  - If `-TitleManifest` is omitted, either require it or default to a safe public synthetic manifest (`assets/titles/synthetic.json`).
+  - If `-TitleManifest` is omitted, default to the safe public synthetic manifest (`assets/titles/synthetic.json`).
   - Derive `GAME_NAME`, build directories, and executable names dynamically from the active plan.
-- Retain `hst_manager.ps1` as a thin backward-compatibility wrapper that issues a warning and invokes `nk_manager.ps1` with the HST manifest.
+- Migrate the local HST route to that manager with an explicit private manifest.
 
-Merged in PR #198. `nk_manager.ps1` is the canonical entry point and
-`hst_manager.ps1` remains the compatibility wrapper for the local HST input route.
+The temporary forwarding shim used during migration is removed. `nk_manager.ps1`
+is the only maintained manager entry point.
 
-### Phase 3: Companion Tooling Decoupling (Implementation complete; provenance validation separate)
+### Phase 3: Companion Tooling Decoupling (Complete)
 
-- [x] Add `nk.ps1` and preserve `hst.ps1` as a deprecated forwarding wrapper.
-- [x] Add `tools/nk_safety.ps1` and preserve `tools/hst_safety.ps1` as a deprecated wrapper.
-- [x] Add title-neutral `tools/nk_doctor*.py` modules and preserve the `hst_doctor*.py` names as deprecated wrappers.
-- [ ] Update the public source profile and exact reviewed-blob admission for every new implementation-bearing path.
+- [x] Add `nk.ps1` as the simple frontend.
+- [x] Add `tools/nk_safety.ps1` as the safety owner.
+- [x] Add title-neutral `tools/nk_doctor*.py` modules.
+- [x] Remove the HST-prefixed frontend, manager, doctor, safety, and run-support compatibility files.
 
 The C-1 runtime diagnostic gate is complete independently: retained HLE diagnostic
 reads require the validated HST code-generation profile and `SR_HLE_DIAGNOSTICS`.
-The companion scripts and wrappers now exist in the current tree. Their presence
-establishes implementation status, not external provenance attestation; the
-publication checklist item still requires trusted evidence.
 
 ### Phase 4: Retirement of Hardcoded HST Literals
 
 - Delete the `0x0029a060` entry literal and `GAME_NAME=hst` fallback.
 - Remove hardcoded assumptions about `place_game_here/` layout in generic code paths; delegate input location checks to manifest validation.
 
-### Phase 5: Companion Tooling Rename (Implemented under Phase 3)
+### Phase 5: Companion Tooling Rename (Complete)
 
-The renames below landed with Phase 3's companion-tooling work; the `hst_*`
-names remain as deprecated wrappers. This list is kept as the rename map.
+The canonical names are:
 
 - `hst.ps1` → `nk.ps1`
 - `tools/hst_safety.ps1` → `tools/nk_safety.ps1` (updating `Assert-HstWorkspaceRoot` → `Assert-NkWorkspaceRoot`)
 - `tools/hst_doctor.py` → `tools/nk_doctor.py`
 
-### Phase 6: Documentation & Test Sweep
+### Phase 6: Documentation & Test Sweep (Complete)
 
-- Update references in `docs/DEBUGGING.md`, `docs/PORTING.md`, `docs/TITLE_CODEGEN_PLAN.md`, and developer guides.
-- Update test cases in `tools/test_*.py` that invoke `hst_manager.ps1`.
+- Maintained docs, tests, CI routing, and dashboard code use the `nk_*` entry points.
+- A regression gate rejects removed HST compatibility paths and generic-tool dependencies.
 
 ---
 
@@ -122,5 +118,5 @@ names remain as deprecated wrappers. This list is kept as the rename map.
 
 1. **Zero Hardcoded Guest Literals**: `nk_manager.ps1` contains 0 hardcoded title guest addresses or disc IDs.
 2. **Hermetic Manifest Builds**: Building with `-TitleManifest assets/titles/synthetic.json` produces `build/synthetic/synthetic.exe` without touching or requiring any HST files.
-3. **Backward Compatibility**: Calling `hst_manager.ps1` continues to function during the deprecation period by delegating to `nk_manager.ps1`.
+3. **Single maintained entry point:** build, test, and verification workflows use `nk.ps1` or `nk_manager.ps1`; removed HST-prefixed compatibility files are not retained.
 4. **Clean Verification**: All automated unit tests and publication audits pass.

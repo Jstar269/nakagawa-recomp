@@ -5,7 +5,7 @@
 name = "nakagawa-recomp-tools"
 version = "0.1.0"
 requires-python = ">=3.14,<3.15"
-# Dev tooling: generated Clang compilation database for IDE/clangd (see hst_manager.ps1).
+# Dev tooling: generated Clang compilation database for IDE/clangd (see nk_manager.ps1).
 # Version-bounded for reproducible developer environments (0.10.x is the current line).
 dependencies = [
     "compiledb>=0.10.7,<1.0",

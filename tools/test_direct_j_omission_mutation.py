@@ -141,7 +141,6 @@ def _generate_compile_run(codegen_path: Path, work: Path, target: int, owner: in
         target + 8: 0x24630044,
     }, owner))
     env = dict(os.environ)
-    env["HST_EXTRA_SPANS"] = ""
     env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
     generated_result = subprocess.run(
         [sys.executable, str(codegen_path), str(elf), str(generated),

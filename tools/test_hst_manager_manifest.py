@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import test_public_title_isolation
-MANAGER = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
+MANAGER = ROOT / "nk_manager.ps1"
 MANIFEST = ROOT / "assets" / "titles" / "hst-ucus98701.json"
 SYNTHETIC_MANIFEST = ROOT / "assets" / "titles" / "synthetic.json"
 HELPER = ROOT / "tools" / "title_manager_plan.ps1"
@@ -64,16 +64,10 @@ class HstManagerManifestTests(unittest.TestCase):
         # and the repository identity files.
         self.manager_copy = self.root / MANAGER.name
         shutil.copy2(MANAGER, self.manager_copy)
-        if (ROOT / "nk_manager.ps1").exists() and MANAGER.name != "nk_manager.ps1":
-            shutil.copy2(ROOT / "nk_manager.ps1", self.root / "nk_manager.ps1")
-        if (ROOT / "hst_manager.ps1").exists() and MANAGER.name != "hst_manager.ps1":
-            shutil.copy2(ROOT / "hst_manager.ps1", self.root / "hst_manager.ps1")
         tools_dir = self.root / "tools"
         tools_dir.mkdir(exist_ok=True)
         for helper in (
             "nk_safety.ps1",
-            "hst_safety.ps1",
-            "hst_run_support.ps1",
             "vulkan_sdk.ps1",
             "title_manager_plan.ps1",
             "title_codegen_plan.py",
@@ -109,7 +103,7 @@ class HstManagerManifestTests(unittest.TestCase):
                     "runtime": runtime,
                     "recomp": recomp,
                     "sdk": sdk,
-                    "hst_extra_spans": os.environ.get("HST_EXTRA_SPANS"),
+                    "title_extra_spans": os.environ.get("TITLE_EXTRA_SPANS"),
                 }
                 with (Path("capture.jsonl")).open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record, sort_keys=True) + "\\n")
@@ -130,13 +124,6 @@ class HstManagerManifestTests(unittest.TestCase):
                 GAME_ELF ?= eboot.elf
                 GAME_BASE ?= 0x08804000
                 GAME_ENTRY ?= 0x08804000
-                ifeq ($(GAME_NAME),hst)
-                CODEGEN_PROFILE_ARG ?= --profile=hst
-                GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x09ebfc00 place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x09ed6000 place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x09ec7f00
-                GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
-                RUNTIME_OPT ?= -O2
-                RECOMP_OPT ?= -O1
-                endif
                 CODEGEN_PROFILE_ARG ?=
                 GAME_EXTRA_ELFS ?=
                 GAME_PSP_HEADER ?=
@@ -184,7 +171,7 @@ class HstManagerManifestTests(unittest.TestCase):
         for key, value in overrides.items():
             command.extend([f"-{key}", str(value)])
         env = os.environ.copy()
-        env.pop("HST_EXTRA_SPANS", None)
+        env.pop("TITLE_EXTRA_SPANS", None)
         return subprocess.run(
             command,
             cwd=self.root,
@@ -202,7 +189,7 @@ class HstManagerManifestTests(unittest.TestCase):
         later caller, which `-File` per-invocation runs can never demonstrate.
         """
         env = os.environ.copy()
-        env.pop("HST_EXTRA_SPANS", None)
+        env.pop("TITLE_EXTRA_SPANS", None)
         return subprocess.run(
             [self.shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", body],
             cwd=str(cwd or self.root),
@@ -257,15 +244,15 @@ class HstManagerManifestTests(unittest.TestCase):
 
     SPAN = "0x00303194,0x00306e24"
 
-    def test_manifest_span_is_scoped_and_never_leaks_into_a_later_legacy_run(self) -> None:
+    def test_manifest_span_is_scoped_and_never_leaks_into_a_later_generic_run(self) -> None:
         self.require_hst_manifest()
         proc = self.run_in_one_shell(
             "\n".join(
                 [
                     self.manager_call("BuildFast", MANIFEST),
                     self.manager_call("BuildFast"),
-                    "if (Test-Path -LiteralPath 'Env:HST_EXTRA_SPANS') "
-                    "{ Write-Output \"FINAL=PRESENT:$env:HST_EXTRA_SPANS\" } "
+                    "if (Test-Path -LiteralPath 'Env:TITLE_EXTRA_SPANS') "
+                    "{ Write-Output \"FINAL=PRESENT:$env:TITLE_EXTRA_SPANS\" } "
                     "else { Write-Output 'FINAL=ABSENT' }",
                 ]
             )
@@ -274,11 +261,9 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertIn("FINAL=ABSENT", combined, combined)
         records = [record for record in self.records() if record["target"] == "all"]
         self.assertEqual(len(records), 2, combined)
-        manifest_run, legacy_run = records
-        # The manifest build's child still receives the span...
-        self.assertEqual(manifest_run["hst_extra_spans"], self.SPAN)
-        # ...and the legacy build that follows it in the same process does not.
-        self.assertIsNone(legacy_run["hst_extra_spans"])
+        manifest_run, generic_run = records
+        self.assertEqual(manifest_run["title_extra_spans"], self.SPAN)
+        self.assertIsNone(generic_run["title_extra_spans"])
 
     def test_preexisting_caller_span_is_restored_exactly_after_the_manager_exits(self) -> None:
         self.require_hst_manifest()
@@ -286,17 +271,16 @@ class HstManagerManifestTests(unittest.TestCase):
         proc = self.run_in_one_shell(
             "\n".join(
                 [
-                    f"$env:HST_EXTRA_SPANS = '{caller}'",
+                    f"$env:TITLE_EXTRA_SPANS = '{caller}'",
                     self.manager_call("BuildFast", MANIFEST),
-                    'Write-Output "FINAL=$env:HST_EXTRA_SPANS"',
+                    'Write-Output "FINAL=$env:TITLE_EXTRA_SPANS"',
                 ]
             )
         )
         combined = proc.stdout + proc.stderr
         self.assertIn(f"FINAL={caller}", combined, combined)
         record = [item for item in self.records() if item["target"] == "all"][-1]
-        # Scoped to the build; the caller's unrelated value never reached the analyzer.
-        self.assertEqual(record["hst_extra_spans"], self.SPAN)
+        self.assertEqual(record["title_extra_spans"], self.SPAN)
 
     def test_scoped_span_unwinds_when_the_scoped_operation_throws(self) -> None:
         body = "\n".join(
@@ -307,12 +291,12 @@ class HstManagerManifestTests(unittest.TestCase):
                 "  try { throw 'synthetic spawn failure' }",
                 "  finally { Pop-TitleAnalyzerEnvironment -State $state }",
                 "}",
-                "$env:HST_EXTRA_SPANS = 'ORIGINAL-VALUE'",
+                "$env:TITLE_EXTRA_SPANS = 'ORIGINAL-VALUE'",
                 "try { Invoke-Failing } catch { }",
-                'Write-Output "RESTORED=$env:HST_EXTRA_SPANS"',
-                "Remove-Item -LiteralPath 'Env:HST_EXTRA_SPANS' -Force",
+                'Write-Output "RESTORED=$env:TITLE_EXTRA_SPANS"',
+                "Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force",
                 "try { Invoke-Failing } catch { }",
-                "if (Test-Path -LiteralPath 'Env:HST_EXTRA_SPANS') "
+                "if (Test-Path -LiteralPath 'Env:TITLE_EXTRA_SPANS') "
                 "{ Write-Output 'ABSENT=NO' } else { Write-Output 'ABSENT=YES' }",
             ]
         )
@@ -351,24 +335,14 @@ class HstManagerManifestTests(unittest.TestCase):
                 "opt in with a local ignored manifest)"
             )
 
-    def test_buildfull_legacy_and_manifest_modes_have_equal_effective_hst_values(self) -> None:
+    def test_buildfull_manifest_mode_matches_the_validated_plan(self) -> None:
         self.require_hst_manifest()
-        legacy = self.run_manager("BuildFull")
-        self.assert_manager_success(legacy)
         manifest = self.run_manager("BuildFull", MANIFEST)
         self.assert_manager_success(manifest)
-        alls = [record for record in self.records() if record["target"] == "all"]
-        self.assertEqual(len(alls), 2)
-        first, second = alls
-        for field in (
-            "game_name", "game_elf", "base", "entry", "extra", "header", "profile",
-            "build_dir", "funcs", "runtime", "recomp", "sdk",
-        ):
-            self.assertEqual(first[field], second[field], field)
-        self.assertEqual(first["runtime"], "-O2")
-        self.assertEqual(first["recomp"], "-O1")
-        self.assertEqual(first["hst_extra_spans"] or "0x00303194,0x00306e24", "0x00303194,0x00306e24")
-        self.assertEqual(second["hst_extra_spans"], "0x00303194,0x00306e24")
+        record = [item for item in self.records() if item["target"] == "all"][-1]
+        self.assertEqual(record["runtime"], "-O2")
+        self.assertEqual(record["recomp"], "-O1")
+        self.assertEqual(record["title_extra_spans"], "0x00303194,0x00306e24")
         planner = subprocess.run(
             [
                 sys.executable,
@@ -387,52 +361,38 @@ class HstManagerManifestTests(unittest.TestCase):
             check=True,
         )
         direct_plan = json.loads(planner.stdout)
-        self.assertEqual(second["game_name"], direct_plan["make"]["game_name"])
-        self.assertEqual(second["base"], direct_plan["make"]["game_base"])
-        self.assertEqual(second["entry"], direct_plan["make"]["game_entry"])
-        self.assertEqual(second["profile"], direct_plan["make"]["codegen_profile_arg"])
-        self.assertEqual(second["build_dir"], direct_plan["make"]["build_dir"])
-        self.assertEqual(second["funcs"], str(direct_plan["make"]["funcs_per_chunk"]))
-        self.assertEqual(second["hst_extra_spans"], direct_plan["environment"]["HST_EXTRA_SPANS"])
+        self.assertEqual(record["game_name"], direct_plan["make"]["game_name"])
+        self.assertEqual(record["base"], direct_plan["make"]["game_base"])
+        self.assertEqual(record["entry"], direct_plan["make"]["game_entry"])
+        self.assertEqual(record["profile"], direct_plan["make"]["codegen_profile_arg"])
+        self.assertEqual(record["build_dir"], direct_plan["make"]["build_dir"])
+        self.assertEqual(record["funcs"], str(direct_plan["make"]["funcs_per_chunk"]))
+        self.assertEqual(record["title_extra_spans"], direct_plan["environment"]["TITLE_EXTRA_SPANS"])
         self.assertIn("Using opt-in title manifest", manifest.stdout)
 
-    def test_fast_and_test_routes_preserve_legacy_action_and_effective_values(self) -> None:
+    def test_fast_and_test_routes_use_manifest_values(self) -> None:
         self.require_hst_manifest()
-        # `all` reaches analyze.py and receives the scoped span; `selftest` does not run the
-        # analyzer, so manifest mode leaves it exactly as legacy mode does - unset.
         for action, target, spans in (
             ("BuildFast", "all", self.SPAN),
             ("Test", "selftest", None),
         ):
             with self.subTest(action=action):
-                legacy = self.run_manager(action)
-                self.assert_manager_success(legacy)
                 manifest = self.run_manager(action, MANIFEST)
                 self.assert_manager_success(manifest)
                 records = [record for record in self.records() if record["target"] == target]
-                self.assertEqual(len(records), 2)
-                first, second = records
-                for field in (
-                    "target", "game_name", "game_elf", "base", "entry", "extra", "header",
-                    "profile", "build_dir", "funcs", "runtime", "recomp", "sdk",
-                ):
-                    self.assertEqual(first[field], second[field], field)
-                self.assertEqual(first["runtime"], "-O2")
-                self.assertEqual(first["recomp"], "-O1")
-                self.assertIsNone(first["hst_extra_spans"])
-                self.assertEqual(second["hst_extra_spans"], spans)
+                self.assertEqual(len(records), 1)
+                record = records[-1]
+                self.assertEqual(record["runtime"], "-O2")
+                self.assertEqual(record["recomp"], "-O1")
+                self.assertEqual(record["title_extra_spans"], spans)
 
     def test_fuzz_receives_the_scoped_span_because_it_runs_the_pipeline(self) -> None:
         self.require_hst_manifest()
-        # `make vfpu_fuzz` invokes `$(MAKE) pipeline`, so it does reach analyze.py.
-        legacy = self.run_manager("Fuzz")
-        self.assert_manager_success(legacy)
         manifest = self.run_manager("Fuzz", MANIFEST)
         self.assert_manager_success(manifest)
         records = [record for record in self.records() if record["target"] == "vfpu_fuzz"]
-        self.assertEqual(len(records), 2)
-        self.assertIsNone(records[0]["hst_extra_spans"])
-        self.assertEqual(records[1]["hst_extra_spans"], self.SPAN)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["title_extra_spans"], self.SPAN)
 
     def test_explicit_make_path_is_required_to_be_a_real_executable(self) -> None:
         missing = self.root / "does-not-exist-make"

@@ -18,10 +18,51 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 
-import hst_doctor  # noqa: E402
-import hst_doctor_checks  # noqa: E402
-import hst_doctor_core  # noqa: E402
+import nk_doctor  # noqa: E402
+import nk_doctor_checks  # noqa: E402
+import nk_doctor_core  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
+
+
+def retail_manifest() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "id": "mygame-v1",
+        "display_name": "My Game",
+        "kind": "retail",
+        "game_name": "mygame",
+        "disc": {"id": "UCUS98701", "region": "NA", "revision_policy": "exact-disc-id"},
+        "filesystem": {
+            "data_root": "place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted",
+            "module_dir": "place_game_here/EXTRACTED/decrypted",
+            "psp_header": "place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN",
+            "disc_image": "place_game_here/ISO/synthetic.iso",
+        },
+        "executable": {
+            "path": "place_game_here/EBOOT.elf",
+            "bss_metadata_source": "psp-header",
+        },
+        "modules": [
+            {"name": name, "role": "guest-prx", "required": True}
+            for name in ("libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx")
+        ],
+    }
+
+
+def check_inputs(
+    root: Path,
+    report: object,
+    *,
+    need_iso: bool,
+    need_assets: bool,
+) -> None:
+    context = nk_doctor_checks.title_diagnostic_context(root, retail_manifest())
+    nk_doctor_checks.check_private_inputs(
+        report,
+        need_iso=need_iso,
+        need_assets=need_assets,
+        title_context=context,
+    )
 
 
 def write_pe(path: Path, *, pe_offset: int = 0x80) -> None:
@@ -83,7 +124,7 @@ class FormatHardeningTests(unittest.TestCase):
             data[:2] = b"MZ"
             struct.pack_into("<I", data, 0x3C, 0x10000000)
             path.write_bytes(data)
-            ok, error = hst_doctor._validate_pe_x64(path)
+            ok, error = nk_doctor_core._validate_pe_x64(path)
             self.assertFalse(ok)
             self.assertIn("outside", error)
 
@@ -91,14 +132,14 @@ class FormatHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "good.exe"
             write_pe(path)
-            ok, detail = hst_doctor._validate_pe_x64(path)
+            ok, detail = nk_doctor_core._validate_pe_x64(path)
             self.assertTrue(ok, detail)
 
     def test_rejects_non_primary_iso_descriptor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad.iso"
             write_iso(path, descriptor_type=2)
-            metadata, error = hst_doctor._validate_iso(path)
+            metadata, error = nk_doctor_core._validate_iso(path)
             self.assertIsNone(metadata)
             self.assertIn("expected primary", error or "")
 
@@ -111,7 +152,7 @@ class FormatHardeningTests(unittest.TestCase):
                 path,
                 [(1, 16, 16), (0x700000A1, 32, 0)],
             )
-            metadata, error = hst_doctor_core._parse_elf(path)
+            metadata, error = nk_doctor_core._parse_elf(path)
             self.assertIsNone(error)
             self.assertIsNotNone(metadata)
             assert metadata is not None
@@ -122,7 +163,7 @@ class FormatHardeningTests(unittest.TestCase):
             path = Path(tmp) / "bad_load.elf"
             # Segment 0: PT_LOAD (type 1) with filesz > memsz
             write_synthetic_elf(path, [(1, 32, 16)])
-            metadata, error = hst_doctor_core._parse_elf(path)
+            metadata, error = nk_doctor_core._parse_elf(path)
             self.assertIsNone(metadata)
             self.assertIn("has p_memsz < p_filesz", error or "")
 
@@ -132,7 +173,7 @@ class FormatHardeningTests(unittest.TestCase):
             write_synthetic_elf(path, [(1, 64, 64)])
             data = path.read_bytes()
             path.write_bytes(data[:-10])
-            metadata, error = hst_doctor_core._parse_elf(path)
+            metadata, error = nk_doctor_core._parse_elf(path)
             self.assertIsNone(metadata)
             self.assertIn("extends beyond the file", error or "")
 
@@ -149,8 +190,8 @@ class InputPairHardeningTests(unittest.TestCase):
             decrypted = root / "place_game_here" / "EXTRACTED" / "decrypted"
             for name in ("libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx"):
                 write_elf(decrypted / name)
-            report = hst_doctor.Report(root, "inputs")
-            hst_doctor.check_private_inputs(report, need_iso=False, need_assets=False)
+            report = nk_doctor.Report(root, "inputs")
+            check_inputs(root, report, need_iso=False, need_assets=False)
             result = [item for item in report.results if item.code == "INPUT_EBOOT_PAIR"][-1]
             self.assertEqual(result.status, "FAIL")
 
@@ -193,7 +234,7 @@ This remains subject to legal review.
             proc = subprocess.run(
                 [
                     sys.executable,
-                    str(TOOLS / "hst_doctor.py"),
+                    str(TOOLS / "nk_doctor.py"),
                     "--root",
                     str(root),
                     "--scope",
@@ -211,18 +252,17 @@ This remains subject to legal review.
 
 class ManagerExitPropagationHardeningTests(unittest.TestCase):
     def test_parameterized_manager_actions_fail_closed(self) -> None:
-        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
-        manager = mgr_path.read_text(encoding="utf-8-sig")
+        manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8-sig")
         # Each failing action records a nonzero termination code and breaks out of the
         # switch; the single `exit` after the finally block applies it, so the caller
         # sees a nonzero status AND the caller's location is restored first.
-        self.assertTrue(
-            '"BuildFull" { if (-not (Invoke-NkBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }' in manager
-            or '"BuildFull" { if (-not (Invoke-HstBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }' in manager
+        self.assertIn(
+            '"BuildFull" { if (-not (Invoke-NkBuild -Mode "Full")) { $script:ManagerExitCode = 1; break } }',
+            manager,
         )
-        self.assertTrue(
-            '"BuildFast" { if (-not (Invoke-NkBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }' in manager
-            or '"BuildFast" { if (-not (Invoke-HstBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }' in manager
+        self.assertIn(
+            '"BuildFast" { if (-not (Invoke-NkBuild -Mode "Fast")) { $script:ManagerExitCode = 1; break } }',
+            manager,
         )
         self.assertIn('if (-not (Invoke-Selftest)) { $script:ManagerExitCode = 1; break }', manager)
         self.assertIn('$script:LastRunResult = $null', manager)
@@ -230,10 +270,7 @@ class ManagerExitPropagationHardeningTests(unittest.TestCase):
         self.assertIn('if ($Action -and $script:ManagerExitCode -ne 0) {\n    exit $script:ManagerExitCode', manager)
 
     def test_frontend_does_not_mask_manager_failure(self) -> None:
-        # Phase 3 (#196): nk.ps1 is canonical; hst.ps1 is a forwarding wrapper.
-        nk_path = ROOT / "nk.ps1"
-        hst_path = ROOT / "hst.ps1"
-        frontend = nk_path.read_text(encoding="utf-8-sig") if nk_path.exists() else hst_path.read_text(encoding="utf-8-sig")
+        frontend = (ROOT / "nk.ps1").read_text(encoding="utf-8-sig")
         self.assertNotIn("Invoke-ManagerBuild", frontend)
         self.assertNotIn("Get-HstProductBackupPath", frontend)
         self.assertIn("$LASTEXITCODE = 0", frontend)
@@ -263,8 +300,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
     def test_case_a_no_private_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            report = hst_doctor.Report(root, "inputs")
-            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            report = nk_doctor.Report(root, "inputs")
+            check_inputs(root, report, need_iso=True, need_assets=True)
             failed_codes = {res.code for res in report.results if res.status == "FAIL"}
             self.assertIn("INPUT_EBOOT_ELF", failed_codes)
             self.assertIn("INPUT_EBOOT_BIN", failed_codes)
@@ -279,8 +316,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
             root = Path(tmp)
             self._setup_synthetic_preflight_workspace(root)
             (root / "place_game_here" / "ISO" / "synthetic.iso").unlink()
-            report = hst_doctor.Report(root, "inputs")
-            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            report = nk_doctor.Report(root, "inputs")
+            check_inputs(root, report, need_iso=True, need_assets=True)
             failed_codes = {res.code for res in report.results if res.status == "FAIL"}
             self.assertEqual(failed_codes, {"INPUT_ISO"})
 
@@ -295,8 +332,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
                 else:
                     child.rmdir()
             data_root.rmdir()
-            report = hst_doctor.Report(root, "inputs")
-            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            report = nk_doctor.Report(root, "inputs")
+            check_inputs(root, report, need_iso=True, need_assets=True)
             failed_codes = {res.code for res in report.results if res.status == "FAIL"}
             self.assertEqual(failed_codes, {"INPUT_XB_DATA"})
 
@@ -308,16 +345,16 @@ class SetupMatrixScenariosTests(unittest.TestCase):
             from unittest import mock
             # Relative path rejected
             with mock.patch.dict(os.environ, {"SR_DATAROOT": "relative/xbdata"}):
-                report = hst_doctor.Report(root, "inputs")
-                hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+                report = nk_doctor.Report(root, "inputs")
+                check_inputs(root, report, need_iso=True, need_assets=True)
                 failed_codes = {res.code for res in report.results if res.status == "FAIL"}
                 self.assertIn("INPUT_SR_DATAROOT", failed_codes)
 
             # Nonexistent path rejected
             missing = root / "nonexistent"
             with mock.patch.dict(os.environ, {"SR_DATAROOT": str(missing.resolve())}):
-                report = hst_doctor.Report(root, "inputs")
-                hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+                report = nk_doctor.Report(root, "inputs")
+                check_inputs(root, report, need_iso=True, need_assets=True)
                 failed_codes = {res.code for res in report.results if res.status == "FAIL"}
                 self.assertIn("INPUT_SR_DATAROOT", failed_codes)
 
@@ -338,8 +375,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            report = hst_doctor.Report(root, "products")
-            hst_doctor_checks.check_build_profile(report, root)
+            report = nk_doctor.Report(root, "products")
+            nk_doctor_checks.check_build_profile(report, root, "hst")
             res = next(r for r in report.results if r.code == "BUILD_PROFILE")
             self.assertEqual(res.status, "INFO")
             self.assertEqual(res.metadata.get("public_safe"), 1)
@@ -357,8 +394,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            report_full = hst_doctor.Report(root, "products")
-            hst_doctor_checks.check_build_profile(report_full, root)
+            report_full = nk_doctor.Report(root, "products")
+            nk_doctor_checks.check_build_profile(report_full, root, "hst")
             res_full = next(r for r in report_full.results if r.code == "BUILD_PROFILE")
             self.assertEqual(res_full.status, "INFO")
             self.assertEqual(res_full.metadata.get("public_safe"), 0)
@@ -372,8 +409,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
             import os
             from unittest import mock
             with mock.patch.dict(os.environ, {"SR_MEMSTICK": str(bad_save.resolve())}):
-                report = hst_doctor.Report(root, "inputs")
-                hst_doctor_checks.check_save_root(report, root)
+                report = nk_doctor.Report(root, "inputs")
+                nk_doctor_checks.check_save_root(report, root)
                 failed = [res for res in report.results if res.code == "SAVE_ROOT" and res.status == "FAIL"]
                 self.assertTrue(failed)
 
@@ -384,8 +421,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
             save_dir.mkdir(parents=True)
             from unittest import mock
             with mock.patch.object(Path, "write_bytes", side_effect=PermissionError("access denied")):
-                report = hst_doctor.Report(root, "inputs")
-                hst_doctor_checks.check_save_root(report, root)
+                report = nk_doctor.Report(root, "inputs")
+                nk_doctor_checks.check_save_root(report, root)
                 failed = [res for res in report.results if res.code == "SAVE_ROOT" and res.status == "FAIL"]
                 self.assertTrue(failed)
                 self.assertIn("not writable", failed[0].summary)
@@ -395,9 +432,9 @@ class SetupMatrixScenariosTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._setup_synthetic_preflight_workspace(root)
-            report = hst_doctor.Report(root, "inputs")
-            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
-            hst_doctor_checks.check_save_root(report, root)
+            report = nk_doctor.Report(root, "inputs")
+            check_inputs(root, report, need_iso=True, need_assets=True)
+            nk_doctor_checks.check_save_root(report, root)
             failures = [res for res in report.results if res.status == "FAIL"]
             self.assertEqual(failures, [])
 
@@ -418,8 +455,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "place_game_here").mkdir()
-            report = hst_doctor.Report(root, "inputs")
-            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            report = nk_doctor.Report(root, "inputs")
+            check_inputs(root, report, need_iso=True, need_assets=True)
             eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
             self.assertIsNotNone(
                 eboot_elf_res, "an absent EBOOT.elf must still be diagnosed")
@@ -427,7 +464,7 @@ class SetupMatrixScenariosTests(unittest.TestCase):
             self.assertEqual(report.exit_code(False), 1)
 
             proc = subprocess.run(
-                [sys.executable, str(TOOLS / "hst_doctor.py"),
+                [sys.executable, str(TOOLS / "nk_doctor.py"),
                  "--root", str(root), "--scope", "inputs"],
                 capture_output=True, text=True,
             )
@@ -443,8 +480,8 @@ class SetupMatrixScenariosTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._setup_synthetic_preflight_workspace(root)
-            report = hst_doctor.Report(root, "inputs")
-            hst_doctor_checks.check_private_inputs(report, need_iso=True, need_assets=True)
+            report = nk_doctor.Report(root, "inputs")
+            check_inputs(root, report, need_iso=True, need_assets=True)
             eboot_elf_res = next((r for r in report.results if r.code == "INPUT_EBOOT_ELF"), None)
             self.assertIsNotNone(eboot_elf_res)
             self.assertEqual(
@@ -472,8 +509,8 @@ class AgentIdentityChecks(unittest.TestCase):
         return root
 
     def _run(self, root: Path):
-        report = hst_doctor.Report(root, "identity")
-        hst_doctor_checks.check_agent_identity(report)
+        report = nk_doctor.Report(root, "identity")
+        nk_doctor_checks.check_agent_identity(report)
         results = [r for r in report.results if r.code == "GIT_IDENTITY"]
         self.assertEqual(len(results), 1, "the check must report exactly once")
         return results[0]

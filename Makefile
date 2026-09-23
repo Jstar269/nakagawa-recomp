@@ -23,57 +23,12 @@ NK_INFO_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NK_INFO_ONLY_GOALS),$(M
 # ---------------------------------------------------------------------------
 # GENERIC TITLE CONTRACT (title-neutral, host-portable):
 #   GAME_NAME, GAME_ELF, GAME_BASE, GAME_ENTRY, GAME_EXTRA_ELFS, GAME_PSP_HEADER,
-#   TITLE_EXTRA_SPANS (extra executable span, at most one; legacy HST_EXTRA_SPANS
-#   lives only in the HST PROFILE compatibility block below and is ignored for
-#   generic titles), BUILD_DIR, FUNCS_PER_CHUNK, CODEGEN_PROFILE_ARG, etc., are
-#   all derived from a validated title manifest via tools/title_codegen_plan.py or
-#   TITLE_MANIFEST. Default values below are for a generic rebased ELF; HST-specific
-#   defaults live only in the HST PROFILE block that follows and never affect a
-#   generic title.
+#   TITLE_EXTRA_SPANS (extra executable span, at most one), BUILD_DIR,
+#   FUNCS_PER_CHUNK, CODEGEN_PROFILE_ARG, etc., are all derived from a validated
+#   title manifest via tools/title_codegen_plan.py or TITLE_MANIFEST. Default
+#   values below are for a generic rebased ELF; Make does not infer title data.
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# HST PROFILE (isolated compatibility defaults for the one legacy title).
-#   This block is the ONLY Makefile place that names HST constants (HST span,
-#   module load addresses, psp-header path, O2/O1 tuning). A generic title (including
-#   the three synthetic fixtures) never enters this block unless the
-#   operator explicitly requested GAME_NAME=hst, and a second synthetic title does
-#   not add another conditional here.
-# ---------------------------------------------------------------------------
-ifeq ($(GAME_NAME),hst)
-CODEGEN_PROFILE_ARG := --profile=hst
-GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x09ebfc00 \
-                   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x09ed6000 \
-                   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x09ec7f00
-GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
-# The analyzer applies no title-specific span of its own: an extra executable span
-# outside the section table is title configuration, so the HST span is bound here
-# explicitly for direct-Make builds. nk_manager.ps1 -TitleManifest supplies the same
-# value from the validated manifest plan; a command-line/environment value overrides
-# this default. LEGACY_ADAPTER: this hard-coded span mirrors the retail HST manifest
-# (assets/titles/hst-ucus98701.json, the source of truth — publication-excluded, never
-# checked in) for manifest-less direct-Make builds only. Retire it with the direct-Make
-# HST default path, never by deleting the span.
-HST_EXTRA_SPANS ?= 0x00303194,0x00306e24
-RUNTIME_OPT ?= -O2
-RECOMP_OPT  ?= -O1
-# HST LEGACY COMPATIBILITY: derive generic TITLE span from legacy HST only when the
-# generic key was never explicitly supplied. Use origin check to distinguish explicit
-# empty (command line `TITLE_EXTRA_SPANS=`) from undefined, so explicit empty stays
-# authoritative and does not fall through to stale legacy state. For non-HST titles
-# this block is not entered and HST_EXTRA_SPANS is ignored completely.
-ifeq ($(origin TITLE_EXTRA_SPANS),undefined)
-TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
-else ifeq ($(origin TITLE_EXTRA_SPANS),default)
-TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
-endif
-endif
-# GENERIC title extra-span: host-portable contract. TITLE_EXTRA_SPANS is the only
-# authoritative span input for generic builds; HST_EXTRA_SPANS is legacy and after
-# the HST block above is ignored for non-HST titles. A stale HST_EXTRA_SPANS
-# environment value must not affect a generic build.
 TITLE_EXTRA_SPANS ?=
-HST_EXTRA_SPANS ?=
 export TITLE_EXTRA_SPANS
 
 CODEGEN_PROFILE_ARG ?=
@@ -150,17 +105,9 @@ GAME_INPUT_PREREQ = $(if $(GAME_INPUT_TRACKED),$(GAME_INPUT_STAMP),)
 # needs a POSIX shell, and Make on Windows falls back to cmd.exe when sh is not on
 # PATH. The span therefore reaches only the primary-image analysis (codegen, VFPU
 # fuzz); rebased extra guest modules never receive it.
-# GENERIC: effective span derives ONLY from TITLE_EXTRA_SPANS. For non-HST titles
-# a stale HST_EXTRA_SPANS (environment or make-arg) is ignored completely. For HST
-# the legacy compatibility translation above has already copied HST into TITLE when
-# TITLE was not explicitly supplied, so the effective value still reflects the HST
-# default/legacy without ever reading HST directly here. Explicit empty TITLE stays
-# empty and does not fall through.
+# GENERIC: effective span derives ONLY from TITLE_EXTRA_SPANS.
 EFFECTIVE_EXTRA_SPANS := $(strip $(TITLE_EXTRA_SPANS))
 EXTRA_SPAN_ARG  = $(if $(strip $(EFFECTIVE_EXTRA_SPANS)),--extra-span=$(strip $(EFFECTIVE_EXTRA_SPANS)),)
-# Preserve legacy variable for profile hash and existing recipes that still expand
-# HST_EXTRA_SPANS directly (HST compatibility). It mirrors the effective span.
-HST_EXTRA_SPANS_EFFECTIVE := $(EFFECTIVE_EXTRA_SPANS)
 
 # GNU Make defines a built-in CC=cc with origin "default". A normal `CC ?= gcc`
 # therefore never takes effect. Treat only that built-in/undefined state as unset,
@@ -201,10 +148,8 @@ SDL3_VERSION := none
 endif
 
 # Native runtime code is host-side C and can be tested independently.
-# HST now has measured -O2 runtime / -O1 generated defaults. Generic/unqualified
-# titles remain conservative -O0/-O0. Explicit overrides remain supported.
-# Generated -O2 is NOT being adopted; -O1's measured build cost is higher but
-# acceptable for HST.
+# Direct Make remains conservative -O0/-O0. Validated private title adapters may
+# request measured profile-specific values; explicit overrides remain supported.
 RUNTIME_OPT ?= -O0
 CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
 # The extracted HST archive tree has a title-specific extracted-data census
@@ -381,7 +326,6 @@ endif
 # and no VBLANK counters -- a broken runtime that looks like a successful build. This is
 # a build-time refusal, not a title default: generic builds are untouched, and nothing
 # here makes `runtime-objects` require a retail or title input.
-HST_TITLE_MANIFEST := assets/titles/hst-ucus98701.json
 ifeq ($(GAME_NAME),hst)
 ifeq ($(strip $(TITLE_MANIFEST)),)
 TITLE_CONFIG_HST_UNBOUND := 1
@@ -422,7 +366,7 @@ $(TITLE_CONFIG_STAMP): $(BUILD_PROFILE_TOOL)
 
 $(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(TITLE_CONFIG_STAMP)
 ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)
-	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local HST retail manifest: publication-excluded, never checked in) or build through nk_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
+	$(error GAME_NAME=hst needs a validated title manifest: pass TITLE_MANIFEST=<path> or use nk_manager.ps1 -TitleManifest. Direct Make does not infer HST defaults; generic builds need no manifest when they use a different GAME_NAME.)
 endif
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
 
@@ -909,7 +853,7 @@ production-smoke:
 		GAME_BASE=0x08804000 \
 		GAME_ENTRY=0x08804000 \
 		GAME_PSP_HEADER=$(PRODUCTION_SMOKE_PSP) \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PRODUCTION_SMOKE_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
 		LDFLAGS="$(LDFLAGS) -Wl,-Map,$(PRODUCTION_SMOKE_MAP)"
@@ -932,7 +876,7 @@ display-smoke:
 		GAME_BASE=$(DISPLAY_SMOKE_BASE) \
 		GAME_ENTRY=$(DISPLAY_SMOKE_BASE) \
 		GAME_PSP_HEADER=$(DISPLAY_SMOKE_PSP) \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(DISPLAY_SMOKE_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
@@ -967,7 +911,7 @@ production-smoke-gap:
 		GAME_BASE=0x08804000 \
 		GAME_ENTRY=0x08804000 \
 		GAME_PSP_HEADER=$(PRODUCTION_SMOKE_GAP_FIXTURE)/guest.psp \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=$(PRODUCTION_SMOKE_GAP_CODEGEN_ARGS) \
@@ -1010,7 +954,7 @@ platform-ladder-zero:
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-zero/fixture/guest.prx \
 		GAME_BASE=$(PL_ZERO_BASE) \
 		GAME_ENTRY=0x08940040 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-zero \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
@@ -1024,7 +968,7 @@ platform-ladder-reloc:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-reloc/fixture/guest.psp \
 		GAME_BASE=$(PL_RELOC_BASE) \
 		GAME_ENTRY=0x088C0020 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-reloc \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
@@ -1041,7 +985,7 @@ platform-ladder-gap:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-gap/fixture/guest.psp \
 		GAME_BASE=0x08A00000 \
 		GAME_ENTRY=0x08A00010 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-gap \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=--omit-aot=0x08A00060
@@ -1056,7 +1000,7 @@ platform-ladder-sched:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-sched/fixture/guest.psp \
 		GAME_BASE=$(PL_SCHED_BASE) \
 		GAME_ENTRY=0x08900010 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-sched \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
@@ -1070,7 +1014,7 @@ platform-ladder-fpu:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-fpu/fixture/guest.psp \
 		GAME_BASE=$(PL_FPU_BASE) \
 		GAME_ENTRY=0x08980008 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fpu \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
@@ -1084,7 +1028,7 @@ platform-ladder-fs:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-fs/fixture/guest.psp \
 		GAME_BASE=$(PL_FS_BASE) \
 		GAME_ENTRY=0x089C0018 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fs \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
@@ -1103,7 +1047,7 @@ platform-ladder-title2:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2/fixture/guest.psp \
 		GAME_BASE=$(PL_TITLE2_BASE) \
 		GAME_ENTRY=0x08A40020 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2 \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=--omit-aot=0x08A40220
@@ -1120,7 +1064,7 @@ platform-ladder-title2-negative:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture/guest.psp \
 		GAME_BASE=$(PL_TITLE2_NEGATIVE_BASE) \
 		GAME_ENTRY=0x08A80020 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2-negative \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative
@@ -1321,7 +1265,7 @@ cosim-selftest:
 		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
 		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		CODEGEN_TOOL=$(CODEGEN_TOOL)
 	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
@@ -1329,7 +1273,7 @@ cosim-selftest:
 		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
 		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC)
 

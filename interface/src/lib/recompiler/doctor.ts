@@ -51,7 +51,7 @@ export function isDoctorReport(value: unknown): value is DoctorReport {
   if (!isRecord(value)) return false;
   if (
     value.schema_version !== 1 ||
-    (value.tool !== "nk_doctor" && value.tool !== "hst_doctor") ||
+    value.tool !== "nk_doctor" ||
     typeof value.root !== "string" ||
     typeof value.scope !== "string" ||
     !SCOPE_SET.has(value.scope) ||
@@ -147,7 +147,7 @@ export function classifyDoctorFailure(rawDetail: string | null | undefined): Cla
       diagnostic: detail || null,
     };
   }
-  if (lower.includes("nk_doctor.py not found") || lower.includes("hst_doctor.py not found")) {
+  if (lower.includes("nk_doctor.py not found")) {
     return {
       reason: "doctor-script-missing",
       title: "The preflight diagnostic script is missing",
