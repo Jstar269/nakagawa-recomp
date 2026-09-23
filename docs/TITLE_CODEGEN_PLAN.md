@@ -1,9 +1,11 @@
 # Title-driven code-generation plan
 
-`tools/title_codegen_plan.py` is a read-only bridge between the public title
-manifest and the existing `prxload.py`, `codegen.py`, and `imports.py` command
-lines. It prints deterministic JSON; it does not execute commands, inspect private
-inputs, or modify the manifest.
+`tools/title_codegen_plan.py` defaults to a read-only bridge between the public
+title manifest and the existing `prxload.py`, `codegen.py`, and `imports.py`
+command lines. Plan mode prints deterministic JSON and does not execute commands
+or modify the manifest. The explicit `--package` action runs the existing
+two-phase Make build and writes a local `package.json` plus `build-report.json`;
+it keeps executable, module, and PSP-header paths as CLI bindings.
 
 With `--manager-plan`, the same validated configuration produces a bounded,
 versioned manager/build contract. `nk_manager.ps1` consumes that contract from
@@ -92,6 +94,11 @@ python tools/title_codegen_plan.py assets/titles/hst-ucus98701.json `
 The resulting plan reproduces the current HST base, entry, PSP-header policy,
 module names and load addresses, analyzer span, and codegen profile. Paths are
 normalized for deterministic output but are not resolved or checked for existence.
+
+The package action uses that same plan and builds into a dedicated untracked
+directory. See [Runtime Packaging Architecture](RUNTIME_PACKAGING_ARCHITECTURE.md)
+for its command, package schema, compiler report, and fail-closed semantic-boundary
+records.
 
 Manifests may declare `codegen_profile` (`hst` or `none`); when present it is
 authoritative and an optional `--profile` must match it. A manifest without that

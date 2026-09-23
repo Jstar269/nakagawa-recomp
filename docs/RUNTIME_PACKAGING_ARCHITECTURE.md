@@ -1,8 +1,9 @@
 # Runtime Packaging Architecture
 
 > **Status: CURRENT — maintained packaging decision record.** The process-isolation
-> boundary is implemented in the native launch/session slice. Installers,
-> distributable title packages, and complete end-user preparation remain unbuilt.
+> boundary and a local developer AOT package build are implemented. The player does
+> not yet consume the generated package (#297). ISO unpacking remains #295; installers
+> and complete end-user preparation are not built.
 
 ## 1. Context and Goals
 
@@ -81,10 +82,74 @@ list is not evidence that a distributable installer or title package exists:
 
 ---
 
-## 4. Packaging and Distribution Roadmap (UNBUILT)
+## 4. Packaging and Distribution Roadmap
 
 | Target Environment | Packaging Strategy | Binary Artifacts |
 | --- | --- | --- |
 | **Windows x86-64** | Inno Setup / MSIX / Portable ZIP | `nakagawa_player.exe`, `bin/nakagawa_core.dll` (or static), `build/<game>/<game>.exe`, SDL3.dll |
 | **Linux / Steam Deck** | AppImage / Flatpak | `nakagawa_player`, `bin/<game>`, `libSDL3.so` bundled in AppDir |
 | **macOS ARM64** | App Bundle (`Nakagawa.app`) | `Nakagawa.app/Contents/MacOS/nakagawa_player`, helper executables in `MacOS/` |
+
+## 5. Local AOT package contract (v1)
+
+The planner can run the existing analyzer, code generator, and two-phase Make
+pipeline for a plaintext executable ELF. Run it from the repository root with the
+documented UCRT64 toolchain:
+
+```powershell
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+python tools/title_codegen_plan.py assets/titles/my-title.json `
+  --package `
+  --game-elf place_game_here/EBOOT.elf `
+  --output-dir build/my-title
+```
+
+When the manifest requires PSP-header BSS metadata, also pass
+`--psp-header <path>`. Guest PRXs are resolved by their manifest names beneath
+`--module-dir <directory>`; required PRXs are selected automatically. Add one
+`--include-optional-module <manifest-name>` for each optional PRX to include in
+the AOT build. `--game-name` defaults to the manifest's `game_name`, then to its
+portable `id`. The manifest's `codegen_profile` is authoritative. `--public-safe`
+selects the synthetic/public-safe runtime backends for fixture builds.
+
+The output directory must be dedicated and untracked (use an ignored `build/`
+subdirectory or a directory outside the repository). The command refuses a
+tracked in-repository output and refuses to reuse an existing package directory
+when its manifest, executable, selected PRXs, or PSP header hashes differ. The
+manifest remains unchanged. Make's `all` target still runs the generation and
+compile phases separately so generated chunks are linked on a clean build.
+Current Make recipes cannot transport whitespace or shell-sensitive characters
+in bound paths. Inputs at such paths are copied byte-for-byte into
+`<output-dir>/staged-inputs/` (hashes are unchanged); an output directory at
+such a path is rejected as `PACKAGE_UNSUPPORTED_PATH` while quoting support
+remains in progress under #296.
+
+`package.json` is canonical JSON with this versioned shape:
+
+| Field | Meaning |
+| --- | --- |
+| `format`, `schema_version` | `nakagawa-aot-package`, version `1`. |
+| `title` | Manifest `id`, display name, kind, raw manifest SHA-256, and protected-semantics digest. |
+| `inputs` | SHA-256 for the manifest, executable ELF, selected PRXs with load addresses, and optional PSP header. Absolute input paths are omitted. |
+| `runtime` | `CpuState` ABI version and header hash, resolved guest run entry, runtime contract, bindings, and required bindings. |
+| `executable` | Relative native executable path and hash plus the guest ELF entry address. |
+| `generated_objects` | Sorted relative object paths and SHA-256 hashes. |
+| `required_local_assets` | Manifest title-data/resource roots, selected or optional guest PRXs, and host SDL3/Vulkan runtime requirements. These are references; title assets are not copied into the package. |
+| `build_report` | Relative path `build-report.json`. |
+
+`build-report.json` has format `nakagawa-build-report`, schema version `1`, the
+same `input_hashes`, Python/planner/analyzer/codegen/Make versions, the compiler
+identity, runtime ABI, and deterministic coverage counts (`analyzed_functions`,
+`aot_entries`, callable/resume entries, fallbacks, and unsupported imports,
+instructions, and regions). `unsupported.imports`, `unsupported.instructions`,
+and `unsupported.regions` are always arrays. Each listed boundary includes a
+reason, status `in the works`, and its tracking issue: import coverage uses #71;
+unsupported Allegrex translation and AOT function regions use #118. Empty arrays
+mean the analyzer/code generator did not report that boundary for these inputs;
+they do not establish title acceptance. These records do not patch behavior:
+generated unsupported functions retain the runtime's fail-closed path.
+
+This package command still requires the developer toolchain. It does not unwrap
+an ISO or make the player launch the generated package. The player-side consumer
+and run-directory provisioning are tracked by #297; analyzer ownership and
+stack-balance gates remain tracked by #291.
