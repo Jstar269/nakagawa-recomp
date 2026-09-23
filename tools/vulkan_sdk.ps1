@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 the psp-recomp authors
-#requires -Version 7.6
+#requires -Version 7.4
 
 <#
 .SYNOPSIS

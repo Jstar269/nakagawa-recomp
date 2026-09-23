@@ -9,10 +9,17 @@ gate is a portability probe, not Linux support (see
 The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
-- PowerShell 7.6+ (`pwsh`). Windows PowerShell 5.1 is not supported.
+- PowerShell 7.4+ (`pwsh`). Windows PowerShell 5.1 is not supported.
 - CPython 3.14.x (`>=3.14,<3.15`), with `python` resolving to that feature line.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - A current Vulkan SDK and Vulkan-capable GPU.
+
+The PowerShell floor is a static-evidence minimum: a syntax/cmdlet inventory of every
+tracked `.ps1` proves no script needs anything above the automatic `$IsWindows`
+variable (PowerShell 6.0), and 7.4 is the oldest non-EOL line (LTS, end of support
+2026-11-10). The scripts have not been executed on 7.4 itself; the multi-version
+runtime matrix remains open in
+[issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337).
 
 The environment doctor is the executable form of this contract:
 

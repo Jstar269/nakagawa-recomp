@@ -1,7 +1,7 @@
 # Workspace Doctor
 
 `tools/nk_doctor.py` is the fail-closed preflight for Nakagawa Recomp. It checks the supported
-Windows 11 x64 / PowerShell 7.6+ / CPython 3.14.x host contract, current MSYS2 UCRT64 tools,
+Windows 11 x64 / PowerShell 7.4+ / CPython 3.14.x host contract, current MSYS2 UCRT64 tools,
 Vulkan SDK discovery, the repository, private game-input layout, runtime dependencies, and build
 products without copying, decrypting, extracting, modifying, or uploading private material.
 
@@ -51,7 +51,7 @@ checks depend on the selected manifest.
 
 ### Toolchain identity
 
-The doctor requires Windows 11 x64, PowerShell 7.6+ (`pwsh`), and CPython 3.14.x. It resolves
+The doctor requires Windows 11 x64, PowerShell 7.4+ (`pwsh`), and CPython 3.14.x. It resolves
 `mingw32-make`, `gcc`, and `g++`, records their first version line, and fails when they do not
 resolve from an MSYS2 UCRT64 path. It checks the SDL3 import library and discovers a usable Vulkan
 SDK using `-vulkan-sdk`, `VULKAN_SDK`, then the newest numerically named `C:\VulkanSDK\<version>`

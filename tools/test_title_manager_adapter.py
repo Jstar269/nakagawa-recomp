@@ -47,7 +47,7 @@ class TitleManagerAdapterTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.shell = shutil.which("pwsh")
         if cls.shell is None:
-            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) is required")
+            raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-title-adapter-")
@@ -253,7 +253,7 @@ class RunEntryIsPlanOwned(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.shell = shutil.which("pwsh")
         if cls.shell is None:
-            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) is required")
+            raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
 
     def build(self, manifest: dict) -> dict:
         return title_codegen_plan.build_manager_plan(
