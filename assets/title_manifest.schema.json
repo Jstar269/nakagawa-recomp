@@ -192,10 +192,18 @@
     "executable": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "load_address": ["load_address_evidence"],
+        "load_address_evidence": ["load_address"]
+      },
       "required": ["base", "entry", "bss_metadata_source", "extra_executable_spans"],
       "properties": {
         "base": {"$ref": "#/$defs/uint32"},
         "entry": {"$ref": "#/$defs/uint32"},
+        "load_address": {"$ref": "#/$defs/uint32"},
+        "load_address_evidence": {
+          "enum": ["measured-hw", "measured-ppsspp", "provisional", "documented-psp-default"]
+        },
         "bss_metadata_source": {
           "enum": ["elf", "psp-header", "none"]
         },

@@ -143,6 +143,72 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("replaying title display-driver init", output)
         self.assertIn("libfont compat", output)
 
+    def test_manifest_module_load_honours_address_and_refuses_collision(self):
+        make = shutil.which("mingw32-make")
+        if not make:
+            raise unittest.SkipTest("mingw32-make is not available")
+        with tempfile.TemporaryDirectory(prefix="nakagawa_hle_module_") as tmp:
+            tmp_path = Path(tmp)
+            module_root = tmp_path / "modules"
+            module_root.mkdir()
+            manifest = tmp_path / "synthetic-module.json"
+            configured = synthetic_manifest()
+            configured["modules"] = [{
+                "name": "c285-runtime.prx",
+                "load_address": 0x09F00000,
+                "required": True,
+                "role": "guest-prx",
+                "guest_path": "disc0:/PSP_GAME/USRDIR/c285-runtime.prx",
+                "load_address_evidence": "provisional",
+            }, *configured.get("modules", [])]
+            manifest.write_text(json.dumps(configured), encoding="utf-8")
+            header = tmp_path / "sr_title_config.h"
+            exe = tmp_path / "hle_title_production_selftest_module.exe"
+            command = [
+                make,
+                "--no-print-directory",
+                "hle-title-selftest-one",
+                "HLE_TITLE_CONFIG=synthetic-module",
+                f"HLE_TITLE_MANIFEST={manifest.as_posix()}",
+                f"BUILD_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
+                f"HLE_TITLE_SELFTEST_EXE={exe.as_posix()}",
+            ]
+            env = os.environ.copy()
+            ucrt_bin = Path("C:/msys64/ucrt64/bin")
+            if ucrt_bin.is_dir():
+                env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
+            env["SR_MODULE_DIR"] = str(module_root)
+            env["SR_TEST_GUEST_MODULE_LOAD"] = "success"
+            built = subprocess.run(
+                command, cwd=ROOT, capture_output=True, text=True, env=env, timeout=180
+            )
+            build_output = built.stdout + built.stderr
+            self.assertEqual(built.returncode, 0, build_output)
+            self.assertIn("prx image: runtime -> [0x09f00000", build_output.lower())
+            self.assertIn("0 failures", build_output)
+
+            env["SR_TEST_GUEST_MODULE_LOAD"] = "collision"
+            collided = subprocess.run(
+                [str(exe), "--title-config"],
+                cwd=ROOT, capture_output=True, text=True, env=env, timeout=60,
+            )
+            collision_output = collided.stdout + collided.stderr
+            self.assertEqual(collided.returncode, 0, collision_output)
+            self.assertIn("GUEST_MODULE_LOAD_ADDRESS_COLLISION", collision_output)
+            self.assertIn("0 failures", collision_output)
+
+            env["SR_TEST_GUEST_MODULE_LOAD"] = "missing"
+            missing = subprocess.run(
+                [str(exe), "--title-config"],
+                cwd=ROOT, capture_output=True, text=True, env=env, timeout=60,
+            )
+            missing_output = missing.stdout + missing.stderr
+            self.assertEqual(missing.returncode, 0, missing_output)
+            self.assertIn("GUEST_MODULE_INPUT_MISSING", missing_output)
+            self.assertIn("0 failures", missing_output)
+
     def test_generic_profile_rejects_diagnostics_even_when_requested(self):
         make = shutil.which("mingw32-make")
         if not make:

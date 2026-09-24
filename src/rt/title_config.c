@@ -19,7 +19,7 @@
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 5
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 6
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
@@ -55,12 +55,13 @@ _Static_assert(sizeof s_callback_terminators / sizeof s_callback_terminators[0]
                "generated callback-terminator list does not match its declared count");
 
 /* Guest PRX modules and their load bases: the same manifest list the recompiler used for
- * GAME_EXTRA_ELFS, so code and data agree on one address per module. */
-typedef struct { const char *name; const char *guest_path; uint32_t base; } SrTitleGuestModule;
-#define SR_TITLE_CFG_GUEST_MODULE(n, p, b) { (n), (p), (b) },
+ * GAME_EXTRA_ELFS, so code and data agree on one address per module. Required modules fail
+ * closed when the staged image is absent; optional modules may be supplied by host HLE. */
+typedef struct { const char *name; const char *guest_path; uint32_t base; int required; } SrTitleGuestModule;
+#define SR_TITLE_CFG_GUEST_MODULE(n, p, b, r) { (n), (p), (b), (r) },
 static const SrTitleGuestModule s_guest_modules[] = {
     SR_TITLE_CONFIG_GUEST_MODULE_LIST
-    { "", "", 0u }  /* placeholder: never read; the count is the authority */
+    { "", "", 0u, 0 }  /* placeholder: never read; the count is the authority */
 };
 #undef SR_TITLE_CFG_GUEST_MODULE
 _Static_assert(sizeof s_guest_modules / sizeof s_guest_modules[0]
@@ -77,7 +78,8 @@ static int ascii_ieq(const char *a, const char *b) {
     return *a == *b;
 }
 
-int sr_title_config_guest_module(const char *guest_path, const char **name_out, uint32_t *base_out) {
+int sr_title_config_guest_module(const char *guest_path, const char **name_out,
+                                 uint32_t *base_out, int *required_out) {
     if (!guest_path) return 0;
     /* The list ends at the placeholder (empty name); scanning to it rather than
      * comparing against the count keeps a zero-module build free of a constant
@@ -86,6 +88,7 @@ int sr_title_config_guest_module(const char *guest_path, const char **name_out, 
         if (m->guest_path[0] && ascii_ieq(m->guest_path, guest_path)) {
             if (name_out) *name_out = m->name;
             if (base_out) *base_out = m->base;
+            if (required_out) *required_out = m->required;
             return 1;
         }
     }
@@ -99,11 +102,12 @@ unsigned sr_title_config_guest_module_count(void) {
 }
 
 int sr_title_config_guest_module_at(unsigned index, const char **name_out, const char **guest_path_out,
-                                    uint32_t *base_out) {
+                                    uint32_t *base_out, int *required_out) {
     if (index >= sr_title_config_guest_module_count()) return 0;
     if (name_out) *name_out = s_guest_modules[index].name;
     if (guest_path_out) *guest_path_out = s_guest_modules[index].guest_path;
     if (base_out) *base_out = s_guest_modules[index].base;
+    if (required_out) *required_out = s_guest_modules[index].required;
     return 1;
 }
 
