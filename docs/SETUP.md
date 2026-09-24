@@ -203,9 +203,9 @@ measured and what that does and does not establish.
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files; this repository ships no decryption tools or keys and does not document how to
-obtain decrypted files. Whether any lawful decryption capability can be offered is an open
-maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). When you already have plain modules from your own
+ELF/PRX files; this repository ships no decryption tools or keys. For what the player needs
+and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). Whether
+any lawful decryption capability can be offered is an open maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). When you already have plain modules from your own
 lawfully obtained copy, place them at the paths the local manifest expects, for example:
 
 ```text
