@@ -295,9 +295,12 @@ The output directory must be untracked and dedicated. The package schema and exp
 semantic-boundary records are defined in
 [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#5-local-aot-package-contract-v1).
 Inputs whose paths contain spaces or shell-sensitive characters (common under a Windows profile
-directory) are copied into `<output-dir>/staged-inputs/` so the Make recipes can use them. The
-output directory itself must not contain such characters; otherwise the route stops with the
-named `PACKAGE_UNSUPPORTED_PATH` boundary tracked by #296.
+directory) are copied into `<output-dir>/staged-inputs/` so the Make recipes can use them. When the
+output directory contains spaces, the route builds in a Make-safe workspace—resolved from
+`NK_BUILD_ROOT` if set, or the parent directory's 8.3 short name on Windows—and atomically promotes
+the finished package to the destination. If neither fallback is available, or if the path contains
+characters that Make recipes cannot quote, the route stops with the named `PACKAGE_UNSUPPORTED_PATH`
+boundary tracked by #296.
 
 `assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
