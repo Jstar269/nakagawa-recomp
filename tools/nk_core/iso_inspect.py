@@ -271,6 +271,7 @@ def write_experimental_profile(
             "device_prefixes": ["disc0:", "ms0:"],
         },
         "hle_profile": "generic",
+        "codegen_profile": "none",
         "feature_requirements": [],
         "verification_profile": "experimental-unverified",
     })
@@ -279,6 +280,7 @@ def write_experimental_profile(
     selected_path = ""
     executable_sha256: str | None = None
     elf_sha256: str | None = None
+    executable_entry = 0
     if selected is not None:
         selected_path = f"PSP_GAME/SYSDIR/{selected}"
         digest = hashlib.sha256()
@@ -292,6 +294,17 @@ def write_experimental_profile(
             lba, size = extent
             if size <= 0 or size > MAX_EXECUTABLE_BYTES:
                 raise IsoInspectionError("selected executable is outside the supported hashing bound")
+            header = _read_iso_extent(stream, file_size, lba, size, 0, min(size, 52))
+            if len(header) < 52 or header[:7] != b"\x7fELF\x01\x01\x01":
+                raise IsoInspectionError("selected executable has no supported little-endian ELF32 header")
+            e_type, machine, version = struct.unpack_from("<HHI", header, 16)
+            if machine != 8 or version != 1:
+                raise IsoInspectionError("selected executable is not a supported MIPS ELF32 image")
+            if e_type not in (2, 3):
+                raise IsoInspectionError(
+                    "experimental import needs a user-supplied load binding for relocatable ELF input (#308)"
+                )
+            executable_entry = struct.unpack_from("<I", header, 24)[0]
             offset = 0
             while offset < size:
                 count = min(64 * 1024, size - offset)
@@ -302,6 +315,7 @@ def write_experimental_profile(
                 offset += count
         executable_sha256 = digest.hexdigest()
         elf_sha256 = executable_sha256
+    manifest["executable"]["entry"] = executable_entry
 
     profile = {
         "schema_version": EXPERIMENTAL_PROFILE_SCHEMA_VERSION,

@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -30,6 +33,7 @@ from nk_core.iso_inspect import (
     _lookup_iso_file,
     _read_iso_extent,
     inspect_compatibility_preflight,
+    write_experimental_profile,
 )
 import title_manifest
 
@@ -259,7 +263,7 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         shutil.copyfile(found, package_dir / "SDL3.dll")
 
 
-def cmd_build_package(args: argparse.Namespace) -> int:
+def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
     disc_id = args.disc_id.upper()
     if not re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id):
         sys.stderr.write("Build refused: disc ID must be a nine-character PSP ID.\n")
@@ -342,11 +346,17 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         else:
             import shlex
             print("COMMAND: " + shlex.join(command))
+        compile_started = time.perf_counter()
         completed = subprocess.run(command, cwd=ROOT, env=_runtime_build_environment(),
                                    capture_output=True, text=True, check=False)
         if completed.stdout:
             sys.stdout.write(completed.stdout)
         if completed.returncode != 0:
+            if stage_observer is not None:
+                stage_observer(
+                    "compile", "FAIL",
+                    int((time.perf_counter() - compile_started) * 1000),
+                )
             if completed.stderr:
                 sys.stderr.write(completed.stderr)
             if "PUBLIC_SAFE=0 requires the private PGF and PGD backends" in (
@@ -360,6 +370,12 @@ def cmd_build_package(args: argparse.Namespace) -> int:
             if "PACKAGE_UNSUPPORTED_PATH" in completed.stderr or "PACKAGE_UNSUPPORTED_PATH" in completed.stdout:
                 raise PackageBuildError("The #296 package route does not yet support a user-data path containing shell-sensitive characters.")
             return completed.returncode
+        if stage_observer is not None:
+            stage_observer(
+                "compile", "PASS",
+                int((time.perf_counter() - compile_started) * 1000),
+            )
+        package_started = time.perf_counter()
         _stage_runtime_assets(build_dir)
 
         package_json = json.loads((build_dir / "package.json").read_text(encoding="utf-8"))
@@ -388,6 +404,11 @@ def cmd_build_package(args: argparse.Namespace) -> int:
                 os.replace(backup, target_dir)
             raise
         print(f"PACKAGE: {target_dir}")
+        if stage_observer is not None:
+            stage_observer(
+                "build_package", "PASS",
+                int((time.perf_counter() - package_started) * 1000),
+            )
         return 0
     except (PackageBuildError, OSError, ValueError, KeyError, TypeError) as exc:
         sys.stderr.write(f"Package build refused: {exc}\n")
@@ -472,6 +493,468 @@ def cmd_launch(args: argparse.Namespace) -> int:
         return 1
 
 
+BRINGUP_STAGES = (
+    "inspect", "prepare_import", "analyze", "codegen", "compile",
+    "build_package", "launch",
+)
+BRINGUP_SCHEMA_PATH = ROOT / "assets" / "bringup_report.schema.json"
+
+
+def _schema_at_pointer(schema: dict, pointer: str) -> dict:
+    value = schema
+    for part in pointer.removeprefix("#/").split("/"):
+        value = value[part.replace("~1", "/").replace("~0", "~")]
+    return value
+
+
+def _validate_schema_value(value, schema: dict, root_schema: dict, location: str) -> None:
+    reference = schema.get("$ref")
+    if reference is not None:
+        if not reference.startswith("#/"):
+            raise ValueError("external schema references are not supported")
+        _validate_schema_value(value, _schema_at_pointer(root_schema, reference), root_schema, location)
+        return
+
+    expected = schema.get("type")
+    if expected is not None:
+        expected_types = expected if isinstance(expected, list) else [expected]
+        matches = any(
+            (kind == "object" and isinstance(value, dict)) or
+            (kind == "array" and isinstance(value, list)) or
+            (kind == "string" and isinstance(value, str)) or
+            (kind == "integer" and isinstance(value, int) and not isinstance(value, bool)) or
+            (kind == "number" and isinstance(value, (int, float)) and not isinstance(value, bool)) or
+            (kind == "boolean" and isinstance(value, bool)) or
+            (kind == "null" and value is None)
+            for kind in expected_types
+        )
+        if not matches:
+            raise ValueError(f"{location} has the wrong JSON type")
+    if "const" in schema and value != schema["const"]:
+        raise ValueError(f"{location} does not match its schema constant")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{location} is outside its schema enum")
+    if isinstance(value, str) and "pattern" in schema and not re.fullmatch(schema["pattern"], value):
+        raise ValueError(f"{location} is outside its schema pattern")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            raise ValueError(f"{location} is below its schema minimum")
+    if isinstance(value, list):
+        if schema.get("uniqueItems") and len(value) != len({json.dumps(item, sort_keys=True) for item in value}):
+            raise ValueError(f"{location} contains duplicate items")
+        item_schema = schema.get("items")
+        if item_schema is not None:
+            for index, item in enumerate(value):
+                _validate_schema_value(item, item_schema, root_schema, f"{location}[{index}]")
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        missing = [name for name in required if name not in value]
+        if missing:
+            raise ValueError(f"{location} is missing a required field")
+        property_names = schema.get("propertyNames")
+        for name in value:
+            if property_names is not None:
+                _validate_schema_value(name, property_names, root_schema, f"{location} property name")
+            if name in properties:
+                _validate_schema_value(value[name], properties[name], root_schema, f"{location}.{name}")
+            elif schema.get("additionalProperties") is False:
+                raise ValueError(f"{location} contains a non-whitelisted field")
+            elif isinstance(schema.get("additionalProperties"), dict):
+                _validate_schema_value(
+                    value[name], schema["additionalProperties"], root_schema, f"{location}.{name}"
+                )
+
+
+def validate_bringup_report(report: dict) -> None:
+    """Validate the report against its checked-in, strict public-safe schema."""
+    schema = json.loads(BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
+    _validate_schema_value(report, schema, schema, "report")
+
+
+def _new_bringup_report() -> dict:
+    return {
+        "schema_version": 1,
+        "reached_stage": "none",
+        "stages": {
+            stage: {"status": "NOT_RUN", "duration_ms": 0}
+            for stage in BRINGUP_STAGES
+        },
+        "preflight_checks": [],
+        "failure_class": "NONE",
+        "issue_numbers": [],
+        "unsupported_imports": [],
+        "counts": {
+            "functions": None,
+            "instructions": None,
+            "modules": None,
+            "encrypted_modules": None,
+            "unsupported_opcodes": {},
+        },
+        "exit_classification": "NOT_RUN",
+    }
+
+
+def _update_issues(report: dict, values) -> None:
+    allowed = {71, 118, 285, 295, 296, 297, 298, 300, 308}
+    report["issue_numbers"] = sorted(
+        set(report["issue_numbers"]) | {value for value in values if value in allowed}
+    )
+
+
+def _set_bringup_stage(report: dict, stage: str, status: str, duration_ms: int) -> None:
+    report["reached_stage"] = stage
+    report["stages"][stage] = {
+        "status": status,
+        "duration_ms": max(0, int(duration_ms)),
+    }
+
+
+def _fail_bringup(report: dict, stage: str, failure_class: str, issues=(), duration_ms=0) -> None:
+    _set_bringup_stage(report, stage, "FAIL", duration_ms)
+    report["failure_class"] = failure_class
+    _update_issues(report, issues)
+
+
+def _sanitized_checks(preflight: dict) -> list[dict]:
+    known_codes = {
+        "DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE",
+        "SYSTEM_FONTS", "AUDIO_OUTPUT",
+    }
+    known_status = {"OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS"}
+    checks = []
+    for check in preflight.get("checks", []):
+        if check.get("code") not in known_codes or check.get("status") not in known_status:
+            continue
+        checks.append({
+            "code": check["code"],
+            "status": check["status"],
+            "issue_numbers": sorted(set(check.get("issues", []))),
+        })
+    return checks
+
+
+def _write_bringup_report(report: dict, path: Path) -> None:
+    validate_bringup_report(report)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _bringup_human_summary(report: dict) -> str:
+    if report["failure_class"] == "NONE":
+        return f"Bring-up reached {report['reached_stage']}; launch {report['exit_classification'].lower()}."
+    issues = " ".join(f"#{number}" for number in report["issue_numbers"])
+    suffix = f"; in the works ({issues})" if issues else ""
+    return f"Bring-up stopped at {report['reached_stage']}: {report['failure_class']}{suffix}."
+
+
+def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
+                           selected: str, is_experimental: bool) -> None:
+    library_path = user_root / "library.json"
+    games = []
+    if library_path.exists():
+        payload = json.loads(library_path.read_text(encoding="utf-8"),
+                             object_pairs_hook=title_manifest.no_duplicate_keys)
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1 or \
+                not isinstance(payload.get("games"), list):
+            raise PackageBuildError("The bring-up user library has an unsupported schema.")
+        games = [game for game in payload["games"]
+                 if not isinstance(game, dict) or
+                 str(game.get("disc_id", "")).upper() != metadata.disc_id.upper()]
+    games.append({
+        "disc_id": metadata.disc_id.upper(),
+        "title_id": title_id,
+        "iso_path": str(iso_path),
+        "selected_executable": selected,
+        "is_experimental": is_experimental,
+    })
+    _write_private_file(library_path, json.dumps({"schema_version": 1, "games": games},
+                                                sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _public_import_rows(rows: list[dict]) -> list[dict]:
+    identifier = re.compile(r"^[A-Za-z][A-Za-z0-9_.$-]{0,63}$")
+    symbol = re.compile(r"^[A-Za-z_][A-Za-z0-9_.$-]{0,95}$")
+    result = []
+    for row in rows:
+        library = row.get("library")
+        name = row.get("name")
+        if not isinstance(library, str) or not identifier.fullmatch(library):
+            continue
+        result.append({
+            "library": library,
+            "nid_name": name if isinstance(name, str) and symbol.fullmatch(name) else None,
+        })
+    return sorted(result, key=lambda row: (row["library"], row["nid_name"] or ""))
+
+
+def _count_instructions(sources: list[dict]) -> int:
+    return sum((end - start) // 4 for source in sources
+               for start, end in source.get("ranges", []))
+
+
+def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dict[str, int]:
+    import analyze
+    import title_codegen_plan
+
+    if not codegen_report.is_file():
+        return {}
+    _regions, instructions = title_codegen_plan._read_codegen_fallbacks(codegen_report, sources)
+    counts = Counter()
+    for row in instructions:
+        if row.get("word") is None:
+            continue
+        word = int(row["word"], 16)
+        mnemonic = analyze._cfg_opcode_identity(word)["mnemonic"].upper()
+        counts[mnemonic] += 1
+    return dict(sorted(counts.items()))
+
+
+def cmd_bringup(args: argparse.Namespace) -> int:
+    """Run the consumer route while writing only schema-checked safe evidence."""
+    report = _new_bringup_report()
+    report_path = Path(args.report).expanduser().resolve(strict=False)
+    try:
+        work_dir = _user_data_root(Path(args.work_dir))
+        work_dir.mkdir(parents=True, exist_ok=True)
+        user_root = _user_data_root(work_dir / "user-data")
+        if not user_root.is_relative_to(work_dir):
+            raise PackageBuildError("Bring-up user data escaped the selected work directory.")
+        user_root.mkdir(parents=True, exist_ok=True)
+        iso_path = Path(args.iso).expanduser().resolve(strict=True)
+    except (PackageBuildError, OSError, ValueError):
+        _fail_bringup(report, "inspect", "INVALID_ISO")
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+
+    started = time.perf_counter()
+    try:
+        metadata = inspect_iso(iso_path)
+        preflight = inspect_compatibility_preflight(
+            iso_path, metadata=metadata, runtime_root=user_root
+        )
+    except Exception:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        _fail_bringup(report, "inspect", "INVALID_ISO", duration_ms=elapsed)
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    report["preflight_checks"] = _sanitized_checks(preflight)
+    checks = {check["code"]: check for check in report["preflight_checks"]}
+    disc_ok = checks.get("DISC_SFO", {}).get("status") == "OK"
+    executable_ok = checks.get("EXECUTABLE", {}).get("status") == "OK"
+    selected = preflight.get("selected_executable")
+    if not disc_ok:
+        _fail_bringup(report, "inspect", "INVALID_ISO",
+                      checks.get("DISC_SFO", {}).get("issue_numbers", []),
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    if not executable_ok or selected not in {"EBOOT.BIN", "BOOT.BIN"}:
+        exec_issues = checks.get("EXECUTABLE", {}).get("issue_numbers", [])
+        failure = "EXECUTABLE_UNSUPPORTED" if exec_issues else "INVALID_ISO"
+        _fail_bringup(report, "inspect", failure, exec_issues,
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    _set_bringup_stage(report, "inspect", "PASS", int((time.perf_counter() - started) * 1000))
+
+    started = time.perf_counter()
+    try:
+        if metadata.matched_profile is None:
+            profile_path = write_experimental_profile(
+                iso_path, user_root, metadata=metadata
+            )
+            profile = json.loads(profile_path.read_text(encoding="utf-8"),
+                                 object_pairs_hook=title_manifest.no_duplicate_keys)
+            manifest = title_manifest.validate_manifest(profile["manifest"])
+            title_id = manifest["id"]
+            is_experimental = True
+        else:
+            _manifest_source, manifest = _find_public_manifest(metadata.matched_profile.id)
+            title_id = manifest["id"]
+            is_experimental = False
+        _write_bringup_library(
+            user_root, iso_path, metadata, title_id, str(selected).upper(), is_experimental
+        )
+        selected_elf = work_dir / "selected.elf"
+        _extract_iso_executable(iso_path, str(selected).upper(), selected_elf)
+    except Exception as exc:
+        failure = "EXPERIMENTAL_IMPORT_FAILED"
+        issues = [308]
+        if isinstance(exc, IsoInspectionError) and "load binding" in str(exc):
+            failure = "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED"
+        if checks.get("EXECUTABLE", {}).get("issue_numbers"):
+            if failure == "EXPERIMENTAL_IMPORT_FAILED":
+                issues = checks["EXECUTABLE"]["issue_numbers"]
+        _fail_bringup(report, "prepare_import", failure, issues,
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    _set_bringup_stage(report, "prepare_import", "PASS", int((time.perf_counter() - started) * 1000))
+    report["counts"]["modules"] = len(manifest.get("modules", []))
+    if not metadata.matched_profile:
+        _update_issues(report, [285, 308])
+
+    started = time.perf_counter()
+    try:
+        import title_codegen_plan
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            sources, analysis_summary, unsupported_imports, _diagnostics = \
+                title_codegen_plan._make_input_images(
+                    manifest, selected_elf, None, None, set()
+                )
+        report["counts"]["functions"] = int(analysis_summary["analyzed_functions"])
+        report["counts"]["instructions"] = _count_instructions(sources)
+        report["unsupported_imports"] = _public_import_rows(unsupported_imports)
+    except Exception:
+        _fail_bringup(report, "analyze", "ANALYSIS_FAILED", [296],
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    _set_bringup_stage(report, "analyze", "PASS", int((time.perf_counter() - started) * 1000))
+    _update_issues(report, [71] if report["unsupported_imports"] else [])
+
+    started = time.perf_counter()
+    codegen_dir = work_dir / "codegen-stage"
+    try:
+        import title_codegen_plan
+        codegen_dir.mkdir(parents=True, exist_ok=True)
+        if not codegen_dir.resolve().is_relative_to(work_dir):
+            raise PackageBuildError("Code generation output escaped the work directory.")
+        plan = title_codegen_plan.build_plan(
+            manifest,
+            game_name=manifest["game_name"],
+            game_elf=selected_elf,
+            build_dir=codegen_dir,
+            codegen_profile=manifest.get("codegen_profile"),
+            python_command=sys.executable,
+        )
+        env = _runtime_build_environment()
+        env.update(plan["environment"])
+        command = list(plan["commands"]["codegen"])
+        if command and command[0] == "python":
+            command[0] = sys.executable
+        completed = subprocess.run(
+            command, cwd=ROOT, env=env, capture_output=True, text=True,
+            check=False,
+        )
+        report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
+            codegen_dir / f"{manifest['game_name']}_recomp_stubs.txt", sources
+        )
+        if completed.returncode != 0:
+            _fail_bringup(report, "codegen", "CODEGEN_FAILED", [296],
+                          int((time.perf_counter() - started) * 1000))
+            _write_bringup_report(report, report_path)
+            print(_bringup_human_summary(report))
+            return 1
+    except Exception:
+        _fail_bringup(report, "codegen", "CODEGEN_FAILED", [296],
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    _set_bringup_stage(report, "codegen", "PASS", int((time.perf_counter() - started) * 1000))
+
+    observer_events = {}
+    def observe_package_stage(stage, status, duration_ms):
+        observer_events[stage] = (status, duration_ms)
+        _set_bringup_stage(report, stage, status, duration_ms)
+
+    build_args = argparse.Namespace(
+        disc_id=metadata.disc_id,
+        user_data_root=user_root,
+        module_dir=None,
+        psp_header=None,
+    )
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+    with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+        build_status = cmd_build_package(build_args, stage_observer=observe_package_stage)
+    if build_status != 0:
+        combined = (stdout_capture.getvalue() + stderr_capture.getvalue()).casefold()
+        if "production pgf/pgd runtime backends" in combined:
+            failure, stage, issues = "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE", "compile", [297]
+        elif "package_build_failed" in combined or observer_events.get("compile", (None,))[0] == "FAIL":
+            failure, stage, issues = "COMPILE_FAILED", "compile", [296]
+        else:
+            failure, stage, issues = "BUILD_PACKAGE_FAILED", "build_package", [296, 297]
+        if report["stages"][stage]["status"] == "NOT_RUN":
+            _fail_bringup(report, stage, failure, issues, 0)
+        else:
+            report["failure_class"] = failure
+            _update_issues(report, issues)
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    if report["stages"]["compile"]["status"] == "NOT_RUN":
+        _set_bringup_stage(report, "compile", "PASS", 0)
+    if report["stages"]["build_package"]["status"] == "NOT_RUN":
+        _set_bringup_stage(report, "build_package", "PASS", 0)
+
+    started = time.perf_counter()
+    package_dir = user_root / "packages" / metadata.disc_id.upper()
+    try:
+        package = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+        executable = package_dir / package["executable"]["path"]
+        if not executable.is_file():
+            raise PackageBuildError("The generated package executable is missing.")
+        env = os.environ.copy()
+        env.update({
+            "SR_DISPATCH_FATAL": "1",
+            "SDL_VIDEODRIVER": "dummy",
+            "SDL_AUDIODRIVER": "dummy",
+            "PSP_ISO": str(iso_path),
+            "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
+        })
+        timeout = max(1, min(int(args.launch_timeout), 120))
+        process = subprocess.Popen(
+            [str(executable)], cwd=package_dir, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
+        try:
+            launch_output, _ = process.communicate(timeout=timeout)
+            report["exit_classification"] = "EXITED_ZERO" if process.returncode == 0 else "EXITED_NONZERO"
+            if process.returncode != 0:
+                folded = launch_output.casefold()
+                if "no available video device" in folded or "video driver" in folded:
+                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
+                    report["exit_classification"] = "HEADLESS_UNAVAILABLE"
+                elif "unknown nid" in folded or "unimplemented import" in folded:
+                    failure, issues = "UNSUPPORTED_IMPORT", [71]
+                elif "unsupported instruction" in folded or "aot-gap" in folded:
+                    failure, issues = "UNSUPPORTED_INSTRUCTION", [118]
+                else:
+                    failure, issues = "LAUNCH_FAILED", [297]
+                _fail_bringup(report, "launch", failure, issues,
+                              int((time.perf_counter() - started) * 1000))
+            else:
+                _set_bringup_stage(report, "launch", "PASS",
+                                   int((time.perf_counter() - started) * 1000))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            report["exit_classification"] = "TIMED_OUT"
+            _fail_bringup(report, "launch", "LAUNCH_TIMEOUT", [297],
+                          int((time.perf_counter() - started) * 1000))
+    except OSError:
+        report["exit_classification"] = "EXITED_NONZERO"
+        _fail_bringup(report, "launch", "LAUNCH_FAILED", [297],
+                      int((time.perf_counter() - started) * 1000))
+
+    _write_bringup_report(report, report_path)
+    print(_bringup_human_summary(report))
+    return 0 if report["failure_class"] == "NONE" else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Nakagawa Recomp Headless CLI")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
@@ -505,6 +988,18 @@ def main() -> int:
     p_build.add_argument("--psp-header", type=Path,
                          help="PSP header required by some title manifests")
     p_build.set_defaults(func=cmd_build_package)
+
+    p_bringup = subparsers.add_parser(
+        "bringup", help="Run and report a sanitized PSP ISO consumer bring-up"
+    )
+    p_bringup.add_argument("iso", help="Path to the PSP ISO image")
+    p_bringup.add_argument("--work-dir", required=True,
+                           help="Private work directory outside the repository")
+    p_bringup.add_argument("--report", required=True,
+                           help="Destination for the public-safe JSON report")
+    p_bringup.add_argument("--launch-timeout", type=int, default=20,
+                           help="Hard launch limit in seconds (1..120; default 20)")
+    p_bringup.set_defaults(func=cmd_bringup)
 
     args = parser.parse_args()
     return args.func(args)

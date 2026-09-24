@@ -689,7 +689,8 @@ int main(int argc, char **argv) {{
         self.assertEqual(manifest["disc"]["id"], "ULUS99998")
         self.assertEqual(manifest["display_name"], "Experimental Fixture")
         self.assertEqual(manifest["executable"]["base"], 0)
-        self.assertEqual(manifest["executable"]["entry"], 0)
+        self.assertEqual(manifest["executable"]["entry"], 0x08800000)
+        self.assertEqual(manifest["codegen_profile"], "none")
         self.assertEqual(manifest["modules"], [])
         self.assertEqual(identity["selected_executable"], "PSP_GAME/SYSDIR/EBOOT.BIN")
         self.assertEqual(identity["executable_sha256"], expected_hash)
@@ -711,6 +712,19 @@ int main(int argc, char **argv) {{
         self.assertEqual(native_manifest["id"], "experimental-ulus99998")
         self.assertEqual(native_profile["input_identity"]["executable_sha256"], expected_hash)
         self.assertEqual(native_profile["input_identity"]["elf_sha256"], expected_hash)
+
+    def test_experimental_import_requires_load_binding_for_relocatable_elf(self) -> None:
+        """ET_SCE_PRX input must stop before profile creation when no load base is supplied."""
+        iso_file = self.temp_dir / "relocatable_experimental.iso"
+        create_test_iso_with_executables(
+            iso_file, build_plain_mips_elf(e_type=0xFFA0),
+            disc_id="ULUS99997", title="Synthetic Relocatable Fixture",
+        )
+        user_root = self.temp_dir / "relocatable-user-data"
+        metadata = inspect_iso(iso_file)
+        with self.assertRaisesRegex(ValueError, "load binding.*#308"):
+            write_experimental_profile(iso_file, user_root, metadata=metadata)
+        self.assertFalse((user_root / "experimental").exists())
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""

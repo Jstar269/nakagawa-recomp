@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,12 +29,14 @@ if str(TOOLS) not in sys.path:
 
 import analyze  # noqa: E402
 import imports as imports_tool  # noqa: E402
+import nk_cli  # noqa: E402
 import prxload  # noqa: E402
 import title_codegen_plan  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_psp_container,
     create_test_iso_with_executables,
 )
+from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
 
 
 SPEC = importlib.util.spec_from_file_location("production_smoke_generator", GENERATOR_PATH)
@@ -716,6 +721,142 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertIn("PACKAGE_INVALID_ELF:", completed.stderr)
         self.assertFalse((bad_output / "package.json").exists())
         self.assertFalse((bad_output / "build-report.json").exists())
+
+
+class TestSanitizedBringup(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="nk-bringup-report-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        executable, _stub = build_synthetic_import_prx(b"sceSynthetic", 0)
+        executable = bytearray(executable)
+        struct.pack_into("<H", executable, 16, 2)
+        phoff = struct.unpack_from("<I", executable, 28)[0]
+        struct.pack_into("<I", executable, phoff + 28, 0x100)
+        self.iso = self.root / "synthetic.iso"
+        create_test_iso_with_executables(
+            self.iso, bytes(executable), disc_id="ULUS99998",
+            title="Synthetic Bring-up",
+        )
+
+    def _run_case(self, failure=None, *, launch_code=0, launch_output="", timeout=False):
+        case_root = self.root / (failure or "success")
+        report_path = case_root / "bringup.json"
+        args = argparse.Namespace(
+            iso=str(self.iso),
+            work_dir=str(case_root / "work"),
+            report=str(report_path),
+            launch_timeout=1,
+        )
+        globals_timeout = timeout
+
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = launch_code
+
+            def communicate(self, timeout=None):
+                if timeout is not None and globals_timeout:
+                    raise subprocess.TimeoutExpired("synthetic-runtime", timeout)
+                return launch_output, None
+
+            def kill(self):
+                self.returncode = -9
+
+        def fake_package_build(build_args, stage_observer=None):
+            if failure == "compile":
+                stage_observer("compile", "FAIL", 3)
+                return 1
+            if failure == "build_package":
+                return 1
+            stage_observer("compile", "PASS", 3)
+            package_dir = build_args.user_data_root / "packages" / "ULUS99998"
+            package_dir.mkdir(parents=True, exist_ok=True)
+            (package_dir / "runtime.exe").write_bytes(b"synthetic runtime marker")
+            (package_dir / "package.json").write_text(
+                json.dumps({
+                    "executable": {"path": "runtime.exe"},
+                    "required_local_assets": [{"path": "data"}],
+                }),
+                encoding="utf-8",
+            )
+            stage_observer("build_package", "PASS", 2)
+            return 0
+
+        completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(nk_cli.subprocess, "run", return_value=completed))
+            stack.enter_context(mock.patch.object(
+                nk_cli.subprocess, "Popen", return_value=FakeProcess()
+            ))
+            stack.enter_context(mock.patch.object(
+                nk_cli, "cmd_build_package", side_effect=fake_package_build
+            ))
+            if failure == "prepare_import":
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "write_experimental_profile", side_effect=RuntimeError("synthetic refusal")
+                ))
+            if failure == "analyze":
+                stack.enter_context(mock.patch.object(
+                    title_codegen_plan, "_make_input_images", side_effect=RuntimeError("synthetic refusal")
+                ))
+            if failure == "inspect":
+                broken_iso = case_root / "broken.iso"
+                broken_iso.parent.mkdir(parents=True, exist_ok=True)
+                broken_iso.write_bytes(b"invalid synthetic image")
+                args.iso = str(broken_iso)
+            with mock.patch("builtins.print"):
+                status = nk_cli.cmd_bringup(args)
+        return status, json.loads(report_path.read_text(encoding="utf-8"))
+
+    def test_synthetic_consumer_stages_succeed_and_report_is_sanitized(self):
+        status, report = self._run_case()
+        self.assertEqual(status, 0)
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertTrue(all(stage["status"] == "PASS" for stage in report["stages"].values()))
+        self.assertGreater(report["counts"]["functions"], 0)
+        self.assertGreater(report["counts"]["instructions"], 0)
+        nk_cli.validate_bringup_report(report)
+
+    def test_each_stage_failure_is_named_in_the_report(self):
+        expected = {
+            "inspect": "INVALID_ISO",
+            "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
+            "analyze": "ANALYSIS_FAILED",
+            "codegen": "CODEGEN_FAILED",
+            "compile": "COMPILE_FAILED",
+            "build_package": "BUILD_PACKAGE_FAILED",
+            "launch": "UNSUPPORTED_INSTRUCTION",
+        }
+        for stage, failure_class in expected.items():
+            with self.subTest(stage=stage):
+                output, report = self._run_case(
+                    stage,
+                    launch_code=1 if stage == "launch" else 0,
+                    launch_output="unsupported instruction" if stage == "launch" else "",
+                )
+                self.assertNotEqual(output, 0)
+                self.assertEqual(report["reached_stage"], stage)
+                self.assertEqual(report["failure_class"], failure_class)
+                self.assertEqual(report["stages"][stage]["status"], "FAIL")
+                nk_cli.validate_bringup_report(report)
+
+    def test_launch_timeout_is_a_bounded_reported_exit(self):
+        status, report = self._run_case(timeout=True)
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "LAUNCH_TIMEOUT")
+        self.assertEqual(report["exit_classification"], "TIMED_OUT")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+
+    def test_report_schema_rejects_unwhitelisted_and_address_shaped_values(self):
+        report = nk_cli._new_bringup_report()
+        report["guest_pc"] = "0x08800000"
+        with self.assertRaisesRegex(ValueError, "non-whitelisted"):
+            nk_cli.validate_bringup_report(report)
+        report = nk_cli._new_bringup_report()
+        report["unsupported_imports"] = [{"library": "sceKernel", "nid_name": "0x08800000"}]
+        with self.assertRaises(ValueError):
+            nk_cli.validate_bringup_report(report)
 
 
 if __name__ == "__main__":
