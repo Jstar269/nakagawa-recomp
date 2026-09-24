@@ -18,6 +18,7 @@
 #include "recomp.h"
 #include "debug.h"
 #include "title_config.h"
+#include "flight_recorder.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -350,6 +351,7 @@ int main(int argc, char **argv) {
     const char *ref_trace, *out;
     DriverExpectedU32 expectations[DRIVER_MAX_EXPECT_U32];
     memset(expectations, 0, sizeof(expectations));
+    sr_flight_init();
 
 #ifndef SR_SELFTEST_ONLY
 #ifdef _WIN32

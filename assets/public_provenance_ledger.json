@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "8260a35952fb8a771a1ab7e7ed10203b3d0abbf8afd5f13f3b55262eeb60e780"
+      "sha256": "39ab2a9d7bdd63a76b4f8d3cf94bec0d7a18c717c3bfc35ceef8cae214cdc197"
     },
     {
       "path": "NOTICE.md",
@@ -388,6 +388,18 @@
       "sha256": "5620aee90be59409b5e1b374735f3a4cbd9d605e7543352123ba439d8923b18c"
     },
     {
+      "path": "assets/flight_recorder_schema.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "flight-recorder-320",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6903d06563e649857bc5ebad67390c415159eeed69f21188660c85a94d4860df"
+    },
+    {
       "path": "assets/issue_routing.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -426,7 +438,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d28af8cc6e975fadc4fa6a6fc77317cb856267fee3907c35a065f88e95ee03a2"
+      "sha256": "1c48e2859c2851357ddcde2c893e5dfaf08fb8d16ff41fa06bff670f4d7a115e"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -1110,7 +1122,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c7910b8e776e9c7f1d0b9b26a92908158e254bc822ce446ed070b1a15090d3ec"
+      "sha256": "928d9f9542591a084f0ed104ca620b4874e6f48ae395b1af31412b7b763a61ea"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -1365,7 +1377,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d8f45c5836186bbf288c9520438a7c5cacf453e8bbd26c5b814f730531c6b73c"
+      "sha256": "4a89752a4509cd5c523a04ba1884f2a967f5c929e6211c092c51f192092d4fb7"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -3600,7 +3612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8690d6ed57793817d085bb60f67b9375f3459307c354dae3165e790a7d7b82e"
+      "sha256": "6b5f39289969a436b58617592072a1ac2d4a39914b09434b3b21cc40ad249190"
     },
     {
       "path": "nk_manager.ps1",
@@ -5323,7 +5335,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ced4bda3ac652cbd3f0ab48ae49082ca00d8afe7c821ccc6d6162b1c629e98a5"
+      "sha256": "445ff896463635a7bd9355a1d530a67d3332e9abff7659b0e08890c862c29a0a"
     },
     {
       "path": "src/rt/cpu_lle.h",
@@ -5431,7 +5443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a06a2fae8db41412f8d8bba7d5091c8a935e01f8dc7de7ab27f55a012a6bdca4"
+      "sha256": "c3fe2f13e1d8195c1991cd2ea9cef8fd6a507c396042594e6cb46b64cbe1d63d"
     },
     {
       "path": "src/rt/domain_mode.h",
@@ -5470,7 +5482,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "48de7f5cef4537e089b3897c48e7ab619ef169d5764d3654e18649526d4e007f"
+      "sha256": "292c506aeb55335d1654efbef3e287b5f6cdcf38e87547e02ea738e9708bea0d"
     },
     {
       "path": "src/rt/evf.h",
@@ -5519,6 +5531,30 @@
         "upstream_attribution": null
       },
       "sha256": "5ab5aa272f845aaae3e6b487268d33444cfd00895a19b729a8b14223f80dfdad"
+    },
+    {
+      "path": "src/rt/flight_recorder.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "flight-recorder-320",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "94f8709d9cf6ad323fb88316dcd6720aaf7d41fc081cfbe4c1c0b7317a696b17"
+    },
+    {
+      "path": "src/rt/flight_recorder.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "flight-recorder-320",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "8a05fabfd6fafc4baf65b69f033d80232e8668ac8f2c2643d41aee47fdeecaf9"
     },
     {
       "path": "src/rt/fp_convert.h",
@@ -5990,7 +6026,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "b9214be56d70f991d8adc5626e6ae5e5a8f84b4b68c52dc0c907a8f5684d787e"
+      "sha256": "4b84188dd822486979355a68e3ae7b88708fd4e7fe0aa7c15ea9272510e32d34"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6052,7 +6088,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7317b9560d80c6a58fe021e8f90922fac7f38c3af19a3a3cf9a9a3d3817dc83"
+      "sha256": "1dbd803bd2483c7a0eff1913dbf07e2e91e400d2d446afdf38883e08524485e7"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6267,7 +6303,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8b851f05fc880bf8c5864f255b2811ee6ca92acb724130684975ba401c2621e3"
+      "sha256": "cc01c643e68102fb2f9507dea44c362d05f02cd817fd1e41f75045ec48d255d3"
     },
     {
       "path": "src/rt/prx_loader.h",
@@ -6347,7 +6383,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9b8b14b49c239975c84ef64d13030a0404198c93a8cfe9c6b85427f469d5b9bc"
+      "sha256": "d158d715efffafa1b7485febf6b89a019037291904c60e58c7984262cc3e3e76"
     },
     {
       "path": "src/rt/recomp.h",
@@ -6400,7 +6436,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "21d8a41bca136a72511c749e15b18d049e53885260bdd0502b23bc1b71e46ae6"
+      "sha256": "4a3d4b76c027b98903209f8edaf15cd5452b6ead29b85d2050935d3da2a6d993"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -7165,6 +7201,18 @@
       "sha256": "b42d2886ff68d2f3b91b39b4b7e37f96113a130abf33b25600fbdc7534f85caa"
     },
     {
+      "path": "tools/flight_diff.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "flight-recorder-320",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f40c2974f1ec29d65f14fa701cc994d3e51f2d78c0d8369c91f7541d4d7b518a"
+    },
+    {
       "path": "tools/funcdiff_cmp.py",
       "classification": "upstream_derived",
       "evidence": {
@@ -7569,18 +7617,6 @@
         "modification_status": "modified_or_translated; see record"
       },
       "sha256": "d9f18a84c5243a1d7e2c35732561502713342246a6c856b7c7d6704846c3074c"
-    },
-    {
-      "path": "tools/nk_clean.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "preview-first-clean-368",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cdc122a968b6ef7478312ef2e9345e1b73321cea39122f497309c4729c0d6c9d"
     },
     {
       "path": "tools/nk_cli.py",
@@ -8699,6 +8735,18 @@
       "sha256": "02ae49e9df461ce915e66b21187ef48bb5877efa96b19ec4671aaa08605c1539"
     },
     {
+      "path": "tools/test_flight_diff.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "flight-recorder-320",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "68ab18dc11d5566217aefb3df9941c2507660febc815709016630e51fef402f9"
+    },
+    {
       "path": "tools/test_font_provisioning.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9116,18 +9164,6 @@
       "sha256": "b47867bd034d3e239573fb115cd17505f483f6bfba38b12198e67feed2849ea9"
     },
     {
-      "path": "tools/test_nk_clean.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "preview-first-clean-368",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "5f37b620fa7e2c3ed6c64760a3bffe04158843c8a2f9abd8f3bd6f8bd600462c"
-    },
-    {
       "path": "tools/test_nk_core.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9212,7 +9248,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "eabe16080eccc3f3757952592b33893952af5a21dd1af33d4c38debe1940c437"
+      "sha256": "378b3d3d39bedadc5e99a8cd2f61e2189d1b0b89448d05b017cd4b5c13f54378"
     },
     {
       "path": "tools/test_progress_evidence.py",
@@ -9822,18 +9858,6 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "0f3b2d5a6899b3e8ccb0557c35c8bf51b8c93b371a60445e99e3f929d214739d"
-    },
-    {
-      "path": "tools/test_workspace_paths.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "preview-first-clean-368",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "0d79d32eec0e81bed5d2ee2adc1053037df6e399a7cf1829150629d41bad4e64"
     },
     {
       "path": "tools/test_xb_probe.py",
