@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "abbdfb125a5b0a4d6e26d9f150178108b5ece20fb74cc76ceb2de1afc0ed48df"
+      "sha256": "1d3b3f07f227b7ecbd9b6476886fe3034595824bcb2807f5cf2500bc5b298e89"
     },
     {
       "path": "NOTICE.md",
@@ -747,7 +747,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c38ec9e63704bf618cc35b9e1c511eaf69a66d4190ee6d7cef99f00ede12ebdc"
+      "sha256": "07c84c7491c03bb2325278e2c2cd95c57c0d068e57f9a5f4461ef5efe6f8a0a7"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -954,7 +954,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "754e87e12d648d45f0bc5eb09f25a21d4d0c1f85ade297199ad412ea66908dad"
+      "sha256": "e6b8d628bbb97ace7cc7d3153f22d6410df75c95a749b76882293757a0ba8c07"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -7674,7 +7674,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1b3392516bc250d28d5d3873a81e98a5b17c1ceb98d5dd8e891c3b89182bb394"
+      "sha256": "0abf3ddd5ba5327471ddccc4d7bea2ed87290a79f4ae18b9f682552d7334976f"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -7698,7 +7698,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "373e57635876bf68be6ec4a2eec1a1c40f768db0499fdb3a8e73dffa50ccab10"
+      "sha256": "621466ae083ce68bea7397bc43889dc6b59bc70661580e370295494d9bf817d6"
     },
     {
       "path": "tools/prxload.py",
@@ -9023,7 +9023,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4e0d1d541a41a82b0de1d9e9a9122aff28815610fc20a96c2264efcf7564349c"
+      "sha256": "4d5a365e7e6d4a515654b107c0f0f41c7d2b1fb592c97fefd433833e721acbd3"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",

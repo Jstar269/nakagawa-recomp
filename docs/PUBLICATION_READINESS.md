@@ -222,9 +222,29 @@ why a cheap docs-only classification is nonetheless safe.
 
 ## Reviewed refresh of an existing public path
 
-A legitimate edit to an already-qualified public path needs a new
-content hash, but the candidate must not be able to turn that edit into its own
-provenance claim. The maintainer-controlled refresh workflow is:
+A legitimate edit to an already-qualified public path needs a new content
+hash, and the candidate must not be able to turn that edit into its own
+provenance claim. For a local working tree, run the single refresh command:
+
+```bash
+NK_TRUSTED_LEDGER=/path/to/IMPLEMENTATION_PROVENANCE.json \
+mingw32-make --no-print-directory provenance-refresh
+```
+
+Stage the intended candidate changes first. This command calls the same
+`generate_ephemeral_controls()` implementation as hosted attestation, reads the
+public ledger from the exact base commit, records the changed existing public
+paths in the refresh audit block, and generates both controls in one pass. It
+stages the generated ledger and export, plus the profile when `--apply-policy`
+is selected. If `PROVENANCE_BASE_SHA` is omitted,
+the command uses `merge-base(HEAD, origin/main)`.
+When the candidate publication profile changed, also supply the external
+`PROVENANCE_TRUSTED_CANDIDATE_POLICY` and
+`PROVENANCE_POLICY_DELTA_AUTHORITY` inputs; the command stops if either is
+missing.
+
+The lower-level exact-path API remains available for narrowly scoped refresh
+operations and is useful for testing the underlying path checks:
 
 ```text
 python tools/provenance_ledger.py refresh-reviewed \
