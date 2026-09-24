@@ -1302,7 +1302,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "601e32ba7e09b2a56862ceb48c8511adddd3f21c7df5c5d9c59e32a874259605"
+      "sha256": "8bfe1775c43e24e56086a09bba8a8f706ef84e34cfe5382050d580c447d5e746"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1320,7 +1320,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b2d36ab9fd3308bd4cd745bc9a4c655f8be31eed46943368e8d0aee72bd8b773"
+      "sha256": "42e85786b821939e52e4e8762927873a81be448e6ecaeb835b8aa11aafa9bdb8"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -1410,7 +1410,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "02584dfe9154c5f534ff44d5a21f9b59128d48c1c24d6ea0fee8c1b9de6a1ae0"
+      "sha256": "9632088bc279eb014d4312e71776f0a97861c2f369a727e2a094123d7ebb6dd4"
     },
     {
       "path": "fixtures/psp_phaseb/Makefile",
@@ -3357,7 +3357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93d8945c43b37de1cb232fd764c73507174ece6e600e403badf39aa99130f02b"
+      "sha256": "8a4bf7036d3634d0c5ecdf7a42590b95223ecffda2dc420960ede27710f9f9ee"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.mjs",
@@ -3369,7 +3369,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8702a5a908110f34eefedb7beae9faa0368a7c05b20ac1fa1aa96335a51ecacb"
+      "sha256": "de9cc39d97a45547fae280cbc4faad2f08eb864694dfc35163f4b192c122afa8"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.test.mjs",
@@ -3381,7 +3381,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "530c198a3463310eefba3a7bdbe4aca63e957233cf7a7a6d939d070bbadb2090"
+      "sha256": "3dad06dee2a90961e4eba385a461940a51c24604e396942b52c77b7e0bbd3a5f"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-route.test.ts",
@@ -3393,7 +3393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8f3398bf827c16fda7cd98b12961be6bca4df57292d687f7252adb1063664cd"
+      "sha256": "6ce21d2026cce283f5cc5b1344de2e3633cea7162736db1035671ded8b6139ad"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.d.mts",
@@ -3441,7 +3441,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "466a3e16b57432126a46f363563e9e66000b658b833d0a54a9b356fe47b8167e"
+      "sha256": "f8a1b0b6765f5fd6777033b614c981a9a96a23373372f877dc275f9433d5b98e"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-store.ts",
@@ -6589,7 +6589,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0920ad6de4e3aad96f647c7774587433f62a3cd89fd642ed3080fc2453bfd54f"
+      "sha256": "19d8ba43126f91a511b3049ff23b19739822091c9c378d9483ddf977aa5da487"
     },
     {
       "path": "src/rt/watchpoints_file.h",
@@ -6601,7 +6601,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44c6713fc6f9c928f49bc671878290888477ddb3e26d5505726a87b8c413dbd7"
+      "sha256": "8ae80dd565065de5a67b05d9b0a4e8f034eaed9fcb03c0363859a80822466985"
     },
     {
       "path": "src/rt/watchpoints_file_selftest.c",
@@ -6613,7 +6613,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1528dcbac69138aa08e387472117ccba85c0a99e30eed9d0fb6c4b05a1e8bf9e"
+      "sha256": "5f2bd02c31ddfcf12abd4d1651193f380dafd36e84aaa12b923037741b50bd30"
     },
     {
       "path": "tests/native/argv_echo_helper.c",
@@ -9845,177 +9845,20 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "f11d7282fecad625f93b38766d3c122bcc11b6ba",
-    "candidate_tree": "e26cbb35d6f7b70a803cfcea29e88077551b4a1c",
+    "trusted_tree": "cfb6bff45e12fd9041f491f538abbcc6edd1189e",
+    "candidate_tree": "a26b4c8a2ac903a07248dfcb440a492a1087bc86",
     "refreshed_paths": [
-      "CONTRIBUTING.md",
-      "NOTICE.md",
-      "copy_build_assets.ps1",
-      "fixtures/display_smoke/generate.py",
-      "fixtures/platform_ladder/generate.py",
-      "nk_manager.ps1",
-      "src/rt/asset_index.h",
-      "src/rt/asset_index_selftest.c",
-      "src/rt/atrac3p_bridge.c",
-      "src/rt/atrac3p_bridge.h",
-      "src/rt/atrac3p_bridge_selftest.c",
-      "src/rt/atrac3p_title_accept.c",
-      "src/rt/audio_unavailable.c",
-      "src/rt/cpu_lle.c",
-      "src/rt/cpu_lle.h",
-      "src/rt/cpu_lle_selftest.c",
-      "src/rt/debug.c",
-      "src/rt/debug.h",
-      "src/rt/debug_selftest.c",
-      "src/rt/dispatch_isolation_selftest.c",
-      "src/rt/dispatch_selftest.c",
-      "src/rt/dispatch_table.h",
-      "src/rt/domain_mode.c",
-      "src/rt/domain_mode.h",
-      "src/rt/domain_mode_selftest.c",
-      "src/rt/evf.h",
-      "src/rt/evf_selftest.c",
-      "src/rt/fbcap_policy.c",
-      "src/rt/fbcap_policy.h",
-      "src/rt/fp_convert.h",
-      "src/rt/fp_convert_selftest.c",
-      "src/rt/ge_capture.c",
-      "src/rt/ge_capture.h",
-      "src/rt/ge_capture_selftest.c",
-      "src/rt/ge_replay.c",
-      "src/rt/gpu_capture_selftest.c",
-      "src/rt/gpu_coherence_selftest.c",
-      "src/rt/guest_printf.c",
-      "src/rt/guest_printf_selftest.c",
-      "src/rt/guestmem_selftest.c",
-      "src/rt/h264_null.c",
-      "src/rt/heap_selftest.c",
-      "src/rt/hle_thread_selftest.c",
-      "src/rt/intr_conformance.h",
-      "src/rt/iso_public.c",
-      "src/rt/iso_unavailable.c",
-      "src/rt/nested_frames.c",
-      "src/rt/nested_frames.h",
-      "src/rt/perf.c",
-      "src/rt/perf.h",
-      "src/rt/pgd_api.h",
-      "src/rt/pgd_unavailable.c",
-      "src/rt/pgf_api.h",
-      "src/rt/pgf_unavailable.c",
-      "src/rt/profiler_selftest.c",
-      "src/rt/psmf_media_selftest.c",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer.h",
-      "src/rt/psmf_producer_selftest.c",
-      "src/rt/sched_selftest.c",
-      "src/rt/sdkver.h",
-      "src/rt/sdkver_selftest.c",
-      "src/rt/sr_coro.c",
-      "src/rt/sr_coro.h",
-      "src/rt/sr_coro_selftest.c",
-      "src/rt/sr_h264.h",
-      "src/rt/stale_code.c",
-      "src/rt/stale_code.h",
-      "src/rt/stale_code_selftest.c",
-      "src/rt/strbuf.h",
-      "src/rt/strbuf_selftest.c",
-      "src/rt/vfpu_addr_selftest.c",
-      "src/rt/vfpu_interp_selftest.c",
-      "src/rt/vfpu_tables.c",
-      "src/rt/vfpu_tables.h",
-      "src/rt/vfpu_tables_selftest.c",
-      "src/rt/vfs_contained.h",
-      "src/rt/vfs_contained_selftest.c",
-      "src/rt/vfs_path.h",
-      "src/rt/vfs_selftest.c",
+      "fixtures/psp_oracle/Makefile",
+      "fixtures/psp_oracle/mutex_imports.S",
+      "fixtures/psp_oracle/threadman_user_imports.S",
+      "interface/src/lib/recompiler/watchpoint-file.d.mts",
+      "interface/src/lib/recompiler/watchpoint-file.mjs",
+      "interface/src/lib/recompiler/watchpoint-file.test.mjs",
+      "interface/src/lib/recompiler/watchpoint-route.test.ts",
+      "interface/src/lib/recompiler/watchpoint-store.test.ts",
       "src/rt/watchpoints_file.c",
       "src/rt/watchpoints_file.h",
-      "src/rt/watchpoints_file_selftest.c",
-      "tools/audit_public_issue_links.py",
-      "tools/benchmark_codegen_chunks.py",
-      "tools/betterleaks_canary.py",
-      "tools/boot_gate.py",
-      "tools/build_graph_snapshot.py",
-      "tools/build_profile.py",
-      "tools/build_public_export.py",
-      "tools/ci_paths.py",
-      "tools/ci_required.py",
-      "tools/compat_overrides.py",
-      "tools/decompme_export.py",
-      "tools/discovery_contract.py",
-      "tools/elf_bounds.py",
-      "tools/entry_frame_balance.py",
-      "tools/extract_xb.py",
-      "tools/gate_stub.c",
-      "tools/ge_replay_metrics.py",
-      "tools/ge_transition_diff.py",
-      "tools/gen_key_scrub_spec.py",
-      "tools/gen_nidnames.py",
-      "tools/generate_benchmarks.py",
-      "tools/generate_sbom.py",
-      "tools/ghidra_crosscheck.py",
-      "tools/ghidra_headless.py",
-      "tools/ghidra_scripts/DecompileList.java",
-      "tools/ghidra_scripts/ExportFunctionsCSV.java",
-      "tools/ghidra_scripts/ListRefsTo.java",
-      "tools/history_audit.py",
-      "tools/hle_manifest.py",
-      "tools/hle_registry_meta.py",
-      "tools/host_stubs.py",
-      "tools/import_audit.py",
-      "tools/import_audit_gate.py",
-      "tools/import_fixtures.py",
-      "tools/lint_docs.py",
-      "tools/mem_debug.py",
-      "tools/nid_auditor.py",
-      "tools/nk_safety.ps1",
-      "tools/padscript_from_log.py",
-      "tools/pngcmp.py",
-      "tools/policy_sync.py",
-      "tools/portability_inventory.py",
-      "tools/progress_tracker.py",
-      "tools/provenance_attest_verify.py",
-      "tools/provenance_ledger.py",
-      "tools/psp_import_table.py",
-      "tools/psp_oracle/verify_vfpu_addr.py",
-      "tools/public_candidate.py",
-      "tools/public_export.py",
-      "tools/publication_policy.py",
-      "tools/publish_audit.py",
-      "tools/shader_embed.py",
-      "tools/sync_drift_check.py",
-      "tools/test_build_graph_snapshot.py",
-      "tools/test_cpu_lle.py",
-      "tools/test_dispatch_fatal_policy.py",
-      "tools/test_domain_mode.py",
-      "tools/test_extract_xb_probe_fallback.py",
-      "tools/test_extract_xb_security.py",
-      "tools/test_funcdiff_cmp.py",
-      "tools/test_ge_transition_trace.py",
-      "tools/test_gen_nidnames.py",
-      "tools/test_mem_debug.py",
-      "tools/test_nidseq.py",
-      "tools/test_platform_ladder.py",
-      "tools/test_portability_inventory.py",
-      "tools/test_ppmdiff_coverage.py",
-      "tools/test_provenance_attestation_gate.py",
-      "tools/test_provenance_ledger.py",
-      "tools/test_publish_audit.py",
-      "tools/test_sbom_binding.py",
-      "tools/test_sbom_fail_closed.py",
-      "tools/test_stale_code_detect.py",
-      "tools/test_validate_assets.py",
-      "tools/validate_assets.py",
-      "tools/verify_gates.py",
-      "tools/verify_key_scrub.py",
-      "tools/verify_sbom.py",
-      "tools/verify_vfpu_provenance.py",
-      "tools/vfpu_coverage_report.py",
-      "tools/vfpu_overlap_diff_gen.py",
-      "tools/vfpu_synth_gen.py",
-      "tools/vulkan_sdk.ps1",
-      "tools/vulkan_sdk.py",
-      "tools/xb_probe.py"
+      "src/rt/watchpoints_file_selftest.c"
     ]
   }
 }

@@ -276,6 +276,9 @@ $(error PSPDEV/PSPSDK is not available: psp-config --pspsdk-path failed)
 endif
 include $(PSPSDK)/lib/build.mak
 
+# Fail closed if psp-fixup-imports reports out-of-order stubs (issue #400).
+FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; exit $$rc' --
+
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
