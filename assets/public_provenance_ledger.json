@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1d3b3f07f227b7ecbd9b6476886fe3034595824bcb2807f5cf2500bc5b298e89"
+      "sha256": "fd916c64457d7ce6e37a8aa9c8f2fda5247101572aecb8dbb13bb0cbdfcfa82d"
     },
     {
       "path": "NOTICE.md",
@@ -5944,7 +5944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5898d215fa351081b2fabd3bf9b4fc4221cf59e8fd68b13c635d3ce8ca36781"
+      "sha256": "a7317b9560d80c6a58fe021e8f90922fac7f38c3af19a3a3cf9a9a3d3817dc83"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6292,7 +6292,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4d3a8dc7582c126f00b3ebfa9e0b5d7f2eb6889d43ed7a2da7654e5deb27bbc0"
+      "sha256": "21d8a41bca136a72511c749e15b18d049e53885260bdd0502b23bc1b71e46ae6"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -6304,7 +6304,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8cc564eb810d70770fabde29072e6b7a0a458baec4e085e2dd7f835c904608ba"
+      "sha256": "f21eec2b39d41e13bb1516e83f5ecd065ba65ec987b11660a8eda4a21ab83249"
     },
     {
       "path": "src/rt/sdkver.h",
