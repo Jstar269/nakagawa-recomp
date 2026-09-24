@@ -1349,12 +1349,12 @@ class TestSanitizedBringup(unittest.TestCase):
         status, report = self._run_case(
             "launch",
             launch_code=2,
-            launch_output="cannot open C:\\synthetic\\private-title.elf\n",
+            launch_output="cannot open C:/synthetic/private-title.elf\n",
         )
         self.assertNotEqual(status, 0)
         self.assertEqual(report["failure_class"], "RUNTIME_INPUT_UNAVAILABLE")
         self.assertEqual(report["runtime_output_kind"], "DRIVER_INPUT_READ_FAILURE")
-        self.assertNotIn("synthetic\\\\private-title", json.dumps(report))
+        self.assertNotIn("synthetic/private-title", json.dumps(report))
         self.assertIn("in the works (", nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
 
@@ -1362,7 +1362,7 @@ class TestSanitizedBringup(unittest.TestCase):
         status, report = self._run_case(
             "launch",
             launch_code=2,
-            launch_output="no '# init' in C:\\synthetic\\reference.trace\n",
+            launch_output="no '# init' in C:/synthetic/reference.trace\n",
         )
         self.assertNotEqual(status, 0)
         self.assertEqual(report["failure_class"], "RUNTIME_TRACE_UNAVAILABLE")
