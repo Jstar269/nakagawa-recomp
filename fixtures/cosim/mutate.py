@@ -1,26 +1,25 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Prove the AOT/interpreter cosimulation gate is load-bearing.
+"""Prove the AOT/interpreter and FPU-reference gates are load-bearing.
 
-A comparator that cannot fail proves nothing.  This driver takes the production
-interpreter, applies one semantic defect at a time to a COPY of it under the
-ignored build tree, rebuilds the cosim harness against that copy and requires the
-gate to FAIL.
+A comparator that cannot fail proves nothing. This driver applies one semantic
+defect at a time to a copy of the production interpreter, FPU helper header or
+code generator under the ignored build tree, rebuilds the cosim harness against
+that copy and requires the gate to FAIL.
 
 Two rules make the campaign meaningful rather than decorative:
 
-* A mutant must BUILD.  A compile error is not a kill -- it proves the compiler
+* A mutant must BUILD. A compile error is not a kill -- it proves the compiler
   noticed, not the comparator -- so a mutant whose harness never ran is reported
   as INVALID and fails the campaign.
-* A mutant must change behavior the comparator claims to cover.  Each entry below
+* A mutant must change behavior the comparator claims to cover. Each entry below
   names the mission-level defect class it stands for, and the driver records the
   first divergence the gate actually reported, so a mutant that fails "for some
   other reason" is visible in the output rather than counted silently.
 
-The tree is never modified: mutants are written to
-``<build-dir>/mutants/<name>/guest_interp.c`` and selected through the Makefile's
-``COSIM_INTERP_SRC`` override.
+The source tree is never modified. Mutants are selected through the Makefile's
+COSIM_INTERP_SRC, COSIM_FP_CONVERT_PRELUDE or CODEGEN_TOOL override.
 """
 
 from __future__ import annotations
@@ -35,6 +34,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 INTERPRETER = ROOT / "src" / "rt" / "guest_interp.c"
+FP_CONVERT = ROOT / "src" / "rt" / "fp_convert.h"
+FPU_REFERENCE = ROOT / "fixtures" / "cosim" / "fpu_reference.c"
+FPU_REFERENCE_HEADER = ROOT / "fixtures" / "cosim" / "fpu_reference.h"
 GENERATOR = ROOT / "tools" / "codegen.py"
 
 
@@ -213,6 +215,76 @@ MUTANTS: tuple[Mutant, ...] = (
             1,
         )],
     ),
+    Mutant(
+        "fpu-wrong-rounding",
+        "FPU: break nearest-even ties upward",
+        [(
+            "    return fmod(lower, 2.0) == 0.0 ? lower : lower + 1.0;",
+            "    return lower + 1.0;",
+            1,
+        )],
+        target="fp-convert",
+    ),
+    Mutant(
+        "fpu-wrong-conversion-saturation",
+        "FPU: return zero instead of saturating positive overflow",
+        [(
+            "    if (x >= 2147483648.0) return 0x7fffffffu;",
+            "    if (x >= 2147483648.0) return 0u;",
+            1,
+        )],
+        target="fp-convert",
+    ),
+    Mutant(
+        "fpu-wrong-infzero-canonicalization",
+        "FPU: return a noncanonical infinity-times-zero NaN",
+        [(
+            "        const uint32_t canonical_qnan = 0x7fc00000u;",
+            "        const uint32_t canonical_qnan = 0xffc00000u;",
+            1,
+        )],
+        target="fp-convert",
+    ),
+    Mutant(
+        "fpu-wrong-nan-compare",
+        "FPU: reject unordered C.cond predicates",
+        [(
+            "    const unsigned unordered = ((a_mag & 0x7f800000u) == 0x7f800000u &&\n"
+            "                                (a_mag & 0x007fffffu) != 0u) ||\n"
+            "                               ((b_mag & 0x7f800000u) == 0x7f800000u &&\n"
+            "                                (b_mag & 0x007fffffu) != 0u);",
+            "    const unsigned unordered = 0u;",
+            1,
+        )],
+        target="fp-convert",
+    ),
+    Mutant(
+        "fpu-swap-ccond-8-9",
+        "FPU: swap C.cond signaling predicates 8/9",
+        [(
+            "    return (unordered && (condition & 1u)) ||\n"
+            "           (equal && (condition & 2u)) ||\n"
+            "           (less && (condition & 4u));",
+            "    return condition == 8u ? (unordered != 0u) :\n"
+            "           condition == 9u ? 0u :\n"
+            "           ((unordered && (condition & 1u)) ||\n"
+            "            (equal && (condition & 2u)) ||\n"
+            "            (less && (condition & 4u)));",
+            1,
+        )],
+        target="fp-convert",
+    ),
+    Mutant(
+        "fpu-reference-swap-ccond-8-9",
+        "FPU reference: swap C.cond signaling predicates 8/9",
+        [(
+            "    return ref_ccond_truth[condition][relation];",
+            "    return ref_ccond_truth[condition == 8u ? 9u :\n"
+            "                            condition == 9u ? 8u : condition][relation];",
+            1,
+        )],
+        target="fpu-reference",
+    ),
 )
 
 
@@ -237,11 +309,16 @@ def resolve_make() -> str:
 
 
 def make_command(source: Path, target: str) -> list[str]:
-    override = (
-        f"COSIM_INTERP_SRC={source.as_posix()}"
-        if target == "interpreter"
-        else f"CODEGEN_TOOL={source.as_posix()}"
-    )
+    if target == "interpreter":
+        override = f"COSIM_INTERP_SRC={source.as_posix()}"
+    elif target == "fp-convert":
+        override = f"COSIM_FP_CONVERT_PRELUDE={source.as_posix()}"
+    elif target == "fpu-reference":
+        override = f"COSIM_FPU_REFERENCE_SRC={source.as_posix()}"
+    elif target == "generator":
+        override = f"CODEGEN_TOOL={source.as_posix()}"
+    else:
+        raise ValueError(f"unknown mutation target: {target}")
     return [resolve_make(), "--no-print-directory", "cosim-selftest", override]
 
 
@@ -269,7 +346,7 @@ def run_gate(source: Path, target: str = "interpreter") -> tuple[str, str]:
     output = completed.stdout + completed.stderr
     detail = ""
     for index, line in enumerate(output.splitlines()):
-        if line.startswith("COSIM DIVERGENCE"):
+        if line.startswith(("COSIM DIVERGENCE", "COSIM FPU REFERENCE FAIL")):
             detail = line.strip()
             remainder = output.splitlines()[index + 1 : index + 2]
             if remainder:
@@ -290,15 +367,22 @@ def main(argv: list[str] | None = None) -> int:
 
     sources = {
         "interpreter": INTERPRETER.read_text(encoding="utf-8"),
+        "fp-convert": FP_CONVERT.read_text(encoding="utf-8"),
+        "fpu-reference": FPU_REFERENCE.read_text(encoding="utf-8"),
         "generator": GENERATOR.read_text(encoding="utf-8"),
     }
-    filenames = {"interpreter": "guest_interp.c", "generator": "codegen.py"}
+    filenames = {
+        "interpreter": "guest_interp.c",
+        "fp-convert": "fp_convert.h",
+        "fpu-reference": "fpu_reference.c",
+        "generator": "codegen.py",
+    }
     mutant_root = args.build_dir / "mutants"
     if mutant_root.exists():
         shutil.rmtree(mutant_root)
     mutant_root.mkdir(parents=True, exist_ok=True)
 
-    print("COSIM_MUTATION baseline: the unmutated interpreter must pass")
+    print("COSIM_MUTATION baseline: the unmutated sources must pass")
     verdict, detail = run_gate(INTERPRETER)
     if verdict != "ok":
         print(f"COSIM_MUTATION FAIL: baseline verdict={verdict}\n{detail}", file=sys.stderr)
@@ -315,6 +399,12 @@ def main(argv: list[str] | None = None) -> int:
         target.write_text(
             mutant.apply(sources[mutant.target]), encoding="utf-8", newline="\n"
         )
+        if mutant.target == "fpu-reference":
+            (directory / "fpu_reference.h").write_text(
+                FPU_REFERENCE_HEADER.read_text(encoding="utf-8"),
+                encoding="utf-8",
+                newline="\n",
+            )
 
         verdict, detail = run_gate(target, mutant.target)
         if verdict == "fail":
@@ -336,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"COSIM_MUTATION INVALID  {mutant.name:<34} (never ran; not a kill)")
             print(detail)
 
-    # Leave the tree in the state a reader expects: the real interpreter, passing.
+    # Leave the tree in the state a reader expects: the real sources, passing.
     print("COSIM_MUTATION restoring the unmutated build")
     verdict, detail = run_gate(INTERPRETER)
     if verdict != "ok":

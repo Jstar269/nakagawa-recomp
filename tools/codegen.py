@@ -1239,9 +1239,10 @@ def fpu_effect(addr, w):
             cond = fn & 0xF
             # FCC0 stays architectural in FCR31; fpcond remains as the cached
             # read for bc1t/bc1f and is written together with bit 23 so the two
-            # can never disagree after a compare or a guest ctc1.
-            return (f"{{ float _a={F(fs)},_b={F(ft)}; int _u=isnan(_a)||isnan(_b); int _l=!_u&&_a<_b; int _e=!_u&&_a==_b; "
-                    f"s->fpcond = ((_u&&({cond}&1))||(_e&&({cond}&2))||(_l&&({cond}&4)))?1u:0u; "
+            # can never disagree after a compare or a guest ctc1. The helper
+            # orders raw words so ambient DAZ cannot alter a denormal compare.
+            return (f"{{ int _p=(int)sr_fpu_condition_s(0x{cond:02x}u, s->fi[{fs}], s->fi[{ft}]); "
+                    f"s->fpcond = (uint32_t)_p; "
                     f"s->fcr31 = (s->fcr31 & ~0x00800000u) | (s->fpcond << 23); }}"), None, 0
     if fmt == 0x14 and funct(w) == 0x20: return f"{F(fdv)} = sr_fpu_cvt_s_w(sr_u32_as_s32(s->fi[{fs}]), s->fcr31);", None, 0  # cvt.s.w
     raise Unsupported(f"COP1 fmt 0x{fmt:02x} funct 0x{funct(w):02x} at 0x{addr:08x}")

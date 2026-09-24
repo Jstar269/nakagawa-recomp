@@ -42,8 +42,9 @@ in both runs.
 
 ## What is compared
 
-Four independent channels, ordered from most localizing to least. Each has been
-shown to be the *sole* killer of at least one mutant, so none is decorative.
+Four independent AOT/interpreter channels, ordered from most localizing to least.
+Each has been shown to be the *sole* killer of at least one mutant, so none is
+decorative. Scalar FPU adds a separate reference comparison described below.
 
 1. **Canonical instruction trace** — `sr_trace_open()` / `sr_begin()` / `sr_end()`,
    the per-instruction record the generated code already emits
@@ -198,6 +199,7 @@ returns through its callee's `jr $ra` instead.
 | `jrslot` / `jrtail` | a computed call and a computed tail call whose delay slots rewrite the target register |
 | `hilo` | `HI`/`LO` through signed and unsigned multiply (they differ in the high word only) |
 | `fpu` | scalar FPU over the #120 helper path, re-run under all four FCR31 rounding modes and with FS set |
+| `fpu_aot` | AOT-only instruction inventory checked against the independent scalar-FPU reference |
 | `xcall` / `xtail` | **cross-tier** — a returning call and a tail transfer that each drop into the interpreter mid-run and hand back |
 | `spleak` | **positive control** — an unbalanced `$sp` epilogue |
 
@@ -207,6 +209,44 @@ lanes genuinely have: generated code closes every callable entry with
 interpreter executes only the instructions present. The cell declares that `r29`
 must differ — and *nothing else* — so a comparator that stopped detecting it
 fails, and so does one that started reporting extra fields.
+
+## Independent scalar-FPU reference
+
+[`fpu_reference.c`](fpu_reference.c) evaluates binary32 words with explicit
+IEEE-754 classification, 512-bit integer significands, integer square root and
+division, directed rounding, conversions, comparisons and branch predicates. It
+does not include `fp_convert.h`, call an `sr_fpu_*` helper, use a host
+floating-point expression or consult the host rounding environment.
+
+The fixture entry calls `fpu_aot` so real codegen discovers its body; the
+ordinary AOT/interpreter comparison and interpreter form census exclude this
+AOT-only cell. The oracle then executes its generated body and compares the
+results, FCC0 and FCR31 flow with the reference. It covers `add.s`, `sub.s`,
+`mul.s`, `div.s`, `sqrt.s`, `abs.s`, `mov.s`, `neg.s`, `round.w.s`, `trunc.w.s`,
+`ceil.w.s`, `floor.w.s`, `cvt.w.s`, `cvt.s.w`, all 16 `c.cond.s` predicates,
+`bc1t`, `bc1f`, `cfc1.s` and `ctc1.s`. Direct helper checks cover the same
+production kernels without letting shared code provide its own expected result.
+
+The existing `fpu` cell remains the two-tier check for `add.s`, `mul.s` and
+`cvt.w.s`, the three scalar forms both AOT and the interpreter currently share.
+The oracle adds AOT-only coverage for `sub.s`, `div.s`, unary operations,
+rounding/ceiling/floor forms, `cvt.s.w`, all comparisons and both branches.
+There is no scalar FPU madd/msub implementation to claim: the similarly named
+instructions in the fixture are integer HI/LO `madd`/`msub`.
+
+The 38-value corpus is the Cartesian product of both operands, four FCR31 rounding
+modes and FS clear/set: 11,552 contexts and 901,056 exact result checks per run.
+It includes signed zero, both infinities, quiet/signaling NaNs, both subnormal
+edges, the inexact subnormal-to-minimum-normal tie, conversion limits,
+directed-rounding ties, maximum finite values and the repository's PSP rounding
+anchors.
+
+A reference result with `EXPECTED_UNKNOWN (#312)` is counted and reported but not
+treated as agreement. The boundary is explicit: unmeasured NaN payload/sign
+propagation and signaling-NaN behavior, exact subnormal results with FS set,
+non-nearest-even `sqrt.s` PSP behavior, and signaling/NaN behavior for the upper
+eight `c.cond.s` predicates. COP1 exception flags and enables are outside this
+oracle. None of those cases is guessed or counted as a pass.
 
 ### A constraint the fixture had to obey
 
@@ -222,31 +262,33 @@ model and is recorded as the next expansion rather than faked.
 
 * Integer, memory and control-flow semantics are **independently implemented** in
   the two lanes, so a disagreement is real evidence.
-* Scalar FPU arithmetic is **not** independently implemented: both lanes call the
-  same `sr_fpu_*` helpers from [`src/rt/fp_convert.h`](../../src/rt/fp_convert.h).
-  The `fpu` cell compares operand selection, register indexing and FCR31
-  threading — not the arithmetic kernel, which
-  [`src/rt/fp_convert_selftest.c`](../../src/rt/fp_convert_selftest.c) owns.
-* Evidence tier **2 (production helper / white-box)**: the production dispatch
-  core, the production interpreter and real codegen output all execute, but the
-  `CpuState` seeding, the dispatch-table reset and the cell entry are
-  test-specific.
+* The listed scalar FPU forms now have an **independent integer reference** for
+  the generated AOT body and the production helper calls. The shared-helper
+  `fpu` cell still covers operand selection, register indexing and FCR31
+  threading between AOT and the interpreter.
+* This remains a **software/white-box oracle**, not a physical-PSP oracle. Real
+  codegen, the production dispatch core and production helpers execute, but the
+  `CpuState` corpus, dispatch-table reset and cell entry are test-specific.
+  `EXPECTED_UNKNOWN (#312)` cases remain explicitly unverified.
 * The interpreter is deliberately **more fail-closed** than the generated code on
   out-of-range and misaligned data access. The cells stay in range, so this never
   shows up as a divergence; it is a documented lane asymmetry, not a comparison.
 
 ## Proving the comparator is load-bearing
 
-`mutate.py` applies one semantic defect at a time to a *copy* of the interpreter — or
-of `tools/codegen.py`, via the `CODEGEN_TOOL` override — under the ignored build tree,
-rebuilds the harness against it and requires the gate to fail. A mutant that only breaks
-the build is reported `INVALID` and fails the campaign: a compile error proves the
-compiler noticed, not the comparator.
+`mutate.py` applies one semantic defect at a time to a *copy* of the
+interpreter, `src/rt/fp_convert.h`, or `tools/codegen.py` under the ignored build
+tree, rebuilds the harness through the corresponding Make override, and requires
+the gate to fail. A mutant that only breaks the build is reported `INVALID` and
+fails the campaign: a compile error proves the compiler noticed, not the
+comparator.
 
-Mutating both sides matters. A differential proven against one lane is half proven, so
-one mutant restores the **generator** to its pre-fix computed-transfer emission order —
-the exact production defect this fixture was built to find — and `jrslot`/`jrtail` must
-both diverge.
+Mutating both sides matters. A differential proven against one lane is half
+proven, so one mutant restores the **generator** to its pre-fix
+computed-transfer emission order — the exact production defect this fixture was
+built to find — and `jrslot`/`jrtail` must both diverge. Four additional
+`fp-convert` mutants break nearest-even ties, positive conversion saturation,
+infinity-times-zero canonicalization and the unordered `C.cond` predicate.
 
 Two interpreter guards are not killed by this gate, and each is layering rather than a
 hole:
@@ -270,8 +312,9 @@ the first run, because the `r0` cell ended with a `nop` — which encodes as
 
 | path | role |
 | --- | --- |
-| `generate.py` | the fixture recipe: guest module, relocations, and the generated C manifest of cell addresses |
-| `cosim_selftest.c` | the comparator harness |
+| `generate.py` | the fixture recipe: guest module, relocations, FPU corpus and generated C manifests |
+| `cosim_selftest.c` | the AOT/interpreter comparator and scalar-FPU reference harness |
+| `fpu_reference.c` / `fpu_reference.h` | the integer-only binary32 expected-result evaluator |
 | `mutate.py` | the mutation campaign driver |
 | `../../tools/test_cosim_fixture.py` | structural gates that need no toolchain |
 

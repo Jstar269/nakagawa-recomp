@@ -17,7 +17,9 @@
  * Because the project links the recompiled game (GPLv2+ via this port), this binds to GPLv2+.
  */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "recomp.h"
 #ifdef SR_SDL3VK
 /* Portable H.264 decode backend seam (sr_h264.h): Media Foundation on Windows (h264_mf.c),
@@ -40,6 +42,8 @@
 #define PSMF_STREAM_SIZE_OFFSET    0xC
 #define PSMF_FIRST_TIMESTAMP_OFFSET 0x54
 #define PSMF_LAST_TIMESTAMP_OFFSET  0x5A
+#define PSMF_AVC_WIDTH_OFFSET       142u
+#define PSMF_AVC_HEIGHT_OFFSET      143u
 
 #define MPEG_AVC_STREAM   0
 #define MPEG_ATRAC_STREAM 1
@@ -49,8 +53,15 @@
 
 #define MPEG_AVC_ES_SIZE   2048
 #define MPEG_ATRAC_ES_SIZE 2112
+#define MPEG_PCM_ES_SIZE   320
+#define MPEG_PCM_OUTPUT_SIZE 320
 
+/* Public MPEG constants and return families are recorded in PSPSDK's src/mpeg/pspmpeg.h. The
+ * YCbCr ABI details not stated there remain an explicit #302 physical-PSP hardware-oracle gap. */
 #define MPEG_MEMSIZE_0105 0x10000u
+#define MPEG_MAX_DIMENSION 4096u
+#define MPEG_AU_MODE_DECODE 0u
+#define MPEG_AU_MODE_SKIP   1u
 
 #define SCE_MPEG_ERROR_INVALID_VALUE 0x806100FEu
 #define SCE_MPEG_ERROR_BAD_VERSION   0x806100A0u
@@ -59,7 +70,6 @@
 
 static const int videoTimestampStep = 3003;   /* mpegTimestampPerSecond / 29.97 */
 static const int audioTimestampStep = 4180;   /* 2048 samples / 44100 Hz */
-static const int64_t mpegTimestampPerSecond = 90000;
 
 /* ---- ring-buffer field offsets (SceMpegRingBuffer, all 32-bit) ---- */
 enum {
@@ -121,6 +131,7 @@ static int rb_read_valid(uint32_t ring, RingState *out, int writable) {
 typedef struct {
     int used;
     uint32_t handle;            /* the value stored at *mpegAddr (dataPtr+0x30) */
+    uint32_t guestAddr;         /* descriptor address used by the HLE entry points */
     uint32_t ringAddr;
     uint32_t magic, rawVersion; int version;
     uint32_t offset, streamSize;
@@ -135,20 +146,22 @@ typedef struct {
     int h264;                    /* SDL3 build: Media Foundation H.264 decoder id (-1 = none) */
     int h264Init, h264Frames;
     int defaultFrameWidth, pixelMode;
+    uint32_t streamWidth, streamHeight;
     int ycbcrWant;   /* pictures requested through sceMpegAvcDecodeYCbCr */
     uint32_t auPacketsDone;   /* ring packets released by real access units */
     int64_t lastAuPts;        /* presentation time of the last real access unit (-1 before any) */
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
-    /* stream map: small fixed table sid -> (type,num,needsReset) */
-    struct { int used, type, num, needsReset; uint32_t sid; } streams[8];
+    /* stream map: small fixed table sid -> (type,num,needsReset,auMode) */
+    struct { int used, type, num, needsReset, auMode; uint32_t sid; } streams[8];
 } Mpeg;
 
 static Mpeg s_mpeg[8];
 static int s_mpegInit = 0;
 static uint32_t s_streamIdGen = 1;
+static void ycbcr_reset_mpeg(uint32_t mpegAddr);
 
 static Mpeg *mpeg_find(uint32_t mpegAddr) {
-    if (!mpegAddr) return 0;
+    if (!mpegAddr || !sr_guest_span_readable(mpegAddr, 4)) return 0;
     uint32_t h = MEM_R32(mpegAddr);
     for (int i = 0; i < 8; i++) if (s_mpeg[i].used && s_mpeg[i].handle == h) return &s_mpeg[i];
     return 0;
@@ -199,6 +212,11 @@ static int64_t mpeg_ts(uint32_t a) {
            ((int64_t)MEM_R8(a+3) << 8) | (int64_t)MEM_R8(a+4);
 }
 
+static uint32_t mpeg_contract_error(const char *api, const char *boundary, uint32_t error) {
+    fprintf(stderr, "MPEG_CONTRACT: %s: %s; in the works (#302)\n", api, boundary);
+    return error;
+}
+
 static int getMpegVersion(uint32_t raw) {
     switch (raw) {
         case 0x32313030: return 0; case 0x33313030: return 1;
@@ -218,6 +236,16 @@ static void analyze(uint32_t buffer, Mpeg *ctx) {
     ctx->firstTimestamp = mpeg_ts(buffer + PSMF_FIRST_TIMESTAMP_OFFSET);
     ctx->lastTimestamp = mpeg_ts(buffer + PSMF_LAST_TIMESTAMP_OFFSET);
     ctx->videoPts = 0; ctx->audioPts = 0; ctx->videoEnd = 0; ctx->audioEnd = 0;
+    ctx->streamWidth = 0; ctx->streamHeight = 0;
+    if (sr_guest_span_readable(buffer, PSMF_AVC_HEIGHT_OFFSET + 1u)) {
+        uint32_t macroblocksWide = MEM_R8(buffer + PSMF_AVC_WIDTH_OFFSET);
+        uint32_t macroblocksHigh = MEM_R8(buffer + PSMF_AVC_HEIGHT_OFFSET);
+        if (!(macroblocksWide && macroblocksHigh &&
+              u32_mul_checked(macroblocksWide, 16u, &ctx->streamWidth) &&
+              u32_mul_checked(macroblocksHigh, 16u, &ctx->streamHeight) &&
+              ctx->streamWidth <= MPEG_MAX_DIMENSION && ctx->streamHeight <= MPEG_MAX_DIMENSION))
+            ctx->streamWidth = ctx->streamHeight = 0;
+    }
     ctx->fedPackets = 0;
     /* Whole-movie packet count from the PSMF stream size; the movie ends when the game has fed
      * this many packets into the ring and they have been consumed (real EOF, not a header
@@ -244,6 +272,8 @@ uint32_t mpeg_finish(void) {
         s_mpeg[i].h264 = -1;
     }
 #endif
+    for (int i = 0; i < 8; i++) if (s_mpeg[i].used) ycbcr_reset_mpeg(s_mpeg[i].guestAddr);
+    memset(s_mpeg, 0, sizeof(s_mpeg));
     s_mpegInit = 0;
     return 0;
 }
@@ -312,7 +342,7 @@ uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_
     Mpeg *ctx = 0; for (int i = 0; i < 8; i++) if (!s_mpeg[i].used) { ctx = &s_mpeg[i]; break; }
     if (!ctx) return SCE_MPEG_ERROR_NO_MEMORY;
     memset(ctx, 0, sizeof(*ctx));
-    ctx->used = 1; ctx->handle = h; ctx->ringAddr = ringAddr;
+    ctx->used = 1; ctx->handle = h; ctx->guestAddr = mpegAddr; ctx->ringAddr = ringAddr;
     ctx->defaultFrameWidth = (int)frameWidth; ctx->pixelMode = 3; ctx->isAnalyzed = 0;
     ctx->lastAuPts = -1;
     ctx->h264 = -1;
@@ -325,6 +355,7 @@ uint32_t mpeg_delete(uint32_t mpegAddr) {
 #ifdef SR_SDL3VK
     if (ctx->h264 >= 0) { sr_h264_destroy(ctx->h264); ctx->h264 = -1; }
 #endif
+    ycbcr_reset_mpeg(ctx->guestAddr);
     ctx->used = 0;
     return 0;
 }
@@ -361,6 +392,7 @@ uint32_t mpeg_regist_stream(uint32_t mpegAddr, uint32_t streamType, uint32_t str
     for (int i = 0; i < 8; i++) if (!ctx->streams[i].used) {
         ctx->streams[i].used = 1; ctx->streams[i].type = (int)streamType;
         ctx->streams[i].num = (int)streamNum; ctx->streams[i].sid = sid; ctx->streams[i].needsReset = 1;
+        ctx->streams[i].auMode = MPEG_AU_MODE_DECODE;
         break;
     }
     return sid;
@@ -404,7 +436,10 @@ uint32_t mpeg_init_au(uint32_t mpegAddr, uint32_t esBuffer, uint32_t auAddr) {
 }
 uint32_t mpeg_unregist_stream(uint32_t mpegAddr, uint32_t sid) {
     Mpeg *ctx = mpeg_find(mpegAddr);
-    if (ctx) for (int i = 0; i < 8; i++) if (ctx->streams[i].used && ctx->streams[i].sid == sid) ctx->streams[i].used = 0;
+    if (ctx) for (int i = 0; i < 8; i++) if (ctx->streams[i].used && ctx->streams[i].sid == sid) {
+        ctx->streams[i].used = 0;
+        ctx->streams[i].auMode = MPEG_AU_MODE_DECODE;
+    }
     return 0;
 }
 
@@ -616,108 +651,210 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     return 0;   /* audio AU available; the audio ring drains with the video at EOF */
 }
 
-static uint32_t video_buffer_bytes(uint32_t frameWidth, int pixelMode) {
-    uint32_t fw = frameWidth ? frameWidth : 512;
-    if (fw > 2048) fw = 512;
-    return fw * 272u * (pixelMode == 3 ? 4u : 2u);
+static int video_geometry(const Mpeg *ctx, uint32_t requestedWidth,
+                          uint32_t *outWidth, uint32_t *outHeight) {
+    if (!ctx || !outWidth || !outHeight) return 0;
+    uint32_t width = requestedWidth ? requestedWidth : (uint32_t)ctx->defaultFrameWidth;
+    uint32_t height = ctx->streamHeight;
+    if (!width || !height || width > MPEG_MAX_DIMENSION || height > MPEG_MAX_DIMENSION ||
+        (width & 15u) || (height & 15u)) return 0;
+    *outWidth = width;
+    *outHeight = height;
+    return 1;
 }
 
-static void clear_video_buffer(uint32_t ptr, uint32_t frameWidth, int pixelMode) {
-    if (!ptr) return;
-    uint32_t bytes = video_buffer_bytes(frameWidth, pixelMode);
+static uint32_t video_buffer_bytes(uint32_t width, uint32_t height, int pixelMode) {
+    if (!width || !height || width > MPEG_MAX_DIMENSION || height > MPEG_MAX_DIMENSION ||
+        (pixelMode < 0 || pixelMode > 3)) return 0;
+    uint32_t bpp = pixelMode == 3 ? 4u : 2u;
+    uint32_t pixels, bytes;
+    if (!u32_mul_checked(width, height, &pixels) || !u32_mul_checked(pixels, bpp, &bytes)) return 0;
+    return bytes;
+}
+
+static int clear_video_buffer(uint32_t ptr, uint32_t width, uint32_t height, int pixelMode) {
+    uint32_t bytes = video_buffer_bytes(width, height, pixelMode);
+    if (!ptr || !bytes || !sr_guest_span_writable(ptr, bytes)) return 0;
     for (uint32_t i = 0; i < bytes; i++) MEM_W8(ptr + i, 0);
+    return 1;
 }
 
 /* AvcDecode(mpeg, auAddr, frameWidth, bufferAddr, initAddr): decode one AVC frame into
- * *bufferAddr. The SDL3 build decodes through Media Foundation (h264_mf.c); otherwise the
- * timestamp-only model runs and leaves the frame blank. */
+ * *bufferAddr. The output geometry comes from the guest stride and the analysed stream. */
 uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t initAddr) {
-    (void)auAddr;
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
-    g_mpeg_avcdec++;
-    if (frameWidth == 0 || frameWidth > 2048)
-        frameWidth = ctx->defaultFrameWidth ? (uint32_t)ctx->defaultFrameWidth : 512u;
-    uint32_t buffer = bufferAddr ? MEM_R32(bufferAddr) : 0;
+    if (!sr_guest_span_readable(auAddr, 24u) || !sr_guest_span_readable(bufferAddr, 4u) ||
+        !sr_guest_span_writable(initAddr, 4u) || (bufferAddr & 3u) || (initAddr & 3u))
+        return mpeg_contract_error("sceMpegAvcDecode", "invalid AU or output pointer", (uint32_t)-1);
+    uint32_t width, height;
+    if (!video_geometry(ctx, frameWidth, &width, &height))
+        return mpeg_contract_error("sceMpegAvcDecode", "missing or unsupported stream geometry", SCE_MPEG_ERROR_INVALID_VALUE);
+    uint32_t buffer = MEM_R32(bufferAddr);
+    uint32_t bytes = video_buffer_bytes(width, height, ctx->pixelMode);
+    if (!buffer || (buffer & 3u) || (height && (!bytes || !sr_guest_span_writable(buffer, bytes))))
+        return mpeg_contract_error("sceMpegAvcDecode", "invalid destination span", SCE_MPEG_ERROR_INVALID_VALUE);
 
+    g_mpeg_avcdec++;
     ctx->videoPts += videoTimestampStep;
-    /* Report "a frame was produced" (1) every decode; the game keeps feeding/decoding until it has
-     * read the whole file, then stops on its own. */
     int gotFrame = 0;
 #ifdef SR_SDL3VK
-    if (ctx->h264Init && ctx->h264 >= 0 && buffer) {
+    if (ctx->h264Init && ctx->h264 >= 0) {
         int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
-        gotFrame = sr_h264_frame(ctx->h264, eos, buffer,
-                                 (int)frameWidth, ctx->pixelMode);
+        gotFrame = sr_h264_frame(ctx->h264, eos, buffer, (int)width, ctx->pixelMode);
         if (gotFrame > 0) ctx->h264Frames++;
     }
 #endif
-    /* No decoder (or it hasn't produced its first frame yet): clear the destination instead of
-     * leaving stale contents, which otherwise appears as moving black bands over uninitialised
-     * movie frames. Once frames flow, a miss keeps the previous frame (no black flicker). */
     if (gotFrame <= 0 && !ctx->h264Frames) {
-        clear_video_buffer(buffer, frameWidth, ctx->pixelMode);
-        if (buffer) {
-            extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-            sr_gpu_vram_dirty(buffer, video_buffer_bytes(frameWidth, ctx->pixelMode));
+        if (!height) {
+            MEM_W32(initAddr, 0u);
+            return mpeg_contract_error("sceMpegAvcDecode", "stream height is unavailable for a blank frame", SCE_MPEG_ERROR_NO_DATA);
         }
+        if (!clear_video_buffer(buffer, width, height, ctx->pixelMode))
+            return mpeg_contract_error("sceMpegAvcDecode", "destination changed during validation", SCE_MPEG_ERROR_INVALID_VALUE);
+        extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
+        sr_gpu_vram_dirty(buffer, bytes);
     }
-    if (initAddr) MEM_W32(initAddr, 1);
+    MEM_W32(initAddr, gotFrame > 0 ? 1u : 0u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
             fprintf(stderr, "MpegAvcDecode #%d buf=0x%x fw=%u pts=%lld dec=%d frames=%d\n",
-                    n, buffer, frameWidth, (long long)ctx->videoPts, gotFrame, ctx->h264Frames);
+                    n, buffer, width, (long long)ctx->videoPts, gotFrame, ctx->h264Frames);
     }
-    return 0;
+    return gotFrame > 0 ? 0 : SCE_MPEG_ERROR_NO_DATA;
 }
 /* ---- YCbCr decode path (sceMpegAvc*YCbCr / sceMpegAvcCsc) ----
- * Project-authored boundary for the guest libpsmfplayer, which decodes each access unit into an
- * opaque "YCbCr" buffer, may copy it to another YCbCr buffer, and later colour-converts one into
- * its display buffer (observed in the title's own libpsmfplayer: QueryYCbCrSize -> InitYCbCr ->
- * DecodeYCbCr -> CopyYCbCr -> Csc). The guest never reads the buffer contents, so the host keeps
- * the decoded picture for each buffer address itself: DecodeYCbCr decodes the next picture into
- * that buffer's host store, CopyYCbCr copies a store, and Csc converts a store into the
- * destination in the context's pixel mode. Stores are RGBA8888, 512 x 272. */
-#define YCBCR_W 512
-#define YCBCR_H 272
-typedef struct { uint32_t mpeg, buf; uint8_t *rgba; int valid; } YcbcrBuf;
-static YcbcrBuf s_ycbcr[16];
+ * The guest-visible YCbCr allocation is a deterministic, zero-filled contract. The decoded
+ * picture is retained separately as RGBA so the existing H.264 backend can stay unchanged; every
+ * operation rechecks the allocation address, geometry, guest fingerprint, and decoded-picture
+ * state before using that hidden store. Unsupported firmware-visible details fail closed and
+ * name #302 instead of being inferred from a title's dimensions. */
+#define YCBCR_HEADER_BYTES 128u
+#define YCBCR_ALIGNMENT 16u
+#define YCBCR_SLOT_COUNT 16
+
+typedef struct {
+    uint32_t mpeg, buf, width, height, size;
+    uint64_t guest_tag;
+    uint8_t *rgba;
+    int initialized, valid;
+} YcbcrBuf;
+static YcbcrBuf s_ycbcr[YCBCR_SLOT_COUNT];
+
+static int ycbcr_mode_valid(uint32_t mode) {
+    return mode == UINT32_MAX || mode <= 3u;
+}
+
+static int ycbcr_size_for(uint32_t width, uint32_t height, uint32_t *size) {
+    if (!size || !width || !height || width > MPEG_MAX_DIMENSION || height > MPEG_MAX_DIMENSION ||
+        (width & 15u) || (height & 15u)) return 0;
+    uint32_t pixels, bytes;
+    if (!u32_mul_checked(width / 2u, height / 2u, &pixels) ||
+        !u32_mul_checked(pixels, 6u, &bytes) || !u32_add_checked(bytes, YCBCR_HEADER_BYTES, size))
+        return 0;
+    return 1;
+}
 
 static YcbcrBuf *ycbcr_find(uint32_t mpegAddr, uint32_t buf) {
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
         if (buf && s_ycbcr[i].buf == buf && s_ycbcr[i].mpeg == mpegAddr) return &s_ycbcr[i];
     return NULL;
 }
 
-static YcbcrBuf *ycbcr_slot(uint32_t mpegAddr, uint32_t buf) {
-    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
-    if (b || !buf) return b;
-    for (int i = 0; i < 16; i++) if (!s_ycbcr[i].buf) { b = &s_ycbcr[i]; break; }
-    if (!b) b = &s_ycbcr[0];   /* all in use: recycle the first slot */
-    b->mpeg = mpegAddr; b->buf = buf; b->valid = 0;
-    if (!b->rgba) b->rgba = (uint8_t *)calloc(YCBCR_W * YCBCR_H, 4);
-    return b->rgba ? b : NULL;
+static void ycbcr_clear_slot(YcbcrBuf *b) {
+    if (!b) return;
+    free(b->rgba);
+    memset(b, 0, sizeof(*b));
 }
 
-/* 4:2:0 planar size (Y plane plus two quarter-size chroma planes) plus a 128-byte header. */
+static void ycbcr_reset_mpeg(uint32_t mpegAddr) {
+    for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
+        if (s_ycbcr[i].mpeg == mpegAddr) ycbcr_clear_slot(&s_ycbcr[i]);
+}
+
+static uint64_t ycbcr_fingerprint(uint32_t buf, uint32_t size) {
+    const uint8_t *p = (const uint8_t *)SR_HOST(buf);
+    uint64_t tag = UINT64_C(1469598103934665603);
+    for (uint32_t i = 0; i < size; i++) {
+        tag ^= p[i];
+        tag *= UINT64_C(1099511628211);
+    }
+    return tag;
+}
+
+static int ycbcr_state_usable(const YcbcrBuf *b, int require_picture) {
+    uint32_t expected;
+    if (!b || !b->initialized || !b->rgba || !b->buf ||
+        !ycbcr_size_for(b->width, b->height, &expected) || expected != b->size ||
+        !sr_guest_span_readable(b->buf, b->size) || !sr_guest_span_writable(b->buf, b->size) ||
+        ycbcr_fingerprint(b->buf, b->size) != b->guest_tag) return 0;
+    return !require_picture || b->valid;
+}
+
+static YcbcrBuf *ycbcr_slot_for_init(uint32_t mpegAddr, uint32_t buf, uint32_t width,
+                                     uint32_t height, uint32_t size) {
+    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
+    if (!b) {
+        for (int i = 0; i < YCBCR_SLOT_COUNT; i++) if (!s_ycbcr[i].buf) {
+            b = &s_ycbcr[i];
+            break;
+        }
+    }
+    if (!b) return NULL;
+    uint64_t rgbaBytes64 = (uint64_t)width * height * 4u;
+    if (rgbaBytes64 == 0 || rgbaBytes64 > (uint64_t)SIZE_MAX) return NULL;
+    uint8_t *rgba = (uint8_t *)calloc((size_t)rgbaBytes64, 1u);
+    if (!rgba) return NULL;
+    for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
+        if (s_ycbcr[i].buf == buf && s_ycbcr[i].mpeg != mpegAddr) ycbcr_clear_slot(&s_ycbcr[i]);
+    ycbcr_clear_slot(b);
+    b->mpeg = mpegAddr; b->buf = buf; b->width = width; b->height = height; b->size = size;
+    b->rgba = rgba; b->initialized = 1; b->valid = 0;
+    memset(SR_HOST(buf), 0, size);
+    b->guest_tag = ycbcr_fingerprint(buf, size);
+    return b;
+}
+
+static int ycbcr_pointer_valid(uint32_t addr, uint32_t size, uint32_t alignment) {
+    return addr && !(addr & (alignment - 1u)) && sr_guest_span_writable(addr, size);
+}
+
+/* The public PSPSDK MPEG surface uses 4:2:0 YCbCr allocations with a 128-byte header. The
+ * dimensions and mode are supplied by the guest; the only hardware-independent contract exposed
+ * here is that layout. Firmware values outside it remain an explicit #302 limitation. */
 uint32_t mpeg_avc_query_ycbcr_size(uint32_t mpegAddr, uint32_t mode, uint32_t width,
                                    uint32_t height, uint32_t resultAddr) {
-    (void)mode;
-    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    if (!width || !height || width > 4096 || height > 4096 || (width & 15) || (height & 15))
-        return SCE_MPEG_ERROR_INVALID_VALUE;
-    uint32_t size = (width / 2u) * (height / 2u) * 6u + 128u;
-    if (resultAddr) MEM_W32(resultAddr, size);
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (!resultAddr || (resultAddr & 3u) || !sr_guest_span_writable(resultAddr, 4u))
+        return mpeg_contract_error("sceMpegAvcQueryYCbCrSize", "unaligned or invalid result pointer", SCE_MPEG_ERROR_INVALID_VALUE);
+    uint32_t size;
+    if (!ycbcr_mode_valid(mode) || !ycbcr_size_for(width, height, &size)) {
+        MEM_W32(resultAddr, 0);
+        return mpeg_contract_error("sceMpegAvcQueryYCbCrSize", "unsupported mode or geometry", SCE_MPEG_ERROR_INVALID_VALUE);
+    }
+    if (ctx->streamWidth && (width != ctx->streamWidth || height != ctx->streamHeight)) {
+        MEM_W32(resultAddr, 0);
+        return mpeg_contract_error("sceMpegAvcQueryYCbCrSize", "geometry disagrees with the PSMF stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    }
+    MEM_W32(resultAddr, size);
     return 0;
 }
 
 uint32_t mpeg_avc_init_ycbcr(uint32_t mpegAddr, uint32_t mode, uint32_t width, uint32_t height,
                              uint32_t buf) {
-    (void)mode; (void)width; (void)height;
-    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf);
-    if (b) b->valid = 0;
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    uint32_t size;
+    if (!ycbcr_mode_valid(mode) || !ycbcr_size_for(width, height, &size))
+        return mpeg_contract_error("sceMpegAvcInitYCbCr", "unsupported mode or geometry", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (ctx->streamWidth && (width != ctx->streamWidth || height != ctx->streamHeight))
+        return mpeg_contract_error("sceMpegAvcInitYCbCr", "geometry disagrees with the PSMF stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (!ycbcr_pointer_valid(buf, size, YCBCR_ALIGNMENT))
+        return mpeg_contract_error("sceMpegAvcInitYCbCr", "unaligned or truncated guest allocation", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (!ycbcr_slot_for_init(mpegAddr, buf, width, height, size))
+        return mpeg_contract_error("sceMpegAvcInitYCbCr", "host YCbCr state allocation failed", SCE_MPEG_ERROR_NO_MEMORY);
     return 0;
 }
 
@@ -725,37 +862,59 @@ uint32_t mpeg_avc_init_ycbcr(uint32_t mpegAddr, uint32_t mode, uint32_t width, u
 uint32_t mpeg_avc_decode_mode(uint32_t mpegAddr, uint32_t modeAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
-    if (!modeAddr) return SCE_MPEG_ERROR_INVALID_VALUE;
-    uint32_t pm = MEM_R32(modeAddr + 4);
-    if (pm > 3) return SCE_MPEG_ERROR_INVALID_VALUE;
+    if (!modeAddr || (modeAddr & 3u) || !sr_guest_span_readable(modeAddr, 8u))
+        return mpeg_contract_error("sceMpegAvcDecodeMode", "unaligned or truncated mode pointer", SCE_MPEG_ERROR_INVALID_VALUE);
+    uint32_t pm = MEM_R32(modeAddr + 4u);
+    if (pm > 3u)
+        return mpeg_contract_error("sceMpegAvcDecodeMode", "unsupported pixel mode", SCE_MPEG_ERROR_INVALID_VALUE);
     ctx->pixelMode = (int)pm;
     return 0;
 }
 
-/* sceMpegAvcDecodeYCbCr(mpeg, au, ycbcr*, init*): like sceMpegAvcDecode, the buffer argument
- * points at the YCbCr buffer address. */
+/* sceMpegAvcDecodeYCbCr(mpeg, au, ycbcr*, init*): the buffer argument points at the YCbCr
+ * allocation address, and init is the guest-visible picture-ready result. */
 uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufPtr, uint32_t initAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
+    if (!sr_guest_span_readable(auAddr, 24u) || !sr_guest_span_readable(bufPtr, 4u) ||
+        !sr_guest_span_writable(initAddr, 4u) || (bufPtr & 3u) || (initAddr & 3u))
+        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "invalid AU, buffer, or init pointer", (uint32_t)-1);
+    uint32_t buf = MEM_R32(bufPtr);
+    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
+    if (!b || !ycbcr_state_usable(b, 0))
+        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "missing, stale, or modified guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
     g_mpeg_avcdec++;
     ctx->videoPts += videoTimestampStep;
-    uint32_t buf = bufPtr ? MEM_R32(bufPtr) : 0u;
-    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf);
+    ctx->ycbcrWant++;
     int got = 0;
+    int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
 #ifdef SR_SDL3VK
-    if (b && ctx->h264Init && ctx->h264 >= 0) {
-        int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
-        /* One picture per request: pull until the decoder's output count catches up with the
-         * requests (a low-latency decoder can hold pictures back), keeping the newest. */
-        ctx->ycbcrWant++;
+    if (ctx->h264Init && ctx->h264 >= 0) {
         while (ctx->h264Frames < ctx->ycbcrWant) {
-            int r = sr_h264_frame_host(ctx->h264, eos, b->rgba, YCBCR_W, YCBCR_W * 4);
-            if (r <= 0) break;
-            got = r; b->valid = 1; ctx->h264Frames++;
+            int r = sr_h264_frame_host(ctx->h264, eos, b->rgba, (int)b->width, (int)b->width * 4);
+            if (r > 0) {
+                got = r;
+                b->valid = 1;
+                ctx->h264Frames++;
+            } else if (r < 0) {
+                b->valid = 0;
+                MEM_W32(initAddr, 0u);
+                return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "H.264 backend rejected the access unit", SCE_MPEG_ERROR_NO_DATA);
+            } else {
+                break;
+            }
         }
     }
 #endif
-    if (initAddr) MEM_W32(initAddr, 1);   /* a picture is ready in the buffer */
+    if (got <= 0) {
+        b->valid = 0;
+        MEM_W32(initAddr, 0u);
+        if (eos || !ctx->h264Init || ctx->h264 < 0) {
+            return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "no decoder or drained picture", SCE_MPEG_ERROR_NO_DATA);
+        }
+        return 0;
+    }
+    MEM_W32(initAddr, 1u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
@@ -766,26 +925,48 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
 }
 
 uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t buf, uint32_t statusAddr) {
-    (void)buf;
-    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    if (statusAddr) MEM_W32(statusAddr, 0);   /* no buffered pictures remain */
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (!statusAddr || (statusAddr & 3u) || !sr_guest_span_writable(statusAddr, 4u))
+        return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "invalid status pointer", (uint32_t)-1);
+    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
+    if (!b || !ycbcr_state_usable(b, 0))
+        return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "missing, stale, or modified guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
+    b->valid = 0;
+    memset(b->rgba, 0, (size_t)b->width * b->height * 4u);
+    memset(SR_HOST(b->buf), 0, b->size);
+    b->guest_tag = ycbcr_fingerprint(b->buf, b->size);
+    MEM_W32(statusAddr, 0u);
     return 0;
 }
 
+static int ycbcr_ranges_overlap(uint32_t a, uint32_t b, uint32_t size) {
+    uint64_t a0 = a, a1 = a0 + size, b0 = b, b1 = b0 + size;
+    return a0 < b1 && b0 < a1;
+}
+
 uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
-    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (!dst || !src || (dst & (YCBCR_ALIGNMENT - 1u)) || (src & (YCBCR_ALIGNMENT - 1u)))
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "unaligned source or destination", SCE_MPEG_ERROR_INVALID_VALUE);
     YcbcrBuf *from = ycbcr_find(mpegAddr, src);
-    YcbcrBuf *to = ycbcr_slot(mpegAddr, dst);
+    YcbcrBuf *to = ycbcr_find(mpegAddr, dst);
+    if (!from || !to || !ycbcr_state_usable(from, 1) || !ycbcr_state_usable(to, 0))
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "missing, stale, or undecoded guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (from->width != to->width || from->height != to->height || from->size != to->size)
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "source and destination geometry differ", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (dst == src) return 0;
+    if (ycbcr_ranges_overlap(dst, src, from->size))
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "overlapping allocations are not modeled", SCE_MPEG_ERROR_INVALID_VALUE);
+    memcpy(SR_HOST(dst), SR_HOST(src), from->size);
+    memcpy(to->rgba, from->rgba, (size_t)from->width * from->height * 4u);
+    to->valid = from->valid;
+    to->guest_tag = from->guest_tag;
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcCopyYCbCr #%d dst=0x%x [dst]=0x%x src=0x%x [src]=0x%x from=%d\n",
-                    n, dst, sr_guest_span_readable(dst, 4) ? MEM_R32(dst) : 0u,
-                    src, sr_guest_span_readable(src, 4) ? MEM_R32(src) : 0u, from ? from->valid : -1);
-    }
-    if (from && to && from != to) {
-        if (from->valid) memcpy(to->rgba, from->rgba, (size_t)YCBCR_W * YCBCR_H * 4);
-        to->valid = from->valid;
+            fprintf(stderr, "MpegAvcCopyYCbCr #%d dst=0x%x src=0x%x size=%u\n", n, dst, src, from->size);
     }
     return 0;
 }
@@ -795,73 +976,117 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
                       uint32_t dest) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
-    if (!rangeAddr || !dest) return SCE_MPEG_ERROR_INVALID_VALUE;
-    if (frameWidth == 0 || frameWidth > 2048)
-        frameWidth = ctx->defaultFrameWidth ? (uint32_t)ctx->defaultFrameWidth : 512u;
-    uint32_t x0 = MEM_R32(rangeAddr), y0 = MEM_R32(rangeAddr + 4);
-    uint32_t w = MEM_R32(rangeAddr + 8), h = MEM_R32(rangeAddr + 12);
-    if (x0 >= YCBCR_W || y0 >= YCBCR_H) return SCE_MPEG_ERROR_INVALID_VALUE;
-    if (w > YCBCR_W - x0) w = YCBCR_W - x0;
-    if (h > YCBCR_H - y0) h = YCBCR_H - y0;
-    if (w > frameWidth) w = frameWidth;
-    uint32_t bpp = ctx->pixelMode == 3 ? 4u : 2u;
+    if (!rangeAddr || (rangeAddr & 3u) || !sr_guest_span_readable(rangeAddr, 16u) ||
+        !dest || (dest & 3u))
+        return mpeg_contract_error("sceMpegAvcCsc", "unaligned or truncated range/destination pointer", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (frameWidth == 0) frameWidth = (uint32_t)ctx->defaultFrameWidth;
+    if (!frameWidth || frameWidth > MPEG_MAX_DIMENSION || ctx->pixelMode < 0 || ctx->pixelMode > 3)
+        return mpeg_contract_error("sceMpegAvcCsc", "invalid stride or pixel mode", SCE_MPEG_ERROR_INVALID_VALUE);
     YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
-    if (!b || !b->valid) {
-        if (!ctx->h264Frames) clear_video_buffer(dest, frameWidth, ctx->pixelMode);
-    } else {
-        for (uint32_t y = 0; y < h; y++) {
-            uint32_t row = dest + ((y0 + y) * frameWidth + x0) * bpp;
-            if (!sr_guest_span_writable(row, w * bpp)) break;
-            const uint8_t *px = b->rgba + ((size_t)(y0 + y) * YCBCR_W + x0) * 4u;
-            uint8_t *out = (uint8_t *)SR_HOST(row);
-            for (uint32_t x = 0; x < w; x++, px += 4) {
-                unsigned r = px[0], g = px[1], bl = px[2];
-                uint16_t v16;
-                switch (ctx->pixelMode) {
-                    case 0: v16 = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11));
-                            memcpy(out + x * 2u, &v16, 2); break;
-                    case 1: v16 = (uint16_t)((r >> 3) | ((g >> 3) << 5) | ((bl >> 3) << 10) | 0x8000u);
-                            memcpy(out + x * 2u, &v16, 2); break;
-                    case 2: v16 = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((bl >> 4) << 8) | 0xF000u);
-                            memcpy(out + x * 2u, &v16, 2); break;
-                    default: memcpy(out + x * 4u, px, 4); break;
-                }
+    if (!b || !ycbcr_state_usable(b, 1))
+        return mpeg_contract_error("sceMpegAvcCsc", "missing, stale, or undecoded guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
+    int32_t x = (int32_t)MEM_R32(rangeAddr);
+    int32_t y = (int32_t)MEM_R32(rangeAddr + 4u);
+    int32_t w = (int32_t)MEM_R32(rangeAddr + 8u);
+    int32_t h = (int32_t)MEM_R32(rangeAddr + 12u);
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || (uint32_t)x >= b->width || (uint32_t)y >= b->height)
+        return mpeg_contract_error("sceMpegAvcCsc", "negative or empty source range", SCE_MPEG_ERROR_INVALID_VALUE);
+    /* Firmware clipping is not measured; clip positive source overflow and reject invalid origins. */
+    if ((uint32_t)w > b->width - (uint32_t)x) w = (int32_t)(b->width - (uint32_t)x);
+    if ((uint32_t)h > b->height - (uint32_t)y) h = (int32_t)(b->height - (uint32_t)y);
+    if ((uint32_t)x >= frameWidth)
+        return mpeg_contract_error("sceMpegAvcCsc", "range starts beyond destination stride", SCE_MPEG_ERROR_INVALID_VALUE);
+    if ((uint32_t)w > frameWidth - (uint32_t)x)
+        return mpeg_contract_error("sceMpegAvcCsc", "range exceeds destination stride", SCE_MPEG_ERROR_INVALID_VALUE);
+    uint32_t bpp = ctx->pixelMode == 3 ? 4u : 2u;
+    SrGuestRectSpan span;
+    if (!sr_guest_rect_writable(dest, (uint32_t)x, (uint32_t)y, frameWidth,
+                                (uint32_t)w, (uint32_t)h, bpp, &span))
+        return mpeg_contract_error("sceMpegAvcCsc", "destination rectangle is out of bounds", SCE_MPEG_ERROR_INVALID_VALUE);
+    for (uint32_t row = 0; row < (uint32_t)h; row++) {
+        const uint8_t *px = b->rgba + ((size_t)((uint32_t)y + row) * b->width + (uint32_t)x) * 4u;
+        uint32_t rowAddr = span.first + row * span.row_pitch;
+        uint8_t *out = (uint8_t *)SR_HOST(rowAddr);
+        for (uint32_t col = 0; col < (uint32_t)w; col++, px += 4u) {
+            unsigned r = px[0], g = px[1], bl = px[2];
+            uint16_t v16;
+            switch (ctx->pixelMode) {
+                case 0:
+                    v16 = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11));
+                    memcpy(out + col * 2u, &v16, 2u);
+                    break;
+                case 1:
+                    v16 = (uint16_t)((r >> 3) | ((g >> 3) << 5) | ((bl >> 3) << 10) | 0x8000u);
+                    memcpy(out + col * 2u, &v16, 2u);
+                    break;
+                case 2:
+                    v16 = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((bl >> 4) << 8) | 0xF000u);
+                    memcpy(out + col * 2u, &v16, 2u);
+                    break;
+                default:
+                    memcpy(out + col * 4u, px, 4u);
+                    break;
             }
         }
+        extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
+        sr_gpu_vram_dirty(rowAddr, span.row_bytes);
     }
-    extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-    sr_gpu_vram_dirty(dest, video_buffer_bytes(frameWidth, ctx->pixelMode));
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%x valid=%d dest=0x%x fw=%u range=%u,%u %ux%u\n",
-                    n, buf, b ? b->valid : -1, dest, frameWidth, x0, y0, w, h);
+            fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%x dest=0x%x fw=%u range=%u,%u %ux%u\n",
+                    n, buf, dest, frameWidth, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h);
     }
     return 0;
 }
 
-/* LPCM audio streams: this model has no PCM decode; report the standard LPCM access-unit size and
- * no data, which the guest player treats as "no PCM stream present". */
+static int mpeg_stream_index(const Mpeg *ctx, uint32_t sid) {
+    if (!ctx) return -1;
+    for (int i = 0; i < 8; i++) if (ctx->streams[i].used && ctx->streams[i].sid == sid) return i;
+    return -1;
+}
+
+/* LPCM ES and output sizes are public constants; PCM access-unit production remains unsupported. */
 uint32_t mpeg_query_pcm_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uint32_t outSizeAddr) {
     if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    if (!esSizeAddr || !outSizeAddr) return SCE_MPEG_ERROR_INVALID_VALUE;
-    MEM_W32(esSizeAddr, 320u);
-    MEM_W32(outSizeAddr, 320u);
+    if (!esSizeAddr || !outSizeAddr || (esSizeAddr & 3u) || (outSizeAddr & 3u) ||
+        !sr_guest_span_writable(esSizeAddr, 4u) || !sr_guest_span_writable(outSizeAddr, 4u))
+        return mpeg_contract_error("sceMpegQueryPcmEsSize", "unaligned or truncated size pointer", SCE_MPEG_ERROR_INVALID_VALUE);
+    MEM_W32(esSizeAddr, MPEG_PCM_ES_SIZE);
+    MEM_W32(outSizeAddr, MPEG_PCM_OUTPUT_SIZE);
     return 0;
 }
 
 uint32_t mpeg_get_pcm_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint32_t attrAddr) {
-    (void)sid; (void)auAddr; (void)attrAddr;
-    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    return SCE_MPEG_ERROR_NO_DATA;
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (!auAddr || (auAddr & 3u) || !sr_guest_span_writable(auAddr, 24u) ||
+        !attrAddr || (attrAddr & 3u) || !sr_guest_span_writable(attrAddr, 4u))
+        return mpeg_contract_error("sceMpegGetPcmAu", "unaligned or truncated AU pointer", SCE_MPEG_ERROR_INVALID_VALUE);
+    int index = mpeg_stream_index(ctx, sid);
+    if (index < 0 || ctx->streams[index].type != MPEG_PCM_STREAM)
+        return mpeg_contract_error("sceMpegGetPcmAu", "unknown or non-PCM stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    au_write_pts(auAddr, 0, -1);
+    au_write_pts(auAddr, 8, -1);
+    MEM_W32(auAddr + 16u, 0u);
+    MEM_W32(auAddr + 20u, MPEG_PCM_ES_SIZE);
+    MEM_W32(attrAddr, 0u);
+    return mpeg_contract_error("sceMpegGetPcmAu", "PCM decode is not implemented", SCE_MPEG_ERROR_NO_DATA);
 }
 
-/* sceMpegChangeGetAuMode(mpeg, stream, mode): 0 = decode, 1 = skip. Access units are produced
- * the same way in both modes here; skipping only means the guest does not decode them. */
+/* sceMpegChangeGetAuMode(mpeg, stream, mode): decode mode is retained; skip mode has no measured
+ * queue/timestamp contract and therefore fails closed. */
 uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode) {
-    (void)sid;
-    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
-    if (mode > 1) return SCE_MPEG_ERROR_INVALID_VALUE;
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (mode != MPEG_AU_MODE_DECODE && mode != MPEG_AU_MODE_SKIP)
+        return mpeg_contract_error("sceMpegChangeGetAuMode", "unsupported AU mode", SCE_MPEG_ERROR_INVALID_VALUE);
+    int index = mpeg_stream_index(ctx, sid);
+    if (index < 0)
+        return mpeg_contract_error("sceMpegChangeGetAuMode", "unknown stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (mode == MPEG_AU_MODE_SKIP)
+        return mpeg_contract_error("sceMpegChangeGetAuMode", "skip-mode queue and timestamp semantics are unmeasured", (uint32_t)-1);
+    ctx->streams[index].auMode = MPEG_AU_MODE_DECODE;
     return 0;
 }
 

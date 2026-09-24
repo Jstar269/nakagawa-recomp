@@ -345,8 +345,9 @@ void nk_input_profile_init_default(NkInputProfile *profile) {
     profile->psp_buttons[NK_PSP_BTN_SQUARE].primary.type = NK_BINDING_HOST_BUTTON;
     profile->psp_buttons[NK_PSP_BTN_SQUARE].primary.index = NK_HOST_BUTTON_WEST;
 
-    profile->psp_buttons[NK_PSP_BTN_HOME].primary.type = NK_BINDING_HOST_BUTTON;
-    profile->psp_buttons[NK_PSP_BTN_HOME].primary.index = NK_HOST_BUTTON_GUIDE;
+    /* HOME stays unbound by default: the pre-profile runtime never mapped the host GUIDE
+     * button, and the default must reproduce that mapping exactly. Users may bind it. */
+    profile->psp_buttons[NK_PSP_BTN_HOME].primary.type = NK_BINDING_NONE;
 
     profile->psp_buttons[NK_PSP_BTN_HOLD].primary.type = NK_BINDING_NONE;
 

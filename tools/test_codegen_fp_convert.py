@@ -11,6 +11,7 @@ so generated/reference agreement cannot conceal the historical shared UB.
 
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 import shutil
@@ -25,6 +26,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CODEGEN = ROOT / "tools" / "codegen.py"
 CC = shutil.which("gcc")
 ENTRY = 0x00001000
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+codegen = importlib.import_module("codegen")
 
 # Isolated translation-unit contract for generated output: the same interface the
 # real runtime exposes, with accepting no-op stubs so an isolated harness does not
@@ -127,6 +130,10 @@ def _mfc1(rt: int, fs: int) -> int:
     return (0x11 << 26) | (rt << 16) | (fs << 11)
 
 
+def _mtc1(rt: int, fs: int) -> int:
+    return (0x11 << 26) | (0x04 << 21) | (rt << 16) | (fs << 11)
+
+
 def _fpw(fs: int, fd: int) -> int:
     return (0x11 << 26) | (0x14 << 21) | (fs << 11) | (fd << 6) | 0x20
 
@@ -179,7 +186,7 @@ def _fixture_words() -> list[int]:
         (5, 12, 0x24),  # cvt.w.s (fcr31-directed)
     ):
         words.extend((_fps(0, fd, funct), _mfc1(rt, fd)))
-    words.extend((_fpw(6, 7), _mfc1(13, 7)))  # signed-word reinterpretation
+    words.extend((_mtc1(6, 6), _fpw(6, 7), _mfc1(13, 7)))  # signed-word reinterpretation
     words.extend((
         _vf2i(0, 0, 1),   # vf2in.s s001, s000 -> physical vi[4]
         _vf2i(1, 0, 2),   # vf2iz.s s002, s000 -> physical vi[8]
@@ -189,6 +196,17 @@ def _fixture_words() -> list[int]:
     ))
     words.extend((0x03E00008, 0x00000000))     # jr ra; nop
     return words
+
+
+class FpuFieldMappingTests(unittest.TestCase):
+    def test_cvt_sw_reads_fs_and_writes_fd(self):
+        effect, _, _ = codegen.fpu_effect(0x1000, _fpw(14, 15))
+        self.assertEqual(
+            effect,
+            "s->f[15] = sr_fpu_cvt_s_w("
+            "sr_u32_as_s32(s->fi[14]), s->fcr31);",
+        )
+        self.assertNotIn("s->r[0]", effect)
 
 
 @unittest.skipUnless(CC, "gcc is required for the generated-C conversion regression")
@@ -279,7 +297,7 @@ int main(void) {
             CpuState s = {0};
             s.fi[0] = vectors[i].input;
             s.vi[0] = vectors[i].input;
-            s.fi[6] = 0xffffffffu;  /* cvt.s.w -1 is exact under every host mode. */
+            s.r[6] = 0xffffffffu;  /* cvt.s.w -1 is exact under every host mode. */
             s.fcr31 = vectors[i].fcr31;
             s.vfpuCtrl[0] = 0xe4u;
             s.vfpuCtrl[1] = 0xe4u;
@@ -303,7 +321,7 @@ int main(void) {
     }
     (void)fesetround(FE_TONEAREST);
     CpuState signed_max = {0};
-    signed_max.fi[6] = 0x7fffffffu;
+    signed_max.r[6] = 0x7fffffffu;
     f_00001000(&signed_max);
     if (signed_max.r[13] != 0x4f000000u) failures++;
     printf("generated_fp_convert: %s\\n", failures == 0 ? "PASS" : "FAIL");
@@ -576,8 +594,8 @@ int main(void) {
     for (unsigned i = 0; i < 4; i++) {
         static const struct Case cases[] = {{0, 0}, {2, 0}, {0, 1}, {3, 1}};
         CpuState s = {0};
-        s.fi[23] = 0x01000001u;   /* word 16777217  = 2^24+1  */
-        s.fi[25] = 0xfeffffffu;   /* word -16777217            */
+        s.r[23] = 0x01000001u;   /* word 16777217  = 2^24+1  */
+        s.r[25] = 0xfeffffffu;   /* word -16777217            */
         s.r[8] = cases[i].rm;
         f_00001000(&s);
         if (!cases[i].negative) {
@@ -779,8 +797,8 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
     def test_cell4_cvt_sw_honors_guest_rounding_mode(self):
         words: list[int] = [
             _ctc1(8),
-            _fpw(23, 22), _mfc1(9, 22),                 # cvt.s.w f22,f23
-            _fpw(25, 24), _mfc1(10, 24),                # cvt.s.w f24,f25
+            _mtc1(23, 23), _fpw(23, 22), _mfc1(9, 22),  # cvt.s.w f22,f23
+            _mtc1(25, 25), _fpw(25, 24), _mfc1(10, 24), # cvt.s.w f24,f25
             0x03E00008, 0x00000000,
         ]
         emitted = _run_generated_fixture(self, "fp_scalar_cvtsw", words, _CELL4_MAIN)
