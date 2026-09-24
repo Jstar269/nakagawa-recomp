@@ -168,6 +168,8 @@
     "THIRD_PARTY_LICENSES/SAL063_CREDITS.txt",
     "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
     "assets/README.md",
+    "assets/issue_routing.json",
+    "assets/issue_routing.schema.json",
     "assets/public_provenance_ledger.json",
     "assets/public_source_profile.json",
     "assets/pypi_tool_metadata_2026-09-24.json",
