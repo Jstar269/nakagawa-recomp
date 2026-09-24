@@ -7895,7 +7895,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9ece6f15af546e842b4c1b9db1f8becc9be7c6c11eab2cb55ece96184739f28f"
+      "sha256": "13ee23d483c76bff18ea5a207aaac79687bfe807a9f841293b7b513cfc689e3b"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -8624,7 +8624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e9b290449300af11e838e74d9aca62202d0f6ed08150cc5673708a50d32ccd97"
+      "sha256": "0a1f7dcadf1fef722d0f632072c36cb46eaf5ffaeeed6be995a28e3053821ddb"
     },
     {
       "path": "tools/test_history_audit.py",
