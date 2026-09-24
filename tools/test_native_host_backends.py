@@ -127,6 +127,9 @@ class NativeHostBackendTests(unittest.TestCase):
         cls._objects["src/player/input_settings.c"] = _compile_object(
             cls, "src/player/input_settings.c", "input_settings.o", ("-Isrc/player",)
         )
+        cls._objects["src/player/iso_reader.c"] = _compile_object(
+            cls, "src/player/iso_reader.c", "iso_reader.o", ("-Isrc/player",)
+        )
         harnesses = {
             "tests/native/test_launch_resolution.c": (),
             "tests/native/test_player_state.c": ("-Isrc/player",),
@@ -156,7 +159,11 @@ class NativeHostBackendTests(unittest.TestCase):
         """Library entry lookup and honest add results, with no SDL involved."""
         stdout = _build_and_run(
             self, "tests/native/test_player_state.c", "test_player_state",
-            extra_sources=("src/player/player_state.c", "src/player/input_settings.c"),
+            extra_sources=(
+                "src/player/player_state.c",
+                "src/player/input_settings.c",
+                "src/player/iso_reader.c",
+            ),
         )
         self.assertIn("ALL PLAYER STATE TESTS PASSED", stdout)
 
