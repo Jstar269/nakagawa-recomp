@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from typing import Any
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -583,6 +584,58 @@ def parse_npm_lockfile(lock_path: Path) -> list[dict]:
     return _parse_npm_lock_text(snap, lock_path)
 
 
+def _normalize_spdx_license(raw: str) -> str:
+    cleaned = raw.strip()
+    mapping = {
+        "mit": "MIT",
+        "bsd-3-clause": "BSD-3-Clause",
+        "gpl-3.0-or-later": "GPL-3.0-or-later",
+        "gplv3+": "GPL-3.0-or-later",
+        "gplv3": "GPL-3.0-only",
+        "apache-2.0": "Apache-2.0",
+        "zlib": "Zlib",
+        "lgpl-2.1-or-later": "LGPL-2.1-or-later",
+    }
+    return mapping.get(cleaned.lower(), cleaned if cleaned in mapping.values() else "NOASSERTION")
+
+
+def _resolve_python_package_license(name: str) -> str:
+    """Resolve an SPDX license identifier for an installed Python package from local dist-info metadata.
+
+    Reads locally from the current Python environment using importlib.metadata; never uses the network.
+    """
+    try:
+        import importlib.metadata as md
+        dist_meta = md.metadata(name)
+    except Exception:
+        dist_meta = None
+
+    if dist_meta is not None:
+        lic_expr = dist_meta.get("License-Expression")
+        if lic_expr and lic_expr.strip():
+            return lic_expr.strip()
+
+        raw_lic = dist_meta.get("License")
+        if raw_lic and raw_lic.strip():
+            norm = _normalize_spdx_license(raw_lic.strip())
+            if norm != "NOASSERTION":
+                return norm
+
+        classifiers = dist_meta.get_all("Classifier", [])
+        for c in classifiers:
+            if "GNU General Public License v3 or later" in c or "GPLv3+" in c:
+                return "GPL-3.0-or-later"
+            if "GNU General Public License v3" in c or "GPLv3" in c:
+                return "GPL-3.0-only"
+            if "MIT License" in c:
+                return "MIT"
+            if "Apache Software License" in c:
+                return "Apache-2.0"
+
+    # No guessed licenses: an unresolvable package stays NOASSERTION so the release gate sees it.
+    return "NOASSERTION"
+
+
 def parse_python_lockfile(
     lock_path: Path,
     artifact_metadata: PythonArtifactMetadata | None = None,
@@ -697,7 +750,7 @@ def _parse_python_lock_text(
             "name": name,
             "version": version,
             "spdx_id": f"SPDXRef-pip-{name}-{version}",
-            "license": "NOASSERTION",
+            "license": _resolve_python_package_license(name),
             "sha256": declared_hashes[0],
             "declared_sha256": declared_hashes,
             "verified_sha256": verified_hashes,
@@ -748,12 +801,100 @@ def _python_hash_annotations(package: dict) -> list[dict]:
     return annotations
 
 
+def resolve_shipped_dlls(
+    package_dir: Path | None = None,
+    manifest_data: dict | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve the list of shipped native DLLs with their SPDX license identifiers.
+
+    Reads from package_dir/THIRD_PARTY_NOTICES/index.json if present, or resolves known
+    shipped runtime DLLs (SDL3.dll, MinGW/UCRT runtimes) and manifest components.
+    """
+    shipped: dict[str, dict[str, Any]] = {}
+
+    if package_dir is not None and package_dir.is_dir():
+        index_path = package_dir / "THIRD_PARTY_NOTICES" / "index.json"
+        if index_path.is_file():
+            try:
+                index_data = json.loads(index_path.read_text(encoding="utf-8"))
+                for comp in index_data.get("components", []):
+                    bin_name = comp.get("binary")
+                    if bin_name and bin_name.lower().endswith(".dll"):
+                        slug = re.sub(r"[^A-Za-z0-9._-]", "_", bin_name)
+                        shipped[bin_name.lower()] = {
+                            "name": bin_name,
+                            "spdx_id": f"SPDXRef-dll-{slug}",
+                            "version": comp.get("version", "unknown"),
+                            "license": comp.get("spdx_id", "NOASSERTION"),
+                            "downloadLocation": comp.get("upstream_origin", "NOASSERTION"),
+                            "source_path": comp.get("source_path", bin_name),
+                        }
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        for dll_file in package_dir.glob("*.dll"):
+            dll_lower = dll_file.name.lower()
+            if dll_lower not in shipped:
+                from package_notices import (
+                    KNOWN_RUNTIME_DLLS,
+                    installed_package_version,
+                    resolve_toolchain_root,
+                )
+                if dll_lower in KNOWN_RUNTIME_DLLS:
+                    record = KNOWN_RUNTIME_DLLS[dll_lower]
+                    name = dll_file.name
+                    lic = record["spdx_id"]
+                    ver = installed_package_version(resolve_toolchain_root(), record.get("pacman_package"))
+                    orig = record.get("upstream_origin", "NOASSERTION")
+                    slug = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+                    shipped[dll_lower] = {
+                        "name": name,
+                        "spdx_id": f"SPDXRef-dll-{slug}",
+                        "version": ver,
+                        "license": lic,
+                        "downloadLocation": orig,
+                        "source_path": name,
+                    }
+
+    if manifest_data:
+        for comp in manifest_data.get("components", []):
+            src_path = comp.get("source_path", "")
+            if src_path.lower().endswith(".dll") or comp.get("id") == "sdl3-runtime":
+                dll_name = Path(src_path).name if src_path else "SDL3.dll"
+                dll_lower = dll_name.lower()
+                if dll_lower not in shipped:
+                    slug = re.sub(r"[^A-Za-z0-9._-]", "_", dll_name)
+                    shipped[dll_lower] = {
+                        "name": dll_name,
+                        "spdx_id": f"SPDXRef-dll-{slug}",
+                        "version": comp.get("version", ">=3.0.0"),
+                        "license": comp.get("license", "Zlib"),
+                        "downloadLocation": comp.get("upstream_origin", "https://github.com/libsdl-org/SDL"),
+                        "source_path": src_path or dll_name,
+                    }
+
+    if not shipped:
+        shipped["sdl3.dll"] = {
+            "name": "SDL3.dll",
+            "spdx_id": "SPDXRef-dll-SDL3",
+            "version": ">=3.0.0",
+            "license": "Zlib",
+            "downloadLocation": "https://github.com/libsdl-org/SDL",
+            "source_path": "SDL3.dll",
+        }
+
+    return [shipped[k] for k in sorted(shipped)]
+
+
 def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict],
                     lock_files: list[dict] | None = None,
-                    lock_relationships: list[dict] | None = None) -> dict:
+                    lock_relationships: list[dict] | None = None,
+                    shipped_dlls: list[dict] | None = None) -> dict:
     """Build the SPDX 2.3 document; optionally embed standards-conformant
     lockfile evidence (files entries + DEPENDENCY_MANIFEST_OF relationships).
     """
+    if shipped_dlls is None:
+        shipped_dlls = resolve_shipped_dlls(manifest_data=manifest_data)
     doc_id = "SPDXRef-DOCUMENT"
     root_pkg_id = "SPDXRef-Package-nakagawa-recomp"
 
@@ -823,6 +964,26 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
             "spdxElementId": root_pkg_id,
             "relationshipType": "DEPENDS_ON",
             "relatedSpdxElement": c_id,
+        })
+
+    # Ingest shipped native DLLs
+    for dll in shipped_dlls:
+        if any(p.get("name") in (dll["name"], dll.get("id")) or p.get("SPDXID") == dll["spdx_id"] for p in packages):
+            continue
+        packages.append({
+            "SPDXID": dll["spdx_id"],
+            "name": dll["name"],
+            "versionInfo": dll.get("version", "unknown"),
+            "downloadLocation": dll.get("downloadLocation", "NOASSERTION"),
+            "filesAnalyzed": False,
+            "licenseConcluded": dll["license"],
+            "licenseDeclared": dll["license"],
+            "copyrightText": "NOASSERTION",
+        })
+        relationships.append({
+            "spdxElementId": root_pkg_id,
+            "relationshipType": "DEPENDS_ON",
+            "relatedSpdxElement": dll["spdx_id"],
         })
 
     # Ingest NPM packages
@@ -904,7 +1065,10 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
     return document
 
 
-def generate_spdx301(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict]) -> dict:
+def generate_spdx301(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict],
+                     shipped_dlls: list[dict] | None = None) -> dict:
+    if shipped_dlls is None:
+        shipped_dlls = resolve_shipped_dlls(manifest_data=manifest_data)
     base_id = f"{DOCUMENT_NAMESPACE_BASE}-{manifest_data.get('version', '0.1.0')}"
     graph = [
         {
@@ -922,6 +1086,15 @@ def generate_spdx301(manifest_data: dict, npm_packages: list[dict], py_packages:
             "spdx:concludedLicense": f"http://spdx.org/licenses/{manifest_data.get('license', 'GPL-3.0-or-later')}",
         }
     ]
+
+    for dll in shipped_dlls:
+        graph.append({
+            "@id": f"{base_id}#{dll['spdx_id']}",
+            "@type": "spdx:Package",
+            "spdx:name": dll["name"],
+            "spdx:packageVersion": dll.get("version", "unknown"),
+            "spdx:concludedLicense": f"http://spdx.org/licenses/{dll['license']}",
+        })
 
     for pkg in npm_packages:
         graph.append({
@@ -971,7 +1144,10 @@ def generate_spdx301(manifest_data: dict, npm_packages: list[dict], py_packages:
     }
 
 
-def generate_cyclonedx(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict]) -> dict:
+def generate_cyclonedx(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict],
+                       shipped_dlls: list[dict] | None = None) -> dict:
+    if shipped_dlls is None:
+        shipped_dlls = resolve_shipped_dlls(manifest_data=manifest_data)
     components = [
         {
             "type": "application",
@@ -998,6 +1174,14 @@ def generate_cyclonedx(manifest_data: dict, npm_packages: list[dict], py_package
             }],
         })
 
+    for dll in shipped_dlls:
+        components.append({
+            "type": "library",
+            "name": dll["name"],
+            "version": dll.get("version", "unknown"),
+            "licenses": [{"license": {"id": dll["license"]}}],
+        })
+
     # CycloneDX identifies a library by its purl, and a purl is unique per
     # package name+version regardless of install path. The npm lockfile can
     # list the same package at several paths, so deduplicate by purl here
@@ -1019,6 +1203,9 @@ def generate_cyclonedx(manifest_data: dict, npm_packages: list[dict], py_package
         if pkg.get("ecosystem") == "npm":
             entry["licenses"] = [{"license": {"id": pkg["license"] if pkg["license"] != "NOASSERTION" else "unspecified"}}]
         if pkg.get("ecosystem") == "pypi":
+            lic = pkg.get("license", "NOASSERTION")
+            if lic != "NOASSERTION":
+                entry["licenses"] = [{"license": {"id": lic}}]
             entry["hashes"] = [
                 {"alg": "SHA-256", "content": sha256_hash}
                 for sha256_hash in pkg["verified_sha256"]
@@ -1085,6 +1272,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spdx-out", type=Path, help="Output path for SPDX 2.3 JSON")
     parser.add_argument("--spdx3-out", type=Path, help="Output path for SPDX 3.0.1 JSON-LD")
     parser.add_argument("--cyclonedx-out", type=Path, help="Output path for CycloneDX 1.5 JSON")
+    parser.add_argument(
+        "--package-dir",
+        type=Path,
+        help="Native package directory containing shipped DLLs and notices",
+    )
 
     args = parser.parse_args(argv)
 
@@ -1133,14 +1325,16 @@ def main(argv: list[str] | None = None) -> int:
 
     npm_packages = parsed["npm_packages"]
     py_packages = parsed["py_packages"]
+    shipped_dlls = resolve_shipped_dlls(package_dir=args.package_dir, manifest_data=manifest_data)
 
     spdx23_doc = generate_spdx23(
         manifest_data, npm_packages, py_packages,
         lock_files=parsed["lock_files"],
         lock_relationships=parsed["lock_relationships"],
+        shipped_dlls=shipped_dlls,
     )
-    spdx301_doc = generate_spdx301(manifest_data, npm_packages, py_packages)
-    cyclonedx_doc = generate_cyclonedx(manifest_data, npm_packages, py_packages)
+    spdx301_doc = generate_spdx301(manifest_data, npm_packages, py_packages, shipped_dlls=shipped_dlls)
+    cyclonedx_doc = generate_cyclonedx(manifest_data, npm_packages, py_packages, shipped_dlls=shipped_dlls)
 
     if args.spdx_out:
         args.spdx_out.parent.mkdir(parents=True, exist_ok=True)

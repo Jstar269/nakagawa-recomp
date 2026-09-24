@@ -31,6 +31,58 @@ class TestSBOMTooling(unittest.TestCase):
         )
         self.assertEqual(len(packages[0]["declared_sha256"]), 2)
         self.assertEqual(len(packages[1]["declared_sha256"]), 18)
+        self.assertEqual(packages[0]["license"], "GPL-3.0-or-later")
+        self.assertEqual(packages[1]["license"], "MIT")
+        for pkg in packages:
+            self.assertNotIn(pkg["license"], {"NOASSERTION", "UNKNOWN", "unspecified"})
+
+    def test_shipped_dlls_appear_in_sboms_with_licenses(self):
+        manifest_data = {
+            "name": "nakagawa-recomp",
+            "version": "0.1.0",
+            "license": "GPL-3.0-or-later",
+            "description": "Test App",
+            "components": [],
+        }
+        npm_pkgs = []
+        py_pkgs = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkg_dir = Path(tmpdir)
+            (pkg_dir / "SDL3.dll").write_bytes(b"dummy-sdl3")
+            notices_dir = pkg_dir / "THIRD_PARTY_NOTICES"
+            notices_dir.mkdir()
+            (notices_dir / "index.json").write_text(json.dumps({
+                "schema_version": 1,
+                "components": [
+                    {
+                        "name": "SDL3",
+                        "binary": "SDL3.dll",
+                        "version": "3.4.12",
+                        "spdx_id": "Zlib",
+                        "source_path": "share/licenses/SDL3/LICENSE.txt",
+                    }
+                ]
+            }), encoding="utf-8")
+
+            shipped = generate_sbom.resolve_shipped_dlls(package_dir=pkg_dir, manifest_data=manifest_data)
+            self.assertEqual(len(shipped), 1)
+            self.assertEqual(shipped[0]["name"], "SDL3.dll")
+            self.assertEqual(shipped[0]["license"], "Zlib")
+
+            spdx23 = generate_sbom.generate_spdx23(manifest_data, npm_pkgs, py_pkgs, shipped_dlls=shipped)
+            spdx_names = {p["name"]: p.get("licenseConcluded") for p in spdx23["packages"]}
+            self.assertIn("SDL3.dll", spdx_names)
+            self.assertEqual(spdx_names["SDL3.dll"], "Zlib")
+
+            spdx301 = generate_sbom.generate_spdx301(manifest_data, npm_pkgs, py_pkgs, shipped_dlls=shipped)
+            graph_names = {node.get("spdx:name"): node.get("spdx:concludedLicense") for node in spdx301["@graph"]}
+            self.assertIn("SDL3.dll", graph_names)
+            self.assertEqual(graph_names["SDL3.dll"], "http://spdx.org/licenses/Zlib")
+
+            cyclonedx = generate_sbom.generate_cyclonedx(manifest_data, npm_pkgs, py_pkgs, shipped_dlls=shipped)
+            cdx_names = {c["name"]: c["licenses"][0]["license"]["id"] for c in cyclonedx["components"] if "licenses" in c}
+            self.assertIn("SDL3.dll", cdx_names)
+            self.assertEqual(cdx_names["SDL3.dll"], "Zlib")
 
     def test_ruff_lock_matches_pre_commit_pin(self):
         lock_text = (generate_sbom.ROOT / "tools" / "requirements-lock.txt").read_text(

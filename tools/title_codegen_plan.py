@@ -1220,6 +1220,10 @@ def build_package(
             "build_report": "build-report.json",
         }
         build_workspace.mkdir(parents=True, exist_ok=True)
+        from package_notices import generate_package_notices
+        # Notices live beside package.json (THIRD_PARTY_NOTICES/, RELINK.md); package.json keeps
+        # its fixed v1 key set because the native package validator rejects unknown root keys.
+        generate_package_notices(build_workspace, repo_root=ROOT)
         report_path = build_workspace / "build-report.json"
         package_path = build_workspace / "package.json"
         report_path.write_text(canonical_json(report), encoding="utf-8", newline="\n")
