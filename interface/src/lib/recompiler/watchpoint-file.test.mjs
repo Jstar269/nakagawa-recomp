@@ -129,6 +129,20 @@ test("classifies corrupt, unsupported-version and hash-mismatch states", (t) => 
   wrongFormat.format = "something-else";
   writeFileSync(file, JSON.stringify(wrongFormat));
   assert.equal(readWatchpointsFile(file).status, "corrupt");
+
+  const legacyEnv = JSON.parse(validEnvelope());
+  legacyEnv.format = "hst-watchpoints";
+  writeFileSync(file, JSON.stringify(legacyEnv));
+  const legacyState = readWatchpointsFile(file);
+  assert.equal(legacyState.status, "ok");
+  assert.deepEqual(legacyState.watchpoints, WATCHES);
+  assert.equal(legacyState.meta.format, "hst-watchpoints");
+
+  const legacyBadVersion = JSON.parse(validEnvelope());
+  legacyBadVersion.format = "hst-watchpoints";
+  legacyBadVersion.version = 2;
+  writeFileSync(file, JSON.stringify(legacyBadVersion));
+  assert.equal(readWatchpointsFile(file).status, "unsupported-version");
 });
 
 test("classifies invalid watchpoint content inside the envelope", (t) => {
@@ -187,6 +201,7 @@ test("writer output matches the embedded native-parser fixture format", () => {
   assert.deepEqual(Object.keys(envelope), [
     "format", "version", "profileId", "source", "writtenAt", "contentHash", "watchpoints",
   ]);
+  assert.equal(envelope.format, "nk-watchpoints");
   for (const watch of envelope.watchpoints) {
     assert.deepEqual(Object.keys(watch), ["start", "end", "label"]);
     assert.equal(typeof watch.start, "number");

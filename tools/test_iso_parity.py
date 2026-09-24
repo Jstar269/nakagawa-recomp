@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -24,6 +25,7 @@ from nk_core.iso_inspect import (
     inspect_iso,
     write_experimental_profile,
 )
+import nk_cli
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
@@ -736,6 +738,144 @@ int main(int argc, char **argv) {{
         )
         self.assertEqual(executable_check["status"], "OK")
         self.assertIn("BOOT.BIN selected for analysis", executable_check["message"])
+
+    def test_cli_preflight_guides_encrypted_eboot_to_title_scoped_user_input(self) -> None:
+        iso_file = self.temp_dir / "cli-encrypted-user-input.iso"
+        user_root = self.temp_dir / "user-data"
+        decrypted_dir = user_root / "titles" / "TEST00001" / "decrypted"
+        create_test_iso_with_executables(
+            iso_file, build_psp_container(), disc_id="TEST00001",
+            title="Synthetic Test Title",
+        )
+
+        metadata = inspect_iso(iso_file)
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=metadata, runtime_root=user_root
+        )
+        executable = next(check for check in report["checks"]
+                          if check["code"] == "EXECUTABLE")
+        self.assertEqual(executable["status"], "UNSUPPORTED")
+        self.assertIn(f"supply decrypted modules at {decrypted_dir}".lower(),
+                      executable["message"].lower())
+        self.assertIn("#295", executable["message"])
+        cli = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
+             str(iso_file), "--json", "--root", str(user_root)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        cli_checks = json.loads(cli.stdout)["compatibility_preflight"]["checks"]
+        cli_executable = next(check for check in cli_checks
+                              if check["code"] == "EXECUTABLE")
+        self.assertIn(str(decrypted_dir), cli_executable["message"])
+        self.assertIn("in the works", cli_executable["message"])
+        self.assertIn("#295", cli_executable["message"])
+
+        decrypted_dir.mkdir(parents=True)
+        eboot = decrypted_dir / "EBOOT.elf"
+        eboot.write_bytes(b"not an ELF")
+        invalid = inspect_compatibility_preflight(
+            iso_file, metadata=metadata, runtime_root=user_root
+        )
+        invalid_check = next(check for check in invalid["checks"]
+                             if check["code"] == "EXECUTABLE")
+        self.assertEqual(invalid_check["status"], "UNSUPPORTED")
+        self.assertIn("invalid", invalid_check["message"].lower())
+
+        eboot.write_bytes(build_plain_mips_elf())
+        valid = inspect_compatibility_preflight(
+            iso_file, metadata=metadata, runtime_root=user_root
+        )
+        valid_check = next(check for check in valid["checks"]
+                           if check["code"] == "EXECUTABLE")
+        self.assertEqual(valid_check["status"], "OK")
+        self.assertEqual(valid["selected_executable"], "EBOOT.elf")
+        self.assertEqual(valid["decrypted_executable"], str(eboot))
+        for name, wrapped in (("sce", b"~SCE" + bytes(124)),
+                              ("pbp", b"\0PBP" + bytes(124))):
+            wrapped_iso = self.temp_dir / f"cli-wrapped-{name}.iso"
+            create_test_iso_with_executables(
+                wrapped_iso, wrapped, disc_id="TEST00001",
+                title="Synthetic Test Title",
+            )
+            wrapped_meta = inspect_iso(wrapped_iso)
+            wrapped_report = inspect_compatibility_preflight(
+                wrapped_iso, metadata=wrapped_meta, runtime_root=user_root
+            )
+            wrapped_check = next(check for check in wrapped_report["checks"]
+                                 if check["code"] == "EXECUTABLE")
+            self.assertEqual(wrapped_check["status"], "OK")
+            self.assertEqual(wrapped_report["selected_executable"], "EBOOT.elf")
+
+    def test_build_package_discovers_user_decrypted_elf_and_modules(self) -> None:
+        iso_file = self.temp_dir / "synthetic-package-input.iso"
+        user_root = self.temp_dir / "package-user-data"
+        disc_id = "TEST00002"
+        title_id = "synthetic-title2-v1"
+        create_test_iso_with_executables(
+            iso_file, build_psp_container(), disc_id=disc_id,
+            title="Synthetic Title 2 Fixture",
+        )
+        entry = {
+            "disc_id": disc_id,
+            "title_id": title_id,
+            "iso_path": str(iso_file),
+            "selected_executable": "",
+            "is_experimental": False,
+        }
+        user_root.mkdir()
+        (user_root / "library.json").write_text(
+            json.dumps({"schema_version": 1, "games": [entry]}),
+            encoding="utf-8",
+        )
+        decrypted_dir = user_root / "titles" / disc_id / "decrypted"
+        decrypted_dir.mkdir(parents=True)
+        eboot_bytes = build_plain_mips_elf()
+        module_bytes = build_plain_mips_elf(0xFFA0)
+        (decrypted_dir / "EBOOT.elf").write_bytes(eboot_bytes)
+        (decrypted_dir / "synthetic2.prx").write_bytes(module_bytes)
+
+        manifest_path = ROOT / "assets" / "titles" / "synthetic-title2.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["modules"][0]["required"] = True
+        manifest["modules"][0]["role"] = "guest-prx"
+        captured_command: list[str] = []
+
+        def fake_package_build(command, **_kwargs):
+            captured_command.extend(command)
+            build_dir = Path(command[command.index("--output-dir") + 1])
+            build_dir.mkdir(parents=True, exist_ok=True)
+            package = {
+                "title": {"id": title_id},
+                "inputs": {"executable": {"sha256": hashlib.sha256(eboot_bytes).hexdigest()}},
+            }
+            (build_dir / "package.json").write_text(
+                json.dumps(package), encoding="utf-8"
+            )
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        args = type("BuildArgs", (), {
+            "disc_id": disc_id,
+            "user_data_root": user_root,
+            "module_dir": None,
+            "psp_header": None,
+        })()
+        with patch.object(nk_cli, "_load_entry_manifest",
+                          return_value=(manifest_path, manifest, None)), \
+             patch.object(nk_cli.subprocess, "run", side_effect=fake_package_build), \
+             patch.object(nk_cli, "_stage_runtime_assets"):
+            self.assertEqual(nk_cli.cmd_build_package(args), 0)
+
+        game_elf = Path(captured_command[captured_command.index("--game-elf") + 1])
+        module_dir = Path(captured_command[captured_command.index("--module-dir") + 1])
+        self.assertEqual(game_elf.read_bytes(), eboot_bytes)
+        self.assertEqual((module_dir / "synthetic2.prx").read_bytes(), module_bytes)
+        (decrypted_dir / "synthetic2.prx").write_bytes(b"not an ELF")
+        with self.assertRaisesRegex(nk_cli.PackageBuildError, "not a decrypted ELF"):
+            nk_cli._copy_optional_modules(
+                iso_file, manifest, user_root / "bad-module-cache", None,
+                decrypted_dir,
+            )
 
     def test_prx_format_boot_fallback_is_selected_by_both_inspectors(self) -> None:
         """Retail BOOT.BIN is often PSP PRX-format (e_type 0xFFA0), which the
