@@ -29,6 +29,88 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "vfpu",
 })
 
+EXPECTED_TOOLCHAIN_COMPONENTS = frozenset({
+    "compiler",
+    "make",
+    "python",
+    "sdl3",
+    "vulkan_sdk",
+})
+
+
+def parse_policy_spec(spec: str) -> list[tuple[str, tuple[int, ...]]]:
+    """Parse range constraints from a toolchain policy specification string.
+
+    Example:
+        '>=4.9.0 (rolling-msys2)' -> [('>=', (4, 9, 0))]
+        '>=3.14,<3.15' -> [('>=', (3, 14)), ('<', (3, 15))]
+    """
+    if not isinstance(spec, str):
+        raise ValueError("specification must be a string")
+    clean = re.sub(r"\s*\([^)]*\)\s*$", "", spec).strip()
+    if not clean:
+        raise ValueError("empty range specification")
+    parts = [p.strip() for p in clean.split(",")]
+    constraints = []
+    for part in parts:
+        if not part:
+            raise ValueError("empty constraint in range specification")
+        m = re.match(r"^([<>!=]=?|[<>])\s*(\d+(?:\.\d+)*)$", part)
+        if not m:
+            raise ValueError(f"invalid constraint syntax: {part!r}")
+        op = m.group(1)
+        ver = tuple(int(x) for x in m.group(2).split("."))
+        constraints.append((op, ver))
+    return constraints
+
+
+def extract_observed_version(entry: object) -> str:
+    """Extract version string from observed toolchain entry (flat string or object)."""
+    if isinstance(entry, str):
+        val = entry.strip()
+        if not val:
+            raise ValueError("version string cannot be empty")
+        return val
+    if isinstance(entry, dict) and "version" in entry and isinstance(entry["version"], str):
+        val = entry["version"].strip()
+        if not val:
+            raise ValueError("object 'version' string cannot be empty")
+        return val
+    raise ValueError(f"expected version string or object with 'version' key, got {entry!r}")
+
+
+def compare_version(v_obs: tuple[int, ...], op: str, v_target: tuple[int, ...]) -> bool:
+    """Compare observed version tuple against target tuple with operator."""
+    max_len = max(len(v_obs), len(v_target))
+    padded_obs = v_obs + (0,) * (max_len - len(v_obs))
+    padded_target = v_target + (0,) * (max_len - len(v_target))
+    if op == ">=":
+        return padded_obs >= padded_target
+    elif op == "<=":
+        return padded_obs <= padded_target
+    elif op == ">":
+        return padded_obs > padded_target
+    elif op == "<":
+        return padded_obs < padded_target
+    elif op == "==":
+        return padded_obs == padded_target
+    elif op == "!=":
+        return padded_obs != padded_target
+    raise ValueError(f"unsupported operator: {op}")
+
+
+def satisfies_policy(obs_version_str: str, constraints: list[tuple[str, tuple[int, ...]]]) -> bool:
+    """Check whether observed version string satisfies all policy constraints."""
+    m = re.search(r"(\d+(?:\.\d+)*)", obs_version_str)
+    if not m:
+        raise ValueError(f"cannot extract version numbers from {obs_version_str!r}")
+    obs_ver = tuple(int(x) for x in m.group(1).split("."))
+    for op, target in constraints:
+        if not compare_version(obs_ver, op, target):
+            return False
+    return True
+
+
 
 def verify_provenance_families(manifest_data: dict) -> list[str]:
     """Require the reviewed upstream families independently of component rows."""
@@ -82,19 +164,23 @@ def verify_release_locks(
     release_index_path: Path = generate_sbom.PYTHON_RELEASE_INDEX_PATH,
     fetch_live_metadata: bool = False,
     metadata_timeout: float = 30.0,
+    observed_toolchain: Path | dict | str | None = None,
 ) -> list[str]:
-    """Parse and validate the declared dependency lockfiles, not just their existence.
+    """Parse and validate the declared dependency lockfiles and toolchain policy.
 
-    The declared lockfile paths are taken from the release manifest itself and
-    each lockfile is fully parsed with the fail-closed parsers; a malformed,
-    unsupported, truncated, or unreadable lockfile is a verification error
-    (issue #375). A lockfile that parses to an intentionally empty inventory
-    is valid and passes.
+    The declared lockfile paths and toolchain policy are taken from the release
+    manifest itself. Lockfiles are fully parsed with fail-closed parsers; a
+    malformed, unsupported, truncated, or unreadable lockfile is a verification
+    error (issue #375). Toolchain policy shape and range syntax are validated,
+    and if an observed toolchain is provided, every observed component version
+    must satisfy its policy range.
     """
     # Reset the module-level validation state first so an early return can
     # never leave a previous call's paths behind (issue #375 hygiene).
     verify_release_locks.last_validated_npm_lock = None
     verify_release_locks.last_validated_py_lock = None
+    verify_release_locks.last_validated_toolchain_policy = None
+    verify_release_locks.last_validated_observed_toolchain = None
     errors = []
     if not manifest_path.is_file():
         return [f"Release manifest file missing: {manifest_path}"]
@@ -109,6 +195,8 @@ def verify_release_locks(
 
     npm_lock_path: Path | None = None
     py_lock_path: Path | None = None
+    toolchain_policy: dict | None = None
+    observed_data: dict | None = None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         errors.extend(verify_provenance_families(data))
@@ -150,13 +238,80 @@ def verify_release_locks(
 
         pkg_json_path = repo_root / "interface" / "package.json"
         errors.extend(verify_dashboard_toolchain_compatibility(pkg_json_path))
+
+        # Validate toolchain_policy shape and range syntax
+        toolchain_policy_raw = data.get("toolchain_policy")
+        if toolchain_policy_raw is None:
+            errors.append("release manifest missing toolchain_policy object")
+        elif not isinstance(toolchain_policy_raw, dict):
+            errors.append("release manifest toolchain_policy must be a JSON object")
+        else:
+            toolchain_policy = toolchain_policy_raw
+            for comp in sorted(EXPECTED_TOOLCHAIN_COMPONENTS):
+                if comp not in toolchain_policy:
+                    errors.append(f"missing required component in toolchain_policy: {comp}")
+            for comp in sorted(toolchain_policy.keys()):
+                if comp not in EXPECTED_TOOLCHAIN_COMPONENTS:
+                    errors.append(f"unknown component in toolchain_policy: {comp}")
+
+            for comp, spec in sorted(toolchain_policy.items()):
+                if comp not in EXPECTED_TOOLCHAIN_COMPONENTS:
+                    continue
+                if not isinstance(spec, str) or not spec.strip():
+                    errors.append(f"toolchain_policy component '{comp}' must have a non-empty string value")
+                    continue
+                try:
+                    parse_policy_spec(spec)
+                except ValueError as exc:
+                    errors.append(f"toolchain_policy component '{comp}' has invalid range syntax: {spec!r} ({exc})")
+
+        # Validate optional observed_toolchain input against toolchain_policy
+        if observed_toolchain is not None:
+            if isinstance(observed_toolchain, dict):
+                observed_data = observed_toolchain
+            else:
+                obs_path = Path(observed_toolchain)
+                if not obs_path.is_file():
+                    errors.append(f"observed toolchain file missing or unreadable: {obs_path}")
+                else:
+                    try:
+                        observed_data = json.loads(obs_path.read_text(encoding="utf-8"))
+                    except Exception as exc:
+                        errors.append(f"failed to parse observed toolchain file {obs_path}: {exc}")
+
+            if observed_data is not None:
+                if not isinstance(observed_data, dict):
+                    errors.append("observed toolchain must be a JSON object")
+                elif isinstance(toolchain_policy, dict):
+                    for comp in sorted(EXPECTED_TOOLCHAIN_COMPONENTS):
+                        if comp not in observed_data:
+                            errors.append(f"observed toolchain missing required component: {comp}")
+                            continue
+                        try:
+                            obs_ver = extract_observed_version(observed_data[comp])
+                        except ValueError as exc:
+                            errors.append(f"observed toolchain component '{comp}' invalid: {exc}")
+                            continue
+
+                        spec = toolchain_policy.get(comp)
+                        if isinstance(spec, str):
+                            try:
+                                constraints = parse_policy_spec(spec)
+                                if not satisfies_policy(obs_ver, constraints):
+                                    errors.append(
+                                        f"observed toolchain component '{comp}' version '{obs_ver}' "
+                                        f"does not satisfy policy '{spec}'"
+                                    )
+                            except ValueError:
+                                pass
     except Exception as exc:
         errors.append(f"Failed to parse release manifest {manifest_path}: {exc}")
 
-    # Expose the successfully validated lockfile paths for callers that need to
-    # verify an SBOM against exactly these files.
+    # Expose the successfully validated paths and policy for callers.
     verify_release_locks.last_validated_npm_lock = npm_lock_path
     verify_release_locks.last_validated_py_lock = py_lock_path
+    verify_release_locks.last_validated_toolchain_policy = toolchain_policy
+    verify_release_locks.last_validated_observed_toolchain = observed_data
     return errors
 
 
@@ -525,6 +680,12 @@ def main(argv: list[str] | None = None) -> int:
         default=30.0,
         help="Timeout in seconds for each live PyPI metadata request",
     )
+    parser.add_argument(
+        "--observed-toolchain",
+        type=Path,
+        default=None,
+        help="Path to observed toolchain JSON to verify against toolchain_policy",
+    )
     parser.add_argument("--spdx", type=Path, help="Path to SPDX 2.3 JSON SBOM to verify")
 
     args = parser.parse_args(argv)
@@ -534,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
         release_index_path=args.release_index,
         fetch_live_metadata=args.fetch_live_metadata,
         metadata_timeout=args.metadata_timeout,
+        observed_toolchain=args.observed_toolchain,
     )
     # Bind the verified SBOM to the exact lockfile bytes: when the lockfiles
     # declared by the manifest were just parsed successfully, require the SBOM
@@ -576,23 +738,30 @@ def main(argv: list[str] | None = None) -> int:
             print(f"SBOM Verification FAIL: {err}", file=sys.stderr)
         return 1
 
+    checked_items = ["Release dependency lockfiles", "artifact hashes", "toolchain policy"]
+    if args.observed_toolchain:
+        checked_items.append("observed toolchain")
+
     if args.spdx:
         # Report the digests of the snapshots that were actually verified —
         # never a fresh read, which could describe bytes other than the ones
         # whose inventory and checksum binding just passed (issue #375).
+        checked_items.append("SBOM elements")
         npm_digest = verified_digests["npm"]
         py_digest = verified_digests["python"]
         if npm_digest is None or py_digest is None:
             # Unreachable when errors is empty (snapshot failure always adds
             # an error); refuse to print an unverified digest anyway.
             return 1
+        summary = ", ".join(checked_items)
         print(
-            "SBOM Verification: OK (All release dependency locks and SBOM elements verified)\n"
+            f"SBOM Verification: OK ({summary} verified)\n"
             f"  npm lockfile sha256: {npm_digest}\n"
             f"  python lockfile sha256: {py_digest}"
         )
     else:
-        print("SBOM Verification: OK (All release dependency locks verified)")
+        summary = ", ".join(checked_items)
+        print(f"SBOM Verification: OK ({summary} verified)")
     return 0
 
 
