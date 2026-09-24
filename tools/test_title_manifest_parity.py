@@ -217,6 +217,18 @@ class TitleManifestParityTests(unittest.TestCase):
             (lambda d: d["filesystem"].update({"psp_header": "boot/"}), "trailing PSP-header separator"),
             # 20. Repeated optional disc-image separator
             (lambda d: d["filesystem"].update({"disc_image": "disc//image.iso"}), "repeated disc-image separator"),
+            # 21. Declared executable keeps the Make-safe component rule
+            (lambda d: d["filesystem"].update({"executable": "game dir/EBOOT.elf"}), "executable with space"),
+            # 22. Disc image may not climb out of the working directory
+            (lambda d: d["filesystem"].update({"disc_image": "../disc.iso"}), "disc-image parent component"),
+            # 23. Disc image rejects Windows-forbidden characters
+            (lambda d: d["filesystem"].update({"disc_image": "bad|name.iso"}), "disc-image forbidden character"),
+            # 24. Disc image rejects control characters
+            (lambda d: d["filesystem"].update({"disc_image": "bad\x01name.iso"}), "disc-image control character"),
+            # 25. Disc image rejects a leading space and a trailing dot
+            (lambda d: d["filesystem"].update({"disc_image": " lead/trail."}), "disc-image leading space"),
+            # 26. Disc image rejects reserved Windows device names
+            (lambda d: d["filesystem"].update({"disc_image": "CON .iso"}), "disc-image reserved name"),
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -245,6 +257,36 @@ class TitleManifestParityTests(unittest.TestCase):
 
             self.assertFalse(py_ok, f"Python should reject duplicate key: {py_err}")
             self.assertFalse(c_ok, f"Native should reject duplicate key: {c_err}")
+
+    def test_declared_input_locations_parity(self):
+        """Both parsers accept a declared executable and an ordinary dump-named disc image."""
+        base = {
+            "schema_version": 1, "id": "parity-inputs", "display_name": "Parity Inputs",
+            "kind": "synthetic",
+            "executable": {"base": 0, "entry": 142606336, "bss_metadata_source": "elf",
+                           "extra_executable_spans": []},
+            "modules": [],
+            "filesystem": {"data_root": "data", "memory_stick_root": "ms",
+                           "device_prefixes": ["host0:"]},
+            "hle_profile": "standard", "feature_requirements": ["allegrex"],
+            "verification_profile": "smoke",
+        }
+        cases = [
+            {"executable": "inputs/EBOOT.elf"},
+            {"disc_image": "hst.iso"},
+            {"disc_image": "inputs/ISO/Synthetic Title - Edition™ [ABCD12345].iso"},
+            {"disc_image": "a b (1).iso", "executable": "EBOOT.elf"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for idx, extra in enumerate(cases):
+                d = json.loads(json.dumps(base))
+                d["filesystem"].update(extra)
+                mf = Path(tmpdir) / f"inputs_{idx}.json"
+                mf.write_text(json.dumps(d), encoding="utf-8")
+                py_ok, py_msg = self._run_python(mf)
+                c_ok, c_msg = self._run_native(mf)
+                self.assertTrue(py_ok, f"Python rejected {extra}: {py_msg}")
+                self.assertTrue(c_ok, f"Native rejected {extra}: {c_msg}")
 
     def test_trailing_garbage_parity(self):
         """Both parsers must reject trailing garbage after root JSON object."""
