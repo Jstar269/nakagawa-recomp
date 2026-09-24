@@ -75,6 +75,7 @@ typedef struct {
     uint32_t start, end;
     int has_pts, has_dts;
     int64_t pts, dts;
+    uint8_t stream_id;
 } PtsMark;
 
 typedef struct {
@@ -87,6 +88,14 @@ typedef struct {
     uint8_t stream_id;
 } Track;
 
+#define SR_PSMF_MAX_STREAMS 128u
+
+typedef struct {
+    uint8_t stream_id;      /* Video: PES sid (0xE0..0xEF). Audio: e[0] (0xBD, 0xB0..0xBF, 0xF0..0xFF) */
+    uint8_t sub_stream_id;  /* Audio: sub-stream id (e.g. 0x00, 0x01, or 0xB0..0xBF) */
+    uint8_t valid;
+} SrPsmfStreamEntry;
+
 struct SrPsmfProducer {
     SrPsmfSource source;
     uint64_t stream_start, stream_end, cursor;
@@ -96,6 +105,13 @@ struct SrPsmfProducer {
     Track track[2];
     AuQueue queue[2];
     SrPsmfProducerStats stats;
+    uint32_t video_stream_count;
+    uint32_t audio_stream_count;
+    uint32_t selected_video_stream;
+    uint32_t selected_audio_stream;
+    int single_stream_compat;
+    SrPsmfStreamEntry video_stream_entry[SR_PSMF_MAX_STREAMS];
+    SrPsmfStreamEntry audio_stream_entry[SR_PSMF_MAX_STREAMS];
 };
 
 static uint32_t be16(const uint8_t *p) { return ((uint32_t)p[0] << 8) | p[1]; }
@@ -216,7 +232,8 @@ static void track_consume(Track *t, uint32_t n) {
 }
 
 static int track_mark_push(Track *t, uint32_t start, uint32_t end,
-                           int has_pts, int has_dts, int64_t pts, int64_t dts) {
+                           int has_pts, int has_dts, int64_t pts, int64_t dts,
+                           uint8_t stream_id) {
     track_drop_marks(t);
     if (t->nmarks == SR_PSMF_MAX_MARKS) {
         /* Nothing may be discarded while it still covers a buffered byte, so the
@@ -234,6 +251,7 @@ static int track_mark_push(Track *t, uint32_t start, uint32_t end,
     m->has_dts = has_dts;
     m->pts = pts;
     m->dts = dts;
+    m->stream_id = stream_id;
     return 1;
 }
 
@@ -259,7 +277,7 @@ static int track_append(Track *t, const uint8_t *p, uint32_t n, uint8_t stream_i
     if (n == 0) return 1;
     if (!p || !track_reserve(t, n)) return 0;
     t->stream_id = stream_id;
-    track_mark_push(t, t->tail, t->tail + n, has_pts, has_dts, pts, dts);
+    track_mark_push(t, t->tail, t->tail + n, has_pts, has_dts, pts, dts, stream_id);
     memcpy(t->buf + t->tail, p, n);
     t->tail += n;
     return 1;
@@ -338,7 +356,7 @@ static int emit_au(SrPsmfProducer *p, SrPsmfAuKind kind, uint32_t len) {
     SrPsmfAu au;
     memset(&au, 0, sizeof(au));
     au.kind = kind;
-    au.stream_id = t->stream_id;
+    au.stream_id = m ? m->stream_id : t->stream_id;
     au.has_pts = (uint8_t)(m ? m->has_pts : 0);
     au.has_dts = (uint8_t)(m ? m->has_dts : 0);
     au.raw_pts = m ? m->pts : 0;
@@ -443,6 +461,33 @@ static uint32_t ps1_header_bytes(uint8_t sub_stream_id) {
     return (sub_stream_id >= 0xB0u && sub_stream_id <= 0xBFu) ? 5u : 4u;
 }
 
+static int audio_substream_matches(uint8_t entry_stream_id, uint8_t entry_substream_id, uint8_t pkt_sub_id) {
+    if (pkt_sub_id == entry_substream_id) return 1;
+    if (pkt_sub_id == entry_stream_id) return 1;
+    if ((entry_stream_id & 0xF0u) == 0xB0u && pkt_sub_id == (entry_stream_id & 0x0Fu)) return 1;
+    if ((entry_substream_id & 0xF0u) == 0xB0u && pkt_sub_id == (entry_substream_id & 0x0Fu)) return 1;
+    if (entry_substream_id < 0x10u && pkt_sub_id == (0xB0u | entry_substream_id)) return 1;
+    return 0;
+}
+
+static int is_selected_video_stream(const SrPsmfProducer *p, uint8_t sid) {
+    if (p->single_stream_compat) {
+        return (p->selected_video_stream == 0);
+    }
+    if (p->selected_video_stream >= p->video_stream_count) return 0;
+    return (sid == p->video_stream_entry[p->selected_video_stream].stream_id);
+}
+
+static int is_selected_audio_stream(const SrPsmfProducer *p, uint8_t sub_id) {
+    if (p->selected_audio_stream == SR_PSMF_STREAM_NONE) return 0;
+    if (p->single_stream_compat) {
+        return (p->selected_audio_stream == 0);
+    }
+    if (p->selected_audio_stream >= p->audio_stream_count) return 0;
+    const SrPsmfStreamEntry *entry = &p->audio_stream_entry[p->selected_audio_stream];
+    return audio_substream_matches(entry->stream_id, entry->sub_stream_id, sub_id);
+}
+
 static int parse_one(SrPsmfProducer *p) {
     uint8_t h[32];
     if (p->cursor >= p->stream_end) { p->eof = 1; return 0; }
@@ -518,12 +563,22 @@ static int parse_one(SrPsmfProducer *p) {
         if (has_dts) p->stats.pes_with_dts++;
 
         uint32_t skip = 0;
+        uint8_t actual_id = sid;
         if (!is_video) {
             if (payload_len < 4u) { free(payload); return -1; }
-            skip = ps1_header_bytes(payload[0]);
+            actual_id = payload[0];
+            skip = ps1_header_bytes(actual_id);
             if (skip > payload_len) { free(payload); return -1; }
         }
-        int ok = track_append(&p->track[kind], payload + skip, payload_len - skip, sid,
+
+        int selected = is_video ? is_selected_video_stream(p, sid)
+                                : is_selected_audio_stream(p, actual_id);
+        if (!selected) {
+            free(payload);
+            return 1;
+        }
+
+        int ok = track_append(&p->track[kind], payload + skip, payload_len - skip, actual_id,
                               has_pts, has_dts, pts, dts);
         free(payload);
         if (!ok) { p->stats.parser_failures++; p->failed = 1; return -1; }
@@ -551,6 +606,48 @@ SrPsmfProducer *sr_psmf_producer_open(const SrPsmfSource *source,
     p->stream_start = start;
     p->stream_end = end;
     p->cursor = start;
+
+    uint32_t streams = be16(header + 0x80);
+    if (streams > 128u || 0x82u + streams * 16u > PSMF_HEADER_BYTES) {
+        free(p); return NULL;
+    }
+    if (streams == 0) {
+        p->single_stream_compat = 1;
+        p->video_stream_count = 1;
+        p->audio_stream_count = 1;
+        p->selected_video_stream = 0;
+        p->selected_audio_stream = 0;
+    } else {
+        for (uint32_t i = 0; i < streams; i++) {
+            const uint8_t *e = header + 0x82u + i * 16u;
+            if ((e[0] & 0xE0u) == 0xE0u) {
+                if (p->video_stream_count < SR_PSMF_MAX_STREAMS) {
+                    uint8_t vid_id = e[0];
+                    if (e[0] == 0xE0u && (e[1] & 0x0Fu)) {
+                        vid_id = 0xE0u | (e[1] & 0x0Fu);
+                    }
+                    p->video_stream_entry[p->video_stream_count].stream_id = vid_id;
+                    p->video_stream_entry[p->video_stream_count].sub_stream_id = e[1];
+                    p->video_stream_entry[p->video_stream_count].valid = 1;
+                    p->video_stream_count++;
+                }
+            } else if ((e[0] & 0xF0u) == 0xB0u || (e[0] & 0xF0u) == 0xF0u || e[0] == 0xBDu) {
+                if (p->audio_stream_count < SR_PSMF_MAX_STREAMS) {
+                    uint8_t sub_id = (e[0] == 0xBDu) ? e[1] : (e[1] != 0 ? e[1] : e[0]);
+                    p->audio_stream_entry[p->audio_stream_count].stream_id = e[0];
+                    p->audio_stream_entry[p->audio_stream_count].sub_stream_id = sub_id;
+                    p->audio_stream_entry[p->audio_stream_count].valid = 1;
+                    p->audio_stream_count++;
+                }
+            }
+        }
+        if (p->video_stream_count == 0) {
+            free(p); return NULL;
+        }
+        p->selected_video_stream = 0;
+        p->selected_audio_stream = p->audio_stream_count > 0 ? 0 : SR_PSMF_STREAM_NONE;
+    }
+
     return p;
 }
 
@@ -628,3 +725,32 @@ void sr_psmf_producer_stats(const SrPsmfProducer *p, SrPsmfProducerStats *out) {
     out->eof = p->eof;
     out->failed = p->failed;
 }
+
+int sr_psmf_producer_select_streams(SrPsmfProducer *p, uint32_t vs, uint32_t as) {
+    if (!p) return 0;
+    if (vs >= p->video_stream_count) return 0;
+    if (as != SR_PSMF_STREAM_NONE) {
+        if (p->audio_stream_count == 0 || as >= p->audio_stream_count) return 0;
+    }
+    p->selected_video_stream = vs;
+    p->selected_audio_stream = as;
+    sr_psmf_producer_reset(p);
+    return 1;
+}
+
+uint32_t sr_psmf_producer_video_streams(const SrPsmfProducer *p) {
+    return p ? p->video_stream_count : 0;
+}
+
+uint32_t sr_psmf_producer_audio_streams(const SrPsmfProducer *p) {
+    return p ? p->audio_stream_count : 0;
+}
+
+uint32_t sr_psmf_producer_selected_video_stream(const SrPsmfProducer *p) {
+    return p ? p->selected_video_stream : 0;
+}
+
+uint32_t sr_psmf_producer_selected_audio_stream(const SrPsmfProducer *p) {
+    return p ? p->selected_audio_stream : SR_PSMF_STREAM_NONE;
+}
+
