@@ -174,7 +174,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "695618f3d5b3aabb6702550431990c01e8cc48ffa6460452df9665d65607ad07"
+      "sha256": "03c6fa0b638d242817ebf23833e69201568db74c2cdd53cb25708db3f9f3aefc"
     },
     {
       "path": ".gitignore",
@@ -347,11 +347,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
-        "upstream": "pspsdk",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "BSD-3-Clause and per-component",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "2a72b3d563b8e080dd2be9a963f44c8396ca615421833d3cffb6d126101c1c82"
     },
@@ -362,13 +360,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "upstream-sal063-notice",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "CREDITS.md"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "98454ee97dec8ccf25f93766b42cabf40d29517f28db11c8c3ec66b65d1b9825"
     },
@@ -380,10 +374,8 @@
         "record_id": "dependency-shadcn-dashboard",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "upstream_paths": [],
-        "upstream_revision": null,
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f"
     },
@@ -555,11 +547,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
-        "upstream": "pspsdk",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "BSD-3-Clause and per-component",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5fbf4f3f25453fe7f3a6090688a624eb2d6d2c89316fc3b8b7d2fcafd2b6762a"
     },
@@ -570,11 +560,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
-        "upstream": "pspsdk",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "BSD-3-Clause and per-component",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1806b02a3802dd41347d32ad759073407d37e4a4d7b1196f50307c8825cd28b8"
     },
@@ -585,11 +573,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
-        "upstream": "pspsdk",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "BSD-3-Clause and per-component",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "8409d03f2c148cef29ba2041081068bbc17da217a09591c094a501716548d6c4"
     },
@@ -610,7 +596,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "7a046ed71cc700dba4f90ff42e66ebd4b292281d3d2899202c3e370aa7c26ef9"
     },
@@ -622,7 +608,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "6c6ba37ae631df90b731c6753f500e1bd4455b6435a56d50e3dd8f813b234027"
     },
@@ -634,7 +620,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "418dd88590f2a2cfe4d45b27abe5e547a81ecf3ea00c90afec86740d6012d9c8"
     },
@@ -646,7 +632,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "fcd6b4f4bb088e70c0c3e0aa0466d8ae9a2bf6b9459ae0a660e7de37a914ea35"
     },
@@ -658,7 +644,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "7a0c42d5652c0fa48f457072b02a87f949e747d3f8a04f25bfa861fc2b85b01d"
     },
@@ -670,7 +656,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "2ce3277fc2eaa9188f7afa341dadfd041447c07482d7aea8c5dbd1a3c869181c"
     },
@@ -682,7 +668,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "f7b0f2726808c5bb7207a2a5c297df437277e95e121b7e46dc8f5cf152bb0dd4"
     },
@@ -694,7 +680,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "25a0ddddbf33bab98a88f9c95a678fb93d54be17b1d08a1a90131161b42eeec5"
     },
@@ -706,7 +692,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "0aee9fd249988073e4f364cd724cb6f54aa0c57ce0b515a1fe69a65444a92c55"
     },
@@ -718,7 +704,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "9ebaa077ce0e70c6e6a706945bd905af681a8cc16d9fedd623b23d59d7794ced"
     },
@@ -730,7 +716,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "1017c38fcc37ced830dc68e5603725526ecadcc23bb0fdf99159622351f61676"
     },
@@ -742,7 +728,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "24bddbb34b59b9a714e3c1f9a0335b3fbbfcedf8d04e71f95adf1b4295fbb13b"
     },
@@ -754,7 +740,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "46d585d103c9265393ed7c79bc4db7d047daf855c52358f4311a54d275e7fb74"
     },
@@ -766,7 +752,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "1506831c116bb5def823fc89c80b8d4fcdd6c938b223855a67709fcfe3fb285b"
     },
@@ -778,7 +764,7 @@
         "record_id": "vfpu-transcendental-tables",
         "evidence_tier": "H",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "634e81488992fc2a0bfe5eaa3982f8895f7cdbb59595cb1dc6934bddafde86a6"
     },
@@ -1041,7 +1027,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8e938e0db9e1e948e9db0bda907a86904dbc467d231702ce75ddeab449ea0bf4"
+      "sha256": "cb8c04614213f903fb8f4ca74795283f2a1b9be864b4f8f2f5a8f0d611ba8a3e"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -2730,11 +2716,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a76213c5f62be9c748c2bd6b40c0a5b06a7e9109a12336563dea316c00c8e480"
     },
@@ -2745,11 +2729,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "19a88d306e9728cc570f1bfa467679726817db8bebbe8fed46eed561abf088c5"
     },
@@ -2760,11 +2742,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "12afd0b9a7eef861e6383b55864be58c2653b346b53cbc393a89ee4e0b70d05c"
     },
@@ -2775,11 +2755,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6940872bf122271a604890d88f45e06f05bbe00ef69c6ef358fa37b3b87bacb6"
     },
@@ -2790,11 +2768,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b970adf18bb9f8e445ac10788df19a6110f7125de912ac21f6a033bb3ecd4872"
     },
@@ -2805,11 +2781,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "567e5e4f4203adba35501bf064e415c25f93b8f82a5cd8437ebfc7795f5ce007"
     },
@@ -2820,11 +2794,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "fdcbec3ca95192058a6dc346d19ec46784de106269fab47094b6b48bd2cb99a5"
     },
@@ -2835,11 +2807,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "cfd6aeb90a34ca42f4fffaeb0861fca27db4e09b752e75d609c7ff1e99c0019c"
     },
@@ -2850,11 +2820,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a54d55442bb523e095e09ae98e447ef0069c60a98b33d56aa0933f4662accfc3"
     },
@@ -2865,11 +2833,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6718e4810940d758ae5b6fd8e4a99ae7070e4b13aa85dde6e5fa80b0c0311cc7"
     },
@@ -2880,11 +2846,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ab8fcea97cd41c01d5bd86864a474d383d1226897daa06ee5b577d288d7133c3"
     },
@@ -2895,11 +2859,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f0fd3c1dd20a3c4948a8e0fa3600442dd0e764ef7493e3f517a5e5173d2e7422"
     },
@@ -2910,11 +2872,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a2514d0c0834f60aabd31819e50729fa46c7e15a8d9be8daf54fb126eaf3f832"
     },
@@ -2925,11 +2885,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b1254cb1644373db9c9b11a8cd4f4a71eba4b2976968c4e3fd327a53d171ab35"
     },
@@ -2940,11 +2898,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "2d306d6af1425766af06a3b1bf775e4d85b2f3659ec247aa154abe4e779fa9f1"
     },
@@ -2955,11 +2911,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "91b84e07fda8c7b544d908aa2192f312dc31611aed4db779e9fade3853f06ce3"
     },
@@ -2970,11 +2924,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "56ffdf61207a9c48430aa7e8c72158dc4cfdab0b50a3b7539740aceb1bdf9abd"
     },
@@ -3009,11 +2961,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4fc1aeccfc4260ad4738690b67f1bafc4fae12e8b35459eb41c9ab05964feaac"
     },
@@ -3036,11 +2986,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
-        "upstream": "shadcn/ui",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "MIT",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f9ee2956c278ca95d49675bbc9a630ef19d76c7ea876c765eae58ad218c55779"
     },
@@ -3735,8 +3683,8 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "native-player-000",
         "evidence_tier": "S",
-        "generator": "project-owned generator; recomputable from tracked public inputs",
-        "source_family": "tracked public project inputs"
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
       },
       "sha256": "94ee283ef924be6842713910756f2809daceb4b37b64d5c8045b7d48fbf81965"
     },
@@ -3747,8 +3695,8 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "native-player-001",
         "evidence_tier": "S",
-        "generator": "project-owned generator; recomputable from tracked public inputs",
-        "source_family": "tracked public project inputs"
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
       },
       "sha256": "f306430221a9e5d91c85d2b1ed47b1eb62ba3e09710590959c8d7d589cbc7454"
     },
@@ -4155,11 +4103,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "3ec6b3bedc5978b2e0f8785a3448b9c5f5d645badf48456f0889b497ca3b0693"
     },
@@ -4170,11 +4116,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5cf1274e440bc8f6eb5573fa8527c380f235b61be82c1e0aee37ce0dbe19cab3"
     },
@@ -4185,11 +4129,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "67652f12dc748d984309444dfd938c4ab3e59ca66a9ae67f4c63a0431f217ac3"
     },
@@ -4200,11 +4142,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "72d5316029a6b3de4dc435973d3c0c0a5e081721cdedbd6999818e2d76d2dee7"
     },
@@ -4215,11 +4155,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f47d423f9e65b190c68c2fdc87f4b44bad8df47d802f5bf77c187b2dcbb47760"
     },
@@ -4254,15 +4192,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
     },
@@ -4273,15 +4205,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "072e5d11fbb60a1c7d5929f171d6b35cd4836cb87ab3b20c5d1d966ad3b84186"
     },
@@ -4292,15 +4218,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4a450999df43f19c8b9e897f6b19f199374895b0d2961d180d611f30452c2198"
     },
@@ -4311,15 +4231,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0b6bf8175f4cf050ed0508768c05a252cb0ef3c5d67965a2f01e41eb41206cbe"
     },
@@ -4330,15 +4244,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4d77692706a0427028ca926528315166d03e16a28b96b14a278dfdfb078a7d95"
     },
@@ -4349,15 +4257,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "92a1c929473bccda38454d3c145f679c82ee1ac7ee010841c0a88a54469c850c"
     },
@@ -4368,15 +4270,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1bebd1ca1df67c0530736cde3c375a0654a817ed74d5078a5d79f25ece7a65c5"
     },
@@ -4387,15 +4283,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9cedbfb13727c7b6050408aaecb7f04aa7d28ef41cfb29d7e506bbc3ad6fc0dd"
     },
@@ -4406,15 +4296,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4d4b01fe20383ae4339809f5a68d43e7f3278706ad705e80e6e405545cad4045"
     },
@@ -4425,15 +4309,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "28575294fcc484756897785c0c17c149aa1166c079cf1aef4dddf17f7211b5ee"
     },
@@ -4444,15 +4322,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "96f361aec8d900c6b337c36c2f857e0e6a07a5924b015942076af09430cd5186"
     },
@@ -4463,15 +4335,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6d989bddcc7e167867cc80999aff6ee065c98c758646a16b915de0d511546982"
     },
@@ -4482,15 +4348,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a0918d3d682f40bd65bbdc60ad0cdca08675a0067cd3e92581342b045fb0cc78"
     },
@@ -4501,15 +4361,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e238284823fa0a29c5ef00fca47ce36cf6148bbae0a971d24fe29583e2bba3c2"
     },
@@ -4520,15 +4374,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f99d9cea5def9f332b6db9e7c5e16fa2ae05925a6ab4e8ee80d1093a5dd32545"
     },
@@ -4539,15 +4387,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ff0673b9b6e3c0e732bedf1c86ac636fc2d99235f3f32251cf357fe6f3fc3622"
     },
@@ -4558,15 +4400,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f007c0b9bbcf1596024709208fec04e57c9b7a01f39b31905733e7e4929d037e"
     },
@@ -4577,15 +4413,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ee94cc8ddaa1de264bcefc355d7274ddf424008a32bcb001c2404fc08936d747"
     },
@@ -4596,15 +4426,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "3a0b71ba81a2465914eeb0e91fca2abec6e780247ca16461c4ab5d12c38651de"
     },
@@ -4615,15 +4439,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9816802db26b5ce796ef0a457ea447daf8a2e1672292d9c9bb36292413955d70"
     },
@@ -4634,15 +4452,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "40e8b88aa3a1c2a7190b43acafee1ab79b5c5e62db365f8d0725730c33999229"
     },
@@ -4653,15 +4465,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e3c5067c886a3a8bcabb0a1e0a2289dbb413644fe5e0de0a6cd85bd4741a927f"
     },
@@ -4672,15 +4478,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "eb95b312e978f88daa79b56759db430166e07b1e58797d8abfb385cc67f2bfc9"
     },
@@ -4691,15 +4491,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "576fb9c5d57651010acfe43c4fd4d2ae88fc4ebde8b755d0b37391ca0332c047"
     },
@@ -4710,15 +4504,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6a74cda2e33b3dbbb34df8ed6b20866710d8a821ef9a70529c8b15c5e5ff5c85"
     },
@@ -4729,15 +4517,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ffbc9d04c45b9c553e41f079691f3726a5715c25a7245608f12d4652343a078c"
     },
@@ -4748,15 +4530,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b24808cee11711da6c119c43bc71b03d3458d1d07be238128d264a5f244c18ab"
     },
@@ -4767,15 +4543,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "fde23a083e05fc1bef1a5b6927042f09bef34598b210beae7f655fe14296941d"
     },
@@ -4786,15 +4556,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b486c555871a4d098500ed0f389dff5f5cb07c17df8c70c8c155b5bd3f15f5f9"
     },
@@ -4805,15 +4569,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a2defd94fb60f2c6b838e51219afedf6a0991f393fccae6dd9d205a60b5c78de"
     },
@@ -4824,15 +4582,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "59da10d0543d7e4a4a11cccfc592335e24c1a94774cbedbd74968e6e1395cf40"
     },
@@ -4843,15 +4595,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "94e1e4cd2472cd13a6d636da6f63650535d479fb7901267ecce75b57b5c0f754"
     },
@@ -4862,15 +4608,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5579591da44aa6d523ae4211d157abb503075ea818e49a8dc4e31c5933f79a58"
     },
@@ -4881,15 +4621,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a067aceabf8c8998393bbd7ab3c3949e041948c6e9672dc22295b975a177c634"
     },
@@ -4900,15 +4634,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "13784fedd0c3407eccdd8816bda672373865d7020b1a9a858000eabf9b3e3564"
     },
@@ -4919,15 +4647,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "fe65a0d0b038e219078177d02f61d8e835a8fb9ccc758e2cac9b3d09a565cc32"
     },
@@ -4938,15 +4660,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7d6432122fcb3a261f037a4323738301a5a6b50ebe80940749a9c9704a56bc3c"
     },
@@ -4957,15 +4673,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f59ee84455dc0b37d61ebb225123f5311cd5fd1161a62f120aab9c31d2b64c0d"
     },
@@ -4976,15 +4686,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9a229b2ef3c930961062a40807c6c689e250128a32dcb569c29ddc8fa5be002a"
     },
@@ -4995,15 +4699,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b6374f30957bd34726b9f609ccc95b892637dc17561d28e00de0c51e95a85918"
     },
@@ -5014,15 +4712,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d94e00c37b220c230b23322a9e1fe24d092eda6ef2353953009727652dd1ee51"
     },
@@ -5033,15 +4725,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "cd530a990c8949e867f05e08e4de07c2df170d435707a73679fe5fe53bb3389e"
     },
@@ -5052,15 +4738,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1ad28eb6c1b831a2d0752fea83957ac66aea96c7ba5c8c707a773ab150cf5670"
     },
@@ -5071,15 +4751,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9d69f6dc6d186dd124228398cb7dd7facb4aa2856c6b4e6cdb9fbdd1121510d1"
     },
@@ -5090,15 +4764,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "14c8372ee5347436f753eab76f25578e44f0631ee038ecac9c587700120ac9c2"
     },
@@ -5109,15 +4777,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "905900f0d1f87ed265d2ff3db42fd9083212cd936f8d15bd384a2c4a03e46957"
     },
@@ -5128,15 +4790,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "61f5c70a02b95624756cc191c0c9d1c232219d37c051b4f33d662dfd33233958"
     },
@@ -5147,15 +4803,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f1b517fa28db3776f87779ba25ff0080b4f2475505f2d12fb17e05d9626acbba"
     },
@@ -5166,15 +4816,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a2de7f9915057670e0e9a48326107072d0ded1e3c7d41f29103ea06f9d0f1274"
     },
@@ -5185,15 +4829,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "825d10534b8851fa86761b28b06bec0a854c264c23cbcc144f4086ce5992781c"
     },
@@ -5204,15 +4842,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7fd8514cbe4b6ef025b0f5cc3b752e2c3940e22f4945cf6e6372653b6e3d2bca"
     },
@@ -5223,15 +4855,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b3aa3486aa11588581ceaf7d3f88708f85aeb7a1c621b5a832acc86e37fb0e2c"
     },
@@ -5242,15 +4868,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7e965f7aa29f393243b18df96a2031ea7f34e2f397d6326e15e31dc3cf29c076"
     },
@@ -5261,15 +4881,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "2627c3903b04c29ade0d9d015edced178cb05e22e04b38aed6fc74aa58229d57"
     },
@@ -5280,15 +4894,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f31a7c033140ed88d4736242162e22c9065ce9bb7a078c3351bb5ba9f9868fd7"
     },
@@ -5299,15 +4907,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "8b533441dbd78070ac2441ec965315c5328386c4716982c554353a8e56e4df8d"
     },
@@ -5318,15 +4920,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1e7908e98aab981c801d6b016a1417d505c998ec8e91a8e1bace6b44a8813c85"
     },
@@ -5337,15 +4933,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7021f8d31b74233859d159ef8108ebe19d2e5e30c2025a728f23009e3233cc9e"
     },
@@ -5356,15 +4946,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "59187ec66a696b1bab6b2a887ea484d116c9a3ac2e1ec341e3ec97f31ee9eaf0"
     },
@@ -5375,15 +4959,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a39e6a9b5c3169f712e0e70ebbf096ca22e78f332a62948ee1d1e0af9c2d6a91"
     },
@@ -5430,15 +5008,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
-        "upstream": "ffmpeg",
-        "upstream_paths": [
-          "libavcodec/atrac.c, atrac3plus*",
-          "libavcodec/fft*/mdct*/sinewin*/bitstream/vlc/get_bits/put_bits",
-          "libavutil/*"
-        ],
-        "upstream_revision": "n4.4 (tag 09c358362008e2d04cec8239526c6827543da4cf; commit dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1)",
+        "upstream": "documented upstream family",
         "license": "LGPL-2.1-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4396573bc42b3bc151fb391ed09fec7b81b86e7e5e0e1221811fd3f1c31f1a99"
     },
@@ -5617,11 +5189,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "292c506aeb55335d1654efbef3e287b5f6cdcf38e87547e02ea738e9708bea0d"
     },
@@ -5633,7 +5203,7 @@
         "record_id": "hle-event-flag-semantics",
         "evidence_tier": "R",
         "authorship": "independent implementation record",
-        "upstream_attribution": "ppsspp"
+        "upstream_attribution": null
       },
       "sha256": "e8ab6c8c54b20ee9c3f8fcce175ddb2fd5b8c26775698b01a48b8ce57435a778"
     },
@@ -5645,7 +5215,7 @@
         "record_id": "hle-event-flag-semantics",
         "evidence_tier": "R",
         "authorship": "independent implementation record",
-        "upstream_attribution": "ppsspp"
+        "upstream_attribution": null
       },
       "sha256": "4d06bc400eba0b115dc66dc1ab115fc3019ca0e0c8f46917578c0f3ebcf5edde"
     },
@@ -5705,7 +5275,7 @@
         "record_id": "portable-fp-conversion",
         "evidence_tier": "R",
         "authorship": "independent implementation record",
-        "upstream_attribution": "ppsspp"
+        "upstream_attribution": null
       },
       "sha256": "7104709cd127c34e17a217b528af09720a3a311c3675823baad1be57819f48d4"
     },
@@ -5717,7 +5287,7 @@
         "record_id": "portable-fp-conversion",
         "evidence_tier": "R",
         "authorship": "independent implementation record",
-        "upstream_attribution": "ppsspp"
+        "upstream_attribution": null
       },
       "sha256": "8ebe40820674227a3800dd8611691f5793aec94eef6ddcaa3d147125d13c888d"
     },
@@ -5728,11 +5298,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "30e13d52de60e3aa34a997909b9d805e04efda0406991706da1927a230de1e33"
     },
@@ -5743,22 +5311,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-software-rasterizer",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "GPU/Software/DrawPixel.cpp",
-          "GPU/Software/Sampler.cpp",
-          "GPU/Software/Lighting.cpp",
-          "GPU/Software/Clipper.cpp",
-          "GPU/Software/BinManager.cpp",
-          "GPU/Software/TransformUnit.cpp",
-          "GPU/Common/VertexDecoderCommon.cpp",
-          "GPU/Common/SplineCommon.cpp",
-          "GPU/ge_constants.h",
-          "Core/MIPS/... (GECommands numbering)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b764c7035ac7267b61bb2a1184963950a60c696874400f5a36abd3c9f71b7643"
     },
@@ -5817,22 +5372,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-software-rasterizer",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "GPU/Software/DrawPixel.cpp",
-          "GPU/Software/Sampler.cpp",
-          "GPU/Software/Lighting.cpp",
-          "GPU/Software/Clipper.cpp",
-          "GPU/Software/BinManager.cpp",
-          "GPU/Software/TransformUnit.cpp",
-          "GPU/Common/VertexDecoderCommon.cpp",
-          "GPU/Common/SplineCommon.cpp",
-          "GPU/ge_constants.h",
-          "Core/MIPS/... (GECommands numbering)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d5215129e2927a3ab943cf3420cf51aedf85750be260e961fb808d38346f8ca2"
     },
@@ -5867,13 +5409,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4d61af190c37770a7ed7a31c21bc78b4bec7def000dcaee9eeacd318c1a52abf"
     },
@@ -5884,13 +5422,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "60da49721642b2611d0740a2d290f261c223b9fe80553d759fa4ee6affe8f33b"
     },
@@ -5901,13 +5435,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e2073c6332aebca7781da5fcda99c919df19c10753acb84b0ca8e6c84739b5b4"
     },
@@ -5918,13 +5448,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-shader-embeds",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/shaders/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e7239e8df4b56945064a4c977c339d64caf62d96aea133b3b7e07e8d75802396"
     },
@@ -5935,13 +5461,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-shader-embeds",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/shaders/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0cb658a5ba2350ca607538700debaf6c728719dfd6ff1b36a3518e49d9fc679c"
     },
@@ -5952,13 +5474,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "68db1214ce5be80dfe680b355db2597c38c4337eafc5de2263e5099e26a0c40c"
     },
@@ -5969,13 +5487,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ad3f53d287e30d18fafef238809dbec39aabc52e38239b6be173dd2e12d67481"
     },
@@ -5986,13 +5500,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "52c32709170185af962ed1cab30d8a50f69b76d1540389dfb276f064a9c7ce10"
     },
@@ -6003,13 +5513,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1b19e8dd6dc5092c514eaf2261b1cd5c1cd8482994cd43ccb4f4e1282db7fed3"
     },
@@ -6020,13 +5526,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "src/rt/gpu_sdl3vk/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "98fdb5a8442ca81da0cf736e0054329ac6e6f74a57faf15e3358f6efa1594d04"
     },
@@ -6038,7 +5540,7 @@
         "record_id": "daybreak4-guest-interpreter",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
-        "upstream_attribution": "ppsspp"
+        "upstream_attribution": null
       },
       "sha256": "fff72c748c80ff83056fbfc56b42dca51dde28dd79490ef9762c2415e273f943"
     },
@@ -6050,7 +5552,7 @@
         "record_id": "daybreak4-guest-interpreter",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
-        "upstream_attribution": "ppsspp"
+        "upstream_attribution": null
       },
       "sha256": "6ea8e1e81b76896547c61f57c99173c51d8456af5864aa65d30c4b0b60f09b14"
     },
@@ -6097,11 +5599,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5e8dbc4d2023356bb846b5299fceff6fec016d9fef0eac747c5282bdb1d3ad42"
     },
@@ -6112,11 +5612,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "media-decode-mediafoundation",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ffbdfab69a6091bb4da43643a26f428fc2432658d4c3a56eba8725fc1c53789d"
     },
@@ -6151,21 +5649,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "hle-core",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/HLE/sceKernelThread.cpp (SetDeadbeefRegs, PARAM(n) convention)",
-          "Core/HLE/sceCtrl.cpp (sample ring)",
-          "Core/HLE/sceFont.cpp (FontLib / LoadedFont native layout)",
-          "Core/Dialog/PSPDialog.cpp (utility dialog status machine)",
-          "Core/HLE/sceIo.cpp (descriptor and devctl reference semantics)",
-          "Core/HLE/sceMpeg.cpp (delay constants)",
-          "Core/HLE/sceAtrac.cpp (stream bookkeeping)",
-          "GPU/GPU.h (GE_STATUS layout)",
-          "Core/HW/Display.cpp (hCountPerVblank)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "24d98b3346cc622facea8fa18764be3f2b2131563452d980a28ba54a207b0516"
     },
@@ -6176,21 +5662,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "hle-power",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/HLE/sceKernelThread.cpp (SetDeadbeefRegs, PARAM(n) convention)",
-          "Core/HLE/sceCtrl.cpp (sample ring)",
-          "Core/HLE/sceFont.cpp (FontLib / LoadedFont native layout)",
-          "Core/Dialog/PSPDialog.cpp (utility dialog status machine)",
-          "Core/HLE/sceIo.cpp (descriptor and devctl reference semantics)",
-          "Core/HLE/sceMpeg.cpp (delay constants)",
-          "Core/HLE/sceAtrac.cpp (stream bookkeeping)",
-          "GPU/GPU.h (GE_STATUS layout)",
-          "Core/HW/Display.cpp (hCountPerVblank)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "890b70bf8138993231e6019fa0ebf0f35d1f7e8743fc1875b813cebd0484dc2f"
     },
@@ -6201,21 +5675,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "hle-power",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/HLE/sceKernelThread.cpp (SetDeadbeefRegs, PARAM(n) convention)",
-          "Core/HLE/sceCtrl.cpp (sample ring)",
-          "Core/HLE/sceFont.cpp (FontLib / LoadedFont native layout)",
-          "Core/Dialog/PSPDialog.cpp (utility dialog status machine)",
-          "Core/HLE/sceIo.cpp (descriptor and devctl reference semantics)",
-          "Core/HLE/sceMpeg.cpp (delay constants)",
-          "Core/HLE/sceAtrac.cpp (stream bookkeeping)",
-          "GPU/GPU.h (GE_STATUS layout)",
-          "Core/HW/Display.cpp (hCountPerVblank)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "40e3892a1aec5c5cfa88778a1201132039fdd46bb66cb6f4f456b0a2762eddad"
     },
@@ -6250,11 +5712,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "iso-vfs-header",
         "evidence_tier": "N",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1d704fdbd90382677ad2300c4d744f2f233752d1648f70acc78a98a808bb8df0"
     },
@@ -6289,13 +5749,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "mpeg-psmf",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/HLE/sceMpeg.cpp"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f11683efdeeb712d148a5ff8bca5122da4bca8ece45f8e54fa5939fbb0f0c133"
     },
@@ -6331,7 +5787,7 @@
         "record_id": "hle-nid-name-table",
         "evidence_tier": "S",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "f50e0ddd8453fdfd5a8c6e6501eefef48975787d8bce391c9a332311c7191b7d"
     },
@@ -6342,11 +5798,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "8a47e7ee600386f7a234b9685df33b9f35ba7769f67bcb755b90648a9da8de7d"
     },
@@ -6513,16 +5967,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/MIPS/MIPSInt.cpp (unaligned LWL/LWR/SWL/SWR merge)",
-          "Core/MIPS/MIPSVFPUUtils.cpp (ApplyPrefixST / ApplyPrefixD)",
-          "Core/MIPS/MIPSVFPUFuncs.cpp (table-based transcendental kernels)",
-          "Core/HLE/sceKernelThread.cpp (__KernelRunCallbackOnThread argument shape)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d158d715efffafa1b7485febf6b89a019037291904c60e58c7984262cc3e3e76"
     },
@@ -6533,16 +5980,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/MIPS/MIPSInt.cpp (unaligned LWL/LWR/SWL/SWR merge)",
-          "Core/MIPS/MIPSVFPUUtils.cpp (ApplyPrefixST / ApplyPrefixD)",
-          "Core/MIPS/MIPSVFPUFuncs.cpp (table-based transcendental kernels)",
-          "Core/HLE/sceKernelThread.cpp (__KernelRunCallbackOnThread argument shape)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0852c9245d466ba7ca8852dfe64da89f2e0f52caac5eff29c95b60026b53fcf9"
     },
@@ -6553,14 +5993,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "savedata",
         "evidence_tier": "N",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/Dialog/SavedataParam.h",
-          "Core/Dialog/SavedataParam.cpp"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b1ef804f2bdadcea66d97ba97325451b9b75aa45a43d56e84a88a636b8acb4c1"
     },
@@ -6571,11 +6006,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "scheduler",
         "evidence_tier": "H",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4a3d4b76c027b98903209f8edaf15cd5452b6ead29b85d2050935d3da2a6d993"
     },
@@ -6766,11 +6199,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "vfpu-differential-fuzz",
         "evidence_tier": "R",
-        "upstream": "sal063",
-        "upstream_paths": [],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9dd9c221703165e2f54a095dc0777bb476cd0444ca0f69376bc20bb6dac9c823"
     },
@@ -6781,14 +6212,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "vfpu-interpreter",
         "evidence_tier": "R",
-        "upstream": "ppsspp",
-        "upstream_paths": [
-          "Core/MIPS/MIPSVFPUUtils.cpp",
-          "Core/MIPS/MIPS.cpp (vcst constants)"
-        ],
-        "upstream_revision": null,
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9d3ecb4cd58c73d5b6aa1b1d5c777b8a25b97d8759418eaea039f20745f16668"
     },
@@ -7117,13 +6543,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b98206bf70b82aec73ab22a30917e8aeaf574248b1a9d16369a7cc9ee0df5227"
     },
@@ -7254,13 +6676,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "61587467d9e002de6496b21a8b29a4a74c6ddfaba294e4a9a3427e9e75045dd2"
     },
@@ -7271,13 +6689,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0d4fc01a95dd11d5573e594df72f9ce0c0d8e8ac9e5bd187af02171b2e60ad2f"
     },
@@ -7396,13 +6810,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "52d7c0e21ce7d868a5311653ef8817d118c8bf793c9d1bde41f58cfdbff1a675"
     },
@@ -7461,13 +6871,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0aac5024f50e5d2fc2ad3145196f07c6be324cd40bbc669f5f196321453c053c"
     },
@@ -7679,13 +7085,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "01583d1053aee14a272543dcedce70190408a2ff8cf2e2d41402c10da2797ebf"
     },
@@ -7720,13 +7122,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "bb0e299eb973a73503c1233a1cd606860bc3582875eeb78231229863cf0905a6"
     },
@@ -7762,7 +7160,7 @@
         "record_id": "hle-nid-name-table",
         "evidence_tier": "S",
         "generator": "documented public-source data path",
-        "source_family": "ppsspp"
+        "source_family": "public source data"
       },
       "sha256": "f297c07b5811dd30155d2f3d3da0678ae43f8f0b9d72de9738c306159c5bd78d"
     },
@@ -7785,13 +7183,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d9f18a84c5243a1d7e2c35732561502713342246a6c856b7c7d6704846c3074c"
     },
@@ -8054,13 +7448,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "69dbe72c2673ca605390acc99fca1b066313cb6d43f96de63b51e72caf5e5c52"
     },
@@ -8071,13 +7461,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b3fc973f6f0101cdefff02960625bc917d24954767964c4268e2df9027f47369"
     },
@@ -8103,7 +7489,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d7363a059304af09bb5ec2ac28e6e797d2dfa5ec601eca7b06604ab4014733a5"
+      "sha256": "31451d9dfc6964eb48acdf13081b4fbecda59ac850b0eb50be3dc6966f3cb259"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -8115,7 +7501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4251d581ceb409d5c091992938cf09fc3014cb6f7178512a6a5bfe12593f8273"
+      "sha256": "47b3188b632cb63e25bfc205deb9aa1db1a55025dbbc12fdfc0c00c5667b05b9"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -8127,7 +7513,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "621466ae083ce68bea7397bc43889dc6b59bc70661580e370295494d9bf817d6"
+      "sha256": "06c70bdec2a802799046f5e391bf935c4214d4d620e6f9c3747bc4b5fb865f18"
     },
     {
       "path": "tools/prxload.py",
@@ -8136,13 +7522,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "55d9a31f1ddf08bd35949032bd6ba82f52161b31b6a7de9253322c8eab089769"
     },
@@ -9548,7 +8930,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4d5a365e7e6d4a515654b107c0f0f41c7d2b1fb592c97fefd433833e721acbd3"
+      "sha256": "90293248bcbb34c49849997ca04e226ab000c34746267a188d2be16c39cd0d0d"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -10244,13 +9626,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f1c68d740e80626649cc3bf92b7336811d4dd0833a5f1e440756ddfe0b28e9d8"
     },
@@ -10333,13 +9711,9 @@
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
-        "upstream": "sal063",
-        "upstream_paths": [
-          "tools/"
-        ],
-        "upstream_revision": "da17b0e",
+        "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see record"
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7b970037821255cdc5dc715bf30d57f04c9d280b6804d7151686b50a160623d0"
     },
@@ -10415,23 +9789,5 @@
       },
       "sha256": "dfd7d3a2f9670931486f83470b847cd7f3c54efa51e7574279824dc0faa44238"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
-    "candidate_tree": "13bae970e95f86a8d6c0e871d495c4ca274bf90e",
-    "refreshed_paths": [
-      "fixtures/psp_oracle/Makefile",
-      "fixtures/psp_oracle/mutex_imports.S",
-      "fixtures/psp_oracle/threadman_user_imports.S",
-      "interface/src/lib/recompiler/watchpoint-file.d.mts",
-      "interface/src/lib/recompiler/watchpoint-file.mjs",
-      "interface/src/lib/recompiler/watchpoint-file.test.mjs",
-      "interface/src/lib/recompiler/watchpoint-route.test.ts",
-      "interface/src/lib/recompiler/watchpoint-store.test.ts",
-      "src/rt/watchpoints_file.c",
-      "src/rt/watchpoints_file.h",
-      "src/rt/watchpoints_file_selftest.c"
-    ]
-  }
+  ]
 }
