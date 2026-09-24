@@ -115,6 +115,9 @@ extern uint32_t sr_hle_test_io_dread(CpuState *s);
 extern uint32_t sr_hle_test_io_dclose(CpuState *s);
 extern uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found);
 extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
+extern void sr_hle_test_register_io_devctl(void);
+extern uint32_t sr_hle_test_io_devctl_callback_uid(void);
+extern uint32_t sr_hle_test_io_devctl_refusal_log_count(void);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
 extern uint32_t sr_hle_test_io_close_async(CpuState *s);
@@ -1383,6 +1386,137 @@ static void test_utility_av_module_state(void) {
            "AV-specific duplicate load reports its AV error");
     expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_AV_MODULE, 0u) == 0,
            "AV-specific unload clears the shared AVCODEC state");
+}
+
+/* Issue #281: a registered unsupported import must return its utility error
+ * visibly, with one diagnostic per function even when the guest retries it. */
+static void test_controlled_unsupported_registration(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t first = sr_syscall(&cpu, 0x1579a159u);  /* sceUtilityLoadNetModule */
+    uint32_t second = sr_syscall(&cpu, 0x1579a159u);
+    expect(first == 0x80110001u && second == first,
+           "sceUtilityLoadNetModule refuses with SCE_ERROR_UTILITY_INVALID_STATUS on each call");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0xb3b5d042u) == 0u,
+           "sceAtracGetOutputChannel retains its named compatibility result under #281/#286");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0x4b85c861u) == 0u,
+           "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
+}
+
+static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
+                               uint32_t indata, uint32_t inlen,
+                               uint32_t outdata, uint32_t outlen) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = device;
+    cpu->r[5] = command;
+    cpu->r[6] = indata;
+    cpu->r[7] = inlen;
+    cpu->r[8] = outdata;
+    cpu->r[9] = outlen;
+    return sr_syscall(cpu, 0x54f5fb11u);
+}
+
+/* Issue #281: exercise the real sceIoDevctl dispatch for the documented
+ * memory-stick capacity, status, and callback commands, plus pointer and
+ * unknown-command boundaries. Unknown pairs must be refused and logged once. */
+static void test_io_devctl_memory_stick(void) {
+    const uint32_t device_addr = 0x09020000u;
+    const uint32_t second_device_addr = 0x09020020u;
+    const uint32_t indata_addr = 0x09020100u;
+    const uint32_t info_addr = 0x09020200u;
+    const uint32_t outdata_addr = 0x09020300u;
+    static const char ms0[] = "ms0:";
+    static const char fatms0[] = "fatms0:";
+    static const char unknown_device[] = "devctl-test0:";
+    const char *old_root_value = getenv("SR_FSDIR");
+    char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
+    CpuState cpu;
+    if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
+    if (old_root_value && !old_root) {
+        expect(0, "sceIoDevctl test can preserve the configured SR_FSDIR");
+        return;
+    }
+
+    CreateDirectoryA("build", NULL);
+    CreateDirectoryA("build/hle_fd_namespace_fs", NULL);
+    expect(SetEnvironmentVariableA("SR_FSDIR", "build/hle_fd_namespace_fs"),
+           "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
+    fd_guest_copy(device_addr, ms0, sizeof(ms0));
+    fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
+    sr_hle_init();
+    sr_hle_test_register_io_devctl();
+
+    MEM_W32(indata_addr, info_addr);
+    for (uint32_t i = 0; i < 5u; i++) MEM_W32(info_addr + i * 4u, 0xdeadbeefu);
+    expect(io_devctl_call(&cpu, device_addr, 0x02425818u,
+                          indata_addr, 4u, 0u, 0u) == 0u,
+           "sceIoDevctl SCE_PR_GETDEV accepts the nested SceDevInf pointer");
+    uint32_t max_clusters = MEM_R32(info_addr);
+    uint32_t free_clusters = MEM_R32(info_addr + 4u);
+    uint32_t max_sectors = MEM_R32(info_addr + 8u);
+    uint32_t sector_size = MEM_R32(info_addr + 12u);
+    uint32_t sector_count = MEM_R32(info_addr + 16u);
+    expect(max_clusters > 0u && free_clusters <= max_clusters &&
+               max_sectors == (uint64_t)max_clusters * sector_count &&
+               sector_size > 0u && sector_count > 0u &&
+               (uint64_t)max_clusters * sector_size * sector_count <= UINT32_MAX,
+           "sceIoDevctl capacity output contains bounded host-volume geometry and free clusters");
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02425818u,
+                          indata_addr, 4u, 0u, 0u) == 0u,
+           "sceIoDevctl SCE_PR_GETDEV accepts the fatms0: alias");
+
+    expect(io_devctl_call(&cpu, device_addr, 0x02025806u,
+                          0u, 0u, outdata_addr, 4u) == 0u &&
+               MEM_R32(outdata_addr) == 1u,
+           "sceIoDevctl inserted query writes 1 to its validated output span");
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02025801u,
+                          0u, 0u, outdata_addr, 4u) == 0u &&
+               MEM_R32(outdata_addr) == 4u,
+           "sceIoDevctl ready query writes 4 to its validated output span");
+
+    MEM_W32(indata_addr, 0x1234u);
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02415821u,
+                          indata_addr, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_uid() == 0x1234u,
+           "sceIoDevctl callback registration stores its input UID without invoking it");
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02415822u,
+                          indata_addr, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_uid() == 0u,
+           "sceIoDevctl callback unregistration clears the stored UID");
+
+    MEM_W32(indata_addr, 0xdeadbeefu);
+    expect(io_devctl_call(&cpu, device_addr, 0x02425818u,
+                          indata_addr, 4u, 0u, 0u) == 0x80000103u,
+           "sceIoDevctl capacity query returns ILLEGAL_ADDR for a bad nested output pointer");
+
+    uint32_t logs_before = sr_hle_test_io_devctl_refusal_log_count();
+    fd_guest_copy(device_addr, unknown_device, sizeof(unknown_device));
+    MEM_W32(outdata_addr, 0xa5a5a5a5u);
+    uint32_t refused_device = io_devctl_call(&cpu, device_addr, 0x02025806u,
+                                             0u, 0u, outdata_addr, 4u);
+    uint32_t refused_device_retry = io_devctl_call(&cpu, device_addr, 0x02025806u,
+                                                  0u, 0u, outdata_addr, 4u);
+    expect(refused_device == 0x80010086u && refused_device_retry == refused_device &&
+               MEM_R32(outdata_addr) == 0xa5a5a5a5u &&
+               sr_hle_test_io_devctl_refusal_log_count() == logs_before + 1u,
+           "sceIoDevctl refuses an unsupported device without writing and logs that pair once");
+
+    fd_guest_copy(device_addr, ms0, sizeof(ms0));
+    uint32_t refused_command = io_devctl_call(&cpu, device_addr, 0xdeadbeefu,
+                                              0u, 0u, 0u, 0u);
+    uint32_t refused_command_retry = io_devctl_call(&cpu, device_addr, 0xdeadbeefu,
+                                                   0u, 0u, 0u, 0u);
+    expect(refused_command == 0x80010086u && refused_command_retry == refused_command &&
+               sr_hle_test_io_devctl_refusal_log_count() == logs_before + 2u,
+           "sceIoDevctl refuses an unknown command and logs each device/command pair once");
+
+    if (old_root) SetEnvironmentVariableA("SR_FSDIR", old_root);
+    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    free(old_root);
 }
 
 /* ---- coroutine park ------------------------------------------------------------------
@@ -13142,6 +13276,8 @@ int main(int argc, char **argv) {
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_utility_av_module_state();
+    test_controlled_unsupported_registration();
+    test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
     test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);

@@ -2221,7 +2221,7 @@ def validate_title2_negative_output(completed) -> None:
 def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     plan = effective_plan(workload)
     stem = game_name_of(workload)
-    executable = build_dir / f"{stem}.exe"
+    executable = (build_dir / f"{stem}.exe").resolve()
     image_path = build_dir / f"{stem}_image.bin"
 
     if workload == "ladder-title2-negative":
