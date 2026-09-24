@@ -35,6 +35,8 @@ from nk_core.iso_inspect import (
     _elf32_mips_usable,
     _lookup_iso_file,
     _read_iso_extent,
+    _classify_decrypted_elf_file,
+    decrypted_module_dir,
     inspect_compatibility_preflight,
     list_iso_directory,
     write_experimental_profile,
@@ -246,6 +248,41 @@ def _stage_iso_modules(
                 raise
     return module_dir
 
+def _copy_decrypted_elf(source: Path, destination: Path) -> str:
+    """Copy one bounded user ELF into the private package cache after validation."""
+    try:
+        size = source.stat().st_size
+        if size <= 0 or size > MAX_EXECUTABLE_BYTES:
+            raise PackageBuildError("User-supplied decrypted EBOOT.elf exceeds the supported size bound (#295).")
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = destination.with_name(destination.name + ".tmp")
+        digest = hashlib.sha256()
+        copied = 0
+        with source.open("rb") as input_stream, temporary.open("wb") as output:
+            while copied < size:
+                block = input_stream.read(min(64 * 1024, size - copied))
+                if not block:
+                    raise PackageBuildError("User-supplied decrypted EBOOT.elf changed while being copied (#295).")
+                output.write(block)
+                digest.update(block)
+                copied += len(block)
+            if input_stream.read(1):
+                raise PackageBuildError("User-supplied decrypted EBOOT.elf changed while being copied (#295).")
+            output.flush()
+            os.fsync(output.fileno())
+        if _classify_decrypted_elf_file(temporary) != "PLAIN_MIPS_ELF32":
+            temporary.unlink(missing_ok=True)
+            raise PackageBuildError(
+                "User-supplied decrypted EBOOT.elf is not a usable MIPS ELF32; "
+                "the encrypted executable boundary is in the works (#295)."
+            )
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        os.replace(temporary, destination)
+        return digest.hexdigest()
+    except OSError as exc:
+        raise PackageBuildError(f"Could not copy user-supplied decrypted EBOOT.elf: {exc}") from exc
+
 
 def _find_public_manifest(title_id: str) -> tuple[Path, dict]:
     manifest_root = ROOT / "assets" / "titles"
@@ -274,9 +311,11 @@ def _load_library_entry(user_root: Path, disc_id: str) -> dict:
     if len(matches) != 1:
         raise PackageBuildError(f"Library entry {disc_id} was not found uniquely.")
     entry = matches[0]
-    for field in ("title_id", "iso_path", "selected_executable"):
+    for field in ("title_id", "iso_path"):
         if not isinstance(entry.get(field), str) or not entry[field]:
             raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building (#297).")
+    if not isinstance(entry.get("selected_executable", ""), str):
+        raise PackageBuildError(f"Library entry {disc_id} has an invalid selected_executable (#297).")
     if type(entry.get("is_experimental", False)) is not bool:
         raise PackageBuildError(f"Library entry {disc_id} has an invalid experimental marker.")
     return entry
@@ -315,7 +354,8 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
 
 
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
-                           module_dir_arg: Path | None) -> Path | None:
+                           module_dir_arg: Path | None,
+                           default_module_dir: Path | None = None) -> Path | None:
     modules = [module for module in manifest.get("modules", [])
                if module.get("role") == "guest-prx" and module.get("required", False)]
     if not modules:
@@ -324,13 +364,36 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     for module in modules:
         name = module["name"]
-        candidates = (module_dir_arg / name,) if module_dir_arg else ()
-        candidates = (*candidates,)
+        module_dir = module_dir_arg or default_module_dir
+        candidates = (module_dir / name,) if module_dir else ()
         source_path = next((path for path in candidates if path.is_file()), None)
+        if source_path is not None and module_dir_arg is None and default_module_dir is not None:
+            try:
+                source_path.resolve(strict=True).relative_to(
+                    default_module_dir.resolve(strict=False)
+                )
+            except (OSError, ValueError) as exc:
+                raise PackageBuildError(
+                    f"Required guest PRX {name} escapes the per-title decrypted-module folder (#295)."
+                ) from exc
         destination = output / name
         if source_path is not None:
             if source_path.stat().st_size <= 0 or source_path.stat().st_size > MAX_EXECUTABLE_BYTES:
-                raise PackageBuildError(f"Required guest PRX {name} exceeds the supported input size.")
+                raise PackageBuildError(
+                    f"Required guest PRX {name} exceeds the supported input size (#295); "
+                    "broader module intake is in the works."
+                )
+            try:
+                with source_path.open("rb") as module_stream:
+                    is_elf = module_stream.read(4) == b"\x7fELF"
+            except OSError as exc:
+                raise PackageBuildError(f"Could not read required guest PRX {name}: {exc}") from exc
+            if not is_elf:
+                suggested = module_dir_arg or default_module_dir
+                raise PackageBuildError(
+                    f"Required guest PRX {name} is not a decrypted ELF; supply decrypted modules "
+                    f"at {suggested} (#295). Decrypted module intake is in the works."
+                )
             _write_private_file(destination, source_path.read_bytes())
             continue
         extracted = False
@@ -368,13 +431,27 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                                 raise PackageBuildError(f"Could not extract required guest PRX {name} completely.")
                             output_stream.write(block)
                             offset += count
+                    with temporary.open("rb") as module_stream:
+                        is_elf = module_stream.read(4) == b"\x7fELF"
+                    if not is_elf:
+                        temporary.unlink(missing_ok=True)
+                        suggested = module_dir_arg or default_module_dir
+                        raise PackageBuildError(
+                            f"Required guest PRX {name} is encrypted or not a plain ELF; "
+                            f"supply decrypted modules at {suggested} (#295). "
+                            "Decrypted module intake is in the works."
+                        )
                     os.replace(temporary, destination)
                     extracted = True
                     break
             except OSError:
                 continue
         if not extracted and source_path is None:
-            raise PackageBuildError(f"Required guest PRX {name} is unavailable in the ISO or --module-dir; package build is in the works (#296).")
+            suggested = module_dir_arg or default_module_dir
+            raise PackageBuildError(
+                f"Required guest PRX {name} is unavailable; supply decrypted modules at "
+                f"{suggested} (#295). Decrypted module intake is in the works."
+            )
     return output
 
 
@@ -416,16 +493,39 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             raise PackageBuildError(f"ISO identity {metadata.disc_id} no longer matches library entry {disc_id}.")
         preflight = inspect_compatibility_preflight(iso_path, metadata=metadata,
                                                     runtime_root=user_root)
-        selected = preflight.get("selected_executable")
-        if selected is None:
-            raise PackageBuildError("No plaintext ELF is selected; encrypted executable support is in the works (#295).")
-        selected = str(selected).upper()
-        library_selected = Path(entry["selected_executable"].replace("\\", "/")).name.upper()
-        if library_selected not in {"EBOOT.BIN", "BOOT.BIN"} or library_selected != selected:
+        selected_value = preflight.get("selected_executable")
+        uses_decrypted_eboot = selected_value == "EBOOT.elf"
+        decrypted_eboot = preflight.get("decrypted_executable") if uses_decrypted_eboot else None
+        if selected_value is None or (uses_decrypted_eboot and not decrypted_eboot):
+            module_dir = decrypted_module_dir(user_root, disc_id)
+            folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
+            raise PackageBuildError(
+                f"Encrypted executable: supply decrypted modules at {folder} (#295). "
+                "Automatic decryption is in the works."
+            )
+        selected = str(selected_value).upper()
+        selected_from_library = entry.get("selected_executable", "")
+        library_selected = (
+            Path(selected_from_library.replace("\\", "/")).name.upper()
+            if selected_from_library else ""
+        )
+        if uses_decrypted_eboot:
+            if not library_selected:
+                library_selected = "EBOOT.BIN"
+            if library_selected not in {"EBOOT.BIN", "BOOT.BIN"}:
+                raise PackageBuildError(
+                    f"Library executable selection {library_selected!r} is invalid for a user-supplied EBOOT.elf (#297)."
+                )
+            manifest_selected = library_selected
+        else:
+            manifest_selected = selected
+        if library_selected not in {"EBOOT.BIN", "BOOT.BIN"} or (
+            not uses_decrypted_eboot and library_selected != selected
+        ):
             raise PackageBuildError(f"Selected executable changed from library entry {library_selected!r} to {selected!r}; re-import the ISO (#297).")
 
         manifest_source, manifest, expected_hash = _load_entry_manifest(
-            user_root, entry, disc_id, selected
+            user_root, entry, disc_id, manifest_selected
         )
         cache_dir = _require_child(user_root, user_root / "cache" / "packages" / disc_id,
                                    "Package cache")
@@ -439,7 +539,11 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             if marker.read_text(encoding="ascii") != "Nakagawa Recomp package cache v1\n":
                 raise PackageBuildError("Package cache marker is not recognized; refusing to replace it.")
         elf_path = cache_dir / "selected.elf"
-        actual_hash = _extract_iso_executable(iso_path, selected, elf_path)
+        actual_hash = (
+            _copy_decrypted_elf(Path(str(decrypted_eboot)), elf_path)
+            if uses_decrypted_eboot
+            else _extract_iso_executable(iso_path, selected, elf_path)
+        )
         if expected_hash and actual_hash != expected_hash:
             raise PackageBuildError("Selected executable SHA-256 differs from the experimental profile; re-import the ISO before rebuilding.")
 
@@ -456,8 +560,13 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         if psp_header is not None:
             cached_header = cache_dir / "selected.psp"
             shutil.copyfile(psp_header, cached_header)
-        module_dir = _copy_optional_modules(iso_path, manifest, cache_dir,
-                                            args.module_dir.expanduser().resolve() if args.module_dir else None)
+        module_dir = _copy_optional_modules(
+            iso_path,
+            manifest,
+            cache_dir,
+            args.module_dir.expanduser().resolve() if args.module_dir else None,
+            decrypted_module_dir(user_root, disc_id),
+        )
 
         build_dir = cache_dir / "package"
         target_dir = user_root / "packages" / disc_id
@@ -1163,7 +1272,8 @@ def main() -> int:
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")
     p_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    p_inspect.add_argument("--root", default=".", help="Runtime/install root for package checks")
+    p_inspect.add_argument("--root", default=str(default_user_data_root()),
+                           help="Player per-user data directory for package, font, and decrypted-input checks")
     p_inspect.set_defaults(func=cmd_inspect)
 
     p_prep = subparsers.add_parser("prepare", help="Prepare an ISO for native execution")

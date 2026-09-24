@@ -744,6 +744,439 @@ static void test_timestamp_flags(void) {
     }
 }
 
+/* ISO/IEC 13818-1 offsets: 0-3 pack_start_code; 4-13 MPEG-2 pack_header; 14-22 PES_header; 23-29 payload. */
+static const uint8_t corpus_pack_zero[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 MPEG-2 pack_header; 14-16 pack_stuffing; 17-25 PES_header; 26-32 payload. */
+static const uint8_t corpus_pack_stuffed[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x03,
+    0xFF, 0xFF, 0xFF,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-17 system_header start; 18-19 length; 20-33 system_header; 34-42 padding_stream; 43-51 PES_header; 52-58 payload. */
+static const uint8_t corpus_system_padding[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xBB, 0x00, 0x0E,
+    0x80, 0x04, 0x00, 0x21, 0xFF, 0xFF, 0xE0, 0x08,
+    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0xBE, 0x00, 0x03, 0xFF, 0xFF, 0xFF,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 private_stream_1 PES_header; 23-27 PTS; 28-47 private_stream_1 payload. */
+static const uint8_t corpus_private_audio[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xBD, 0x00, 0x1C, 0x80, 0x80, 0x05,
+    0x21, 0x00, 0x05, 0xBF, 0x21,
+    0x00, 0x00, 0x00, 0x00,
+    0x0F, 0xD0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8
+};
+
+/* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 PTS_DTS_flags; 8 header_data_length; 9-13 PTS; 14-20 payload. */
+static const uint8_t corpus_video_pts[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+    0x21, 0x00, 0x05, 0xBF, 0x21,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 PTS_DTS_flags; 8 header_data_length; 9-13 PTS; 14-18 DTS; 19-25 payload. */
+static const uint8_t corpus_video_pts_dts[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x14, 0x80, 0xC0, 0x0A,
+    0x31, 0x00, 0x05, 0xBF, 0x21,
+    0x11, 0x00, 0x05, 0xEE, 0x0D,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 PTS_DTS_flags=00; 8 header_data_length; 9-11 optional bytes; 12-18 payload. */
+static const uint8_t corpus_video_no_pts_optional[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0D, 0x80, 0x00, 0x03,
+    0xDE, 0xAD, 0xBE,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 no timestamps; 8 no optional header; 9-15 three-byte Annex-B start code and AUD. */
+static const uint8_t corpus_annexb_three[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header with PTS_DTS_flags=01; 23-29 payload. */
+static const uint8_t corpus_video_reserved[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x40, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header; 23-27 PTS with its first marker bit clear; 28-34 payload. */
+static const uint8_t corpus_pts_marker_first[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+    0x20, 0x00, 0x05, 0xBF, 0x21,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header; 23-27 PTS with its middle marker bit clear; 28-34 payload. */
+static const uint8_t corpus_pts_marker_middle[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+    0x21, 0x00, 0x04, 0xBF, 0x21,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header; 23-27 PTS with its last marker bit clear; 28-34 payload. */
+static const uint8_t corpus_pts_marker_last[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+    0x21, 0x00, 0x05, 0xBF, 0x20,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header with flags1 missing the mandatory '10'; 23-29 payload. */
+static const uint8_t corpus_bad_pes_marker[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header; 23-29 payload; 30-33 program_end_code; 34-49 trailing PES packet. */
+static const uint8_t corpus_program_end[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11,
+    0x00, 0x00, 0x01, 0xB9,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0xEE, 0xEE, 0xEE
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header; PES_packet_length declares 32 body bytes but the table ends at offset 22. */
+static const uint8_t corpus_truncated_pes[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x20, 0x80, 0x00, 0x00
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-22 PES_header; header_data_length=5 exceeds the three-byte PES body. */
+static const uint8_t corpus_header_length_past_end[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x03, 0x80, 0x00, 0x05
+};
+
+/* ISO/IEC 13818-1 offsets: 0-13 pack_header; 14-17 bad start-code prefix; 18-29 deliberately present payload. */
+static const uint8_t corpus_bad_start_prefix[] = {
+    0x00, 0x00, 0x01, 0xBA,
+    0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x02, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0xEE, 0xEE, 0xEE
+};
+
+/* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 no timestamps; 8 no optional header; 9-16 four-byte Annex-B start code and AUD. */
+static const uint8_t corpus_annexb_four[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0B, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 no timestamps; 8 no optional header; 9-16 valid trailing packet. */
+static const uint8_t corpus_follow_video[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0A, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x09, 0xEE, 0xEE, 0xEE
+};
+
+#define CORPUS_NO_POS 0xFFFFFFFFu
+
+enum CorpusOutcome {
+    CORPUS_ACCEPT,
+    CORPUS_FAILURE,
+    CORPUS_PROGRAM_END
+};
+
+typedef struct {
+    const char *name;
+    const uint8_t *data;
+    uint32_t size;
+    const uint8_t *tail;
+    uint32_t tail_size;
+    int tail_in_stream;
+    enum CorpusOutcome outcome;
+    SrPsmfAuKind kind;
+    uint32_t packs, pes, video_pes, audio_pes;
+    uint32_t pes_at;
+    uint16_t pes_length;
+    uint8_t pes_sid, pes_flags1, pes_flags2, pes_header_length;
+    uint32_t pts_at, dts_at;
+    uint8_t pts_prefix, dts_prefix, pts_markers, dts_markers;
+    int64_t pts, dts;
+    int has_pts, has_dts;
+    uint32_t data_at, data_size;
+    uint8_t stream_id;
+    uint32_t fail_at, read_limit;
+} CorpusCase;
+
+static void check_literal_pes(const CorpusCase *c) {
+    if (c->pes_at == CORPUS_NO_POS) return;
+    uint32_t at = c->pes_at;
+    CHECK(at + 9u <= c->size, "literal PES header is inside its byte table");
+    if (at + 9u > c->size) return;
+    const uint8_t *s = c->data + at;
+    CHECK(s[0] == 0x00u && s[1] == 0x00u && s[2] == 0x01u,
+          "literal PES start-code prefix is 00 00 01");
+    CHECK(s[3] == c->pes_sid, "literal PES stream id is at byte 3");
+    CHECK((uint16_t)(((uint16_t)s[4] << 8) | s[5]) == c->pes_length,
+          "literal PES length is at bytes 4-5");
+    CHECK(s[6] == c->pes_flags1, "literal mandatory marker byte is byte 6");
+    CHECK(s[7] == c->pes_flags2, "literal PTS_DTS_flags byte is byte 7");
+    CHECK(s[8] == c->pes_header_length, "literal header_data_length is byte 8");
+    if (c->pts_at != CORPUS_NO_POS) {
+        CHECK(c->pts_at + 5u <= c->size, "literal PTS is inside its byte table");
+        if (c->pts_at + 5u <= c->size) {
+            const uint8_t *p = c->data + c->pts_at;
+            uint8_t markers = (uint8_t)((p[0] & 1u) |
+                                        ((p[2] & 1u) << 1) |
+                                        ((p[4] & 1u) << 2));
+            CHECK((p[0] & 0xF0u) == c->pts_prefix,
+                  "literal PTS prefix is checked independently");
+            /* ISO/IEC 13818-1 2.4.3.7: PTS alone is prefixed '0010'; with a DTS it is '0011'. */
+            if (c->outcome == CORPUS_ACCEPT)
+                CHECK((p[0] & 0xF0u) == ((c->pes_flags2 >> 6) == 3u ? 0x30u : 0x20u),
+                      "accepted literal PTS prefix matches its PTS_DTS_flags");
+            CHECK(markers == c->pts_markers,
+                  "literal PTS marker bits are pinned by the table");
+            CHECK(read_pts(p) == c->pts, "literal PTS encodes its declared value");
+        }
+    }
+    if (c->dts_at != CORPUS_NO_POS) {
+        CHECK(c->dts_at + 5u <= c->size, "literal DTS is inside its byte table");
+        if (c->dts_at + 5u <= c->size) {
+            const uint8_t *p = c->data + c->dts_at;
+            uint8_t markers = (uint8_t)((p[0] & 1u) |
+                                        ((p[2] & 1u) << 1) |
+                                        ((p[4] & 1u) << 2));
+            CHECK((p[0] & 0xF0u) == c->dts_prefix,
+                  "literal DTS prefix is checked independently");
+            if (c->outcome == CORPUS_ACCEPT)
+                CHECK((p[0] & 0xF0u) == 0x10u, "accepted literal DTS prefix is '0001'");
+            CHECK(markers == c->dts_markers,
+                  "literal DTS marker bits are pinned by the table");
+            CHECK(read_pts(p) == c->dts, "literal DTS encodes its declared value");
+        }
+    }
+}
+
+static uint8_t *corpus_wrap(const CorpusCase *c, uint32_t *source_size, uint32_t *stream_size) {
+    uint32_t in_stream_tail = c->tail_in_stream ? c->tail_size : 0u;
+    *stream_size = c->size + in_stream_tail;
+    *source_size = 2048u + c->size + c->tail_size;
+    uint8_t *data = (uint8_t *)calloc(1, *source_size);
+    if (!data) return NULL;
+    memcpy(data + 2048u, c->data, c->size);
+    if (c->tail_size) memcpy(data + 2048u + c->size, c->tail, c->tail_size);
+    data[0] = 'P'; data[1] = 'S'; data[2] = 'M'; data[3] = 'F';
+    be32(data + 8, 2048u);
+    be32(data + 12, *stream_size);
+    return data;
+}
+
+static void run_corpus_case(const CorpusCase *c) {
+    check_literal_pes(c);
+    uint32_t source_size = 0, stream_size = 0;
+    uint8_t *data = corpus_wrap(c, &source_size, &stream_size);
+    CHECK(data != NULL, "corpus source allocated");
+    if (!data) return;
+    MemSource mem = {data, source_size, 3u, 0};
+    SrPsmfSource source = {mem_read, &mem, source_size};
+    SrPsmfProducer *p = sr_psmf_producer_open(&source, 90000);
+    CHECK(p != NULL, c->name);
+    if (!p) { free(data); return; }
+    for (int i = 0; i < 128 && !sr_psmf_producer_eof(p); i++)
+        sr_psmf_producer_pump(p, 1);
+    SrPsmfProducerStats st;
+    sr_psmf_producer_stats(p, &st);
+    CHECK(st.packs == c->packs, c->name);
+    CHECK(st.pes_packets == c->pes, c->name);
+    CHECK(st.video_pes == c->video_pes, c->name);
+    CHECK(st.audio_pes == c->audio_pes, c->name);
+    if (c->read_limit != CORPUS_NO_POS)
+        CHECK(st.bytes_read <= 2048u + c->read_limit, c->name);
+
+    SrPsmfAu au;
+    memset(&au, 0, sizeof(au));
+    if (c->outcome == CORPUS_FAILURE) {
+        CHECK(st.failed && !st.eof, c->name);
+        CHECK(st.parser_failures == 1 && st.source_failures == 0, c->name);
+        CHECK(st.fail_offset == 2048u + c->fail_at, c->name);
+        CHECK(st.video_aus == 0 && st.audio_aus == 0, c->name);
+        int got_video = sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au);
+        CHECK(!got_video, "a failed packet yields no following video access unit");
+        if (got_video) sr_psmf_au_release(&au);
+        memset(&au, 0, sizeof(au));
+        int got_audio = sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au);
+        CHECK(!got_audio, "a failed packet yields no following audio access unit");
+        if (got_audio) sr_psmf_au_release(&au);
+    } else {
+        CHECK(!st.failed && st.eof, c->name);
+        CHECK(st.parser_failures == 0 && st.source_failures == 0, c->name);
+        int got = sr_psmf_producer_pop(p, c->kind, &au);
+        CHECK(got, c->name);
+        if (got) {
+            CHECK(au.kind == c->kind, c->name);
+            CHECK(au.stream_id == c->stream_id, c->name);
+            CHECK(au.has_pts == (uint8_t)c->has_pts, c->name);
+            CHECK(au.has_dts == (uint8_t)c->has_dts, c->name);
+            CHECK(au.size == c->data_size, c->name);
+            if (au.size == c->data_size && c->data_at != CORPUS_NO_POS)
+                CHECK(memcmp(au.data, c->data + c->data_at, c->data_size) == 0,
+                      "accepted payload begins at the literal table's declared offset");
+            if (c->has_pts) {
+                CHECK(au.raw_pts == c->pts, c->name);
+                CHECK(au.pts == c->pts - 90000, c->name);
+            }
+            if (c->has_dts) {
+                CHECK(au.raw_dts == c->dts, c->name);
+                CHECK(au.dts == c->dts - 90000, c->name);
+            }
+            sr_psmf_au_release(&au);
+        }
+        CHECK(!sr_psmf_producer_pop(p, c->kind, &au),
+              "an accepted corpus case yields exactly one access unit");
+    }
+    sr_psmf_producer_close(p);
+    free(data);
+}
+
+static void test_conformance_corpus(void) {
+    static const CorpusCase cases[] = {
+        { .name = "pack stuffing length 0", .data = corpus_pack_zero, .size = sizeof(corpus_pack_zero),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .packs = 1, .pes = 1,
+          .video_pes = 1, .pes_at = 14, .pes_length = 0x000A, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0x00, .pes_header_length = 0,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .data_at = 23, .data_size = 7,
+          .stream_id = 0xE0, .read_limit = CORPUS_NO_POS },
+        { .name = "pack stuffing length 3", .data = corpus_pack_stuffed, .size = sizeof(corpus_pack_stuffed),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .packs = 1, .pes = 1,
+          .video_pes = 1, .pes_at = 17, .pes_length = 0x000A, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0x00, .pes_header_length = 0,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .data_at = 26, .data_size = 7,
+          .stream_id = 0xE0, .read_limit = CORPUS_NO_POS },
+        { .name = "system header and padding are skipped", .data = corpus_system_padding, .size = sizeof(corpus_system_padding),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .packs = 2, .pes = 1,
+          .video_pes = 1, .pes_at = 43, .pes_length = 0x000A, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0x00, .pes_header_length = 0,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .data_at = 52, .data_size = 7,
+          .stream_id = 0xE0, .read_limit = CORPUS_NO_POS },
+        { .name = "private stream 1 audio", .data = corpus_private_audio, .size = sizeof(corpus_private_audio),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_AUDIO, .packs = 1, .pes = 1,
+          .audio_pes = 1, .pes_at = 14, .pes_length = 0x001C, .pes_sid = 0xBD,
+          .pes_flags1 = 0x80, .pes_flags2 = 0x80, .pes_header_length = 5,
+          .pts_at = 23, .dts_at = CORPUS_NO_POS, .pts_prefix = 0x20, .pts_markers = 0x07,
+          .pts = 90000, .has_pts = 1, .data_at = 32, .data_size = 16, .stream_id = 0x00,
+          .read_limit = CORPUS_NO_POS },
+        { .name = "PTS only", .data = corpus_video_pts, .size = sizeof(corpus_video_pts),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .pes = 1, .video_pes = 1,
+          .pes_at = 0, .pes_length = 0x000F, .pes_sid = 0xE0, .pes_flags1 = 0x80,
+          .pes_flags2 = 0x80, .pes_header_length = 5, .pts_at = 9, .dts_at = CORPUS_NO_POS,
+          .pts_prefix = 0x20, .pts_markers = 0x07, .pts = 90000, .has_pts = 1,
+          .data_at = 14, .data_size = 7, .stream_id = 0xE0, .read_limit = CORPUS_NO_POS },
+        { .name = "PTS and DTS", .data = corpus_video_pts_dts, .size = sizeof(corpus_video_pts_dts),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .pes = 1, .video_pes = 1,
+          .pes_at = 0, .pes_length = 0x0014, .pes_sid = 0xE0, .pes_flags1 = 0x80,
+          .pes_flags2 = 0xC0, .pes_header_length = 10, .pts_at = 9, .dts_at = 14,
+          .pts_prefix = 0x30, .dts_prefix = 0x10, .pts_markers = 0x07, .dts_markers = 0x07,
+          .pts = 90000, .dts = 96006, .has_pts = 1, .has_dts = 1,
+          .data_at = 19, .data_size = 7, .stream_id = 0xE0, .read_limit = CORPUS_NO_POS },
+        { .name = "no PTS with optional header", .data = corpus_video_no_pts_optional, .size = sizeof(corpus_video_no_pts_optional),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .pes = 1, .video_pes = 1,
+          .pes_at = 0, .pes_length = 0x000D, .pes_sid = 0xE0, .pes_flags1 = 0x80,
+          .pes_flags2 = 0x00, .pes_header_length = 3, .pts_at = CORPUS_NO_POS,
+          .dts_at = CORPUS_NO_POS, .data_at = 12, .data_size = 7, .stream_id = 0xE0,
+          .read_limit = CORPUS_NO_POS },
+        { .name = "three-byte Annex-B start code", .data = corpus_annexb_three, .size = sizeof(corpus_annexb_three),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .pes = 1, .video_pes = 1,
+          .pes_at = 0, .pes_length = 0x000A, .pes_sid = 0xE0, .pes_flags1 = 0x80,
+          .pes_flags2 = 0x00, .pes_header_length = 0, .pts_at = CORPUS_NO_POS,
+          .dts_at = CORPUS_NO_POS, .data_at = 9, .data_size = 7, .stream_id = 0xE0,
+          .read_limit = CORPUS_NO_POS },
+        { .name = "program end stops before trailing packet", .data = corpus_program_end, .size = sizeof(corpus_program_end),
+          .outcome = CORPUS_PROGRAM_END, .kind = SR_PSMF_AU_VIDEO, .packs = 1, .pes = 1,
+          .video_pes = 1, .pes_at = 14, .pes_length = 0x000A, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0x00, .pes_header_length = 0,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .data_at = 23, .data_size = 7,
+          .stream_id = 0xE0, .read_limit = 34 },
+        { .name = "four-byte Annex-B start code", .data = corpus_annexb_four, .size = sizeof(corpus_annexb_four),
+          .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .pes = 1, .video_pes = 1,
+          .pes_at = 0, .pes_length = 0x000B, .pes_sid = 0xE0, .pes_flags1 = 0x80,
+          .pes_flags2 = 0x00, .pes_header_length = 0, .pts_at = CORPUS_NO_POS,
+          .dts_at = CORPUS_NO_POS, .data_at = 9, .data_size = 8, .stream_id = 0xE0,
+          .read_limit = CORPUS_NO_POS },
+        { .name = "reserved PTS_DTS_flags 01", .data = corpus_video_reserved, .size = sizeof(corpus_video_reserved),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = 14, .pes_length = 0x000A,
+          .pes_sid = 0xE0, .pes_flags1 = 0x80, .pes_flags2 = 0x40, .pes_header_length = 0,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .fail_at = 14,
+          .read_limit = sizeof(corpus_video_reserved) },
+        { .name = "PTS first marker bit", .data = corpus_pts_marker_first, .size = sizeof(corpus_pts_marker_first),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = 14, .pes_length = 0x000F,
+          .pes_sid = 0xE0, .pes_flags1 = 0x80, .pes_flags2 = 0x80, .pes_header_length = 5,
+          .pts_at = 23, .dts_at = CORPUS_NO_POS, .pts_prefix = 0x20, .pts_markers = 0x06, .pts = 90000,
+          .fail_at = 14, .read_limit = sizeof(corpus_pts_marker_first) },
+        { .name = "PTS middle marker bit", .data = corpus_pts_marker_middle, .size = sizeof(corpus_pts_marker_middle),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = 14, .pes_length = 0x000F,
+          .pes_sid = 0xE0, .pes_flags1 = 0x80, .pes_flags2 = 0x80, .pes_header_length = 5,
+          .pts_at = 23, .dts_at = CORPUS_NO_POS, .pts_prefix = 0x20, .pts_markers = 0x05, .pts = 90000,
+          .fail_at = 14, .read_limit = sizeof(corpus_pts_marker_middle) },
+        { .name = "PTS last marker bit", .data = corpus_pts_marker_last, .size = sizeof(corpus_pts_marker_last),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = 14, .pes_length = 0x000F,
+          .pes_sid = 0xE0, .pes_flags1 = 0x80, .pes_flags2 = 0x80, .pes_header_length = 5,
+          .pts_at = 23, .dts_at = CORPUS_NO_POS, .pts_prefix = 0x20, .pts_markers = 0x03, .pts = 90000,
+          .fail_at = 14, .read_limit = sizeof(corpus_pts_marker_last) },
+        { .name = "PES marker byte is not 10", .data = corpus_bad_pes_marker, .size = sizeof(corpus_bad_pes_marker),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = 14, .pes_length = 0x000A,
+          .pes_sid = 0xE0, .pes_flags1 = 0x00, .pes_flags2 = 0x00, .pes_header_length = 0,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .fail_at = 14,
+          .read_limit = sizeof(corpus_bad_pes_marker) },
+        { .name = "truncated PES packet length", .data = corpus_truncated_pes, .size = sizeof(corpus_truncated_pes),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video),
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = 14, .pes_length = 0x0020,
+          .pes_sid = 0xE0, .pes_flags1 = 0x80, .pes_flags2 = 0x00, .pes_header_length = 0,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .fail_at = 14,
+          .read_limit = sizeof(corpus_truncated_pes) },
+        { .name = "header_data_length past packet", .data = corpus_header_length_past_end, .size = sizeof(corpus_header_length_past_end),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = 14, .pes_length = 0x0003,
+          .pes_sid = 0xE0, .pes_flags1 = 0x80, .pes_flags2 = 0x00, .pes_header_length = 5,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .fail_at = 14,
+          .read_limit = sizeof(corpus_header_length_past_end) },
+        { .name = "bad start-code prefix", .data = corpus_bad_start_prefix, .size = sizeof(corpus_bad_start_prefix),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .packs = 1, .pes = 0, .pes_at = CORPUS_NO_POS,
+          .pts_at = CORPUS_NO_POS, .dts_at = CORPUS_NO_POS, .fail_at = 14,
+          .read_limit = sizeof(corpus_bad_start_prefix) }
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        run_corpus_case(&cases[i]);
+}
+
 int main(void) {
     test_access_unit_formation();
     test_backpressure_keeps_order();
@@ -755,6 +1188,7 @@ int main(void) {
     test_malformed();
     test_rejects_bad_containers();
     test_timestamp_flags();
+    test_conformance_corpus();
     printf("psmf_producer_selftest: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

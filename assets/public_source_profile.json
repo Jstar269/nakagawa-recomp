@@ -169,6 +169,8 @@
     "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
     "assets/README.md",
     "assets/bringup_report.schema.json",
+    "assets/issue_routing.json",
+    "assets/issue_routing.schema.json",
     "assets/public_provenance_ledger.json",
     "assets/public_source_profile.json",
     "assets/release_manifest.json",

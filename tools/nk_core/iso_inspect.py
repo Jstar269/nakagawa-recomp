@@ -574,6 +574,43 @@ def _elf32_mips_usable(stream, file_size: int, lba: int, size: int) -> bool:
     return have_load and entry_executable
 
 
+def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | None:
+    """Return the contained per-title folder for user-supplied decrypted inputs."""
+    canonical_id = str(disc_id).upper()
+    if not title_manifest.DISC_ID_RE.fullmatch(canonical_id):
+        return None
+    root = Path(user_data_root).expanduser().resolve(strict=False)
+    candidate = root / "titles" / canonical_id / "decrypted"
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _classify_decrypted_elf_file(path: Path | str) -> str:
+    """Validate a user-supplied ELF32/MIPS executable using the ISO checks."""
+    candidate = Path(path)
+    try:
+        size = candidate.stat().st_size
+        if size == 0:
+            return "EMPTY_OR_ZERO_FILLED"
+        if size > MAX_EXECUTABLE_BYTES:
+            return "UNKNOWN"
+        with candidate.open("rb") as stream:
+            header = stream.read(min(size, 0x80))
+            if header.startswith(b"\x7fELF"):
+                return (
+                    "PLAIN_MIPS_ELF32"
+                    if _elf32_mips_usable(stream, size, 0, size)
+                    else "UNKNOWN"
+                )
+    except (OSError, IsoInspectionError, struct.error):
+        return "UNKNOWN"
+    return "UNKNOWN"
+
+
 def _classify_iso_executable(stream, file_size: int, path: str) -> dict[str, object]:
     entry = _lookup_iso_file(stream, file_size, ("PSP_GAME", "SYSDIR", path))
     if entry is None:
@@ -659,6 +696,29 @@ def inspect_compatibility_preflight(
     if eboot_kind == "PSP_ENCRYPTED_CONTAINER" and boot_kind == "PLAIN_MIPS_ELF32":
         selected = "BOOT.BIN"
         fallback = True
+    root = Path(runtime_root)
+    module_dir = decrypted_module_dir(root, metadata.disc_id)
+    decrypted_elf: Path | None = None
+    decrypted_elf_kind = "MISSING"
+    if module_dir is not None:
+        candidate_elf = module_dir / "EBOOT.elf"
+        try:
+            candidate_elf.resolve(strict=False).relative_to(root.expanduser().resolve(strict=False))
+        except ValueError:
+            candidate_elf = None
+        if candidate_elf is not None and candidate_elf.is_file():
+            decrypted_elf = candidate_elf
+            decrypted_elf_kind = _classify_decrypted_elf_file(candidate_elf)
+    user_decryptable_kinds = {
+        "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
+    }
+    if (
+        selected is None
+        and eboot_kind in user_decryptable_kinds
+        and decrypted_elf is not None
+        and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
+    ):
+        selected = "EBOOT.elf"
     if directory_error:
         disc_check = {
             "code": "DISC_SFO", "status": "UNSUPPORTED",
@@ -695,6 +755,31 @@ def inspect_compatibility_preflight(
             "message": "EBOOT.BIN is a plain MIPS ELF32 and selected for analysis.",
             "issues": [],
         }
+    elif selected == "EBOOT.elf" and decrypted_elf is not None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "OK",
+            "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+            "issues": [],
+        }
+    elif eboot_kind in user_decryptable_kinds and decrypted_elf is not None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                f"Encrypted executable: {decrypted_elf} is invalid or not a usable MIPS ELF32; "
+                f"supply a valid EBOOT.elf and required PRXs at {module_dir} (#295). "
+                "This container remains in the works."
+            ),
+            "issues": [295],
+        }
+    elif eboot_kind in user_decryptable_kinds and module_dir is not None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
+                "Automatic decryption is in the works."
+            ),
+            "issues": [295],
+        }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
@@ -727,7 +812,6 @@ def inspect_compatibility_preflight(
 
     from .launcher import RuntimeLauncher
 
-    root = Path(runtime_root)
     package_present = RuntimeLauncher(repo_root=root).runtime_package_available(
         metadata.matched_profile
     )
@@ -789,6 +873,12 @@ def inspect_compatibility_preflight(
     return {
         "is_experimental": is_experimental,
         "selected_executable": selected,
+        "decrypted_module_dir": str(module_dir) if module_dir is not None else None,
+        "decrypted_executable": (
+            str(decrypted_elf.resolve(strict=False))
+            if selected == "EBOOT.elf" and decrypted_elf is not None
+            else None
+        ),
         "boot_fallback": fallback,
         "executables": executables,
         "checks": checks,
