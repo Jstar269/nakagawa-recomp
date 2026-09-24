@@ -3,8 +3,8 @@
 
 """Tests for the fail-closed HLE registration manifest (tools/hle_manifest.py).
 
-Covers the extraction equivalence guarantees (every sr_hle_register occurrence
-accounted for, no duplicates, handlers defined), the curated-metadata
+Covers the extraction equivalence guarantees (every registration form
+accounted for, explicit refusal codes, no duplicates, handlers defined), the curated-metadata
 cross-checks, the SetCompiledSdkVersion alias rule from issue #71's comment,
 and reproducibility of the committed classification baseline.
 """
@@ -56,6 +56,25 @@ class ExtractionTests(unittest.TestCase):
                 (0x30, "__sceSas_ok", "h_ok", "sas_ok_loop"),
                 (0x40, "__sceSas_ok", "h_ok", "sas_ok_loop"),
             ],
+        )
+
+    def test_explicit_unsupported_registration_preserves_the_error_code(self) -> None:
+        source = """
+static uint32_t h_ControlledUnsupported(CpuState *s) { (void)s; return 0x80010086u; }
+static void sr_hle_register_unsupported(uint32_t nid, const char *name, uint32_t error) { }
+static void init(void) {
+    sr_hle_register_unsupported(0x00000050u, "synthUnavailable", 0x80010086u);
+}
+"""
+        self.assertEqual(
+            extract_registrations(source),
+            [{
+                "nid": 0x50,
+                "name": "synthUnavailable",
+                "handler": "h_ControlledUnsupported",
+                "origin": "static_unsupported",
+                "refusal_error": 0x80010086,
+            }],
         )
 
     def test_unknown_registration_form_fails_closed(self) -> None:
@@ -189,7 +208,7 @@ class LiveManifestTests(unittest.TestCase):
         """
         self.assertGreaterEqual(len(self.regs), 300)
         origins = {r["origin"] for r in self.manifest["registrations"]}
-        self.assertEqual(origins, {"static"})
+        self.assertEqual(origins, {"static", "static_unsupported"})
 
     #: Registrations whose *name* the generated table assigns to a *different*
     #: NID. Each entry is live semantic debt: nid -> (name, canonical nid,
@@ -405,6 +424,10 @@ class FindingRuleTests(unittest.TestCase):
 
     def test_generic_success_handler_forces_fake_success(self) -> None:
         self.assertEqual(hle_manifest.classify("h_ok"), ("fake_success", "stub"))
+        self.assertEqual(
+            hle_manifest.classify("h_ControlledUnsupported"),
+            ("controlled_unsupported", "controlled_unsupported"),
+        )
         self.assertEqual(hle_manifest.classify("h_Anything"), ("dedicated", "unreviewed"))
         self.assertEqual(
             hle_manifest.classify("h_SasUnsupportedVoice"),
@@ -495,24 +518,57 @@ static uint32_t h_SynthReal(CpuState *s) {
         self.assertEqual(hle_manifest.classify("h_ok"), ("fake_success", "stub"))
         self.assertIn("h_ok", meta.GENERIC_SUCCESS_HANDLERS)
 
-    def test_live_census_counts_all_zero_returning_stubs(self) -> None:
+    def test_live_census_has_only_named_fake_success_exceptions(self) -> None:
         manifest = build_manifest()
-        by_handler: dict[str, list[dict]] = {}
-        for r in manifest["registrations"]:
-            by_handler.setdefault(r["handler"], []).append(r)
-        for handler in (
-            "h_OskUpdate",
-            "h_IoDevctl",
-        ):
-            with self.subTest(handler=handler):
-                self.assertIn(handler, by_handler, f"{handler} must still be registered")
-                for r in by_handler[handler]:
-                    self.assertEqual(
-                        r["classification"], "fake_success", f"{handler} must census as a stub"
-                    )
-                    self.assertEqual(r["status"], "stub")
-        fake = sum(
-            1 for r in manifest["registrations"] if r["classification"] == "fake_success"
+        fake = {
+            r["nid"]: r["name"]
+            for r in manifest["registrations"]
+            if r["classification"] == "fake_success"
+        }
+        self.assertEqual(
+            fake,
+            {
+                "0xa569e425": "sceKernelVolatileMemUnlock",
+                "0x4b85c861": "sceUtilityOskUpdate",
+                "0xb3b5d042": "sceAtracGetOutputChannel",
+            },
+            "only three named route compatibility exceptions may remain fake-success",
+        )
+
+        unsupported = {
+            r["nid"]: (r["name"], r.get("refusal_error"))
+            for r in manifest["registrations"]
+            if r["classification"] == "controlled_unsupported"
+            and r["handler"] == "h_ControlledUnsupported"
+        }
+        self.assertEqual(
+            unsupported,
+            {
+                "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
+                "0x0cae832b": ("sceRegCloseCategory", "0x80010086"),
+                "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
+                "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
+                "0x1d8a762e": ("sceRegOpenCategory", "0x80010086"),
+                "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
+                "0x28a8e98a": ("sceRegGetKeyValue", "0x80010086"),
+                "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
+                "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
+                "0x92e41280": ("sceRegOpenRegistry", "0x80010086"),
+                "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
+                "0xd4475aa8": ("sceRegGetKeyInfo", "0x80010086"),
+                "0xfa8a5739": ("sceRegCloseRegistry", "0x80010086"),
+            },
+        )
+        self.assertEqual(
+            [(r["nid"], r["name"], r["handler"], r["classification"], r["status"])
+             for r in manifest["registrations"] if r["nid"] == "0x54f5fb11"],
+            [("0x54f5fb11", "sceIoDevctl", "h_IoDevctl", "dedicated", "partial")],
+            "sceIoDevctl must remain a real, partially implemented handler",
+        )
+        self.assertEqual(
+            [(r["nid"], r["name"], r["classification"], r["status"])
+             for r in manifest["registrations"] if r["name"] == "sceUmdGetErrorStat"],
+            [("0x20628e6f", "sceUmdGetErrorStat", "dedicated", "compatibility")],
         )
         # Compare against the committed baseline rather than a literal, so converting a
         # stub into a real handler only needs the baseline refresh the gate already demands.
@@ -522,7 +578,27 @@ static uint32_t h_SynthReal(CpuState *s) {
             1 for v in baseline.values()
             if isinstance(v, dict) and v.get("classification") == "fake_success"
         )
-        self.assertEqual(fake, committed, "live census must match the committed baseline")
+        self.assertEqual(len(fake), committed, "live census must match the committed baseline")
+
+
+class ControlledRefusalDiagnosticTests(unittest.TestCase):
+    def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
+        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        self.assertIn(
+            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)",
+            source,
+        )
+        self.assertIn(
+            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)",
+            source,
+        )
+        self.assertIn(
+            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)",
+            source,
+        )
+        self.assertIn("hle_devctl_refusal_first(device, command)", source)
+        self.assertIn("HLE: compatibility exception: %s (NID 0x%08x)", source)
+        self.assertIn("atexit(hle_unsupported_summary)", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):

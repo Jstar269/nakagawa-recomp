@@ -78,13 +78,84 @@ static void ge_enqueue_trace_note_callback(CpuState *s, uint32_t uid, uint32_t e
 
 /* ---- handler table ---- */
 
-typedef struct { uint32_t nid; const char *name; HleFn fn; } HleEntry;
+typedef struct {
+    uint32_t nid;
+    const char *name;
+    HleFn fn;
+    uint32_t unsupported_error;
+    atomic_uint unimplemented_error;
+    atomic_uint unsupported_state;
+} HleEntry;
+typedef struct HleDevctlRefusal {
+    struct HleDevctlRefusal *next;
+    uint32_t command;
+    char device[];
+} HleDevctlRefusal;
+static uint32_t h_ControlledUnsupported(CpuState *s);
 /* Keep the registry comfortably above the current export set.  A full table
  * silently drops the late generic memcpy/memset handlers, which then makes a
  * valid NID look unimplemented even though its production function exists. */
 #define HLE_CAP 1024
 static HleEntry s_hle[HLE_CAP];
 static int s_hle_n = 0;
+static atomic_uint s_hle_unsupported_summary_registered;
+static HleDevctlRefusal *s_hle_devctl_refusals;
+#ifdef SR_HLE_THREAD_SELFTEST
+static atomic_uint s_hle_devctl_refusal_log_count;
+#endif
+
+static const char *hle_success_exception_issue(uint32_t nid) {
+    switch (nid) {
+    case 0xb3b5d042u: return "#281, #286"; /* sceAtracGetOutputChannel */
+    case 0xa569e425u: return "#281";       /* sceKernelVolatileMemUnlock */
+    case 0x4b85c861u: return "#281";       /* sceUtilityOskUpdate */
+    default: return NULL;
+    }
+}
+
+static void hle_unsupported_summary(void);
+
+static void hle_register_unsupported_summary(void) {
+    if (!atomic_exchange_explicit(&s_hle_unsupported_summary_registered, 1u,
+                                  memory_order_acq_rel))
+        (void)atexit(hle_unsupported_summary);
+}
+
+static void hle_unsupported_summary(void) {
+    for (int i = 0; i < s_hle_n; i++) {
+        HleEntry *e = &s_hle[i];
+        if (!(atomic_load_explicit(&e->unsupported_state, memory_order_acquire) & 1u))
+            continue;
+        uint32_t unsupported_error = atomic_load_explicit(&e->unimplemented_error,
+                                                          memory_order_acquire);
+        if (unsupported_error) {
+            fprintf(stderr, "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)\n",
+                    e->name, e->nid, unsupported_error);
+        } else {
+            const char *issue = hle_success_exception_issue(e->nid);
+            if (issue)
+                fprintf(stderr, "HLE unimplemented summary: %s (NID 0x%08x) kept compatibility result 0; in the works (%s)\n",
+                        e->name, e->nid, issue);
+        }
+    }
+}
+
+static void hle_note_unsupported(HleEntry *e) {
+    if (atomic_exchange_explicit(&e->unsupported_state, 1u, memory_order_acq_rel))
+        return;
+    hle_register_unsupported_summary();
+    fprintf(stderr, "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)\n",
+            e->name, e->nid, e->unsupported_error);
+}
+
+static void hle_note_success_exception(HleEntry *e) {
+    const char *issue = hle_success_exception_issue(e->nid);
+    if (!issue || atomic_exchange_explicit(&e->unsupported_state, 1u, memory_order_acq_rel))
+        return;
+    hle_register_unsupported_summary();
+    fprintf(stderr, "HLE: compatibility exception: %s (NID 0x%08x) keeps result 0; semantics in the works (%s)\n",
+            e->name, e->nid, issue);
+}
 
 /* Late imports are intentionally separate from recomp.c's address->native dispatch table.
  * Track A owns that table; this registry only publishes stable NID classifications/guest
@@ -171,7 +242,8 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid) {
     return result;
 }
 
-void sr_hle_register(uint32_t nid, const char *name, HleFn fn) {
+static void sr_hle_register_entry(uint32_t nid, const char *name, HleFn fn,
+                                  uint32_t unsupported_error) {
     /* Duplicate NID guard. The 3 dead duplicate registrations found in this file's static
      * NID table (sceUmdRegisterUMDCallBack, sceAtracSetLoopNum exact dupes, and the
      * sceKernelTotalFreeMemSize / synthetic "SysMemUserForUser_f919f628" collision on
@@ -186,8 +258,30 @@ void sr_hle_register(uint32_t nid, const char *name, HleFn fn) {
             return;
         }
     }
-    if (s_hle_n < HLE_CAP) { s_hle[s_hle_n].nid = nid; s_hle[s_hle_n].name = name; s_hle[s_hle_n].fn = fn; s_hle_n++; }
+    if (s_hle_n < HLE_CAP) {
+        HleEntry *e = &s_hle[s_hle_n++];
+        e->nid = nid;
+        e->name = name;
+        e->fn = fn;
+        e->unsupported_error = unsupported_error;
+        atomic_store_explicit(&e->unimplemented_error, unsupported_error,
+                              memory_order_release);
+        atomic_store_explicit(&e->unsupported_state, 0u, memory_order_release);
+    }
     hle_unlock();
+}
+
+void sr_hle_register(uint32_t nid, const char *name, HleFn fn) {
+    sr_hle_register_entry(nid, name, fn, 0u);
+}
+
+static void sr_hle_register_unsupported(uint32_t nid, const char *name, uint32_t error) {
+    if (!(error & 0x80000000u)) {
+        fprintf(stderr, "HLE: invalid unsupported result 0x%08x for %s (NID 0x%08x)\n",
+                error, name, nid);
+        return;
+    }
+    sr_hle_register_entry(nid, name, h_ControlledUnsupported, error);
 }
 
 static HleEntry *hle_find(uint32_t nid) {
@@ -196,6 +290,51 @@ static HleEntry *hle_find(uint32_t nid) {
     for (int i = 0; i < s_hle_n; i++) if (s_hle[i].nid == nid) { result = &s_hle[i]; break; }
     hle_unlock();
     return result;
+}
+
+static int hle_devctl_refusal_first(const char *device, uint32_t command) {
+    size_t device_len = strlen(device);
+    if (device_len > SIZE_MAX - sizeof(HleDevctlRefusal) - 1u) return 1;
+    hle_lock();
+    for (HleDevctlRefusal *entry = s_hle_devctl_refusals; entry; entry = entry->next) {
+        if (entry->command == command && strcmp(entry->device, device) == 0) {
+            hle_unlock();
+            return 0;
+        }
+    }
+    HleDevctlRefusal *entry = (HleDevctlRefusal *)malloc(
+        sizeof(*entry) + device_len + 1u);
+    if (!entry) {
+        hle_unlock();
+        return 1;
+    }
+    entry->command = command;
+    memcpy(entry->device, device, device_len + 1u);
+    entry->next = s_hle_devctl_refusals;
+    s_hle_devctl_refusals = entry;
+    hle_unlock();
+    return 1;
+}
+
+static void hle_mark_dynamic_unsupported(HleEntry *entry, uint32_t error) {
+    if (!entry) return;
+    atomic_store_explicit(&entry->unimplemented_error, error, memory_order_release);
+    if (!atomic_exchange_explicit(&entry->unsupported_state, 1u, memory_order_acq_rel))
+        hle_register_unsupported_summary();
+}
+
+static void hle_note_devctl_refusal(const char *device, uint32_t command,
+                                   uint32_t error) {
+    if (hle_devctl_refusal_first(device, command)) {
+        fprintf(stderr,
+                "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)\n",
+                device, command, error);
+#ifdef SR_HLE_THREAD_SELFTEST
+        atomic_fetch_add_explicit(&s_hle_devctl_refusal_log_count, 1u,
+                                  memory_order_relaxed);
+#endif
+    }
+    hle_mark_dynamic_unsupported(hle_find(0x54f5fb11u), error);
 }
 
 /* ---- argument / return helpers ---- */
@@ -2457,6 +2596,14 @@ static uint32_t h_UtilityUnloadAvModule(CpuState *s) {
 
 static uint32_t h_ok(CpuState *s) { (void)s; return 0; }
 
+/* Registration refusals are intercepted by sr_syscall so their per-NID error
+ * and diagnostic stay attached to the HLE table entry. This body is a defensive
+ * fallback for any future path that calls the marker handler directly. */
+static uint32_t h_ControlledUnsupported(CpuState *s) {
+    (void)s;
+    return 0x80010086u; /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
+}
+
 /* TD-27 opt-in stale translated-code detector (see src/rt/stale_code.h).
  *
  * Guest/host memory is one coherent array, so cache maintenance has no host
@@ -2964,16 +3111,6 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     sched_delay_current(30000);
     return 0;}
 static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSMF_ERR_STATUS;}
-
-static uint32_t h_IoDevctl(CpuState *s) {
-    char dev[64];
-    if (!guest_cstr(A0, dev, sizeof(dev)))
-        return 0x80010016u;
-    uint32_t cmd = A1;
-    if (hle_log_on())
-        fprintf(stderr, "sceIoDevctl: dev='%s', cmd=0x%08x\n", dev, cmd);
-    return 0;
-}
 
 /* sceKernelExitGame: real PSP terminates the process. Three callers observed so far:
  *  (1) the guest's libc _exit path (call site already inside the engine shutdown decision)
@@ -6042,7 +6179,6 @@ static uint32_t h_OskGetStatus(CpuState *s) {
     else if (s_osk_status == 4) { s_osk_status = 0; s_osk_param = 0; }
     return (uint32_t)ret;
 }
-static uint32_t h_OskUpdate(CpuState *s) { (void)s; return 0; }
 static uint32_t h_OskShutdown(CpuState *s) { (void)s; if (s_osk_status) s_osk_status = 4; return 0; }
 
 /* sceWlanGetEtherAddr: 6-byte MAC out through a0. Fixed value so save/profile stamps stay
@@ -6083,6 +6219,15 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
 static uint32_t s_umd_cb_uid = 0;
 
 static uint32_t h_UmdDriveStat(CpuState *s) { (void)s; return 0x32; }     /* PRESENT|READY|READABLE (matches PPSSPP reference) */
+
+/* The virtual ISO-backed drive currently exposes only PRESENT|READY|READABLE.
+ * In that modeled state sceUmdGetErrorStat reports no drive error. Other drive
+ * error states remain outside this compatibility contract. */
+static uint32_t h_UmdGetErrorStat(CpuState *s) {
+    uint32_t drive_stat = h_UmdDriveStat(s);
+    return drive_stat == 0x32u ? 0u : 0x80010086u;
+}
+
 
 /* Signal that the UMD drive is ready. Wake only threads waiting on the UMD object and
  * notify the registered callback if one exists. */
@@ -8389,7 +8534,123 @@ static uint32_t h_IoDclose(CpuState *s) {
     free(d->path);
     memset(d, 0, sizeof(*d)); return 0;
 }
-/* Async IO: the operation completes synchronously and its result is stashed per-fd for the
+/* PSPSDK's SceDevctlCmd contains a pointer to SceDevInf for SCE_PR_GETDEV
+ * (0x02425818); its five words are maxClusters, freeClusters, maxSectors,
+ * sectorSize, and sectorCount. The host root is the same SR_FSDIR namespace
+ * used by ordinary sceIo* ms0: operations until the broader #334 VFS work. */
+static int io_memstick_capacity(uint32_t info[5]) {
+    char *host_root = host_dir_path_alloc("");
+    wchar_t *host_root_wide = NULL;
+    int path_ok = host_root && sr_wide_path_alloc(host_root, &host_root_wide);
+    free(host_root);
+    if (!path_ok) {
+        free(host_root_wide);
+        return 0;
+    }
+
+    DWORD sectors_per_cluster = 0, bytes_per_sector = 0;
+    DWORD free_clusters = 0, total_clusters = 0;
+    BOOL queried = GetDiskFreeSpaceW(host_root_wide, &sectors_per_cluster,
+                                     &bytes_per_sector, &free_clusters,
+                                     &total_clusters);
+    free(host_root_wide);
+    if (!queried || !sectors_per_cluster || !bytes_per_sector || !total_clusters ||
+        sectors_per_cluster > INT32_MAX || bytes_per_sector > INT32_MAX)
+        return 0;
+
+    uint64_t cluster_bytes = (uint64_t)sectors_per_cluster * bytes_per_sector;
+    if (!cluster_bytes) return 0;
+    /* PSP-visible arithmetic is commonly 32-bit. Limit the reported volume to
+     * the largest byte capacity those consumers can represent without wrap. */
+    uint64_t max_clusters = total_clusters;
+    uint64_t max_psp_clusters = UINT32_MAX / cluster_bytes;
+    if (max_clusters > max_psp_clusters) max_clusters = max_psp_clusters;
+    uint64_t available_clusters = free_clusters;
+    if (available_clusters > max_clusters) available_clusters = max_clusters;
+    uint64_t max_sectors = max_clusters * sectors_per_cluster;
+    if (max_sectors > UINT32_MAX) return 0;
+
+    info[0] = (uint32_t)max_clusters;
+    info[1] = (uint32_t)available_clusters;
+    info[2] = (uint32_t)max_sectors;
+    info[3] = bytes_per_sector;
+    info[4] = sectors_per_cluster;
+    return 1;
+}
+
+static atomic_uint s_memstick_insert_eject_callback_uid;
+
+static uint32_t h_IoDevctl(CpuState *s) {
+    enum {
+        IO_DEVCTL_GET_CAPACITY = 0x02425818u,
+        IO_DEVCTL_CHECK_INSERTED = 0x02025806u,
+        IO_DEVCTL_CHECK_READY = 0x02025801u,
+        IO_DEVCTL_REGISTER_CALLBACK = 0x02415821u,
+        IO_DEVCTL_UNREGISTER_CALLBACK = 0x02415822u,
+        IO_DEVCTL_ERROR_UNSUPPORTED = 0x80010086u,
+        IO_DEVCTL_ERROR_INVALID_ARGUMENT = 0x80010016u,
+        IO_DEVCTL_ERROR_IO = 0x80010005u
+    };
+    char device[128];
+    uint32_t outdata = s->r[8], outlen = s->r[9];
+    if (!A0 || !guest_cstr(A0, device, (int)sizeof(device)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    int is_memstick = strcmp(device, "ms0:") == 0 || strcmp(device, "fatms0:") == 0;
+    if (!is_memstick) {
+        hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
+        return IO_DEVCTL_ERROR_UNSUPPORTED;
+    }
+
+    switch (A1) {
+        case IO_DEVCTL_GET_CAPACITY: {
+            if (A3 < 4u || A3 > INT32_MAX) return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
+            if (!A2 || !sr_guest_span_readable(A2, 4u))
+                return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+            uint32_t info_addr = MEM_R32(A2);
+            if (!info_addr || !sr_guest_span_writable(info_addr, 20u))
+                return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+            uint32_t info[5];
+            if (!io_memstick_capacity(info)) return IO_DEVCTL_ERROR_IO;
+            for (uint32_t i = 0; i < 5u; i++) MEM_W32(info_addr + i * 4u, info[i]);
+            return 0;
+        }
+        case IO_DEVCTL_CHECK_INSERTED:
+        case IO_DEVCTL_CHECK_READY: {
+            if (outlen < 4u || outlen > INT32_MAX)
+                return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
+            if (!outdata || !sr_guest_span_writable(outdata, 4u))
+                return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+            MEM_W32(outdata, A1 == IO_DEVCTL_CHECK_INSERTED ? 1u : 4u);
+            return 0;
+        }
+        case IO_DEVCTL_REGISTER_CALLBACK:
+        case IO_DEVCTL_UNREGISTER_CALLBACK: {
+            if (A3 < 4u || A3 > INT32_MAX) return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
+            if (!A2 || !sr_guest_span_readable(A2, 4u))
+                return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+            uint32_t callback_uid = MEM_R32(A2);
+            if (A1 == IO_DEVCTL_REGISTER_CALLBACK) {
+                atomic_store_explicit(&s_memstick_insert_eject_callback_uid, callback_uid,
+                                      memory_order_release);
+            } else {
+                uint32_t registered = atomic_load_explicit(
+                    &s_memstick_insert_eject_callback_uid, memory_order_acquire);
+                while (registered == callback_uid &&
+                       !atomic_compare_exchange_weak_explicit(
+                           &s_memstick_insert_eject_callback_uid, &registered, 0u,
+                           memory_order_acq_rel, memory_order_acquire)) { }
+            }
+            /* Storage is recorded for lifecycle parity only; callbacks are never
+             * dispatched until the runtime can model insertion/ejection events. */
+            return 0;
+        }
+        default:
+            hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
+            return IO_DEVCTL_ERROR_UNSUPPORTED;
+    }
+}
+
+/* Async IO: the operation completes synchronously and the result is stashed per-fd for the
  * matching sceIoWaitAsync/PollAsync to return (the game streams data this way). */
 static uint32_t h_IoOpenAsync(CpuState *s) {
     uint32_t fd = h_IoOpen(s);
@@ -8489,6 +8750,17 @@ uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
     return vfs_overlay_initial_find_error(error, found);
 }
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
+void sr_hle_test_register_io_devctl(void) {
+    sr_hle_register_entry(0x54f5fb11u, "sceIoDevctl", h_IoDevctl, 0u);
+}
+uint32_t sr_hle_test_io_devctl_callback_uid(void) {
+    return atomic_load_explicit(&s_memstick_insert_eject_callback_uid,
+                                memory_order_acquire);
+}
+uint32_t sr_hle_test_io_devctl_refusal_log_count(void) {
+    return atomic_load_explicit(&s_hle_devctl_refusal_log_count,
+                                memory_order_acquire);
+}
 uint32_t sr_hle_test_io_close(CpuState *s) { return h_IoClose(s); }
 uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }
 uint32_t sr_hle_test_io_close_async(CpuState *s) { return h_IoCloseAsync(s); }
@@ -14010,12 +14282,12 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0x83bf7afd, "sceAtracSetSecondBuffer", h_AtracSetSecondBuffer);
     sr_hle_register(0x83e85ea0, "sceAtracGetSecondBufferInfo", h_AtracGetSecondBufferInfo);
     sr_hle_register(0xd5c28cc0, "sceAtracReleaseResources", h_AtracReleaseResources);
-    sr_hle_register(0xd1f59fdb, "sceAtracStartEntry", h_ok);
+    sr_hle_register_unsupported(0xd1f59fdb, "sceAtracStartEntry", 0x80630004u); /* ATRAC invalid codec type */
     sr_hle_register(0xeca32a99, "sceAtracIsSecondBufferNeeded", h_AtracIsSecondBufferNeeded);
     sr_hle_register(0xe88f759b, "sceAtracGetInternalErrorInfo", h_AtracGetInternalErrorInfo);
-    sr_hle_register(0x231fc6b7, "_sceAtracGetContextAddress", h_ok);
-    sr_hle_register(0x1575d64b, "sceAtracLowLevelInitDecoder", h_ok);
-    sr_hle_register(0x0c116e1b, "sceAtracLowLevelDecode", h_ok);
+    sr_hle_register_unsupported(0x231fc6b7, "_sceAtracGetContextAddress", 0x80630003u); /* ATRAC no ATRAC ID */
+    sr_hle_register_unsupported(0x1575d64b, "sceAtracLowLevelInitDecoder", 0x80630004u); /* ATRAC invalid codec type */
+    sr_hle_register_unsupported(0x0c116e1b, "sceAtracLowLevelDecode", 0x80630004u); /* ATRAC invalid codec type */
 }
 
 /* sceSasCore: stateful SAS registrations.  This helper is called outside the selftest
@@ -14063,6 +14335,9 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0x2a2b3de0, "sceUtilityLoadModule", h_UtilityLoadModule);
     sr_hle_register(0x1579a30a, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
+    sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
+    sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
+    sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_ok);
 }
 
 static void hle_register_kernel_module_handlers(void) {
@@ -14227,9 +14502,7 @@ void sr_hle_init(void) {
     hle_register_impose_handlers();
     /* sceUtility dialogs (OSK / savedata / netconf): no dialog active -> status 0, calls ok. */
     sr_hle_register(0xf3f76017, "sceUtilityOskGetStatus", h_OskGetStatus);
-    sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
     sr_hle_register(0x3dfaeba9, "sceUtilityOskShutdownStart", h_OskShutdown);
-    sr_hle_register(0x1579a159, "sceUtilityLoadNetModule", h_ok);
     /* 0xf6269b82 is OskInitStart, NOT GetSystemParamString -- the old string handler wrote
      * A2 bytes through A1, both garbage for this signature. */
     sr_hle_register(0xf6269b82, "sceUtilityOskInitStart", h_OskInitStart);
@@ -14253,7 +14526,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x7853182d, "sceUtilityGameSharingUpdate", h_SharingDialogUpdate);
     sr_hle_register(0x946963f3, "sceUtilityGameSharingGetStatus", h_SharingDialogStatus);
     sr_hle_register(0xefc6f80f, "sceUtilityGameSharingShutdownStart", h_SharingDialogShutdown);
-    sr_hle_register(0x64d50c56, "sceUtilityUnloadNetModule", h_ok);
     /* sceWlan: the game stamps saves/profiles with the console's MAC. A stable fake works
      * (PPSSPP behaviour); low 2 bits of byte 0 must be clear (locally-administered/multicast
      * OUI bits confuse some games -- PPSSPP masks them too). */
@@ -14328,9 +14600,9 @@ void sr_hle_init(void) {
     sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
     sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
     sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
-    sr_hle_register(0x6af9b50a, "sceUmdCancelWaitDriveStat", h_ok);
+    sr_hle_register_unsupported(0x6af9b50a, "sceUmdCancelWaitDriveStat", 0x80010086u); /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
     sr_hle_register(0x6b4a146c, "sceUmdGetDriveStat", h_UmdDriveStat);
-    sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_ok);
+    sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_UmdGetErrorStat);
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
     /* IoFileMgrForUser: file IO from the ISO. */
@@ -14431,12 +14703,12 @@ void sr_hle_init(void) {
      * wrong canonical names, corrupting import-coverage reports. The labels below match
      * src/rt/nid_names.h; the real sceRegExit NID (0x9b25edf1) and the read/write registry
      * model remain unregistered until the minimal registry implementation lands (#78). */
-    sr_hle_register(0x0cae832b, "sceRegCloseCategory", h_ok);
-    sr_hle_register(0x1d8a762e, "sceRegOpenCategory", h_ok);
-    sr_hle_register(0x28a8e98a, "sceRegGetKeyValue", h_ok);
-    sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_ok);
-    sr_hle_register(0xd4475aa8, "sceRegGetKeyInfo", h_ok);
-    sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_ok);
+    sr_hle_register_unsupported(0x0cae832b, "sceRegCloseCategory", 0x80010086u); /* function not supported */
+    sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u); /* function not supported */
+    sr_hle_register_unsupported(0x28a8e98a, "sceRegGetKeyValue", 0x80010086u); /* function not supported */
+    sr_hle_register_unsupported(0x92e41280, "sceRegOpenRegistry", 0x80010086u); /* function not supported */
+    sr_hle_register_unsupported(0xd4475aa8, "sceRegGetKeyInfo", 0x80010086u); /* function not supported */
+    sr_hle_register_unsupported(0xfa8a5739, "sceRegCloseRegistry", 0x80010086u); /* function not supported */
     /* sceOpenPSID: returns 16-byte console unique ID; zero-fill is fine for boot. */
     sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);
 #endif
@@ -14523,7 +14795,14 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (j == g_ncc && g_ncc < 512) { g_cc[j].nid = nid; g_cc[j].nm = e->name; g_cc[j].n = 0; g_ncc++; }
         if (j < 512) g_cc[j].n++;
     }
-    uint32_t ret = e->fn(s);
+    uint32_t ret;
+    if (e->unsupported_error) {
+        hle_note_unsupported(e);
+        ret = e->unsupported_error;
+    } else {
+        ret = e->fn(s);
+        hle_note_success_exception(e);
+    }
     ge_enqueue_trace_note_hle(s, nid, e->name);
     /* Poison caller-saved temps exactly like PPSSPP SetDeadbeefRegs: r1, r4-r15, r24, r25,
      * hi, lo. The return value in v0 (and v1) is written afterward and survives. */
