@@ -1302,7 +1302,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "601e32ba7e09b2a56862ceb48c8511adddd3f21c7df5c5d9c59e32a874259605"
+      "sha256": "8bfe1775c43e24e56086a09bba8a8f706ef84e34cfe5382050d580c447d5e746"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1320,7 +1320,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b2d36ab9fd3308bd4cd745bc9a4c655f8be31eed46943368e8d0aee72bd8b773"
+      "sha256": "42e85786b821939e52e4e8762927873a81be448e6ecaeb835b8aa11aafa9bdb8"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -1410,7 +1410,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "02584dfe9154c5f534ff44d5a21f9b59128d48c1c24d6ea0fee8c1b9de6a1ae0"
+      "sha256": "9632088bc279eb014d4312e71776f0a97861c2f369a727e2a094123d7ebb6dd4"
     },
     {
       "path": "fixtures/psp_phaseb/Makefile",
@@ -3357,7 +3357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93d8945c43b37de1cb232fd764c73507174ece6e600e403badf39aa99130f02b"
+      "sha256": "8a4bf7036d3634d0c5ecdf7a42590b95223ecffda2dc420960ede27710f9f9ee"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.mjs",
@@ -3369,7 +3369,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8702a5a908110f34eefedb7beae9faa0368a7c05b20ac1fa1aa96335a51ecacb"
+      "sha256": "de9cc39d97a45547fae280cbc4faad2f08eb864694dfc35163f4b192c122afa8"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.test.mjs",
@@ -3381,7 +3381,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "530c198a3463310eefba3a7bdbe4aca63e957233cf7a7a6d939d070bbadb2090"
+      "sha256": "3dad06dee2a90961e4eba385a461940a51c24604e396942b52c77b7e0bbd3a5f"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-route.test.ts",
@@ -3393,7 +3393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8f3398bf827c16fda7cd98b12961be6bca4df57292d687f7252adb1063664cd"
+      "sha256": "6ce21d2026cce283f5cc5b1344de2e3633cea7162736db1035671ded8b6139ad"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.d.mts",
@@ -3441,7 +3441,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "466a3e16b57432126a46f363563e9e66000b658b833d0a54a9b356fe47b8167e"
+      "sha256": "f8a1b0b6765f5fd6777033b614c981a9a96a23373372f877dc275f9433d5b98e"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-store.ts",
@@ -6589,7 +6589,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0920ad6de4e3aad96f647c7774587433f62a3cd89fd642ed3080fc2453bfd54f"
+      "sha256": "19d8ba43126f91a511b3049ff23b19739822091c9c378d9483ddf977aa5da487"
     },
     {
       "path": "src/rt/watchpoints_file.h",
@@ -6601,7 +6601,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44c6713fc6f9c928f49bc671878290888477ddb3e26d5505726a87b8c413dbd7"
+      "sha256": "8ae80dd565065de5a67b05d9b0a4e8f034eaed9fcb03c0363859a80822466985"
     },
     {
       "path": "src/rt/watchpoints_file_selftest.c",
@@ -6613,7 +6613,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1528dcbac69138aa08e387472117ccba85c0a99e30eed9d0fb6c4b05a1e8bf9e"
+      "sha256": "5f2bd02c31ddfcf12abd4d1651193f380dafd36e84aaa12b923037741b50bd30"
     },
     {
       "path": "tests/native/argv_echo_helper.c",
@@ -9845,12 +9845,20 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "004860bd507bf7dd7f3727e129c0407f5b6777c7",
-    "candidate_tree": "941065439c1031741110adb03d6c77839c58997c",
+    "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
+    "candidate_tree": "13bae970e95f86a8d6c0e871d495c4ca274bf90e",
     "refreshed_paths": [
-      "docs/LLE_FIDELITY_ARCHITECTURE.md",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "fixtures/psp_oracle/Makefile",
+      "fixtures/psp_oracle/mutex_imports.S",
+      "fixtures/psp_oracle/threadman_user_imports.S",
+      "interface/src/lib/recompiler/watchpoint-file.d.mts",
+      "interface/src/lib/recompiler/watchpoint-file.mjs",
+      "interface/src/lib/recompiler/watchpoint-file.test.mjs",
+      "interface/src/lib/recompiler/watchpoint-route.test.ts",
+      "interface/src/lib/recompiler/watchpoint-store.test.ts",
+      "src/rt/watchpoints_file.c",
+      "src/rt/watchpoints_file.h",
+      "src/rt/watchpoints_file_selftest.c"
     ]
   }
 }
