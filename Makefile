@@ -151,7 +151,7 @@ endif
 # Direct Make remains conservative -O0/-O0. Validated private title adapters may
 # request measured profile-specific values; explicit overrides remain supported.
 RUNTIME_OPT ?= -O0
-CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
+CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -Isrc/core $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
 # The extracted HST archive tree has a title-specific extracted-data census
 # (HST: 56,672 files). The generic build has no census (0 = disabled); a
 # title-configured build carries the expectation via runtime_bindings
@@ -432,6 +432,28 @@ ifndef NK_INFO_ONLY
 _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
 endif
 
+ifeq ($(OS),Windows_NT)
+PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
+PLAYER_EXTRA_LIBS   := -lshell32
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+# The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
+# must derive from the shared VULKAN_SDK resolution above (explicit override,
+# environment, then tools/vulkan_sdk.py discovery) rather than naming one
+# machine's SDK install. The player-vulkan-check order-only prerequisite below
+# fails closed with the one variable to set when discovery found nothing,
+# instead of a hardcoded fallback or a confusing compiler error.
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             := .exe
+else
+PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
+PLAYER_EXTRA_LIBS   :=
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             :=
+endif
+
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
               src/rt/cpu_lle.c \
@@ -466,7 +488,10 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/osk_win.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
-              src/rt/gpu_sdl3vk/ge_gpu.c
+              src/rt/gpu_sdl3vk/ge_gpu.c \
+              src/core/nk_input_profile.c \
+              src/core/nk_json.c \
+              $(PLAYER_PLATFORM_SRC)
 
 RT_OBJS    := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
 
@@ -488,7 +513,8 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # RT_SRCS and gpu-capture-selftest but not the other recipes that compile
 # sdl3vk.c directly, silently breaking gpu-coherence-selftest and ge-replay.
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies it.
-SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c
+SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c \
+               src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
 
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
@@ -1156,6 +1182,9 @@ $(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 $(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/%.o: src/core/%.c $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
 # generated include path stops here rather than leaking into CFLAGS.
@@ -1180,28 +1209,6 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 portable-core-objects: $(PORTABLE_CORE_OBJS)
 
 atrac3p-objects: $(ATRAC3P_OBJS)
-
-ifeq ($(OS),Windows_NT)
-PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
-PLAYER_EXTRA_LIBS   := -lshell32
-PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
-# The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
-# must derive from the shared VULKAN_SDK resolution above (explicit override,
-# environment, then tools/vulkan_sdk.py discovery) rather than naming one
-# machine's SDK install. The player-vulkan-check order-only prerequisite below
-# fails closed with the one variable to set when discovery found nothing,
-# instead of a hardcoded fallback or a confusing compiler error.
-PLAYER_VULKAN_INC   :=
-PLAYER_VULKAN_LIB   :=
-EXE_EXT             := .exe
-else
-PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
-PLAYER_EXTRA_LIBS   :=
-PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
-PLAYER_VULKAN_INC   :=
-PLAYER_VULKAN_LIB   :=
-EXE_EXT             :=
-endif
 
 # A clear player-target failure when no usable SDK resolved (see the Windows
 # branch above). A no-op recipe when VULKAN_SDK is set.
@@ -1550,9 +1557,10 @@ PSMF_MEDIA_LIBS :=
 endif
 
 psmf-media-selftest:
-	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_media_selftest.exe \
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections \
+		-o $(BUILD_DIR)/psmf_media_selftest.exe \
 		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c \
-		$(PSMF_MEDIA_LIBS)
+		$(PSMF_MEDIA_LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
 audio-selftest:

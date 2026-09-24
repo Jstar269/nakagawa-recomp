@@ -115,6 +115,42 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)",
     },
+    "h_MpegAvcQueryYCbCrSize": {
+        "status": "partial",
+        "limitation": "the YCbCr size formula, pointer preflight, and guest geometry are source-tested; firmware mode coverage and the hardware-oracle contract remain open (#302)",
+    },
+    "h_MpegAvcInitYCbCr": {
+        "status": "partial",
+        "limitation": "Init accepts only the documented 4:2:0 allocation shape and makes guest bytes deterministic; the firmware-owned header and cache contract are not measured (#302)",
+    },
+    "h_MpegAvcDecodeYCbCr": {
+        "status": "partial",
+        "limitation": "Decode produces only a backend-delivered picture and reports delayed/no-data states; the hardware EOS and cache-coherency observations are still required (#302)",
+    },
+    "h_MpegAvcDecodeStopYCbCr": {
+        "status": "partial",
+        "limitation": "Stop clears tracked state, but the firmware buffered-picture status is explicitly unmeasured rather than reported as a guessed frame count (#302)",
+    },
+    "h_MpegAvcCopyYCbCr": {
+        "status": "partial",
+        "limitation": "Copy handles matching initialized allocations and rejects overlap; the firmware layout and overlap result still need a physical PSP oracle (#302)",
+    },
+    "h_MpegAvcCsc": {
+        "status": "partial",
+        "limitation": "CSC preflights dynamic source/range/stride geometry and pixel formats; clipping, range conversion, and destination coherency remain hardware-oracle work (#302)",
+    },
+    "h_MpegQueryPcmEsSize": {
+        "status": "partial",
+        "limitation": "the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)",
+    },
+    "h_MpegGetPcmAu": {
+        "status": "controlled_unsupported",
+        "description": "PCM access-unit production is deliberately refused with NO_DATA; no PCM decoder or hardware-oracle queue contract is available (#302)",
+    },
+    "h_MpegChangeGetAuMode": {
+        "status": "partial",
+        "limitation": "decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)",
+    },
     # SAS waveform/ATRAC3 entry points whose source codecs are not implemented
     # by this runtime. They validate the core/voice identity and return the
     # documented invalid-state error instead of fabricating success.
