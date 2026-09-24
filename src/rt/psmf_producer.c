@@ -290,7 +290,9 @@ static const PtsMark *track_head_mark(Track *t) {
     return NULL;
 }
 
-/* Index of the next access-unit delimiter start code at or after `from`, or -1. */
+/* Index of the next access-unit delimiter start code at or after `from`, or -1.
+ * Annex-B permits both 00 00 01 and a leading-zero 00 00 00 01; matching the
+ * 00 00 01 suffix accepts both forms and retains the leading zero in the first AU. */
 static int find_aud(const uint8_t *b, uint32_t len, uint32_t from,
                     uint64_t *scan_candidates) {
     if (from >= len) return -1;
@@ -444,7 +446,10 @@ static int drain_track(SrPsmfProducer *p, SrPsmfAuKind kind) {
 /* ---- MPEG program stream ------------------------------------------------------------- */
 
 static int parse_pts(const uint8_t *p, int64_t *out) {
-    /* MPEG PTS marker layout: 0010/0011, 3, 15, 15 bits with marker bits. */
+    /* MPEG PTS marker layout: 0010/0011, 3, 15, 15 bits with marker bits.  The
+     * 4-bit prefix is deliberately not enforced: PTS_DTS_flags already states which
+     * fields follow, and no PSP-muxed evidence yet shows every retail stream sets it
+     * exactly (#288).  Marker bits are enforced. */
     if (!p || !out || (p[0] & 1u) == 0 || (p[2] & 1u) == 0 || (p[4] & 1u) == 0)
         return 0;
     *out = ((int64_t)((p[0] >> 1) & 7u) << 30) |
@@ -495,11 +500,16 @@ static int parse_one(SrPsmfProducer *p) {
     if (left < 4 || !read_exact(p, p->cursor, h, 4)) return -1;
     if (h[0] != 0 || h[1] != 0 || h[2] != 1) return -1;
     uint8_t sid = h[3];
+    if (sid == 0xB9u) {                 /* program_end_code terminates the program */
+        p->cursor += 4u;
+        p->eof = 1;
+        return 0;
+    }
     if (sid == 0xBAu) {
         uint32_t total;
         if (left < 12 || !read_exact(p, p->cursor + 4, h + 4, 10)) return -1;
-        /* MPEG-2 pack headers are 14 bytes; MPEG-1 pack headers are 12. */
-        total = (h[4] & 0xc0u) == 0x40u ? 14u : 12u;
+        /* MPEG-2 pack headers are 14 bytes plus pack_stuffing_length bytes. */
+        total = (h[4] & 0xc0u) == 0x40u ? 14u + (h[13] & 7u) : 12u;
         if (left < total) return -1;
         p->cursor += total;
         p->stats.packs++;
