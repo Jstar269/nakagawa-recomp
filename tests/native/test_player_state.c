@@ -333,14 +333,9 @@ int main(int argc, char **argv) {
              cache_dir, nk_platform_path_separator());
     snprintf(fixture_package_dir, sizeof(fixture_package_dir), "%s%cpackages%cTEST00006",
              fixture_root, nk_platform_path_separator(), nk_platform_path_separator());
-    snprintf(fixture_exe, sizeof(fixture_exe), "%s%cdisplay-smoke-v1%s",
-             fixture_package_dir, nk_platform_path_separator(),
-#if defined(_WIN32) || defined(_WIN64)
-             ".exe"
-#else
-             ""
-#endif
-    );
+    /* The synthetic package names display-smoke-v1.exe on every host. */
+    snprintf(fixture_exe, sizeof(fixture_exe), "%s%cdisplay-smoke-v1.exe",
+             fixture_package_dir, nk_platform_path_separator());
     snprintf(fixture_image, sizeof(fixture_image), "%s%cdisplay-smoke-v1_image.bin",
              fixture_package_dir, nk_platform_path_separator());
     snprintf(fixture_package_json, sizeof(fixture_package_json), "%s%cpackage.json",

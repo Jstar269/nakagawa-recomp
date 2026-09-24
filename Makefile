@@ -622,7 +622,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check sdl3-check
+INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin sdl3-check
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1898,12 +1898,11 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 # Native Product Core Tests
 # -----------------------------------------------------------------------------
-.PHONY: player-state-test-bin
 player-state-test-bin:
 	@mkdir -p build
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/player_state.c \
-		tests/native/test_player_state.c -o $@
+		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
