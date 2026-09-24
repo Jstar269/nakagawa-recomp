@@ -5,6 +5,7 @@
 #include "nk_iso.h"
 #include "nk_platform.h"
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2357,4 +2358,880 @@ bool nk_title_manifest_write_experimental_profile(
     }
     snprintf(out_profile_id, out_profile_id_len, "%s", profile_id);
     return true;
+}
+
+typedef struct {
+    char *data;
+    size_t length;
+    size_t capacity;
+    bool failed;
+} NkJsonWriter;
+
+static bool json_writer_append(NkJsonWriter *writer, const char *format, ...) {
+    if (!writer || writer->failed) return false;
+    va_list args;
+    va_start(args, format);
+    va_list measure;
+    va_copy(measure, args);
+    int needed = vsnprintf(NULL, 0, format, measure);
+    va_end(measure);
+    if (needed < 0 || (size_t)needed > SIZE_MAX - writer->length - 1) {
+        writer->failed = true;
+        va_end(args);
+        return false;
+    }
+    size_t required = writer->length + (size_t)needed + 1;
+    if (required > writer->capacity) {
+        size_t capacity = writer->capacity ? writer->capacity : 256;
+        while (capacity < required) {
+            if (capacity > SIZE_MAX / 2) {
+                writer->failed = true;
+                va_end(args);
+                return false;
+            }
+            capacity *= 2;
+        }
+        char *grown = (char *)realloc(writer->data, capacity);
+        if (!grown) {
+            writer->failed = true;
+            va_end(args);
+            return false;
+        }
+        writer->data = grown;
+        writer->capacity = capacity;
+    }
+    vsnprintf(writer->data + writer->length,
+              writer->capacity - writer->length, format, args);
+    va_end(args);
+    writer->length += (size_t)needed;
+    return true;
+}
+
+static bool json_writer_string(NkJsonWriter *writer, const char *value) {
+    if (!json_writer_append(writer, "\"")) return false;
+    for (const unsigned char *p = (const unsigned char *)(value ? value : ""); *p; p++) {
+        switch (*p) {
+            case '"': if (!json_writer_append(writer, "\\\"")) return false; break;
+            case '\\': if (!json_writer_append(writer, "\\\\")) return false; break;
+            case '\b': if (!json_writer_append(writer, "\\b")) return false; break;
+            case '\f': if (!json_writer_append(writer, "\\f")) return false; break;
+            case '\n': if (!json_writer_append(writer, "\\n")) return false; break;
+            case '\r': if (!json_writer_append(writer, "\\r")) return false; break;
+            case '\t': if (!json_writer_append(writer, "\\t")) return false; break;
+            default:
+                if (*p < 0x20) {
+                    if (!json_writer_append(writer, "\\u%04x", (unsigned)*p)) return false;
+                } else if (!json_writer_append(writer, "%c", *p)) {
+                    return false;
+                }
+                break;
+        }
+    }
+    return json_writer_append(writer, "\"");
+}
+
+static bool json_writer_node(NkJsonWriter *writer, const JsonNode *node,
+                             unsigned int depth) {
+    if (!writer || !node || depth > NK_MANIFEST_MAX_JSON_DEPTH) return false;
+    switch (node->type) {
+        case JSON_NULL: return json_writer_append(writer, "null");
+        case JSON_BOOL: return json_writer_append(writer, "%s", node->u.bool_val ? "true" : "false");
+        case JSON_NUMBER:
+            if (node->u.num.is_integer) {
+                return json_writer_append(writer, "%lld", (long long)node->u.num.int_val);
+            }
+            return json_writer_append(writer, "%.17g", node->u.num.num_val);
+        case JSON_STRING: return json_writer_string(writer, node->u.str_val);
+        case JSON_ARRAY:
+            if (!json_writer_append(writer, "[")) return false;
+            for (size_t i = 0; i < node->u.arr.count; i++) {
+                if (i && !json_writer_append(writer, ",")) return false;
+                if (!json_writer_node(writer, node->u.arr.items[i], depth + 1)) return false;
+            }
+            return json_writer_append(writer, "]");
+        case JSON_OBJECT:
+            if (!json_writer_append(writer, "{")) return false;
+            for (size_t i = 0; i < node->u.obj.count; i++) {
+                if (i && !json_writer_append(writer, ",")) return false;
+                if (!json_writer_string(writer, node->u.obj.members[i].key) ||
+                    !json_writer_append(writer, ":") ||
+                    !json_writer_node(writer, node->u.obj.members[i].val, depth + 1)) return false;
+            }
+            return json_writer_append(writer, "}");
+    }
+    return false;
+}
+
+static bool json_nodes_equal(const JsonNode *a, const JsonNode *b) {
+    if (!a || !b || a->type != b->type) return a == b;
+    switch (a->type) {
+        case JSON_NULL: return true;
+        case JSON_BOOL: return a->u.bool_val == b->u.bool_val;
+        case JSON_NUMBER:
+            return a->u.num.is_integer == b->u.num.is_integer &&
+                (a->u.num.is_integer ? a->u.num.int_val == b->u.num.int_val
+                                     : a->u.num.num_val == b->u.num.num_val);
+        case JSON_STRING: return strcmp(a->u.str_val, b->u.str_val) == 0;
+        case JSON_ARRAY:
+            if (a->u.arr.count != b->u.arr.count) return false;
+            for (size_t i = 0; i < a->u.arr.count; i++) {
+                if (!json_nodes_equal(a->u.arr.items[i], b->u.arr.items[i])) return false;
+            }
+            return true;
+        case JSON_OBJECT:
+            if (a->u.obj.count != b->u.obj.count) return false;
+            for (size_t i = 0; i < a->u.obj.count; i++) {
+                JsonNode *other = obj_get(b, a->u.obj.members[i].key);
+                if (!other || !json_nodes_equal(a->u.obj.members[i].val, other)) return false;
+            }
+            return true;
+    }
+    return false;
+}
+
+static bool package_check_object(const JsonNode *node, const char *path,
+                                 const char * const *allowed,
+                                 const char * const *required,
+                                 char *error, size_t error_size) {
+    if (!check_object_keys(node, path, allowed, required, error, error_size)) return false;
+    for (size_t i = 0; i < node->u.obj.count; i++) {
+        for (size_t j = i + 1; j < node->u.obj.count; j++) {
+            if (strcmp(node->u.obj.members[i].key, node->u.obj.members[j].key) == 0) {
+                if (error && error_size) snprintf(error, error_size,
+                    "%s: duplicate field '%s'", path, node->u.obj.members[i].key);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool package_string(const JsonNode *node, const char **out) {
+    if (!node || node->type != JSON_STRING || !node->u.str_val || !node->u.str_val[0]) return false;
+    if (out) *out = node->u.str_val;
+    return true;
+}
+
+static bool package_sha256(const JsonNode *node, const char **out) {
+    const char *value = NULL;
+    if (!package_string(node, &value) || strlen(value) != 64) return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (!((value[i] >= '0' && value[i] <= '9') ||
+              (value[i] >= 'a' && value[i] <= 'f'))) return false;
+    }
+    if (out) *out = value;
+    return true;
+}
+
+static bool package_number(const JsonNode *node, int64_t expected) {
+    return node && node->type == JSON_NUMBER && node->u.num.is_integer &&
+           node->u.num.int_val == expected;
+}
+
+static bool package_read_json(const char *path, size_t max_bytes,
+                              char **out_text, size_t *out_length,
+                              char *error, size_t error_size) {
+    if (!path || !out_text || !out_length) return false;
+    FILE *file = manifest_fopen(path);
+    if (!file) {
+        if (error && error_size) snprintf(error, error_size, "Could not open %s", path);
+        return false;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        if (error && error_size) snprintf(error, error_size, "Could not seek %s", path);
+        fclose(file);
+        return false;
+    }
+    long size = ftell(file);
+    if (size < 0 || (unsigned long)size > max_bytes ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        if (error && error_size) snprintf(error, error_size,
+            "%s is larger than the supported JSON limit", path);
+        fclose(file);
+        return false;
+    }
+    char *text = (char *)malloc((size_t)size + 1);
+    if (!text) {
+        if (error && error_size) snprintf(error, error_size, "Out of memory reading %s", path);
+        fclose(file);
+        return false;
+    }
+    size_t got = fread(text, 1, (size_t)size, file);
+    bool ok = got == (size_t)size && !ferror(file);
+    fclose(file);
+    if (!ok) {
+        if (error && error_size) snprintf(error, error_size, "Short read from %s", path);
+        free(text);
+        return false;
+    }
+    text[got] = '\0';
+    *out_text = text;
+    *out_length = got;
+    return true;
+}
+
+static bool package_join_path(char *out, size_t out_size,
+                              const char *root, const char *relative) {
+    if (!out || out_size == 0 || !root || !*root || !relative || !*relative) return false;
+    size_t root_length = strlen(root);
+    char sep = nk_platform_path_separator();
+    bool has_sep = root_length > 0 &&
+        (root[root_length - 1] == '/' || root[root_length - 1] == '\\');
+    int written = snprintf(out, out_size, "%s%s%s", root, has_sep ? "" : (sep == '/' ? "/" : "\\"), relative);
+    return written > 0 && (size_t)written < out_size;
+}
+
+static bool package_resolved_path(const char *path, char *out, size_t out_size) {
+    if (!path || !out || out_size == 0) return false;
+#if defined(_WIN32) || defined(_WIN64)
+    /* Extended-length paths need 32K-character buffers; keep them off the stack. */
+    enum { WIDE_PATH_CHARS = 32768 };
+    WCHAR *input = (WCHAR *)malloc(sizeof(WCHAR) * WIDE_PATH_CHARS * 2);
+    if (!input) return false;
+    WCHAR *resolved = input + WIDE_PATH_CHARS;
+    bool ok = false;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                            input, WIDE_PATH_CHARS) > 0) {
+        HANDLE handle = CreateFileW(input, FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (handle != INVALID_HANDLE_VALUE) {
+            DWORD length = GetFinalPathNameByHandleW(handle, resolved, WIDE_PATH_CHARS,
+                                                     FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+            CloseHandle(handle);
+            ok = length > 0 && length < WIDE_PATH_CHARS &&
+                 WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, resolved, -1,
+                                     out, (int)out_size, NULL, NULL) > 0;
+        }
+    }
+    free(input);
+    return ok;
+#else
+    return nk_platform_absolute_path(path, out, out_size);
+#endif
+}
+
+static bool package_path_is_within(const char *root, const char *path) {
+    char abs_root[NK_MAX_PATH * 2];
+    char abs_path[NK_MAX_PATH * 2];
+    if (!package_resolved_path(root, abs_root, sizeof(abs_root)) ||
+        !package_resolved_path(path, abs_path, sizeof(abs_path))) return false;
+    size_t root_length = strlen(abs_root);
+    while (root_length > 1 &&
+           (abs_root[root_length - 1] == '/' || abs_root[root_length - 1] == '\\')) {
+        abs_root[--root_length] = '\0';
+    }
+    for (size_t i = 0; i < root_length; i++) {
+        if (nk_ascii_lower((unsigned char)abs_root[i]) !=
+            nk_ascii_lower((unsigned char)abs_path[i])) return false;
+    }
+    return abs_path[root_length] == '/' || abs_path[root_length] == '\\';
+}
+
+static bool package_direct_file(const char *package_root, const char *relative,
+                                char *out_path, size_t out_size) {
+    if (!relative || !is_valid_portable_path(relative)) return false;
+    char joined[NK_MAX_PATH * 2];
+    if (!package_join_path(joined, sizeof(joined), package_root, relative) ||
+        !nk_platform_file_exists(joined) ||
+        !package_path_is_within(package_root, joined)) return false;
+    char absolute[NK_MAX_PATH * 2];
+    if (!nk_platform_absolute_path(joined, absolute, sizeof(absolute)) ||
+        strlen(absolute) >= out_size) return false;
+    snprintf(out_path, out_size, "%s", absolute);
+    return true;
+}
+
+static bool package_hash_file(const char *path, char out_hex[65]) {
+    FILE *file = manifest_fopen(path);
+    if (!file) return false;
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    uint8_t buffer[32768];
+    size_t count;
+    bool ok = true;
+    while ((count = fread(buffer, 1, sizeof(buffer), file)) != 0) {
+        nk_sha256_update(&ctx, buffer, count);
+    }
+    if (ferror(file)) ok = false;
+    fclose(file);
+    if (!ok) return false;
+    uint8_t digest[32];
+    static const char hex[] = "0123456789abcdef";
+    nk_sha256_finish(&ctx, digest);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out_hex[i * 2] = hex[digest[i] >> 4];
+        out_hex[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out_hex[64] = '\0';
+    return true;
+}
+
+static void package_rebuild_reason(char *reason, size_t reason_size,
+                                   const char *detail, const char *root,
+                                   const char *disc_id) {
+    char manifest_path[NK_MAX_PATH * 2];
+    char executable_path[NK_MAX_PATH * 2];
+    char output_path[NK_MAX_PATH * 2];
+    char relative[NK_MAX_DISC_ID_LEN + 32];
+    snprintf(relative, sizeof(relative), "cache%cpackages%c%s%cmanifest.json",
+             nk_platform_path_separator(), nk_platform_path_separator(), disc_id,
+             nk_platform_path_separator());
+    (void)package_join_path(manifest_path, sizeof(manifest_path), root, relative);
+    snprintf(relative, sizeof(relative), "cache%cpackages%c%s%cselected.elf",
+             nk_platform_path_separator(), nk_platform_path_separator(), disc_id,
+             nk_platform_path_separator());
+    (void)package_join_path(executable_path, sizeof(executable_path), root, relative);
+    snprintf(relative, sizeof(relative), "cache%cpackages%c%s%cpackage",
+             nk_platform_path_separator(), nk_platform_path_separator(), disc_id,
+             nk_platform_path_separator());
+    (void)package_join_path(output_path, sizeof(output_path), root, relative);
+    if (reason && reason_size) {
+        snprintf(reason, reason_size,
+            "%s Rebuild with: python tools/title_codegen_plan.py \"%s\" --package --game-elf \"%s\" --output-dir \"%s\". "
+            "Library command: python tools/nk_cli.py build-package %s (#296).",
+            detail ? detail : "Runtime package needs rebuilding.",
+            manifest_path, executable_path, output_path, disc_id);
+    }
+}
+
+static bool package_check_sha_object(const JsonNode *node, const char *path,
+                                     const char **out_sha, char *error,
+                                     size_t error_size) {
+    static const char * const keys[] = {"sha256", NULL};
+    if (!package_check_object(node, path, keys, keys, error, error_size) ||
+        !package_sha256(obj_get(node, "sha256"), out_sha)) {
+        if (error && error_size && !error[0]) snprintf(error, error_size,
+            "%s.sha256 must be a lowercase SHA-256 digest", path);
+        return false;
+    }
+    return true;
+}
+
+static bool package_validate_contract(const JsonNode *package,
+                                      const char *expected_title_id,
+                                      uint32_t player_abi_version,
+                                      const char **exe_relative,
+                                      const char **exe_hash,
+                                      const char **input_exe_hash,
+                                      char *error, size_t error_size) {
+    static const char * const root_keys[] = {
+        "format", "schema_version", "title", "inputs", "runtime", "executable",
+        "generated_objects", "required_local_assets", "build_report", NULL
+    };
+    static const char * const title_keys[] = {
+        "id", "display_name", "kind", "manifest_sha256", "protected_digest", NULL
+    };
+    static const char * const title_required[] = {
+        "id", "display_name", "kind", "manifest_sha256", "protected_digest", NULL
+    };
+    static const char * const inputs_keys[] = {"manifest", "executable", "modules", "psp_header", NULL};
+    static const char * const inputs_required[] = {"manifest", "executable", "modules", "psp_header", NULL};
+    static const char * const runtime_keys[] = {
+        "abi", "abi_version", "abi_header_sha256", "run_entry", "runtime_contract",
+        "runtime_bindings", "required_runtime_bindings", NULL
+    };
+    static const char * const runtime_required[] = {
+        "abi", "abi_version", "abi_header_sha256", "run_entry", "runtime_contract",
+        "runtime_bindings", "required_runtime_bindings", NULL
+    };
+    static const char * const executable_keys[] = {"path", "sha256", "guest_entry", NULL};
+    static const char * const executable_required[] = {"path", "sha256", "guest_entry", NULL};
+    static const char * const object_keys[] = {"path", "sha256", NULL};
+    static const char * const object_required[] = {"path", "sha256", NULL};
+    const char *value = NULL;
+    if (!package_check_object(package, "$", root_keys, root_keys, error, error_size)) return false;
+    if (!package_string(obj_get(package, "format"), &value) || strcmp(value, "nakagawa-aot-package") != 0 ||
+        !package_number(obj_get(package, "schema_version"), 1)) {
+        snprintf(error, error_size, "package format or schema_version is not v1");
+        return false;
+    }
+
+    const JsonNode *title = obj_get(package, "title");
+    if (!package_check_object(title, "$.title", title_keys, title_required, error, error_size)) return false;
+    if (!package_string(obj_get(title, "id"), &value)) {
+        snprintf(error, error_size, "$.title.id must be a string");
+        return false;
+    }
+    if (strcmp(value, expected_title_id) != 0) {
+        snprintf(error, error_size, "package title identity does not match this disc");
+        return false;
+    }
+    if (!package_string(obj_get(title, "display_name"), NULL) ||
+        !package_string(obj_get(title, "kind"), NULL) ||
+        !package_sha256(obj_get(title, "manifest_sha256"), NULL) ||
+        !package_sha256(obj_get(title, "protected_digest"), NULL)) {
+        snprintf(error, error_size, "$.title does not match the v1 package schema");
+        return false;
+    }
+
+    const JsonNode *inputs = obj_get(package, "inputs");
+    if (!package_check_object(inputs, "$.inputs", inputs_keys, inputs_required, error, error_size)) return false;
+    const JsonNode *manifest_input = obj_get(inputs, "manifest");
+    const JsonNode *executable_input = obj_get(inputs, "executable");
+    const char *manifest_hash = NULL;
+    if (!package_check_sha_object(manifest_input, "$.inputs.manifest", &manifest_hash, error, error_size) ||
+        !package_check_sha_object(executable_input, "$.inputs.executable", input_exe_hash, error, error_size)) return false;
+    if (strcmp(manifest_hash, obj_get(title, "manifest_sha256")->u.str_val) != 0) {
+        snprintf(error, error_size, "package manifest hash disagrees with its title record");
+        return false;
+    }
+    const JsonNode *modules = obj_get(inputs, "modules");
+    if (!modules || modules->type != JSON_ARRAY) {
+        snprintf(error, error_size, "$.inputs.modules must be an array");
+        return false;
+    }
+    for (size_t i = 0; i < modules->u.arr.count; i++) {
+        const JsonNode *module = modules->u.arr.items[i];
+        static const char * const module_keys[] = {"name", "load_address", "sha256", NULL};
+        static const char * const module_required[] = {"name", "load_address", "sha256", NULL};
+        if (!package_check_object(module, "$.inputs.modules[]", module_keys, module_required, error, error_size) ||
+            !package_string(obj_get(module, "name"), NULL) ||
+            !package_string(obj_get(module, "load_address"), NULL) ||
+            !package_sha256(obj_get(module, "sha256"), NULL)) {
+            if (error && error_size && !error[0]) snprintf(error, error_size, "$.inputs.modules contains an invalid record");
+            return false;
+        }
+    }
+    const JsonNode *psp_header = obj_get(inputs, "psp_header");
+    if (psp_header->type != JSON_NULL &&
+        !package_check_sha_object(psp_header, "$.inputs.psp_header", NULL, error, error_size)) return false;
+
+    const JsonNode *runtime = obj_get(package, "runtime");
+    if (!package_check_object(runtime, "$.runtime", runtime_keys, runtime_required, error, error_size)) return false;
+    if (!package_string(obj_get(runtime, "abi"), &value) || strcmp(value, "CpuState") != 0 ||
+        !package_number(obj_get(runtime, "abi_version"), player_abi_version)) {
+        snprintf(error, error_size, "runtime ABI is incompatible with this player build");
+        return false;
+    }
+    if (!package_sha256(obj_get(runtime, "abi_header_sha256"), NULL) ||
+        !package_string(obj_get(runtime, "run_entry"), NULL) ||
+        (obj_get(runtime, "runtime_contract")->type != JSON_NULL &&
+         obj_get(runtime, "runtime_contract")->type != JSON_OBJECT) ||
+        obj_get(runtime, "runtime_bindings")->type != JSON_OBJECT ||
+        obj_get(runtime, "required_runtime_bindings")->type != JSON_ARRAY) {
+        snprintf(error, error_size, "$.runtime does not match the v1 package schema");
+        return false;
+    }
+
+    const JsonNode *executable = obj_get(package, "executable");
+    if (!package_check_object(executable, "$.executable", executable_keys, executable_required, error, error_size)) return false;
+    if (!package_string(obj_get(executable, "path"), exe_relative) ||
+        !is_valid_portable_path(*exe_relative) ||
+        !package_sha256(obj_get(executable, "sha256"), exe_hash) ||
+        !package_string(obj_get(executable, "guest_entry"), NULL)) {
+        snprintf(error, error_size, "package executable path/hash is invalid or escapes its package");
+        return false;
+    }
+
+    const JsonNode *objects = obj_get(package, "generated_objects");
+    if (!objects || objects->type != JSON_ARRAY) {
+        snprintf(error, error_size, "$.generated_objects must be an array");
+        return false;
+    }
+    for (size_t i = 0; i < objects->u.arr.count; i++) {
+        const JsonNode *object = objects->u.arr.items[i];
+        if (!package_check_object(object, "$.generated_objects[]", object_keys, object_required, error, error_size) ||
+            !package_string(obj_get(object, "path"), &value) || !is_valid_portable_path(value) ||
+            !package_sha256(obj_get(object, "sha256"), NULL)) {
+            if (error && error_size && !error[0]) snprintf(error, error_size, "$.generated_objects contains an invalid record");
+            return false;
+        }
+    }
+
+    const JsonNode *assets = obj_get(package, "required_local_assets");
+    if (!assets || assets->type != JSON_ARRAY) {
+        snprintf(error, error_size, "$.required_local_assets must be an array");
+        return false;
+    }
+    for (size_t i = 0; i < assets->u.arr.count; i++) {
+        const JsonNode *asset = assets->u.arr.items[i];
+        static const char * const asset_keys[] = {
+            "kind", "path", "name", "required", "provisioning", "load_address",
+            "included_in_aot", "sha256", "bundled", "resolution", NULL
+        };
+        static const char * const asset_required[] = {"kind", "required", NULL};
+        const char *kind = NULL;
+        const JsonNode *required = NULL;
+        if (!package_check_object(asset, "$.required_local_assets[]", asset_keys, asset_required, error, error_size) ||
+            !package_string(obj_get(asset, "kind"), &kind)) return false;
+        required = obj_get(asset, "required");
+        if (!required || required->type != JSON_BOOL) {
+            snprintf(error, error_size, "required local asset flag must be boolean");
+            return false;
+        }
+        if ((strcmp(kind, "title-data-root") == 0 || strcmp(kind, "runtime-resource-locator") == 0) &&
+            (!package_string(obj_get(asset, "path"), &value) || !is_valid_portable_path(value) ||
+             !package_string(obj_get(asset, "provisioning"), NULL))) {
+            snprintf(error, error_size, "local data asset record is invalid");
+            return false;
+        }
+        if (strcmp(kind, "guest-prx") == 0 &&
+            (!package_string(obj_get(asset, "name"), NULL) ||
+             !package_string(obj_get(asset, "load_address"), NULL) ||
+             !package_string(obj_get(asset, "provisioning"), NULL) ||
+             !obj_get(asset, "included_in_aot") || obj_get(asset, "included_in_aot")->type != JSON_BOOL ||
+             (obj_get(asset, "sha256") && !package_sha256(obj_get(asset, "sha256"), NULL)))) {
+            snprintf(error, error_size, "guest PRX asset record is invalid");
+            return false;
+        }
+        if (strcmp(kind, "host-runtime-library") == 0 &&
+            (!package_string(obj_get(asset, "name"), NULL) ||
+             !package_string(obj_get(asset, "resolution"), NULL) ||
+             (obj_get(asset, "bundled") && obj_get(asset, "bundled")->type != JSON_BOOL))) {
+            snprintf(error, error_size, "host runtime library record is invalid");
+            return false;
+        }
+        if (strcmp(kind, "title-data-root") != 0 &&
+            strcmp(kind, "runtime-resource-locator") != 0 &&
+            strcmp(kind, "guest-prx") != 0 &&
+            strcmp(kind, "host-runtime-library") != 0) {
+            snprintf(error, error_size, "unknown required_local_assets kind '%s'", kind);
+            return false;
+        }
+    }
+
+    if (!package_string(obj_get(package, "build_report"), &value) ||
+        strcmp(value, "build-report.json") != 0) {
+        snprintf(error, error_size, "$.build_report must be build-report.json");
+        return false;
+    }
+    return true;
+}
+
+static bool package_validate_build_report(const JsonNode *report,
+                                          const char *title_id,
+                                          const JsonNode *package_inputs,
+                                          uint32_t player_abi_version,
+                                          char *error, size_t error_size) {
+    static const char * const root_keys[] = {
+        "format", "schema_version", "title_id", "runtime_abi", "input_hashes",
+        "tools", "coverage", "unsupported", "analysis_diagnostics", "artifacts", NULL
+    };
+    static const char * const runtime_keys[] = {"name", "version", NULL};
+    static const char * const runtime_required[] = {"name", "version", NULL};
+    const char *value = NULL;
+    if (!package_check_object(report, "build-report", root_keys, root_keys, error, error_size) ||
+        !package_string(obj_get(report, "format"), &value) || strcmp(value, "nakagawa-build-report") != 0 ||
+        !package_number(obj_get(report, "schema_version"), 1) ||
+        !package_string(obj_get(report, "title_id"), &value) || strcmp(value, title_id) != 0) {
+        if (error && error_size && !error[0]) snprintf(error, error_size, "build report identity/schema does not match package");
+        return false;
+    }
+    const JsonNode *runtime = obj_get(report, "runtime_abi");
+    if (!package_check_object(runtime, "build-report.runtime_abi", runtime_keys, runtime_required, error, error_size) ||
+        !package_string(obj_get(runtime, "name"), &value) || strcmp(value, "CpuState") != 0 ||
+        !package_number(obj_get(runtime, "version"), player_abi_version)) {
+        if (error && error_size && !error[0]) snprintf(error, error_size, "build report ABI does not match this player");
+        return false;
+    }
+    if (!json_nodes_equal(obj_get(report, "input_hashes"), package_inputs) ||
+        obj_get(report, "tools")->type != JSON_OBJECT ||
+        obj_get(report, "coverage")->type != JSON_OBJECT ||
+        obj_get(report, "unsupported")->type != JSON_OBJECT ||
+        obj_get(report, "analysis_diagnostics")->type != JSON_ARRAY ||
+        obj_get(report, "artifacts")->type != JSON_OBJECT) {
+        if (error && error_size) snprintf(error, error_size, "build report inputs or v1 fields do not match package");
+        return false;
+    }
+    const JsonNode *unsupported = obj_get(report, "unsupported");
+    if (obj_get(unsupported, "imports") == NULL || obj_get(unsupported, "imports")->type != JSON_ARRAY ||
+        obj_get(unsupported, "instructions") == NULL || obj_get(unsupported, "instructions")->type != JSON_ARRAY ||
+        obj_get(unsupported, "regions") == NULL || obj_get(unsupported, "regions")->type != JSON_ARRAY) {
+        if (error && error_size) snprintf(error, error_size, "build report unsupported boundaries must be arrays");
+        return false;
+    }
+    return true;
+}
+
+bool nk_title_manifest_read_experimental_profile(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    const char *selected_executable,
+    NkTitleEntry *out_title,
+    char out_executable_sha256[65],
+    char *error_buf,
+    size_t error_buf_len
+) {
+    if (error_buf && error_buf_len) error_buf[0] = '\0';
+    if (!user_data_root || !*user_data_root || !out_title || !out_executable_sha256) return false;
+    char normalized[10];
+    if (!nk_manifest_normalize_disc_id(disc_id, normalized)) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental package has an invalid disc ID.");
+        return false;
+    }
+    char expected_id[64];
+    for (size_t i = 0; i < 9; i++) expected_id[13 + i] = (char)tolower((unsigned char)normalized[i]);
+    memcpy(expected_id, "experimental-", 13);
+    expected_id[22] = '\0';
+    if (!title_id || strcmp(title_id, expected_id) != 0) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental title identity does not match disc %s.", normalized);
+        return false;
+    }
+
+    char relative[NK_MAX_DISC_ID_LEN + 32];
+    char profile_path[NK_MAX_PATH * 2];
+    snprintf(relative, sizeof(relative), "experimental%c%s%cprofile.json",
+             nk_platform_path_separator(), normalized, nk_platform_path_separator());
+    if (!package_join_path(profile_path, sizeof(profile_path), user_data_root, relative)) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental profile path exceeds the supported limit.");
+        return false;
+    }
+    char *profile_text = NULL;
+    size_t profile_length = 0;
+    if (!package_read_json(profile_path, NK_MANIFEST_MAX_BYTES, &profile_text,
+                           &profile_length, error_buf, error_buf_len)) return false;
+    JsonNode *profile = json_parse(profile_text, profile_length, error_buf, error_buf_len);
+    free(profile_text);
+    if (!profile) return false;
+
+    static const char * const profile_keys[] = {"schema_version", "manifest", "input_identity", NULL};
+    static const char * const profile_required[] = {"schema_version", "manifest", "input_identity", NULL};
+    static const char * const identity_keys[] = {
+        "disc_id", "selected_executable", "executable_sha256", "elf_sha256", NULL
+    };
+    static const char * const identity_required[] = {
+        "disc_id", "selected_executable", "executable_sha256", "elf_sha256", NULL
+    };
+    bool valid = package_check_object(profile, "experimental profile", profile_keys,
+                                      profile_required, error_buf, error_buf_len) &&
+                 package_number(obj_get(profile, "schema_version"), 1);
+    const JsonNode *identity = obj_get(profile, "input_identity");
+    if (valid) valid = package_check_object(identity, "experimental input_identity",
+                                             identity_keys, identity_required,
+                                             error_buf, error_buf_len);
+    const char *profile_disc = NULL;
+    const char *profile_executable = NULL;
+    const char *profile_hash = NULL;
+    const char *elf_hash = NULL;
+    if (valid) {
+        valid = package_string(obj_get(identity, "disc_id"), &profile_disc) &&
+                strcmp(profile_disc, normalized) == 0 &&
+                package_string(obj_get(identity, "selected_executable"), &profile_executable) &&
+                package_sha256(obj_get(identity, "executable_sha256"), &profile_hash) &&
+                package_sha256(obj_get(identity, "elf_sha256"), &elf_hash) &&
+                strcmp(profile_hash, elf_hash) == 0;
+    }
+    const char *selected_leaf = selected_executable;
+    if (selected_leaf && strrchr(selected_leaf, '/')) selected_leaf = strrchr(selected_leaf, '/') + 1;
+    if (valid && (!selected_leaf || !*selected_leaf ||
+        !(strcmp(profile_executable, "PSP_GAME/SYSDIR/EBOOT.BIN") == 0 ||
+          strcmp(profile_executable, "PSP_GAME/SYSDIR/BOOT.BIN") == 0) ||
+        strcmp(strrchr(profile_executable, '/') + 1, selected_leaf) != 0)) {
+        valid = false;
+    }
+
+    const JsonNode *manifest = obj_get(profile, "manifest");
+    NkJsonWriter writer = {0};
+    if (valid) valid = json_writer_node(&writer, manifest, 0) && !writer.failed &&
+                       writer.length <= NK_MANIFEST_MAX_BYTES;
+    if (valid) {
+        valid = nk_title_manifest_parse_buffer(writer.data, writer.length, false,
+                                                out_title, error_buf, error_buf_len) &&
+                out_title->id && strcmp(out_title->id, expected_id) == 0 &&
+                out_title->primary_disc_id && strcmp(out_title->primary_disc_id, normalized) == 0;
+    }
+    if (!valid && error_buf && error_buf_len && !error_buf[0]) {
+        snprintf(error_buf, error_buf_len,
+                 "Experimental profile is stale or does not match disc %s and selected executable %s.",
+                 normalized, selected_leaf ? selected_leaf : "(none)");
+    }
+    if (valid) snprintf(out_executable_sha256, 65, "%s", profile_hash);
+    json_free(profile);
+    free(writer.data);
+    return valid;
+}
+
+NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    bool is_experimental,
+    const char *selected_executable,
+    uint32_t player_abi_version,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+) {
+    if (reason && reason_size) reason[0] = '\0';
+    if (out_info) memset(out_info, 0, sizeof(*out_info));
+    char normalized[10];
+    if (!user_data_root || !*user_data_root || !title_id || !*title_id ||
+        !nk_manifest_normalize_disc_id(disc_id, normalized)) {
+        if (reason && reason_size) snprintf(reason, reason_size, "Library title identity is incomplete.");
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+    if (is_experimental) {
+        char profile_id[64];
+        for (size_t i = 0; i < 9; i++) profile_id[13 + i] = (char)tolower((unsigned char)normalized[i]);
+        memcpy(profile_id, "experimental-", 13);
+        profile_id[22] = '\0';
+        if (strcmp(title_id, profile_id) != 0) {
+            package_rebuild_reason(reason, reason_size,
+                "Experimental package identity does not match the disc.", user_data_root, normalized);
+            return NK_RUNTIME_PACKAGE_STALE;
+        }
+    } else {
+        const NkTitleEntry *by_disc = nk_title_catalog_find_by_disc_id(normalized);
+        const NkTitleEntry *by_id = nk_title_catalog_find_by_id(title_id);
+        if (!by_disc || !by_id || by_disc != by_id) {
+            package_rebuild_reason(reason, reason_size,
+                "Package title identity does not match the catalogued disc.", user_data_root, normalized);
+            return NK_RUNTIME_PACKAGE_STALE;
+        }
+    }
+
+    char package_relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_root[NK_MAX_PATH * 2];
+    char package_path[NK_MAX_PATH * 2];
+    snprintf(package_relative, sizeof(package_relative), "packages%c%s",
+             nk_platform_path_separator(), normalized);
+    if (!package_join_path(package_root, sizeof(package_root), user_data_root, package_relative) ||
+        !nk_platform_dir_exists(package_root)) {
+        package_rebuild_reason(reason, reason_size, "Runtime package is missing.", user_data_root, normalized);
+        return NK_RUNTIME_PACKAGE_MISSING;
+    }
+    char resolved_package_root[NK_MAX_PATH * 2];
+    if (!nk_platform_absolute_path(package_root, resolved_package_root,
+                                   sizeof(resolved_package_root)) ||
+        !package_path_is_within(user_data_root, resolved_package_root)) {
+        package_rebuild_reason(reason, reason_size,
+            "Package directory is outside the per-user data directory.",
+            user_data_root, normalized);
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+    snprintf(package_root, sizeof(package_root), "%s", resolved_package_root);
+    if (!package_direct_file(package_root, "package.json", package_path,
+                             sizeof(package_path))) {
+        package_rebuild_reason(reason, reason_size, "Runtime package package.json is missing.", user_data_root, normalized);
+        return NK_RUNTIME_PACKAGE_MISSING;
+    }
+
+    char *package_text = NULL;
+    size_t package_length = 0;
+    char parse_error[320] = "";
+    if (!package_read_json(package_path, NK_MANIFEST_MAX_BYTES, &package_text,
+                           &package_length, parse_error, sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+    JsonNode *package = json_parse(package_text, package_length, parse_error, sizeof(parse_error));
+    free(package_text);
+    if (!package) {
+        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+
+    const char *exe_relative = NULL;
+    const char *exe_hash = NULL;
+    const char *input_exe_hash = NULL;
+    bool contract_ok = package_validate_contract(package, title_id, player_abi_version,
+                                                  &exe_relative, &exe_hash,
+                                                  &input_exe_hash, parse_error,
+                                                  sizeof(parse_error));
+    if (!contract_ok) {
+        NkRuntimePackageStatus status = strstr(parse_error, "identity")
+            ? NK_RUNTIME_PACKAGE_STALE : NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        json_free(package);
+        return status;
+    }
+
+    if (is_experimental) {
+        NkTitleEntry profile_title;
+        char profile_hash[65];
+        char profile_error[320] = "";
+        if (!nk_title_manifest_read_experimental_profile(
+                user_data_root, normalized, title_id, selected_executable,
+                &profile_title, profile_hash, profile_error, sizeof(profile_error))) {
+            package_rebuild_reason(reason, reason_size, profile_error,
+                                   user_data_root, normalized);
+            json_free(package);
+            return NK_RUNTIME_PACKAGE_STALE;
+        }
+        if (strcmp(input_exe_hash, profile_hash) != 0) {
+            package_rebuild_reason(reason, reason_size,
+                "Package executable input hash is stale for the experimental profile.",
+                user_data_root, normalized);
+            json_free(package);
+            return NK_RUNTIME_PACKAGE_STALE;
+        }
+    }
+
+    char resolved_executable[NK_MAX_PATH];
+    if (!package_direct_file(package_root, exe_relative, resolved_executable,
+                              sizeof(resolved_executable))) {
+        package_rebuild_reason(reason, reason_size,
+            "Package executable path is missing or escapes its package directory.",
+            user_data_root, normalized);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+    char actual_exe_hash[65];
+    if (!package_hash_file(resolved_executable, actual_exe_hash) ||
+        strcmp(actual_exe_hash, exe_hash) != 0) {
+        package_rebuild_reason(reason, reason_size,
+            "Package executable hash is stale or the executable was modified.",
+            user_data_root, normalized);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_STALE;
+    }
+
+    char image_relative[NK_MAX_PATH];
+    const char *extension = strrchr(exe_relative, '.');
+    size_t stem_length = extension && extension != exe_relative
+        ? (size_t)(extension - exe_relative) : strlen(exe_relative);
+    int image_name_length = snprintf(image_relative, sizeof(image_relative),
+                                     "%.*s_image.bin", (int)stem_length, exe_relative);
+    char resolved_image[NK_MAX_PATH];
+    if (image_name_length <= 0 || (size_t)image_name_length >= sizeof(image_relative) ||
+        !package_direct_file(package_root, image_relative, resolved_image,
+                             sizeof(resolved_image))) {
+        package_rebuild_reason(reason, reason_size,
+            "Package runtime image is missing or outside its package directory.",
+            user_data_root, normalized);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_MISSING;
+    }
+
+    char report_path[NK_MAX_PATH];
+    char *report_text = NULL;
+    size_t report_length = 0;
+    if (!package_direct_file(package_root, "build-report.json", report_path,
+                             sizeof(report_path)) ||
+        !package_read_json(report_path, NK_MANIFEST_MAX_BYTES, &report_text,
+                           &report_length, parse_error, sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size, "Package build-report.json is missing or unreadable.", user_data_root, normalized);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_MISSING;
+    }
+    JsonNode *report = json_parse(report_text, report_length, parse_error, sizeof(parse_error));
+    free(report_text);
+    if (!report || !package_validate_build_report(
+            report, title_id, obj_get(package, "inputs"), player_abi_version,
+            parse_error, sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size,
+            parse_error[0] ? parse_error : "Package build report is invalid.",
+            user_data_root, normalized);
+        if (report) json_free(report);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_STALE;
+    }
+    json_free(report);
+    json_free(package);
+
+    if (out_info) {
+        if (strlen(package_root) >= sizeof(out_info->package_root) ||
+            strlen(resolved_executable) >= sizeof(out_info->executable_path) ||
+            strlen(resolved_image) >= sizeof(out_info->image_path)) {
+            package_rebuild_reason(reason, reason_size, "Package paths exceed the player path limit.", user_data_root, normalized);
+            return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+        }
+        memcpy(out_info->package_root, package_root, strlen(package_root) + 1);
+        memcpy(out_info->executable_path, resolved_executable, strlen(resolved_executable) + 1);
+        memcpy(out_info->image_path, resolved_image, strlen(resolved_image) + 1);
+    }
+    if (reason && reason_size) snprintf(reason, reason_size, "Runtime package v1 is valid for %s.", normalized);
+    return NK_RUNTIME_PACKAGE_OK;
 }
