@@ -337,9 +337,12 @@ def validate_disc(value: Any, path: str) -> dict[str, Any]:
 
 
 def validate_executable(value: Any, path: str) -> dict[str, Any]:
-    allowed = {"base", "entry", "bss_metadata_source", "extra_executable_spans"}
+    allowed = {
+        "base", "entry", "bss_metadata_source", "extra_executable_spans",
+        "load_address", "load_address_evidence",
+    }
     value = obj(value, path, allowed)
-    require(value, path, *allowed)
+    require(value, path, "base", "entry", "bss_metadata_source", "extra_executable_spans")
     source = text(value["bss_metadata_source"], f"{path}.bss_metadata_source", 32)
     if source not in {"elf", "psp-header", "none"}:
         fail(f"{path}.bss_metadata_source", "unsupported metadata source")
@@ -357,12 +360,29 @@ def validate_executable(value: Any, path: str) -> dict[str, Any]:
     for left, right in zip(spans, spans[1:], strict=False):
         if right["start"] < left["end"]:
             fail(f"{path}.extra_executable_spans", "spans must not overlap")
-    return {
-        "base": uint(value["base"], f"{path}.base"),
+    base = uint(value["base"], f"{path}.base")
+    result = {
+        "base": base,
         "entry": uint(value["entry"], f"{path}.entry"),
         "bss_metadata_source": source,
         "extra_executable_spans": spans,
     }
+    if "load_address" in value:
+        load_address = uint(value["load_address"], f"{path}.load_address")
+        if base != load_address:
+            fail(f"{path}.base", "must match load_address when a main executable load binding is declared")
+        if "load_address_evidence" not in value:
+            fail(f"{path}.load_address_evidence", "is required when load_address is declared")
+        evidence = text(value["load_address_evidence"], f"{path}.load_address_evidence", 32)
+        if evidence not in {
+            "measured-hw", "measured-ppsspp", "provisional", "documented-psp-default",
+        }:
+            fail(f"{path}.load_address_evidence", "unsupported evidence class")
+        result["load_address"] = load_address
+        result["load_address_evidence"] = evidence
+    elif "load_address_evidence" in value:
+        fail(f"{path}.load_address_evidence", "requires load_address")
+    return result
 
 
 def validate_runtime_contract(value: Any, path: str) -> dict[str, Any]:

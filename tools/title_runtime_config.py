@@ -30,7 +30,7 @@ import title_manifest
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
-GENERATED_SCHEMA_VERSION = 5
+GENERATED_SCHEMA_VERSION = 6
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -113,7 +113,8 @@ def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
         # of that single source.
         "guest_modules": [
             {"name": m["name"], "load_address": m["load_address"],
-             "guest_path": m.get("guest_path", "")}
+             "guest_path": m.get("guest_path", ""),
+             "required": bool(m["required"])}
             for m in normalized.get("modules", [])
             if m["role"] in ("guest-prx", "optional-guest-prx")
         ],
@@ -279,7 +280,7 @@ def render_header(config: dict[str, Any]) -> str:
             if '"' in module[field] or chr(92) in module[field]:
                 raise TitleRuntimeConfigError(f"guest module {field} cannot be embedded in C: {module[field]!r}")
         lines.append(f'    SR_TITLE_CFG_GUEST_MODULE("{module["name"]}", "{module["guest_path"]}", '
-                     f"0x{module['load_address']:08x}u){tail}")
+                     f"0x{module['load_address']:08x}u, {1 if module['required'] else 0}u){tail}")
 
     lines += ["", "#endif /* SR_TITLE_CONFIG_GENERATED_H */", ""]
     return "\n".join(lines)

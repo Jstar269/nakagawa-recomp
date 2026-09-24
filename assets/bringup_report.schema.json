@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sanitized PSP title bring-up report",
+  "description": "Public-safe stage evidence. Retail paths, bytes, hashes, strings, and guest addresses are excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "reached_stage",
+    "stages",
+    "preflight_checks",
+    "failure_class",
+    "issue_numbers",
+    "unsupported_imports",
+    "runtime_imports",
+    "runtime_output_kind",
+    "process_exit_code",
+    "counts",
+    "exit_classification"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "reached_stage": {
+      "enum": ["none", "inspect", "prepare_import", "analyze", "codegen", "compile", "build_package", "launch"]
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inspect", "prepare_import", "analyze", "codegen", "compile", "build_package", "launch"],
+      "properties": {
+        "inspect": { "$ref": "#/$defs/stage" },
+        "prepare_import": { "$ref": "#/$defs/stage" },
+        "analyze": { "$ref": "#/$defs/stage" },
+        "codegen": { "$ref": "#/$defs/stage" },
+        "compile": { "$ref": "#/$defs/stage" },
+        "build_package": { "$ref": "#/$defs/stage" },
+        "launch": { "$ref": "#/$defs/stage" }
+      }
+    },
+    "preflight_checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/preflight_check" }
+    },
+    "failure_class": {
+      "enum": [
+        "NONE",
+        "INVALID_ISO",
+        "EXECUTABLE_UNSUPPORTED",
+        "MODIFIED_DUMP_CFW_LOADER",
+        "EXPERIMENTAL_IMPORT_FAILED",
+        "GUEST_MODULE_DECRYPTION_REQUIRED",
+        "GUEST_MODULE_FORMAT_UNSUPPORTED",
+        "GUEST_MODULE_LOAD_BINDING_REQUIRED",
+        "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        "GUEST_MODULE_STAGE_FAILED",
+        "GUEST_MODULE_DISCOVERY_FAILED",
+        "ANALYSIS_FAILED",
+        "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED",
+        "CODEGEN_FAILED",
+        "COMPILE_FAILED",
+        "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE",
+        "BUILD_PACKAGE_FAILED",
+        "UNSUPPORTED_IMPORT",
+        "UNSUPPORTED_INSTRUCTION",
+        "UNRESOLVED_DISPATCH_TARGET",
+        "ENTRY_NOT_COMPILED",
+        "RUNTIME_INPUT_UNAVAILABLE",
+        "RUNTIME_ELF_REJECTED",
+        "RUNTIME_TRACE_UNAVAILABLE",
+        "RUNTIME_ARGUMENT_FAILURE",
+        "NATIVE_RUNTIME_CRASH",
+        "LAUNCH_FAILED",
+        "LAUNCH_TIMEOUT",
+        "HEADLESS_UNAVAILABLE"
+      ]
+    },
+    "issue_numbers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "integer", "enum": [71, 118, 285, 295, 296, 297, 298, 300, 308] }
+    },
+    "unsupported_imports": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/unsupported_import" }
+    },
+    "runtime_imports": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/runtime_import" }
+    },
+    "runtime_output_kind": {
+      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "VIDEO_UNAVAILABLE", "OTHER"]
+    },
+    "process_exit_code": { "type": ["integer", "null"] },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["functions", "instructions", "modules", "encrypted_modules", "unsupported_opcodes"],
+      "properties": {
+        "functions": { "type": ["integer", "null"], "minimum": 0 },
+        "instructions": { "type": ["integer", "null"], "minimum": 0 },
+        "modules": { "type": ["integer", "null"], "minimum": 0 },
+        "encrypted_modules": { "type": ["integer", "null"], "minimum": 0 },
+        "unsupported_opcodes": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Z][A-Z0-9_.]*$" },
+          "additionalProperties": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "exit_classification": {
+      "enum": ["NOT_RUN", "EXITED_ZERO", "EXITED_NONZERO", "TIMED_OUT", "HEADLESS_UNAVAILABLE"]
+    }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "duration_ms"],
+      "properties": {
+        "status": { "enum": ["NOT_RUN", "PASS", "FAIL", "TIMED_OUT"] },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "preflight_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "status", "issue_numbers"],
+      "properties": {
+        "code": { "enum": ["DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE", "SYSTEM_FONTS", "AUDIO_OUTPUT", "MODIFIED_DUMP_CFW_LOADER"] },
+        "status": { "enum": ["OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS"] },
+        "issue_numbers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "enum": [71, 118, 285, 295, 296, 297, 298, 300, 308] }
+        }
+      }
+    },
+    "unsupported_import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["library", "nid_name"],
+      "properties": {
+        "library": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.$-]{0,63}$" },
+        "nid_name": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_.$-]{0,95}$" }
+      }
+    },
+    "runtime_import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["library", "nid", "nid_name"],
+      "properties": {
+        "library": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_.$-]{0,63}$" },
+        "nid": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{8}$" },
+        "nid_name": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_.$-]{0,95}$" }
+      }
+    }
+  }
+}

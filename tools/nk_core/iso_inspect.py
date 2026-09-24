@@ -8,9 +8,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import struct
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import title_manifest
 from .title_registry import TitleRegistry, get_default_registry
@@ -22,9 +23,16 @@ PVD_SECTOR = 16
 ISO_MAGIC = b"\x01CD001\x01"
 SFO_MAGIC = b"\x00PSF\x01\x01\x00\x00"
 MAX_DIRECTORY_BYTES = 512 * 1024
+MAX_DIRECTORY_ENTRIES = 4096
 MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
+MAX_CFW_EBOOT_SCAN_BYTES = 256 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
+PSP_DEFAULT_MAIN_LOAD_ADDRESS = 0x08804000
+PSP_CONVENTIONAL_USER_MEMORY_TOP = 0x0A000000
+PSP_MODULE_ADDRESS_TOP = 0x09EF0000
+PSP_MODULE_ADDRESS_ALIGNMENT = 0x00010000
+PSP_MODULE_HEAP_RESERVE = 0x00100000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
@@ -32,6 +40,143 @@ SFO_FMT_UINT32 = 0x0404
 
 class IsoInspectionError(ValueError):
     """Raised when an ISO image is unreadable or malformed."""
+
+
+def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
+    """Return whether a validated ELF import table names a CFW-only library."""
+    try:
+        from analyze import Elf
+        from imports import parse_imports
+
+        imports = parse_imports(Elf(elf_bytes))
+    except (ImportError, IndexError, OSError, TypeError, ValueError, struct.error):
+        return False
+    cfw_libraries = {"systemctrlforkernel", "kubridge"}
+    return any(
+        library.casefold() in cfw_libraries or library.casefold().endswith("forkernel")
+        for library, _nid in imports.values()
+    )
+
+
+@dataclass(frozen=True)
+class IsoDirectoryEntry:
+    """One bounded ISO9660 directory entry with its validated extent."""
+
+    name: str
+    lba: int
+    size: int
+    is_directory: bool
+    multi_extent: bool
+
+
+def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
+    """Return (ELF type, lowest PT_LOAD address, highest PT_LOAD end)."""
+    try:
+        image_path = Path(path)
+        file_size = image_path.stat().st_size
+        with image_path.open("rb") as stream:
+            header = stream.read(52)
+            if len(header) < 52 or header[:7] != b"\x7fELF\x01\x01\x01":
+                raise IsoInspectionError("ELF32 load binding needs a little-endian ELF32 image")
+            e_type, machine, version = struct.unpack_from("<HHI", header, 16)
+            _entry, phoff = struct.unpack_from("<II", header, 24)
+            ehsize, phentsize, phnum = struct.unpack_from("<HHH", header, 40)
+            if machine != 8 or version != 1 or ehsize != 52 or phentsize != 32:
+                raise IsoInspectionError("ELF32 load binding needs a supported MIPS program-header table")
+            if not 1 <= phnum <= 128 or phoff < ehsize:
+                raise IsoInspectionError("ELF32 load binding has an unsupported program-header count")
+            ph_end = phoff + phentsize * phnum
+            if ph_end < phoff or ph_end > file_size:
+                raise IsoInspectionError("ELF32 program headers exceed the input image")
+            stream.seek(phoff)
+            table = stream.read(phentsize * phnum)
+    except OSError as exc:
+        raise IsoInspectionError("ELF32 image could not be read for guest-module placement") from exc
+    if len(table) != phentsize * phnum:
+        raise IsoInspectionError("ELF32 program headers are truncated")
+
+    low: int | None = None
+    high = 0
+    for index in range(phnum):
+        p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _flags, _align = \
+            struct.unpack_from("<8I", table, index * phentsize)
+        if p_offset + p_filesz < p_offset or p_offset + p_filesz > file_size:
+            raise IsoInspectionError("ELF32 segment file range exceeds the input image")
+        if p_type != 1:
+            continue
+        end = p_vaddr + p_memsz
+        if p_memsz < p_filesz or end < p_vaddr or end > 0xFFFFFFFF:
+            raise IsoInspectionError("ELF32 segment memory range is invalid")
+        low = p_vaddr if low is None else min(low, p_vaddr)
+        high = max(high, end)
+    if low is None or high <= low:
+        raise IsoInspectionError("ELF32 image has no non-empty loadable segment")
+    return e_type, low, high
+
+
+def plan_provisional_module_bindings(
+    main_elf: Path | str,
+    module_inputs: Sequence[tuple[str, Path | str, str]],
+) -> list[dict]:
+    """Place relocatable modules below the conventional partition top.
+
+    The lowest address leaves at least 1 MiB after the main image (including
+    PT_LOAD BSS) for the initial user heap. Modules then occupy ascending,
+    64-KiB-aligned ranges in filename order, below 0x09EF0000. That ceiling is
+    the runtime's VBlank-stack base; the 64-KiB VBlank stack and the 1-MiB
+    nested-call frame arena above it remain reserved. The HLE allocator
+    reserves the exact manifest address when each module is loaded; provisional
+    evidence records that this deterministic layout is a project policy, not a
+    measured firmware placement.
+    """
+    main_type, _main_low, main_high = _elf32_load_span(main_elf)
+    if main_type in (3, 0xFFA0):
+        main_end = PSP_DEFAULT_MAIN_LOAD_ADDRESS + main_high
+    elif main_type == 2:
+        main_end = main_high
+    else:
+        raise IsoInspectionError("main executable type has no supported guest-module layout")
+    if main_end > PSP_CONVENTIONAL_USER_MEMORY_TOP:
+        raise IsoInspectionError("main executable exceeds the conventional user-memory ceiling")
+
+    floor_unaligned = max(
+        main_end + PSP_MODULE_HEAP_RESERVE,
+        title_manifest.GUEST_MODULE_RAM_LO,
+    )
+    alignment = PSP_MODULE_ADDRESS_ALIGNMENT
+    floor = (floor_unaligned + alignment - 1) & ~(alignment - 1)
+    if floor < floor_unaligned or floor >= PSP_MODULE_ADDRESS_TOP:
+        raise IsoInspectionError("main image leaves no safe guest-module address range")
+
+    modules: list[tuple[str, str, int]] = []
+    folded_names: set[str] = set()
+    for name, module_path, guest_path in module_inputs:
+        folded = name.casefold()
+        if folded in folded_names:
+            raise IsoInspectionError("guest-module filenames collide under the placement policy")
+        folded_names.add(folded)
+        module_type, module_low, module_high = _elf32_load_span(module_path)
+        if module_type not in (3, 0xFFA0) or module_low != 0:
+            raise IsoInspectionError("guest module is not a base-zero relocatable ELF/PRX")
+        modules.append((name, guest_path, module_high))
+
+    cursor = floor
+    placed: list[dict] = []
+    for name, guest_path, span in sorted(modules, key=lambda item: item[0].casefold()):
+        address = (cursor + alignment - 1) & ~(alignment - 1)
+        end = address + span
+        if address < cursor or end < address or end > PSP_MODULE_ADDRESS_TOP:
+            raise IsoInspectionError("guest modules do not fit above the main-image heap reserve")
+        placed.append({
+            "name": name,
+            "load_address": address,
+            "required": True,
+            "role": "guest-prx",
+            "guest_path": guest_path,
+            "load_address_evidence": "provisional",
+        })
+        cursor = end
+    return placed
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
@@ -270,6 +415,7 @@ def write_experimental_profile(
             "device_prefixes": ["disc0:", "ms0:"],
         },
         "hle_profile": "generic",
+        "codegen_profile": "none",
         "feature_requirements": [],
         "verification_profile": "experimental-unverified",
     })
@@ -278,29 +424,78 @@ def write_experimental_profile(
     selected_path = ""
     executable_sha256: str | None = None
     elf_sha256: str | None = None
+    executable_entry = 0
+    executable_load_address: int | None = None
     if selected is not None:
-        selected_path = f"PSP_GAME/SYSDIR/{selected}"
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
+        uses_decrypted_eboot = selected == "EBOOT.elf"
+        selected_path = (
+            "PSP_GAME/SYSDIR/EBOOT.BIN"
+            if uses_decrypted_eboot
+            else f"PSP_GAME/SYSDIR/{selected}"
+        )
+        decrypted_path: Path | None = None
+        if uses_decrypted_eboot:
+            decrypted_value = report.get("decrypted_executable")
+            if not isinstance(decrypted_value, str):
+                raise IsoInspectionError("selected decrypted EBOOT.elf is unavailable")
+            decrypted_path = Path(decrypted_value)
+            if _classify_decrypted_elf_file(decrypted_path) != "PLAIN_MIPS_ELF32":
+                raise IsoInspectionError("selected decrypted EBOOT.elf is not a usable MIPS ELF32")
+            file_size = decrypted_path.stat().st_size
+            if file_size <= 0 or file_size > MAX_EXECUTABLE_BYTES:
+                raise IsoInspectionError("selected decrypted EBOOT.elf exceeds the supported size bound")
+        else:
             file_size = path.stat().st_size
-            extent = _lookup_iso_file(
-                stream, file_size, ("PSP_GAME", "SYSDIR", selected)
-            )
-            if extent is None:
-                raise IsoInspectionError("selected executable disappeared from the ISO directory tree")
-            lba, size = extent
+        digest = hashlib.sha256()
+        with (decrypted_path if uses_decrypted_eboot else path).open("rb") as stream:
+            if uses_decrypted_eboot:
+                lba = 0
+                size = file_size
+                header = stream.read(min(size, 52))
+            else:
+                extent = _lookup_iso_file(
+                    stream, file_size, ("PSP_GAME", "SYSDIR", selected)
+                )
+                if extent is None:
+                    raise IsoInspectionError("selected executable disappeared from the ISO directory tree")
+                lba, size = extent
+                header = _read_iso_extent(stream, file_size, lba, size, 0, min(size, 52))
             if size <= 0 or size > MAX_EXECUTABLE_BYTES:
                 raise IsoInspectionError("selected executable is outside the supported hashing bound")
+            if len(header) < 52 or header[:7] != b"\x7fELF\x01\x01\x01":
+                raise IsoInspectionError("selected executable has no supported little-endian ELF32 header")
+            e_type, machine, version = struct.unpack_from("<HHI", header, 16)
+            if machine != 8 or version != 1:
+                raise IsoInspectionError("selected executable is not a supported MIPS ELF32 image")
+            if e_type not in (2, 3, 0xFFA0):
+                raise IsoInspectionError(
+                    "experimental import needs a user-supplied load binding for unsupported relocatable ELF input (#308)"
+                )
+            executable_entry = struct.unpack_from("<I", header, 24)[0]
+            if e_type in (3, 0xFFA0):
+                executable_load_address = PSP_DEFAULT_MAIN_LOAD_ADDRESS
             offset = 0
             while offset < size:
                 count = min(64 * 1024, size - offset)
-                chunk = _read_iso_extent(stream, file_size, lba, size, offset, count)
+                if uses_decrypted_eboot:
+                    stream.seek(offset)
+                    chunk = stream.read(count)
+                else:
+                    chunk = _read_iso_extent(stream, file_size, lba, size, offset, count)
                 if len(chunk) != count:
                     raise IsoInspectionError("selected executable could not be read completely")
                 digest.update(chunk)
                 offset += count
         executable_sha256 = digest.hexdigest()
         elf_sha256 = executable_sha256
+    manifest["executable"]["entry"] = executable_entry
+    if executable_load_address is not None:
+        manifest["executable"].update({
+            "base": executable_load_address,
+            "load_address": executable_load_address,
+            "load_address_evidence": "documented-psp-default",
+        })
+    manifest = title_manifest.validate_manifest(manifest)
 
     profile = {
         "schema_version": EXPERIMENTAL_PROFILE_SCHEMA_VERSION,
@@ -358,6 +553,97 @@ def _read_iso_extent(
     return data
 
 
+def _read_iso_directory_entries(
+    stream, file_size: int, lba: int, size: int
+) -> list[IsoDirectoryEntry]:
+    if size <= 0 or size > MAX_DIRECTORY_BYTES:
+        raise IsoInspectionError("ISO directory is empty or exceeds its supported bound")
+    directory = _read_iso_extent(stream, file_size, lba, size, 0, size)
+    entries: list[IsoDirectoryEntry] = []
+    offset = 0
+    while offset < len(directory):
+        record_size = directory[offset]
+        if record_size == 0:
+            offset = ((offset // SECTOR_SIZE) + 1) * SECTOR_SIZE
+            continue
+        if record_size < 34 or record_size > len(directory) - offset or \
+                (offset % SECTOR_SIZE) + record_size > SECTOR_SIZE:
+            raise IsoInspectionError("malformed ISO directory record bounds")
+        record = directory[offset : offset + record_size]
+        name_size = record[32]
+        if name_size == 0 or 33 + name_size > record_size:
+            raise IsoInspectionError("malformed ISO directory identifier")
+        raw_name = record[33 : 33 + name_size]
+        offset += record_size
+        if raw_name in (b"\0", b"\1"):
+            continue
+        try:
+            name = raw_name.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise IsoInspectionError("ISO directory identifier is not ASCII") from exc
+        # ISO9660 file versions are metadata, not part of the guest filename.
+        name = name.split(";", 1)[0]
+        if not name or name in {".", ".."}:
+            raise IsoInspectionError("ISO directory contains an invalid filename")
+        entry_lba, entry_size, is_directory = _extent_from_record(record, file_size)
+        entries.append(IsoDirectoryEntry(
+            name=name,
+            lba=entry_lba,
+            size=entry_size,
+            is_directory=is_directory,
+            multi_extent=bool(record[25] & 0x80),
+        ))
+        if len(entries) > MAX_DIRECTORY_ENTRIES:
+            raise IsoInspectionError("ISO directory exceeds the supported entry count")
+    return entries
+
+
+def list_iso_directory(
+    iso_path: Path | str, path: tuple[str, ...]
+) -> list[IsoDirectoryEntry] | None:
+    """List one fixed ISO directory after validating every record and extent.
+
+    ``None`` means the requested directory is absent or is not a directory. Caller
+    supplied components are single names; traversal syntax and nested separators
+    are refused.
+    """
+    if len(path) > 8 or any(
+        not isinstance(component, str)
+        or not component
+        or component in {".", ".."}
+        or "/" in component
+        or "\\" in component
+        for component in path
+    ):
+        raise IsoInspectionError("ISO directory path is invalid")
+    image = Path(iso_path)
+    try:
+        file_size = image.stat().st_size
+        with image.open("rb") as stream:
+            stream.seek(PVD_SECTOR * SECTOR_SIZE)
+            pvd = stream.read(SECTOR_SIZE)
+            if len(pvd) != SECTOR_SIZE or pvd[:7] != ISO_MAGIC:
+                raise IsoInspectionError("missing primary volume descriptor")
+            lba, size, is_directory = _extent_from_record(pvd[156:190], file_size)
+            if not is_directory or size == 0 or size > MAX_DIRECTORY_BYTES:
+                raise IsoInspectionError("root directory is not a bounded directory extent")
+            for component in path:
+                entries = _read_iso_directory_entries(stream, file_size, lba, size)
+                found = next(
+                    (entry for entry in entries
+                     if entry.name.casefold() == component.casefold()),
+                    None,
+                )
+                if found is None or not found.is_directory:
+                    return None
+                lba, size = found.lba, found.size
+            if not is_directory and not path:
+                return None
+            return _read_iso_directory_entries(stream, file_size, lba, size)
+    except OSError as exc:
+        raise IsoInspectionError("ISO directory could not be read") from exc
+
+
 def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int, int] | None:
     stream.seek(PVD_SECTOR * SECTOR_SIZE)
     pvd = stream.read(SECTOR_SIZE)
@@ -399,7 +685,9 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
     return (lba, size) if not is_dir else None
 
 
-def _elf32_mips_usable(stream, file_size: int, lba: int, size: int) -> bool:
+def _elf32_mips_usable(
+    stream, file_size: int, lba: int, size: int, *, require_segment_alignment: bool = True
+) -> bool:
     if size < 52:
         return False
     header = _read_iso_extent(stream, file_size, lba, size, 0, 52)
@@ -437,7 +725,9 @@ def _elf32_mips_usable(stream, file_size: int, lba: int, size: int) -> bool:
         memory_end = p_vaddr + p_memsz
         if p_memsz < p_filesz or memory_end > 0x100000000:
             return False
-        if p_align > 1 and (p_align & (p_align - 1) or p_offset % p_align != p_vaddr % p_align):
+        if require_segment_alignment and p_align > 1 and (
+            p_align & (p_align - 1) or p_offset % p_align != p_vaddr % p_align
+        ):
             return False
         have_load = True
         if p_flags & 1 and p_vaddr <= entry < memory_end:
@@ -461,7 +751,7 @@ def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | Non
 
 
 def _classify_decrypted_elf_file(path: Path | str) -> str:
-    """Validate a user-supplied ELF32/MIPS executable using the ISO checks."""
+    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans."""
     candidate = Path(path)
     try:
         size = candidate.stat().st_size
@@ -472,11 +762,12 @@ def _classify_decrypted_elf_file(path: Path | str) -> str:
         with candidate.open("rb") as stream:
             header = stream.read(min(size, 0x80))
             if header.startswith(b"\x7fELF"):
-                return (
-                    "PLAIN_MIPS_ELF32"
-                    if _elf32_mips_usable(stream, size, 0, size)
-                    else "UNKNOWN"
+                # The original ELF is read by the static analyzer, not a host
+                # ELF loader; its bounded guest spans remain required.
+                usable = _elf32_mips_usable(
+                    stream, size, 0, size, require_segment_alignment=False
                 )
+                return "PLAIN_MIPS_ELF32" if usable else "UNKNOWN"
     except (OSError, IsoInspectionError, struct.error):
         return "UNKNOWN"
     return "UNKNOWN"
@@ -536,6 +827,7 @@ def inspect_compatibility_preflight(
     size_bytes = path.stat().st_size
     directory_error: str | None = None
     sfo_entry: tuple[int, int] | None = None
+    cfw_loader_detected = False
     try:
         with path.open("rb") as stream:
             sfo_entry = _lookup_iso_file(stream, size_bytes, ("PSP_GAME", "PARAM.SFO"))
@@ -552,9 +844,29 @@ def inspect_compatibility_preflight(
                 "EBOOT.BIN": _classify_iso_executable(stream, size_bytes, "EBOOT.BIN"),
                 "BOOT.BIN": _classify_iso_executable(stream, size_bytes, "BOOT.BIN"),
             }
+            eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.BIN")
+            )
+            old_eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.OLD")
+            )
+            if (
+                eboot_entry is not None
+                and old_eboot_entry is not None
+                and eboot_entry[1] <= MAX_CFW_EBOOT_SCAN_BYTES
+                and executables["EBOOT.BIN"]["classification"] == "PLAIN_MIPS_ELF32"
+            ):
+                loader = _read_iso_extent(
+                    stream, size_bytes, *eboot_entry, 0, eboot_entry[1]
+                )
+                cfw_loader_detected = (
+                    len(loader) == eboot_entry[1]
+                    and _has_cfw_or_kernel_only_imports(loader)
+                )
     except (OSError, IsoInspectionError, struct.error) as exc:
         sfo_parsed = False
         directory_error = str(exc)
+        cfw_loader_detected = False
         executables = {
             name: {"classification": "UNKNOWN", "present": False, "size_bytes": 0}
             for name in ("EBOOT.BIN", "BOOT.BIN")
@@ -580,10 +892,18 @@ def inspect_compatibility_preflight(
         if candidate_elf is not None and candidate_elf.is_file():
             decrypted_elf = candidate_elf
             decrypted_elf_kind = _classify_decrypted_elf_file(candidate_elf)
+    if cfw_loader_detected:
+        selected = (
+            "EBOOT.elf"
+            if decrypted_elf is not None and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
+            else None
+        )
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
     if (
+        not cfw_loader_detected
+        and
         selected is None
         and eboot_kind in user_decryptable_kinds
         and decrypted_elf is not None
@@ -614,7 +934,18 @@ def inspect_compatibility_preflight(
             "issues": [],
         }
 
-    if selected == "BOOT.BIN":
+    if cfw_loader_detected and selected is None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                "This disc image was modified by a custom-firmware patch. The original "
+                "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
+                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+                "This boundary is in the works (#308)."
+            ),
+            "issues": [308],
+        }
+    elif selected == "BOOT.BIN":
         executable_check = {
             "code": "EXECUTABLE", "status": "OK",
             "message": "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.",
@@ -745,7 +1076,24 @@ def inspect_compatibility_preflight(
                    "With no device, the game runs silently.",
         "issues": [],
     }
-    checks = [disc_check, executable_check, runtime_check, fonts_check, audio_check]
+    checks = [disc_check]
+    if cfw_loader_detected:
+        checks.append({
+            "code": "MODIFIED_DUMP_CFW_LOADER",
+            "status": "IN_PROGRESS" if selected == "EBOOT.elf" else "UNSUPPORTED",
+            "message": (
+                "A custom-firmware patch loader was detected; using the user-supplied "
+                "decrypted original and excluding patch modules. CFW dump support is in "
+                "the works (#308)."
+                if selected == "EBOOT.elf"
+                else "A custom-firmware patch loader was detected. The original executable "
+                     "is EBOOT.OLD (encrypted); supply its decrypted executable at "
+                     "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean "
+                     "dump (#308)."
+            ),
+            "issues": [308],
+        })
+    checks.extend((executable_check, runtime_check, fonts_check, audio_check))
     if experimental_check is not None:
         checks.insert(0, experimental_check)
     return {
@@ -757,6 +1105,7 @@ def inspect_compatibility_preflight(
             if selected == "EBOOT.elf" and decrypted_elf is not None
             else None
         ),
+        "modified_dump_cfw_loader": cfw_loader_detected,
         "boot_fallback": fallback,
         "executables": executables,
         "checks": checks,
