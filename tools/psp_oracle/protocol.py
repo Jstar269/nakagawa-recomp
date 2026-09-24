@@ -33,6 +33,9 @@ UNMEASURED_TOKENS = frozenset({"unknown", "unset", "placeholder", "none", "n/a",
 EXPECTED_SOURCE = {"psp": "psp", "nakagawa": "nakagawa"}
 DMAC_SIZE_MATRIX_SIZES = (0xBFFF, 0xC000, 0xC001, 0xD000, 0xF000, 0xFFFF, 0x10000, 0x100000)
 DMAC_SIZE_MATRIX_TRIALS = 3
+DMAC_SIZE_MATRIX_ALIGNMENT = 0x1000
+DMAC_SIZE_MATRIX_REDZONE = 0x1000
+DMAC_SIZE_MATRIX_PARTITION = 2
 
 # PSPSDK's ``enum PspModel`` is an ordinal generation value, not a retail
 # model number.  In particular, ordinal 3 means generation 04g, which belongs
@@ -474,19 +477,14 @@ def compare_texts(psp_text: str, nakagawa_text: str) -> dict[str, Any]:
     return compare_outputs(psp, nakagawa)
 
 
-def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIALS) -> ParsedOutput:
-    """Validate the complete scalar contract emitted by ``dma-size-matrix``.
-
-    This checks record identity, coverage, repeated-trial accounting, and the
-    full-span/sentinel invariants without interpreting a hardware result as
-    measured unless its surrounding provenance is independently accepted.
-    """
-
+def _validate_dmac_size_matrix_sizes(
+    text: str, expected_sizes: tuple[int, ...], *, trials: int
+) -> ParsedOutput:
     parsed = parse_output(text)
     expected = {
         ("memcpy" if api == 0 else "try", size): (api, size)
         for api in (0, 1)
-        for size in DMAC_SIZE_MATRIX_SIZES
+        for size in expected_sizes
     }
     observed: set[tuple[str, int]] = set()
     for record in parsed.results:
@@ -501,11 +499,18 @@ def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIAL
             raise ProtocolError(f"unexpected or duplicate DMAC matrix case {record.case_id!r}")
         observed.add(key)
         values = dict(record.values)
-        required = {f"out{i}" for i in range(10)}
+        required = {f"out{i}" for i in range(19)}
         if not required <= values.keys():
             raise ProtocolError(f"DMAC matrix case {record.case_id!r} is missing scalar fields")
         numbers = {key: int(value, 0) for key, value in values.items() if key.startswith("out")}
         api, size = expected[key]
+        allocation_bytes = (
+            size + 2 * DMAC_SIZE_MATRIX_REDZONE + DMAC_SIZE_MATRIX_ALIGNMENT - 1
+        ) & ~(DMAC_SIZE_MATRIX_ALIGNMENT - 1)
+        source_address = numbers["out15"]
+        destination_address = numbers["out16"]
+        source_block_uid = numbers["out17"]
+        destination_block_uid = numbers["out18"]
         checks = {
             "requested size": (numbers["out0"], size),
             "copied prefix": (numbers["out1"], size),
@@ -516,6 +521,11 @@ def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIAL
             "failed trials": (numbers["out7"], 0),
             "source-guard mutation": (numbers["out8"], 0),
             "post-request guard mutation": (numbers["out9"], 0),
+            "pre-request guard mutation": (numbers["out10"], 0),
+            "transfer alignment": (numbers["out11"], DMAC_SIZE_MATRIX_ALIGNMENT),
+            "allocation size": (numbers["out12"], allocation_bytes),
+            "partition owner": (numbers["out13"], DMAC_SIZE_MATRIX_PARTITION),
+            "redzone size": (numbers["out14"], DMAC_SIZE_MATRIX_REDZONE),
         }
         if record.status != "PASS":
             raise ProtocolError(f"DMAC matrix case {record.case_id!r} is {record.status}")
@@ -524,10 +534,48 @@ def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIAL
                 raise ProtocolError(
                     f"DMAC matrix case {record.case_id!r}: {label} {actual:#x} != {wanted:#x}"
                 )
+        if source_address % DMAC_SIZE_MATRIX_ALIGNMENT:
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r}: source is misaligned")
+        if destination_address % DMAC_SIZE_MATRIX_ALIGNMENT:
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r}: destination is misaligned")
+        if source_address < DMAC_SIZE_MATRIX_REDZONE or destination_address < DMAC_SIZE_MATRIX_REDZONE:
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r}: allocation address underflows")
+        source_block_start = source_address - DMAC_SIZE_MATRIX_REDZONE
+        destination_block_start = destination_address - DMAC_SIZE_MATRIX_REDZONE
+        source_block_end = source_block_start + allocation_bytes
+        destination_block_end = destination_block_start + allocation_bytes
+        if source_block_end > 0x100000000 or destination_block_end > 0x100000000:
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r}: allocation address wraps")
+        if source_block_start < destination_block_end and destination_block_start < source_block_end:
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r}: allocated spans overlap")
+        if source_block_uid <= 0 or destination_block_uid <= 0:
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r}: allocation UID is invalid")
+        if source_block_uid == destination_block_uid:
+            raise ProtocolError(f"DMAC matrix case {record.case_id!r}: allocation UIDs are not distinct")
     if observed != set(expected):
         missing = sorted(set(expected) - observed)
         raise ProtocolError(f"DMAC size matrix is incomplete; missing {missing}")
     return parsed
+
+
+def validate_dmac_size_matrix(
+    text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIALS
+) -> ParsedOutput:
+    """Validate all sizes and both APIs emitted by ``dma-size-matrix``."""
+
+    return _validate_dmac_size_matrix_sizes(
+        text, DMAC_SIZE_MATRIX_SIZES, trials=trials
+    )
+
+
+def validate_dmac_size_matrix_size(
+    text: str, requested_size: int, *, trials: int = DMAC_SIZE_MATRIX_TRIALS
+) -> ParsedOutput:
+    """Validate both API cells for one isolated matrix-size session."""
+
+    if requested_size not in DMAC_SIZE_MATRIX_SIZES:
+        raise ProtocolError(f"unsupported DMAC matrix size {requested_size:#x}")
+    return _validate_dmac_size_matrix_sizes(text, (requested_size,), trials=trials)
 
 
 def dump_json(value: Any) -> str:
