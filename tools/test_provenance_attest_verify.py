@@ -2321,6 +2321,9 @@ class AuthorityBaselineTests(EphemeralGenerationTests):
         self.assertEqual(envelope["binding"]["base_tree"], verifier._rev_tree(self.repo.root, self.base))
         entries = self.validate(raw)
         self.assertEqual(entries["src/rt/widget.c"]["classification"], "project_authored_attested")
+        # The publication audit checks an upstream file's SPDX header against
+        # this public identifier, so the safe claim must keep it.
+        self.assertEqual(entries["src/rt/core.c"]["evidence"]["license"], "GPL-2.0-or-later")
 
     def test_envelope_for_one_base_is_refused_for_another(self) -> None:
         raw = self.emit()

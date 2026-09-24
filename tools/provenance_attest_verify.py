@@ -867,7 +867,9 @@ def _safe_public_claim(path: str, record: dict | None) -> tuple[str, dict]:
     elif classification == "upstream_derived":
         safe.update({
             "upstream": "documented upstream family",
-            "license": "see NOTICE.md",
+            # The SPDX identifier is public (it is in the file header) and the
+            # publication audit checks the header against it.
+            "license": record.get("upstream_license") or "see NOTICE.md",
             "modification_status": "modified_or_translated; see trusted record",
         })
     elif classification == "generated_from_public_source":
