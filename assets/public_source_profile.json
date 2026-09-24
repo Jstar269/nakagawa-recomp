@@ -168,6 +168,7 @@
     "THIRD_PARTY_LICENSES/SAL063_CREDITS.txt",
     "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
     "assets/README.md",
+    "assets/bringup_report.schema.json",
     "assets/issue_routing.json",
     "assets/issue_routing.schema.json",
     "assets/flight_recorder_schema.json",
