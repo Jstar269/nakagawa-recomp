@@ -138,7 +138,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a2b423b1a7a3241bf046dc07f25155e7ea295e0467bf52d77373078c5f112555"
+      "sha256": "f9d519cb3449cfceeaac1293bdefac95d1a63fa115ea1bb98637da673cf26c95"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -426,7 +426,19 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "8fb51f1dc4a25358a36e80a4c140fa7e9b3355f148b320d2c9fb268052185e3b"
+      "sha256": "f4095e15782b8d1b4af1e4e98149c9173ae14f5279006a7a77e7460ae3c5dfb7"
+    },
+    {
+      "path": "assets/pypi_tool_metadata_2026-09-24.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pypi-tool-metadata-snapshot-392",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "2c8224fe00c1a765ac8b20f8d7f951a21c0d40e634998ab00ca231510e31573d"
     },
     {
       "path": "assets/release_manifest.json",
@@ -7148,7 +7160,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7a662f436cb79f59cf3512469da2e20e610069fe5bb83c1b0611c70716939753"
+      "sha256": "edb4baef9bdb550fe082e3ef8ac54c34829598eca57d7103dd4b8baca344b9e7"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -8096,7 +8108,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "320dbda08b9bab45926a774244d0aa7e4b7d067b1667c820223001c3a78da916"
+      "sha256": "a2315eb8f8cadd5c5af2cd6b4d3ca36ce88ad8c9286ce602780d8601ef75626e"
     },
     {
       "path": "tools/shader_embed.py",
@@ -9299,7 +9311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e18d96ac85da0d3f70d5f5dac2a303242d5bdfe2a1937d02be51cf7e9a24e4f5"
+      "sha256": "b61707493e74d18942819a6fbbe8413ceaa81bab89af85741503fcc576ab1cd9"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9311,7 +9323,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30bdf17974efde0345617d47418c54db4bc0f3fc14138c2b587a24ccc69c265f"
+      "sha256": "2e9d8d73c4f7b93376badaa67f59376bee9461ba192e8b1a44769cfb853d9ba8"
     },
     {
       "path": "tools/test_sbom_fail_closed.py",
@@ -9323,7 +9335,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5b6668325febfb09c3811351cf1ec852591f1e06ff00c39fd231ef4658265967"
+      "sha256": "6567c2bc748f5630be5cc6c4ec401af8470fe97af6cd5efb8788101be3def312"
     },
     {
       "path": "tools/test_sched_invariants.py",
@@ -9763,7 +9775,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3c891598c89558053790cc93b38bdee20a10f00d6ad0a75082a15a79e0855d7"
+      "sha256": "6e8cd00d6455f06b035be3ce83983d4e945c1a95a1646e2a955941dd27438391"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
