@@ -4,6 +4,7 @@
 #include "player_state.h"
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 static const char *player_runtime_root(const PlayerApp *app) {
     return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
@@ -726,6 +727,144 @@ static void player_preflight_add(PlayerCompatibilityPreflight *preflight,
     }
 }
 
+typedef enum {
+    PLAYER_DECRYPTED_EBOOT_MISSING = 0,
+    PLAYER_DECRYPTED_EBOOT_INVALID,
+    PLAYER_DECRYPTED_EBOOT_VALID,
+    PLAYER_DECRYPTED_EBOOT_PATH_INVALID
+} PlayerDecryptedEbootState;
+
+static uint16_t player_read_le16(const unsigned char *bytes) {
+    return (uint16_t)((uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8));
+}
+
+static uint32_t player_read_le32(const unsigned char *bytes) {
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static bool player_decrypted_eboot_paths(const char *runtime_root,
+                                         const char *disc_id,
+                                         char *directory, size_t directory_size,
+                                         char *elf_path, size_t elf_path_size) {
+    char canonical_id[10];
+    if (!runtime_root || !disc_id || !directory || !elf_path ||
+        directory_size == 0 || elf_path_size == 0 || strlen(disc_id) != 9) {
+        return false;
+    }
+    for (size_t i = 0; i < 9; i++) {
+        unsigned char ch = (unsigned char)disc_id[i];
+        if (i < 4) {
+            if (!isalpha(ch) || ch > 0x7f) return false;
+            canonical_id[i] = (char)toupper(ch);
+        } else {
+            if (!isdigit(ch)) return false;
+            canonical_id[i] = (char)ch;
+        }
+    }
+    canonical_id[9] = '\0';
+    int written = snprintf(directory, directory_size, "%s%ctitles%c%s%cdecrypted",
+                           runtime_root, nk_platform_path_separator(),
+                           nk_platform_path_separator(), canonical_id,
+                           nk_platform_path_separator());
+    if (written < 0 || (size_t)written >= directory_size) return false;
+    written = snprintf(elf_path, elf_path_size, "%s%cEBOOT.elf", directory,
+                       nk_platform_path_separator());
+    return written >= 0 && (size_t)written < elf_path_size;
+}
+
+static bool player_is_usable_mips_elf32(const char *path) {
+    unsigned char header[52];
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return false;
+    }
+    long file_size = ftell(file);
+    if (file_size < (long)sizeof(header) || file_size > 512L * 1024L * 1024L ||
+        fseek(file, 0, SEEK_SET) != 0 ||
+        fread(header, 1, sizeof(header), file) != sizeof(header)) {
+        fclose(file);
+        return false;
+    }
+    uint16_t e_type = player_read_le16(header + 16);
+    uint16_t machine = player_read_le16(header + 18);
+    uint32_t version = player_read_le32(header + 20);
+    uint32_t entry = player_read_le32(header + 24);
+    uint32_t phoff = player_read_le32(header + 28);
+    uint32_t shoff = player_read_le32(header + 32);
+    uint16_t ehsize = player_read_le16(header + 40);
+    uint16_t phentsize = player_read_le16(header + 42);
+    uint16_t phnum = player_read_le16(header + 44);
+    uint16_t shentsize = player_read_le16(header + 46);
+    uint16_t shnum = player_read_le16(header + 48);
+    bool valid = memcmp(header, "\x7f" "ELF", 4) == 0 &&
+                 header[4] == 1 && header[5] == 1 && header[6] == 1 &&
+                 (e_type == 1 || e_type == 2 || e_type == 3 || e_type == 0xffa0) &&
+                 machine == 8 && version == 1 && ehsize == sizeof(header) &&
+                 phentsize == 32 && phnum >= 1 && phnum <= 128 &&
+                 phoff >= ehsize &&
+                 (uint64_t)phoff + (uint64_t)phentsize * phnum <= (uint64_t)file_size;
+    if (valid && shnum != 0) {
+        valid = shentsize == 40 && shoff >= ehsize &&
+                (uint64_t)shoff + (uint64_t)shentsize * shnum <= (uint64_t)file_size;
+    } else if (valid && shoff != 0) {
+        valid = false;
+    }
+
+    bool have_load = false;
+    bool entry_executable = false;
+    for (uint16_t i = 0; valid && i < phnum; i++) {
+        unsigned char ph[32];
+        uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
+        if (fseek(file, (long)offset, SEEK_SET) != 0 ||
+            fread(ph, 1, sizeof(ph), file) != sizeof(ph)) {
+            valid = false;
+            break;
+        }
+        uint32_t type = player_read_le32(ph);
+        uint32_t p_offset = player_read_le32(ph + 4);
+        uint32_t vaddr = player_read_le32(ph + 8);
+        uint32_t filesz = player_read_le32(ph + 16);
+        uint32_t memsz = player_read_le32(ph + 20);
+        uint32_t flags = player_read_le32(ph + 24);
+        uint32_t align = player_read_le32(ph + 28);
+        uint64_t memory_end = (uint64_t)vaddr + memsz;
+        if ((uint64_t)p_offset + filesz > (uint64_t)file_size) {
+            valid = false;
+            break;
+        }
+        if (type != 1) continue;
+        if (memsz < filesz || memory_end > 0x100000000ULL ||
+            (align > 1 && ((align & (align - 1u)) != 0 ||
+                           p_offset % align != vaddr % align))) {
+            valid = false;
+            break;
+        }
+        have_load = true;
+        if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
+            entry_executable = true;
+        }
+    }
+    fclose(file);
+    return valid && have_load && entry_executable;
+}
+
+static PlayerDecryptedEbootState player_find_decrypted_eboot(
+    const char *runtime_root, const char *disc_id, char *directory,
+    size_t directory_size, char *elf_path, size_t elf_path_size) {
+    if (!player_decrypted_eboot_paths(runtime_root, disc_id, directory,
+                                      directory_size, elf_path, elf_path_size)) {
+        return PLAYER_DECRYPTED_EBOOT_PATH_INVALID;
+    }
+    FILE *file = fopen(elf_path, "rb");
+    if (!file) return PLAYER_DECRYPTED_EBOOT_MISSING;
+    fclose(file);
+    return player_is_usable_mips_elf32(elf_path)
+        ? PLAYER_DECRYPTED_EBOOT_VALID : PLAYER_DECRYPTED_EBOOT_INVALID;
+}
+
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables) {
@@ -769,24 +908,41 @@ void player_app_build_compatibility_preflight(
     } else if (boot_fallback) {
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
                              "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.", NULL, 0);
-    } else if (eboot == NK_ISO_EXEC_PSP_ENCRYPTED) {
+    } else if (eboot == NK_ISO_EXEC_PSP_ENCRYPTED ||
+               eboot == NK_ISO_EXEC_SCE_WRAPPER || eboot == NK_ISO_EXEC_PBP) {
         static const unsigned int issues[] = { 295 };
-        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                             "Encrypted executable. Decryption support is in the works (#295).",
-                             issues, 1);
+        char decrypted_dir[NK_MAX_PATH * 2];
+        char decrypted_elf[NK_MAX_PATH * 2];
+        PlayerDecryptedEbootState decrypted_state = player_find_decrypted_eboot(
+            runtime_root, app->inspecting_game.disc_id, decrypted_dir,
+            sizeof(decrypted_dir), decrypted_elf, sizeof(decrypted_elf));
+        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
+            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
+                "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+                NULL, 0);
+        } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_INVALID) {
+            char message[512];
+            snprintf(message, sizeof(message),
+                "Encrypted executable: EBOOT.elf is not a usable MIPS ELF32; "
+                "supply decrypted modules at %.300s (#295). Automatic decryption is in the works.",
+                decrypted_dir);
+            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                                 message, issues, 1);
+        } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
+            char message[512];
+            snprintf(message, sizeof(message),
+                "Encrypted executable: supply decrypted modules at %.360s (#295). "
+                "Automatic decryption is in the works.", decrypted_dir);
+            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                                 message, issues, 1);
+        } else {
+            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                "Encrypted executable. Decryption support is in the works (#295).",
+                issues, 1);
+        }
     } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "EBOOT.BIN is empty or zero-filled and cannot be analyzed.", NULL, 0);
-    } else if (eboot == NK_ISO_EXEC_SCE_WRAPPER) {
-        static const unsigned int issues[] = { 295 };
-        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                             "~SCE wrapper is not analyzable; container support is in the works (#295).",
-                             issues, 1);
-    } else if (eboot == NK_ISO_EXEC_PBP) {
-        static const unsigned int issues[] = { 295 };
-        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                             "PBP is not plain ELF; executable unpacking is in the works (#295).",
-                             issues, 1);
     } else {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
