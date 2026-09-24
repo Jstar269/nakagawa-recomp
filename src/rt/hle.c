@@ -51,6 +51,7 @@
 #include "hle_power.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector */
 #include "prx_loader.h"  /* clean-room PRX image loader (G3) */
+#include "flight_recorder.h"
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 
@@ -512,6 +513,7 @@ static void user_partition_init(void) {
     uint32_t base = eb ? (uint32_t)strtoul(eb, NULL, 16) : minimum_base;
     if (loaded_end == 0u || minimum_base < loaded_end) {
         fprintf(stderr, "user_partition_init: invalid loaded image end 0x%08x\n", loaded_end);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, loaded_end, 0u);
         abort();
     }
     if (base < minimum_base) {
@@ -519,6 +521,7 @@ static void user_partition_init(void) {
                 "user_partition_init: SR_HEAP_BASE 0x%08x overlaps loaded image/BSS "
                 "ending at 0x%08x (minimum 0x%08x)\n",
                 base, loaded_end, minimum_base);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, loaded_end, (uint32_t)base);
         abort();
     }
     s_heap = base;
@@ -528,6 +531,7 @@ static void user_partition_init(void) {
         fprintf(stderr,
                 "user_partition_init: partition top 0x%08x is not above heap base 0x%08x\n",
                 s_part_top, s_heap);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, (uint32_t)s_part_top, (uint32_t)s_heap);
         abort();
     }
     fprintf(stderr,
@@ -1836,6 +1840,7 @@ static uint32_t h_ExitThread(CpuState *s) {
          * is unconditional at this point). stderr flush so the trace survives. */
         fprintf(stderr, "GAMELOG: Guest requested exit (libc guard chain)\n");
         fflush(stderr);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, s->pc, uid, 1u);
         _exit(1);
     }
     int delete_request = s_exit_delete_request;
@@ -2647,6 +2652,7 @@ static uint32_t h_CacheInvalidateAll(CpuState *s) {
         uint32_t bad = 0u, exp = 0u, act = 0u;
         if (sr_stale_check_all(stale_mem_read, NULL, &bad, &exp, &act)) {
             fflush(stderr);
+            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, s->pc, bad, 0u);
             abort();
         }
     }
@@ -2659,6 +2665,7 @@ static uint32_t h_CacheInvalidateRange(CpuState *s) {
         uint32_t bad = 0u, exp = 0u, act = 0u;
         if (sr_stale_check_range(A0, A1, stale_mem_read, NULL, &bad, &exp, &act)) {
             fflush(stderr);
+            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, s->pc, bad, A0);
             abort();
         }
     }
@@ -2675,6 +2682,7 @@ void sr_stale_note_cache_op(uint32_t addr) {
         uint32_t bad = 0u, exp = 0u, act = 0u;
         if (sr_stale_check_range(addr, 4u, stale_mem_read, NULL, &bad, &exp, &act)) {
             fflush(stderr);
+            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, bad, addr);
             abort();
         }
     }
@@ -3165,6 +3173,7 @@ static uint32_t h_ExitGame(CpuState *s) {
     }
     fputc('\n', stderr);
     fflush(stderr);
+    sr_flight_exit(0u);
 
 
     /* Terminal on hardware in every context.  Do not park the calling thread to keep the
@@ -9269,7 +9278,10 @@ static void route_fail(const char *fmt, ...) {
     va_end(ap);
     fputc('\n', stderr);
     fflush(stderr);
-    if (!getenv("SR_ROUTE_NO_EXIT")) _Exit(ROUTE_FAIL_EXIT);
+    if (!getenv("SR_ROUTE_NO_EXIT")) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, ROUTE_FAIL_EXIT);
+        _Exit(ROUTE_FAIL_EXIT);
+    }
 }
 
 static int route_hex_nib(int c) {
@@ -10757,9 +10769,14 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                     cres == 0 ? " (not serviced: no present this frame)" : "");
             if (!snap_ok) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
+                sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, 1u);
                 _Exit(1);
             }
-            _Exit(sr_fbcap_exit_status(SR_FBCAP_FBDUMP, cres));
+            {
+                int capture_exit_status = sr_fbcap_exit_status(SR_FBCAP_FBDUMP, cres);
+                sr_flight_exit((uint32_t)capture_exit_status);
+                _Exit(capture_exit_status);
+            }
         }
     }
     return 0;
@@ -11018,6 +11035,7 @@ void sr_vblank_tick(void) {
           if (wde < 0) { const char *e = getenv("SR_WATCHDOG_EXIT"); wde = e ? atoi(e) : 0; }
           if (wde > 0 && diff >= (uint32_t)wde) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
+              sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, diff, (uint32_t)wde);
               _Exit(1);
           }
         }
@@ -11089,6 +11107,7 @@ void sr_vblank_tick(void) {
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);
+            sr_flight_exit(0u);
             _Exit(0);
         }
     }
@@ -14776,6 +14795,7 @@ static int link_started_export(CpuState *s, uint32_t nid) {
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
+    sr_flight_hle_import(nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
     sr_last_nid = nid;
     if (getenv("SR_NIDLOG")) {
         static FILE *nf = NULL; static unsigned long nc = 0;
@@ -14798,6 +14818,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         }
     }
     if (!e) {
+        sr_flight_unsupported_fatal(nid, sched_current_uid(), s->pc);
         {
             const char *nm = sr_nid_name(nid);
             fprintf(stderr, "HLE: unimplemented nid 0x%08x (%s) (thread uid 0x%x)\n"
@@ -14825,6 +14846,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     }
     uint32_t ret;
     if (e->unsupported_error) {
+        sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
         hle_note_unsupported(e);
         ret = e->unsupported_error;
     } else {
