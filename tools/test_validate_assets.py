@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the psp-recomp authors
 
 """Synthetic, retail-free hostile coverage for tools/validate_assets.py.

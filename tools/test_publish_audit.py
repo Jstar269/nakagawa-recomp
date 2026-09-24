@@ -564,6 +564,105 @@ class TestPublishAudit(unittest.TestCase):
         self.assertTrue(publish_audit._spdx_required("src/rt/recomp.c"))
         self.assertTrue(publish_audit._spdx_required("tools/codegen.py"))
 
+    def _spdx_provenance_findings(self, source_path, source_bytes, classification, license_id=None):
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            ledger_path = "assets/public_provenance_ledger.json"
+            source_file = repo / source_path
+            source_file.parent.mkdir(parents=True, exist_ok=True)
+            source_file.write_bytes(source_bytes)
+            source_record = {
+                "path": source_path,
+                "classification": classification,
+                "evidence": {"license": license_id} if license_id else {"source": "test"},
+                "sha256": hashlib.sha256(source_bytes).hexdigest(),
+            }
+            ledger_record = {
+                "path": ledger_path,
+                "classification": "reviewed_configuration",
+                "evidence": {"source": "test"},
+                "sha256": "unused-for-self-record",
+            }
+            ledger_bytes = json.dumps({"entries": [source_record, ledger_record]}).encode("utf-8")
+            ledger_file = repo / ledger_path
+            ledger_file.parent.mkdir(parents=True, exist_ok=True)
+            ledger_file.write_bytes(ledger_bytes)
+            policy_file, _ = hermetic_policy(repo, [source_path, ledger_path])
+            policy = publication_policy.load_policy(policy_file)
+            entries = [
+                publish_audit.GitEntry("100644", "", "0", source_path, "file"),
+                publish_audit.GitEntry("100644", "", "0", ledger_path, "file"),
+            ]
+            return publish_audit._provenance_ledger_findings(
+                policy,
+                entries,
+                {},
+                publish_audit.CONTENT_WORKTREE,
+                repo,
+                None,
+                self_consistency=True,
+            )
+
+    def test_provenance_audit_requires_project_license_for_project_authored_source(self):
+        cases = (
+            ("src/project.c", b"/* SPDX-License-Identifier: GPL-2.0-or-later */\nint project;\n"),
+            ("interface/src/project.tsx", b"// SPDX-License-Identifier: GPL-2.0-or-later\nint project;\n"),
+            ("CMakeLists.txt", b"# SPDX-License-Identifier: GPL-2.0-or-later\nproject(test)\n"),
+            ("fixtures/Makefile", b"# SPDX-License-Identifier: GPL-2.0-or-later\ntest:\n\ttrue\n"),
+        )
+        for source_path, source_bytes in cases:
+            with self.subTest(source_path=source_path):
+                findings = self._spdx_provenance_findings(
+                    source_path,
+                    source_bytes,
+                    "project_authored_attested",
+                )
+                self.assertTrue(any(f.code == "SPDX_PROJECT_LICENSE" for f in findings), findings)
+
+    def test_provenance_audit_preserves_inherited_spdx_lineage(self):
+        cases = ("src/rt/mpeg.c", "src/ref/interp.cpp")
+        for source_path in cases:
+            with self.subTest(source_path=source_path):
+                valid = b"/* SPDX-License-Identifier: GPL-2.0-or-later */\nint inherited;\n"
+                valid_findings = self._spdx_provenance_findings(
+                    source_path, valid, "upstream_derived", "GPL-2.0-or-later"
+                )
+                self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
+
+                removed = b"int inherited;\n"
+                findings = self._spdx_provenance_findings(
+                    source_path, removed, "upstream_derived", "GPL-2.0-or-later"
+                )
+                self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
+    def test_provenance_audit_preserves_byte_exact_upstream_spdx_lineage(self):
+        source_path = "src/rt/atrac3p/libavcodec/avcodec.h"
+        valid = b"/* SPDX-License-Identifier: LGPL-2.1-or-later */\nint imported;\n"
+        valid_findings = self._spdx_provenance_findings(
+            source_path, valid, "upstream_derived", "LGPL-2.1-or-later"
+        )
+        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
+
+        removed = b"int imported;\n"
+        findings = self._spdx_provenance_findings(
+            source_path, removed, "upstream_derived", "LGPL-2.1-or-later"
+        )
+        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
+    def test_provenance_audit_preserves_inherited_dashboard_spdx_declaration(self):
+        source_path = "interface/src/components/ui/button.tsx"
+        valid = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const button = true;\n"
+        valid_findings = self._spdx_provenance_findings(
+            source_path, valid, "upstream_derived", "MIT"
+        )
+        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
+
+        removed = b"export const button = true;\n"
+        findings = self._spdx_provenance_findings(
+            source_path, removed, "upstream_derived", "MIT"
+        )
+        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
     def test_deterministic_report_output_and_aggregate_sha(self):
         entries = [
             publish_audit.GitEntry("100644", "abc1234", "0", "LICENSE", "file"),
@@ -1817,6 +1916,21 @@ class TestPrivateRootDetection(unittest.TestCase):
                 stray_audits.append(rel)
 
         self.assertEqual(stray_audits, [], f"Found non-canonical policy engine(s) under workspace root: {stray_audits}")
+
+
+class GeneratedEmbeddingSpdxTests(unittest.TestCase):
+    def test_exempt_embeddings_match_the_shader_contract_and_their_sources_carry_lineage(self) -> None:
+        import shader_embed
+        gpu = Path(publish_audit.ROOT) / "src" / "rt" / "gpu_sdl3vk"
+        contract = {
+            (gpu / embedded).relative_to(publish_audit.ROOT).as_posix():
+                (gpu / source).relative_to(publish_audit.ROOT).as_posix()
+            for _stage, source, embedded in shader_embed.SHADERS
+        }
+        self.assertEqual(publish_audit.SPDX_GENERATED_EMBEDDING_SOURCES, contract)
+        for source in contract.values():
+            head = (Path(publish_audit.ROOT) / source).read_text(encoding="utf-8").splitlines()[:8]
+            self.assertTrue(any("SPDX-License-Identifier:" in line for line in head), source)
 
 
 if __name__ == "__main__":

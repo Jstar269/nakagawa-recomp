@@ -53,6 +53,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_CACHE_ALIAS 52
 #define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX 53
 #define PSP_ORACLE_CASE_MODEL_PROFILE 54
+#define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL 55
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -112,6 +113,13 @@ PSP_HEAP_SIZE_KB(512);
 PSP_HEAP_SIZE_KB(512);
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
+/* Leave a bounded main-thread heap so the matrix can reserve both DMA spans
+   from partition 2 instead of borrowing unowned VRAM. */
+PSP_HEAP_SIZE_KB(512);
+#endif
+
 /* PPSSPP exposes a pseudo-device that headless builds use to capture test
    output; see Core/HLE/sceIo.cpp. Real hardware has no such device and the
    devctl simply fails, which is how the probe tells the two apart. The same
@@ -158,6 +166,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/audio_query_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
 #define PROBE_HOST0_LOG "host0:/cache_alias_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
+#define PROBE_HOST0_LOG "host0:/dmac_size_matrix_cell_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
 #define PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
@@ -752,14 +762,16 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 
 #if (PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
      PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
 #define DMAC_API_MEMCPY 0u
 #define DMAC_API_TRY_MEMCPY 1u
 #define DMAC_MEASURED_PREFIX 0x0000c000u
 #define DMAC_REFERENCE_BUSY 0x80000021u
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
 static int dmac_call(uint32_t api, void *dst, const void *src, uint32_t size) {
     return api == DMAC_API_TRY_MEMCPY
         ? sceDmacTryMemcpy(dst, src, size)
@@ -777,18 +789,41 @@ static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
 #endif
 #endif
 
-#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
-/* Sequential, thread-free size controls.  The invalid-tail family measures a
-   block boundary; this matrix keeps both spans fully inside VRAM so a result
-   above 0xC000 cannot be mistaken for boundary truncation. */
-#define DMAC_SIZE_BYTES 0x00100000u
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
+/* Keep each transfer inside two partition-2 blocks owned by this probe.  The
+   page-sized redzones also absorb cache-line rounding around the requested
+   spans. */
+#define DMAC_SIZE_PARTITION 2
+#define DMAC_SIZE_ALIGNMENT 0x1000u
+#define DMAC_SIZE_REDZONE_BYTES 0x1000u
 #define DMAC_SIZE_SENTINEL 0xa5u
+#define DMAC_SIZE_SRC_GUARD_BEFORE 0x96u
+#define DMAC_SIZE_SRC_GUARD_AFTER 0x69u
+#define DMAC_SIZE_DST_GUARD_BEFORE 0x5au
+#define DMAC_SIZE_DST_GUARD_AFTER 0xc3u
 #define DMAC_SIZE_TRIALS 3u
-#define DMAC_SIZE_DST ((uint8_t *)0x04000000u)
-#define DMAC_SIZE_SRC ((uint8_t *)0x04100000u)
+
+#if defined(DMAC_SIZE_REQUEST)
+#if DMAC_SIZE_REQUEST != 0x0000bfffu && DMAC_SIZE_REQUEST != 0x0000c000u && \
+    DMAC_SIZE_REQUEST != 0x0000c001u && DMAC_SIZE_REQUEST != 0x0000d000u && \
+    DMAC_SIZE_REQUEST != 0x0000f000u && DMAC_SIZE_REQUEST != 0x0000ffffu && \
+    DMAC_SIZE_REQUEST != 0x00010000u && DMAC_SIZE_REQUEST != 0x00100000u
+#error DMAC_SIZE_REQUEST must be one of the supported matrix sizes
+#endif
+static const uint32_t dmac_size_requests[] = { DMAC_SIZE_REQUEST };
+#else
 static const uint32_t dmac_size_requests[] = {
     0x0000bfffu, 0x0000c000u, 0x0000c001u, 0x0000d000u,
     0x0000f000u, 0x0000ffffu, 0x00010000u, 0x00100000u,
+};
+#endif
+
+struct dmac_size_buffer {
+    SceUID block_uid;
+    uint8_t *head;
+    uint8_t *data;
+    uint32_t allocation_bytes;
 };
 
 static void dmac_size_cache_sync(void *address, uint32_t size) {
@@ -796,84 +831,261 @@ static void dmac_size_cache_sync(void *address, uint32_t size) {
     sceKernelDcacheInvalidateRange(address, size);
 }
 
-static uint32_t dmac_size_prefix(uint32_t requested) {
-    uint32_t offset = 0;
-    while (offset < requested && DMAC_SIZE_DST[offset] == dmac_pattern(offset)) {
-        ++offset;
+static int dmac_size_allocation_bytes(uint32_t requested, uint32_t *allocation_bytes) {
+    const uint32_t overhead = 2u * DMAC_SIZE_REDZONE_BYTES;
+    if (requested > UINT32_MAX - overhead - (DMAC_SIZE_ALIGNMENT - 1u)) return 0;
+    const uint32_t total = requested + overhead;
+    *allocation_bytes =
+        (total + DMAC_SIZE_ALIGNMENT - 1u) & ~(DMAC_SIZE_ALIGNMENT - 1u);
+    return *allocation_bytes >= total;
+}
+
+static int dmac_size_allocate_buffer(struct dmac_size_buffer *buffer,
+                                     const char *name, uint32_t requested,
+                                     uint32_t *failure) {
+    uint32_t allocation_bytes = 0;
+    buffer->block_uid = -1;
+    buffer->head = NULL;
+    buffer->data = NULL;
+    buffer->allocation_bytes = 0;
+    if (!dmac_size_allocation_bytes(requested, &allocation_bytes)) {
+        *failure = UINT32_MAX;
+        return 0;
     }
+
+    const SceUID block_uid = sceKernelAllocPartitionMemory(
+        DMAC_SIZE_PARTITION, name, PSP_SMEM_High, allocation_bytes, NULL);
+    if (block_uid < 0) {
+        *failure = (uint32_t)block_uid;
+        return 0;
+    }
+    uint8_t *const head = (uint8_t *)sceKernelGetBlockHeadAddr(block_uid);
+    const uintptr_t address = (uintptr_t)head;
+    if (!head || address > UINTPTR_MAX - (uintptr_t)allocation_bytes ||
+        (address & (DMAC_SIZE_ALIGNMENT - 1u)) != 0u) {
+        sceKernelFreePartitionMemory(block_uid);
+        *failure = 0;
+        return 0;
+    }
+
+    buffer->block_uid = block_uid;
+    buffer->head = head;
+    buffer->data = head + DMAC_SIZE_REDZONE_BYTES;
+    buffer->allocation_bytes = allocation_bytes;
+    if (((uintptr_t)buffer->data & (DMAC_SIZE_ALIGNMENT - 1u)) != 0u) {
+        sceKernelFreePartitionMemory(block_uid);
+        buffer->block_uid = -1;
+        buffer->head = NULL;
+        buffer->data = NULL;
+        buffer->allocation_bytes = 0;
+        *failure = 0;
+        return 0;
+    }
+    *failure = 0;
+    return 1;
+}
+
+static void dmac_size_release_buffer(struct dmac_size_buffer *buffer) {
+    if (buffer->block_uid >= 0) {
+        sceKernelFreePartitionMemory(buffer->block_uid);
+        buffer->block_uid = -1;
+    }
+}
+
+static int dmac_size_spans_overlap(const struct dmac_size_buffer *left,
+                                   const struct dmac_size_buffer *right) {
+    const uintptr_t left_begin = (uintptr_t)left->head;
+    const uintptr_t right_begin = (uintptr_t)right->head;
+    if (left_begin > UINTPTR_MAX - (uintptr_t)left->allocation_bytes ||
+        right_begin > UINTPTR_MAX - (uintptr_t)right->allocation_bytes) return 1;
+    const uintptr_t left_end = left_begin + left->allocation_bytes;
+    const uintptr_t right_end = right_begin + right->allocation_bytes;
+    return left_begin < right_end && right_begin < left_end;
+}
+
+static void dmac_size_reset_source(struct dmac_size_buffer *source,
+                                   uint32_t requested) {
+    memset(source->head, DMAC_SIZE_SRC_GUARD_BEFORE, DMAC_SIZE_REDZONE_BYTES);
+    for (uint32_t offset = 0; offset < requested; ++offset) {
+        source->data[offset] = dmac_pattern(offset);
+    }
+    memset(source->data + requested, DMAC_SIZE_SRC_GUARD_AFTER,
+           source->allocation_bytes - DMAC_SIZE_REDZONE_BYTES - requested);
+}
+
+static void dmac_size_reset_destination(struct dmac_size_buffer *destination,
+                                        uint32_t requested) {
+    memset(destination->head, DMAC_SIZE_DST_GUARD_BEFORE,
+           DMAC_SIZE_REDZONE_BYTES);
+    memset(destination->data, DMAC_SIZE_SENTINEL, requested);
+    memset(destination->data + requested, DMAC_SIZE_DST_GUARD_AFTER,
+           destination->allocation_bytes - DMAC_SIZE_REDZONE_BYTES - requested);
+}
+
+static uint32_t dmac_size_prefix(const uint8_t *destination, uint32_t requested) {
+    uint32_t offset = 0;
+    while (offset < requested && destination[offset] == dmac_pattern(offset)) ++offset;
     return offset;
 }
 
-static uint32_t dmac_size_non_sentinel(uint32_t offset, uint32_t requested) {
+static uint32_t dmac_size_non_sentinel(const uint8_t *destination,
+                                       uint32_t offset, uint32_t requested) {
     uint32_t count = 0;
     while (offset < requested) {
-        if (DMAC_SIZE_DST[offset] != DMAC_SIZE_SENTINEL) ++count;
+        if (destination[offset] != DMAC_SIZE_SENTINEL) ++count;
         ++offset;
     }
     return count;
 }
 
-static uint32_t dmac_size_tail_mutations(uint32_t requested) {
+static uint32_t dmac_size_source_mutations(const struct dmac_size_buffer *source,
+                                           uint32_t requested) {
     uint32_t count = 0;
-    for (uint32_t offset = requested; offset < DMAC_SIZE_BYTES; ++offset) {
-        if (DMAC_SIZE_DST[offset] != DMAC_SIZE_SENTINEL) ++count;
+    for (uint32_t offset = 0; offset < requested; ++offset) {
+        if (source->data[offset] != dmac_pattern(offset)) ++count;
     }
     return count;
 }
 
-static uint32_t dmac_size_source_mutations(void) {
-    uint32_t count = 0;
-    for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
-        if (DMAC_SIZE_SRC[offset] != dmac_pattern(offset)) ++count;
+static uint32_t dmac_size_guard_mutations(const struct dmac_size_buffer *buffer,
+                                          uint32_t requested,
+                                          uint8_t guard_before,
+                                          uint8_t guard_after,
+                                          uint32_t *post_mutations) {
+    uint32_t before_count = 0;
+    uint32_t after_count = 0;
+    for (uint32_t offset = 0; offset < DMAC_SIZE_REDZONE_BYTES; ++offset) {
+        if (buffer->head[offset] != guard_before) ++before_count;
     }
-    return count;
+    const uint32_t post_start = DMAC_SIZE_REDZONE_BYTES + requested;
+    for (uint32_t offset = post_start; offset < buffer->allocation_bytes; ++offset) {
+        if (buffer->head[offset] != guard_after) ++after_count;
+    }
+    *post_mutations = after_count;
+    return before_count + after_count;
+}
+
+static void dmac_size_emit_setup_skip(int emulated, uint32_t requested,
+                                      uint32_t api, uint32_t failure) {
+    char case_id[64];
+    snprintf(case_id, sizeof(case_id), "size-matrix-%s-0x%08x",
+             api == DMAC_API_TRY_MEMCPY ? "try" : "memcpy",
+             (unsigned int)requested);
+    const uint32_t out[] = {
+        requested, 0u, 0u, 0u, 0u, api, 0u, 1u, 0u, 0u, 0u,
+        DMAC_SIZE_ALIGNMENT, 0u, DMAC_SIZE_PARTITION, DMAC_SIZE_REDZONE_BYTES,
+        0u, 0u, 0u, 0u,
+    };
+    emit_record_extended(emulated, "PSP-DMAC-001", case_id, "SKIP", failure,
+                         out, sizeof(out) / sizeof(out[0]));
 }
 
 static void run_dmac_size_matrix(int emulated) {
-    for (uint32_t offset = 0; offset < DMAC_SIZE_BYTES; ++offset) {
-        DMAC_SIZE_SRC[offset] = dmac_pattern(offset);
-    }
-    dmac_size_cache_sync(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
-
     const uint32_t api_count = 2u;
     const uint32_t request_count =
         (uint32_t)(sizeof(dmac_size_requests) / sizeof(dmac_size_requests[0]));
-    for (uint32_t api = 0; api < api_count; ++api) {
-        for (uint32_t i = 0; i < request_count; ++i) {
-            const uint32_t requested = dmac_size_requests[i];
+    for (uint32_t i = 0; i < request_count; ++i) {
+        const uint32_t requested = dmac_size_requests[i];
+        struct dmac_size_buffer source_buffer = { -1, NULL, NULL, 0u };
+        struct dmac_size_buffer destination_buffer = { -1, NULL, NULL, 0u };
+        uint32_t setup_failure = 0;
+        if (!dmac_size_allocate_buffer(&source_buffer, "oracle-dmac-size-src",
+                                       requested, &setup_failure)) {
+            dmac_size_emit_setup_skip(emulated, requested, DMAC_API_MEMCPY,
+                                      setup_failure);
+            dmac_size_emit_setup_skip(emulated, requested,
+                                      DMAC_API_TRY_MEMCPY, setup_failure);
+            continue;
+        }
+        if (!dmac_size_allocate_buffer(&destination_buffer, "oracle-dmac-size-dst",
+                                       requested, &setup_failure)) {
+            dmac_size_release_buffer(&source_buffer);
+            dmac_size_emit_setup_skip(emulated, requested, DMAC_API_MEMCPY,
+                                      setup_failure);
+            dmac_size_emit_setup_skip(emulated, requested,
+                                      DMAC_API_TRY_MEMCPY, setup_failure);
+            continue;
+        }
+        if (dmac_size_spans_overlap(&source_buffer, &destination_buffer)) {
+            dmac_size_release_buffer(&destination_buffer);
+            dmac_size_release_buffer(&source_buffer);
+            dmac_size_emit_setup_skip(emulated, requested, DMAC_API_MEMCPY,
+                                      UINT32_MAX);
+            dmac_size_emit_setup_skip(emulated, requested,
+                                      DMAC_API_TRY_MEMCPY, UINT32_MAX);
+            continue;
+        }
+
+        const uint32_t source_block_uid = (uint32_t)source_buffer.block_uid;
+        const uint32_t destination_block_uid = (uint32_t)destination_buffer.block_uid;
+        for (uint32_t api = 0; api < api_count; ++api) {
             uint32_t failed_trials = 0;
             uint32_t max_prefix = 0;
             uint32_t max_stray = 0;
             uint32_t max_source_mutations = 0;
-            uint32_t max_tail_mutations = 0;
+            uint32_t max_source_guard_mutations = 0;
+            uint32_t max_destination_post_guard_mutations = 0;
+            uint32_t max_destination_pre_guard_mutations = 0;
             uint32_t max_elapsed_us = 0;
             uint32_t last_result = 0;
             for (uint32_t trial = 0; trial < DMAC_SIZE_TRIALS; ++trial) {
-                memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, DMAC_SIZE_BYTES);
-                dmac_size_cache_sync(DMAC_SIZE_DST, DMAC_SIZE_BYTES);
+                dmac_size_reset_source(&source_buffer, requested);
+                dmac_size_reset_destination(&destination_buffer, requested);
+                dmac_size_cache_sync(source_buffer.head,
+                                     source_buffer.allocation_bytes);
+                dmac_size_cache_sync(destination_buffer.head,
+                                     destination_buffer.allocation_bytes);
                 const uint64_t start_us = sceKernelGetSystemTimeWide();
                 last_result = (uint32_t)dmac_call(
-                    api, DMAC_SIZE_DST, DMAC_SIZE_SRC, requested);
+                    api, destination_buffer.data, source_buffer.data, requested);
                 const uint64_t end_us = sceKernelGetSystemTimeWide();
-                sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, DMAC_SIZE_BYTES);
-                sceKernelDcacheInvalidateRange(DMAC_SIZE_SRC, DMAC_SIZE_BYTES);
+                sceKernelDcacheInvalidateRange(destination_buffer.head,
+                                               destination_buffer.allocation_bytes);
+                sceKernelDcacheInvalidateRange(source_buffer.head,
+                                               source_buffer.allocation_bytes);
 
-                const uint32_t prefix = dmac_size_prefix(requested);
-                const uint32_t stray = dmac_size_non_sentinel(prefix, requested);
-                const uint32_t tail_mutations = dmac_size_tail_mutations(requested);
-                const uint32_t source_mutations = dmac_size_source_mutations();
+                const uint32_t prefix = dmac_size_prefix(destination_buffer.data,
+                                                         requested);
+                const uint32_t stray = dmac_size_non_sentinel(
+                    destination_buffer.data, prefix, requested);
+                const uint32_t source_mutations = dmac_size_source_mutations(
+                    &source_buffer, requested);
+                uint32_t source_post_guard_mutations = 0;
+                const uint32_t source_guard_mutations = dmac_size_guard_mutations(
+                    &source_buffer, requested, DMAC_SIZE_SRC_GUARD_BEFORE,
+                    DMAC_SIZE_SRC_GUARD_AFTER, &source_post_guard_mutations);
+                uint32_t destination_post_guard_mutations = 0;
+                const uint32_t destination_guard_mutations =
+                    dmac_size_guard_mutations(&destination_buffer, requested,
+                                              DMAC_SIZE_DST_GUARD_BEFORE,
+                                              DMAC_SIZE_DST_GUARD_AFTER,
+                                              &destination_post_guard_mutations);
+                const uint32_t destination_pre_guard_mutations =
+                    destination_guard_mutations - destination_post_guard_mutations;
                 const uint32_t elapsed_us = dmac_elapsed_us(start_us, end_us);
                 if (prefix > max_prefix) max_prefix = prefix;
                 if (stray > max_stray) max_stray = stray;
-                if (tail_mutations > max_tail_mutations) {
-                    max_tail_mutations = tail_mutations;
-                }
                 if (source_mutations > max_source_mutations) {
                     max_source_mutations = source_mutations;
                 }
+                if (source_guard_mutations > max_source_guard_mutations) {
+                    max_source_guard_mutations = source_guard_mutations;
+                }
+                if (destination_post_guard_mutations >
+                    max_destination_post_guard_mutations) {
+                    max_destination_post_guard_mutations =
+                        destination_post_guard_mutations;
+                }
+                if (destination_pre_guard_mutations >
+                    max_destination_pre_guard_mutations) {
+                    max_destination_pre_guard_mutations =
+                        destination_pre_guard_mutations;
+                }
                 if (elapsed_us > max_elapsed_us) max_elapsed_us = elapsed_us;
                 if (last_result != 0u || prefix != requested || stray != 0u ||
-                    source_mutations != 0u || tail_mutations != 0u) {
+                    source_mutations != 0u || source_guard_mutations != 0u ||
+                    destination_pre_guard_mutations != 0u ||
+                    destination_post_guard_mutations != 0u) {
                     ++failed_trials;
                 }
             }
@@ -890,13 +1102,24 @@ static void run_dmac_size_matrix(int emulated) {
                 api,
                 DMAC_SIZE_TRIALS,
                 failed_trials,
-                max_source_mutations,
-                max_tail_mutations,
+                max_source_guard_mutations,
+                max_destination_post_guard_mutations,
+                max_destination_pre_guard_mutations,
+                DMAC_SIZE_ALIGNMENT,
+                source_buffer.allocation_bytes,
+                DMAC_SIZE_PARTITION,
+                DMAC_SIZE_REDZONE_BYTES,
+                (uint32_t)(uintptr_t)source_buffer.data,
+                (uint32_t)(uintptr_t)destination_buffer.data,
+                source_block_uid,
+                destination_block_uid,
             };
             emit_record_extended(emulated, "PSP-DMAC-001", case_id,
                                  failed_trials == 0u ? "PASS" : "FAIL",
                                  last_result, out, sizeof(out) / sizeof(out[0]));
         }
+        dmac_size_release_buffer(&destination_buffer);
+        dmac_size_release_buffer(&source_buffer);
     }
 }
 #endif
@@ -3516,7 +3739,8 @@ int main(int argc, char *argv[]) {
     run_thread_exit_delete(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
     run_dmac_survey(emulated);
-#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
     run_dmac_size_matrix(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CTRL_CLOCK
     run_ctrl_clock(emulated);

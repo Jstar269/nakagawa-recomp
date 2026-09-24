@@ -12,15 +12,18 @@ case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-lifecycle`, `CASE=thread-delete-lifecycle`,
 `CASE=thread-delete-followup`, `CASE=thread-delete-explicit`, or
 `CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
-of the four `CASE=dma-invalid-tail-*` cases described below. Display/interrupt-mask
+of the four `CASE=dma-invalid-tail-*` cases described below, or the size-matrix
+cases described below. Display/interrupt-mask
 sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
 `CASE=display-ge-mask`. Transport sessions use `CASE=transport-write`, which
 emits `PSP-TRANSPORT-001`/`host0-write-readback`. Lifecycle sessions use
 `CASE=thread-exit-delete` (`PSP-THREAD-EXIT-001`, 12 cells). Allocator
 sessions use `CASE=dmac-survey` (`PSP-DMAC-001`/`allocator-survey`). The
-thread-free `CASE=dma-size-matrix` control keeps both spans inside VRAM and
-measures full copies at sizes around `0xC000` through 1 MiB, separating a true
-API-wide size limit from invalid-tail boundary behavior. The thread-free
+thread-free `CASE=dma-size-matrix` control allocates both spans from partition
+2 with page-aligned data and guard redzones, separating a true API-wide size
+limit from invalid-tail boundary behavior. `CASE=dma-size-matrix-cell`
+requires `DMAC_SIZE_REQUEST=<supported-size>` and runs one requested size per
+session. The thread-free
 `CASE=model-profile` control records the raw `kuKernelGetModel()` PSPSDK/
 kubridge ordinal, `sceKernelDevkitVersion()` word, and CPU clock. A host-side
 decoder maps the ordinal to a generation and retail family; it never applies
@@ -160,40 +163,52 @@ setup error) and these scalar outputs:
 
 The sequential `dma-size-matrix` records cover `0xBFFF`, `0xC000`,
 `0xC001`, `0xD000`, `0xF000`, `0xFFFF`, `0x10000`, and `0x100000` (1 MiB)
-for both APIs. Each case is repeated three times. The record uses `result`
+for both APIs. Each API/size cell is repeated three times. Each requested data
+span is inside a distinct `sceKernelAllocPartitionMemory` block from user
+partition 2. Data begins at a 4 KiB aligned address, with a 4 KiB leading
+redzone and at least a 4 KiB trailing redzone in each block. Blocks are freed
+after both APIs finish for that size. The 1 MiB cell allocates `0x102000` bytes
+per buffer, rather than borrowing the full VRAM range. The record uses `result`
 for the last DMAC return and these outputs: `out0` requested bytes, `out1`
 maximum contiguous copied prefix, `out2` maximum non-sentinel bytes after that
 prefix, `out3` full-source integrity flag, `out4` maximum elapsed microseconds,
 `out5` API (`0` blocking, `1` try), `out6` trial count, `out7` failed-trial
-count, `out8` maximum mutation count in the adjacent source guard, and `out9`
-maximum mutation count in the destination redzone after the request. Before
-each call the probe initializes and cache-syncs the full 1 MiB destination
-reservation and syncs the full source span; after the call it invalidates both
-full spans before inspection. The destination redzone is empty for the 1 MiB
-request, where the adjacent source span remains the guard. A PASS record
+count, `out8` source-redzone mutation count, `out9` destination trailing
+redzone mutations, `out10` destination leading redzone mutations, `out11`
+data alignment, `out12` allocation bytes per buffer, `out13` partition id,
+`out14` redzone bytes, `out15` source data address, `out16` destination data
+address, and `out17`/`out18` source/destination block UIDs. Before every call,
+the probe initializes both owned blocks and writes back then invalidates both
+full block ranges. After the call it invalidates both full block ranges before
+inspection. Each completed API/size record is appended to host0 and its file
+is closed before the next cell. A PASS record
 requires every trial to return zero, copy the complete requested prefix, leave
-the requested tail, post-request redzone, and full source/guard unchanged, and
-emit all 16 matrix records. These fully in-VRAM
-spans are the control for separating transfer size from allocator-boundary
-truncation. An earlier local PSP-3000/6.61 capture passed the old 16-record
-contract, but it lacks `out9` and cannot qualify under this stricter validator.
-It remains local diagnostic evidence; the probe itself does not promote results
-to public hardware evidence.
+the requested tail and all source/destination redzones unchanged, and emit all
+16 matrix records in full-matrix mode. `dma-size-matrix-cell` emits the two
+API records for exactly one selected size and is used for incremental hardware
+sessions; the runner validates the requested size, block ownership fields,
+guard counts, and complete two-record pair before that session qualifies.
+These partition-owned spans control for transfer size without assuming that
+unallocated VRAM is available to the probe. The probe itself does not promote
+results to public hardware evidence.
 
-The existing runner can retain and validate the host0 stream after launching the
-PRX. Supply the local path that `usbhostfs_pc` exposes as `host0:`:
+The existing runner can retain and validate one selected size after launching
+the PRX. Build one `dma-size-matrix-cell` PRX for a supported request and use
+the matching campaign case id; include `transport-write` first in every
+session to requalify host0:
 
 ```powershell
 python tools/psp_oracle/run_psplink.py `
-  --command '<explicit pspsh ldstart command>' `
-  --host0-output dmac_size_matrix_log.txt `
-  --validate-dmac-size-matrix `
-  --out oracle/hardware-results/dmac-size-matrix.report.json
+  --host0-root fixtures/psp_oracle/build/w6-size-bfff `
+  --campaign-case transport-write=fixtures/psp_oracle/build/w6-size-bfff/transport_write.prx `
+  --campaign-case dmac-size-matrix-size-0x0000bfff=fixtures/psp_oracle/build/w6-size-bfff/dmac_size_matrix_cell.prx `
+  --source-commit <exact-clean-commit> --model <operator-recorded-model> --firmware <operator-recorded-firmware>
 ```
 
-The runner waits for the complete 16-record stream rather than accepting the
-metadata-only prefix, retains a result copy under the ignored hardware-results
-area, and reports placeholder provenance as `acceptance_eligible: false`.
+The runner reads `dmac_size_matrix_cell_log.txt` from the host0 scratch root
+after the module unloads. Use a fresh scratch root per size so each session's
+host0 log and envelope remain available; the first transport failure stops
+before the matrix cell runs.
 
 The invalid-tail cases isolate one API and invalid endpoint per launch:
 
