@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "7849dfe2d4a05c777adfcddcf9878cb04422c2e07044bf7daaafdf6908b62737"
+      "sha256": "b4ef8c9462808dcb219dd64e6ded1a3499a91404789c490cae548384b2b328f0"
     },
     {
       "path": "NOTICE.md",
@@ -426,7 +426,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bd23e1f35de1b0b28c048c9eec016d92fb0da211f15d6272802c40eb0f5eac5a"
+      "sha256": "0f1b2442d1971b37292616e5ed26ca5f5c3396eeda03ce4862444637762a47b6"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -6595,7 +6595,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "a97dfb8f592b4daed8f5c36259bcdb5fa8b0265630aee34c32f93d9d1b1f2df3"
+      "sha256": "9dd9c221703165e2f54a095dc0777bb476cd0444ca0f69376bc20bb6dac9c823"
     },
     {
       "path": "src/rt/vfpu_interp.c",
@@ -6613,7 +6613,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "09280a27eed0d11d1dbd7ca3f0257ba495eb4f1bbf83e7db55b9a4f9d1095b19"
+      "sha256": "9d3ecb4cd58c73d5b6aa1b1d5c777b8a25b97d8759418eaea039f20745f16668"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -6625,7 +6625,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1444dbe3b43db499f27983394534c00c77cad073e15506b3d2ea9ec07b92b9b0"
+      "sha256": "9022d6e9adb9b46a9c74f3689c77e27e34522685743be80af762121c631bcfa7"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -7061,7 +7061,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "f1773a47ce1cfd452d135810cd2f3fd7f900658bde0d02522e7273b1ef158c0e"
+      "sha256": "458a185c9d9d8459d215339cce40357d95f235e4dc376a87a311c438c62f5410"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -8489,7 +8489,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b1a07f34e1d3199f315b2b9d20bf245f76296352584ec3189d517115c70935c5"
+      "sha256": "29cfb86467ea2092cfca19d8e1f459a19229faba11768991ff8bb1bfda18a187"
     },
     {
       "path": "tools/test_compat_manifest.py",
@@ -9383,7 +9383,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "6f6d25b094461918c1fefbe65f8791485f703518c65496ce66ef4cdcbdf7228a"
+      "sha256": "8a6beb5c1741a6c514528d31a1f58b4d16b497b116af60cd2cab10a87022e0a8"
     },
     {
       "path": "tools/test_public_export.py",
@@ -9692,6 +9692,18 @@
       "sha256": "030574e96b1fd0104181d1fde184450f73bdf563e1104b366b4fef5db8e46b7c"
     },
     {
+      "path": "tools/test_vfpu_coverage_census.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vfpu-coverage-census-tests-326",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "bb98a1a8d7759d29a5b1e69ba01d969b899e29646588f8c7d7e8fa5fb4741797"
+    },
+    {
       "path": "tools/test_vfpu_interp_guards.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -9955,7 +9967,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd03746d6a60ecc792daef5de14a61d8d8b7613ce16fc509f503e1eac69e3292"
+      "sha256": "88db5479282534d3ddd946c0484d19eab03fdf37ecd11cf01692e98f02a73f9b"
     },
     {
       "path": "tools/vfpu_fuzz_gen.py",
@@ -9972,7 +9984,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "034bb53de8493442e9566ef023da5c0ae849506e46bf3b00ffc6d76623f4099f"
+      "sha256": "7b970037821255cdc5dc715bf30d57f04c9d280b6804d7151686b50a160623d0"
     },
     {
       "path": "tools/vfpu_overlap_diff_gen.py",
