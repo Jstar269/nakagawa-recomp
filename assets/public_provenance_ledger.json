@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fd916c64457d7ce6e37a8aa9c8f2fda5247101572aecb8dbb13bb0cbdfcfa82d"
+      "sha256": "5f3c6b4b8fa457c70aa2950cf125171f3b2493ad436e0a21941f89bee6c68710"
     },
     {
       "path": "NOTICE.md",
@@ -426,7 +426,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f4095e15782b8d1b4af1e4e98149c9173ae14f5279006a7a77e7460ae3c5dfb7"
+      "sha256": "9db0a0039cb2cc22b1eabe39927bde8b873ee711dfbcd11a3172a04157ca1b31"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -910,6 +910,18 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "1a97c1693bb6176e430eee23629e44d23f0e980a49bb2818ab45451c06e9c49f"
+    },
+    {
+      "path": "docs/PARSER_SAFETY_INVENTORY.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "parser-safety-inventory-319",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "d0d5f391dc09e9d010bcd0eeacae2faf94953c00e86a6d7f4b4d1bc445dc0d71"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -6159,7 +6171,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4ece90821497a13d0991e4bfe30874534178cf1af78217ffa19f2a27156a4c65"
+      "sha256": "8b851f05fc880bf8c5864f255b2811ee6ca92acb724130684975ba401c2621e3"
     },
     {
       "path": "src/rt/prx_loader.h",
@@ -6183,7 +6195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae7fa364512d5b1e625b670df4e22821cd82128d8b63fb0e268a22285f90137b"
+      "sha256": "89ac8a37f0af69f4b3bb0360d7ea0be8e35fcf4b7bf6af33bc1810f73ffdf1dc"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -6195,7 +6207,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eef1eb12da5f918dff449ef00f69e4857dcb53b4de58ec0f9ed550dfb076b249"
+      "sha256": "0e2a4c6bbfbb95d8c2cf03a7280ca4f64eaee76cc2a6f64717035cdc2aac69e7"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -6219,7 +6231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c0b5aeb6641df7be284f4d9adf0fe6cf424a700542e06e4192866922b07a8037"
+      "sha256": "25b857c3c6848f96d8e7199a0b2f86c0f852a6ac55245c1d83064e57a58c7d25"
     },
     {
       "path": "src/rt/recomp.c",
@@ -6685,7 +6697,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a0717f99a7b048fbd50f22a0d1f09802103986f8ef827185ef39d6cfb483642"
+      "sha256": "fe1b54f19f980c2183a10af77e2628e80cf00aa769e6c42d70843148ff6dac77"
     },
     {
       "path": "tests/native/test_launch_resolution.c",
