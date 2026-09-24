@@ -20,6 +20,7 @@
  */
 
 #include "player_state.h"
+#include "nk_font.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -75,6 +76,33 @@ static void write_synthetic_mips_elf(const char *path) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
     assert(fwrite(elf, 1, sizeof(elf), file) == sizeof(elf));
+    assert(fclose(file) == 0);
+}
+
+static void write_synthetic_pgf(const char *path, uint16_t header_offset, uint16_t header_size,
+                                const char magic[4], uint16_t first_glyph, uint16_t last_glyph,
+                                size_t total_size) {
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    uint8_t *buf = (uint8_t *)calloc(1, total_size);
+    assert(buf != NULL);
+    if (total_size >= 4) {
+        buf[0] = (uint8_t)(header_offset & 0xFF);
+        buf[1] = (uint8_t)((header_offset >> 8) & 0xFF);
+        buf[2] = (uint8_t)(header_size & 0xFF);
+        buf[3] = (uint8_t)((header_size >> 8) & 0xFF);
+    }
+    if (total_size >= (size_t)header_offset + 8u) {
+        memcpy(buf + header_offset + 4, magic, 4);
+    }
+    if (total_size >= (size_t)header_offset + 186u) {
+        buf[header_offset + 182] = (uint8_t)(first_glyph & 0xFF);
+        buf[header_offset + 183] = (uint8_t)((first_glyph >> 8) & 0xFF);
+        buf[header_offset + 184] = (uint8_t)(last_glyph & 0xFF);
+        buf[header_offset + 185] = (uint8_t)((last_glyph >> 8) & 0xFF);
+    }
+    assert(fwrite(buf, 1, total_size, file) == total_size);
+    free(buf);
     assert(fclose(file) == 0);
 }
 
@@ -930,6 +958,130 @@ int main(int argc, char **argv) {
         remove(font_path);
 
         free(wiz);
+    }
+
+    /* 14. Font cache provisioning: validation, manifest checking, and preflight status. */
+    printf("[PLAYER_STATE_TEST] Subtest 14: font cache validation and preflight status\n");
+    fflush(stdout);
+    {
+        char cache_test_root[512];
+        char cache_dir[640];
+        char fonts_v1_dir[768];
+        char manifest_path[896];
+        char installed_font[896];
+        char pgf_valid[800];
+        char pgf_trunc[800];
+        char pgf_bad_magic[800];
+        char pgf_corrupt_glyph[800];
+        char err[256];
+        char sha[65];
+        uint64_t font_size = 0;
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_test_root, sizeof(cache_test_root)));
+        snprintf(cache_dir, sizeof(cache_dir), "%s%cplayer_font_test",
+                 cache_test_root, nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(cache_dir));
+
+        snprintf(pgf_valid, sizeof(pgf_valid), "%s%cvalid.pgf", cache_dir, nk_platform_path_separator());
+        snprintf(pgf_trunc, sizeof(pgf_trunc), "%s%ctrunc.pgf", cache_dir, nk_platform_path_separator());
+        snprintf(pgf_bad_magic, sizeof(pgf_bad_magic), "%s%cbad_magic.pgf", cache_dir, nk_platform_path_separator());
+        snprintf(pgf_corrupt_glyph, sizeof(pgf_corrupt_glyph), "%s%ccorrupt_glyph.pgf", cache_dir, nk_platform_path_separator());
+
+        /* 14a: Structural PGF validation */
+        write_synthetic_pgf(pgf_valid, 0, 392, "PGF0", 0, 10, 512);
+        assert(nk_font_validate_pgf(pgf_valid, &font_size, sha, err, sizeof(err)) == true);
+        assert(font_size == 512);
+        assert(strlen(sha) == 64);
+
+        /* Truncated: header declares 392 bytes, file only 100 bytes */
+        write_synthetic_pgf(pgf_trunc, 0, 392, "PGF0", 0, 10, 100);
+        assert(nk_font_validate_pgf(pgf_trunc, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "truncated") != NULL);
+
+        /* Bad magic: magic is "BAD0" */
+        write_synthetic_pgf(pgf_bad_magic, 0, 392, "BAD0", 0, 10, 512);
+        assert(nk_font_validate_pgf(pgf_bad_magic, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "invalid PGF magic") != NULL);
+
+        /* Corrupt glyphs: first_glyph 20 > last_glyph 10 */
+        write_synthetic_pgf(pgf_corrupt_glyph, 0, 392, "PGF0", 20, 10, 512);
+        assert(nk_font_validate_pgf(pgf_corrupt_glyph, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "corrupt glyph indices") != NULL);
+
+        /* 14b: Cache directory and manifest inspection */
+        snprintf(fonts_v1_dir, sizeof(fonts_v1_dir), "%s%cfonts%cv1",
+                 cache_dir, nk_platform_path_separator(), nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(fonts_v1_dir));
+        snprintf(manifest_path, sizeof(manifest_path), "%s%cmanifest.json",
+                 fonts_v1_dir, nk_platform_path_separator());
+        snprintf(installed_font, sizeof(installed_font), "%s%cjpn0.pgf",
+                 fonts_v1_dir, nk_platform_path_separator());
+
+        char msg[512];
+        /* Without manifest and without fallback: MISSING */
+        remove(manifest_path);
+        remove(installed_font);
+        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+
+        /* Install synthetic jpn0.pgf */
+        write_synthetic_pgf(installed_font, 0, 392, "PGF0", 0, 10, 512);
+        assert(nk_font_validate_pgf(installed_font, &font_size, sha, err, sizeof(err)) == true);
+
+        /* Corrupt manifest: invalid JSON */
+        write_text_file(manifest_path, "{ broken json: true ");
+        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+
+        /* Manifest with hash mismatch */
+        char bad_manifest[1024];
+        snprintf(bad_manifest, sizeof(bad_manifest),
+                 "{\"schema_version\":1,\"files\":{\"jpn0.pgf\":{\"size\":512,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}}}");
+        write_text_file(manifest_path, bad_manifest);
+        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+
+        /* Valid manifest */
+        char good_manifest[1024];
+        snprintf(good_manifest, sizeof(good_manifest),
+                 "{\"schema_version\":1,\"import_time\":12345,\"files\":{\"jpn0.pgf\":{\"size\":512,\"sha256\":\"%s\"}}}",
+                 sha);
+        write_text_file(manifest_path, good_manifest);
+        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_OK);
+
+        /* 14c: Compatibility preflight with player app */
+        PlayerApp *font_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(font_app != NULL);
+        nk_library_init(&font_app->library);
+        player_app_set_runtime_root(font_app, cache_dir);
+        snprintf(font_app->inspecting_game.disc_id, sizeof(font_app->inspecting_game.disc_id),
+                 "UCUS98701");
+        snprintf(font_app->inspecting_game.title_id, sizeof(font_app->inspecting_game.title_id),
+                 "synthetic-allegrex-v1");
+        NkIsoExecutableReport exec_rep;
+        memset(&exec_rep, 0, sizeof(exec_rep));
+        exec_rep.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        exec_rep.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+        exec_rep.selected = NK_ISO_EXEC_SELECTION_BOOT;
+        exec_rep.boot_fallback = true;
+        snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
+
+        /* Preflight with valid manifest -> PREFLIGHT_OK */
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+
+        /* Preflight with corrupt manifest -> PREFLIGHT_INVALID */
+        write_text_file(manifest_path, bad_manifest);
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_INVALID);
+        assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 300);
+
+        /* Clean up */
+        free(font_app);
+        remove(pgf_valid);
+        remove(pgf_trunc);
+        remove(pgf_bad_magic);
+        remove(pgf_corrupt_glyph);
+        remove(manifest_path);
+        remove(installed_font);
     }
 
     free(app);
