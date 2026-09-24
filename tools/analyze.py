@@ -86,9 +86,11 @@ class Elf:
         if self.shnum > 0 and self.shentsize > 0 and self.shstrndx > 0:
             shstr = envelope["shdrs"][self.shstrndx]
             section_names = d[shstr["off"] : shstr["off"] + shstr["size"]]
-            has_code_section = b".text\x00" in section_names or b".sceStub.text\x00" in section_names
-            has_module_info = b".rodata.sceModuleInfo\x00" in section_names
-            named_sections_available = has_code_section and has_module_info
+            # A section table whose string table names no code section (e.g. a
+            # decrypted executable with an emptied .shstrtab) carries no usable
+            # layout; reconstruct from PT_LOAD instead.
+            named_sections_available = (b".text\x00" in section_names
+                                        or b".sceStub.text\x00" in section_names)
         if named_sections_available:
             for section in envelope["shdrs"]:
                 name, typ, flags, addr, off, size, link, info, _align, entsz = (
