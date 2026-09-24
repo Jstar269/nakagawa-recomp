@@ -97,51 +97,62 @@ def create_test_iso(
     title: str = "Test Game",
     version: str = "1.00",
     volume_id: str = "TEST_VOL",
+    sfo_bytes: bytes | None = None,
+    update_sfo_bytes: bytes | None = None,
 ) -> None:
     sector_size = 2048
-    num_sectors = 1024  # 2 MiB image
+    sfo_lba = 32
+    update_sfo_lba = 30
+    root_lba, game_lba, sysdir_lba, update_lba = 33, 34, 35, 36
+    num_sectors = max(1024, sfo_lba + 2, update_lba + 2)
     data = bytearray(num_sectors * sector_size)
 
-    # Sector 16: PVD
     pvd_off = 16 * sector_size
     data[pvd_off] = 0x01
     data[pvd_off + 1 : pvd_off + 6] = b"CD001"
     data[pvd_off + 6] = 0x01
     data[pvd_off + 40 : pvd_off + 40 + len(volume_id)] = volume_id.encode("latin-1")
 
-    # PARAM.SFO at sector 32, reachable through a real root directory. A
-    # scan-only fixture no longer proves anything: the native reader refuses to
-    # let an SFO found by scanning raw bytes authorize a catalog match, because
-    # any image can embed one. Only an SFO reached through a validated
-    # directory extent carries filesystem provenance, so the fixture has to be
-    # a genuine ISO9660 structure rather than a blob parked in free space.
-    sfo_bytes = build_param_sfo(disc_id, title, version)
-    sfo_off = 32 * sector_size
+    if sfo_bytes is None:
+        sfo_bytes = build_param_sfo(disc_id, title, version)
+    sfo_off = sfo_lba * sector_size
     data[sfo_off : sfo_off + len(sfo_bytes)] = sfo_bytes
+    if update_sfo_bytes is not None:
+        update_off = update_sfo_lba * sector_size
+        data[update_off : update_off + len(update_sfo_bytes)] = update_sfo_bytes
 
-    # Real PSP layout: root -> PSP_GAME/ -> PARAM.SFO, which is what the
-    # native reader traverses.
-    root_lba, game_lba = 33, 34
-    root_off, game_off = root_lba * sector_size, game_lba * sector_size
     root_entries = (
-        _dir_record(bytes([0]), root_lba, sector_size, True)        # "."
-        + _dir_record(bytes([1]), root_lba, sector_size, True)      # ".."
+        _dir_record(bytes([0]), root_lba, sector_size, True)
+        + _dir_record(bytes([1]), root_lba, sector_size, True)
         + _dir_record(b"PSP_GAME", game_lba, sector_size, True)
     )
-    data[root_off : root_off + len(root_entries)] = root_entries
+    data[root_lba * sector_size : root_lba * sector_size + len(root_entries)] = root_entries
 
     game_entries = (
-        _dir_record(bytes([0]), game_lba, sector_size, True)        # "."
-        + _dir_record(bytes([1]), root_lba, sector_size, True)      # ".."
-        + _dir_record(b"PARAM.SFO;1", 32, len(sfo_bytes), False)
+        _dir_record(bytes([0]), game_lba, sector_size, True)
+        + _dir_record(bytes([1]), root_lba, sector_size, True)
+        + _dir_record(b"PARAM.SFO;1", sfo_lba, len(sfo_bytes), False)
     )
-    data[game_off : game_off + len(game_entries)] = game_entries
+    if update_sfo_bytes is not None:
+        game_entries += _dir_record(b"SYSDIR", sysdir_lba, sector_size, True)
+    data[game_lba * sector_size : game_lba * sector_size + len(game_entries)] = game_entries
 
-    # PVD root directory record (ECMA-119 8.4.18) at byte 156.
-    data[pvd_off + 156 : pvd_off + 156 + 34] = _dir_record(
-        bytes([0]), root_lba, sector_size, True
-    )[:34]
+    if update_sfo_bytes is not None:
+        sysdir_entries = (
+            _dir_record(bytes([0]), sysdir_lba, sector_size, True)
+            + _dir_record(bytes([1]), game_lba, sector_size, True)
+            + _dir_record(b"UPDATE", update_lba, sector_size, True)
+        )
+        update_entries = (
+            _dir_record(bytes([0]), update_lba, sector_size, True)
+            + _dir_record(bytes([1]), sysdir_lba, sector_size, True)
+            + _dir_record(b"PARAM.SFO;1", update_sfo_lba, len(update_sfo_bytes), False)
+        )
+        data[sysdir_lba * sector_size : sysdir_lba * sector_size + len(sysdir_entries)] = sysdir_entries
+        data[update_lba * sector_size : update_lba * sector_size + len(update_entries)] = update_entries
 
+    pvd_root = _dir_record(bytes([0]), root_lba, sector_size, True)[:34]
+    data[pvd_off + 156 : pvd_off + 156 + 34] = pvd_root
     path.write_bytes(data)
 
 
@@ -218,19 +229,7 @@ def _dir_record(name: bytes, extent_lba: int, size_bytes: int, is_dir: bool) -> 
 
 
 def create_custom_sfo_iso(path: Path, sfo_bytes: bytes, volume_id: str = "CUSTOM_VOL") -> None:
-    sector_size = 2048
-    num_sectors = 1024
-    data = bytearray(num_sectors * sector_size)
-
-    pvd_off = 16 * sector_size
-    data[pvd_off] = 0x01
-    data[pvd_off + 1 : pvd_off + 6] = b"CD001"
-    data[pvd_off + 6] = 0x01
-    data[pvd_off + 40 : pvd_off + 40 + len(volume_id)] = volume_id.encode("latin-1")
-
-    sfo_off = 32 * sector_size
-    data[sfo_off : sfo_off + len(sfo_bytes)] = sfo_bytes
-    path.write_bytes(data)
+    create_test_iso(path, volume_id=volume_id, sfo_bytes=sfo_bytes)
 
 
 class IsoParityTests(unittest.TestCase):
@@ -499,7 +498,9 @@ int main(int argc, char **argv) {{
 
     def _run_native_inspect(self, iso_path: Path) -> dict[str, str]:
         cmd = [str(self.exe_path), "inspect", str(iso_path)]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="strict"
+        )
         self.assertEqual(res.returncode, 0, f"Native inspect failed: {res.stderr}")
         lines = res.stdout.strip().splitlines()
         out: dict[str, str] = {}
@@ -529,6 +530,136 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_meta.get("SUPPORTED"), "1")
         self.assertEqual(c_meta.get("PARAM_SFO_PARSED"), "1")
         self.assertEqual(c_meta.get("MATCHED_ID"), py_meta.matched_profile.id)
+
+    def test_game_sfo_wins_over_update_sfo(self) -> None:
+        iso_file = self.temp_dir / "update-decoy.iso"
+        update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 6.20")
+        create_test_iso(
+            iso_file,
+            disc_id="TEST00001",
+            title="Synthetic Test Title",
+            volume_id="VOLUME_ID",
+            update_sfo_bytes=update_sfo,
+        )
+
+        py_meta = inspect_iso(iso_file)
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(py_meta.disc_id, "TEST00001")
+        self.assertEqual(py_meta.title, "Synthetic Test Title")
+        self.assertEqual(c_meta.get("DISC_ID"), py_meta.disc_id)
+        self.assertEqual(c_meta.get("TITLE"), py_meta.title)
+        self.assertEqual(c_meta.get("SUPPORTED"), "1")
+
+    def test_psn_layout_uses_reachable_game_sfo(self) -> None:
+        iso_file = self.temp_dir / "psn-layout.iso"
+        update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 2.71")
+        create_test_iso(
+            iso_file,
+            disc_id="NPUH10028",
+            title="Super Pocket Tennis",
+            volume_id="TYPE_0",
+            update_sfo_bytes=update_sfo,
+        )
+
+        py_meta = inspect_iso(iso_file)
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(py_meta.disc_id, "NPUH10028")
+        self.assertEqual(py_meta.title, "Super Pocket Tennis")
+        self.assertEqual(c_meta.get("DISC_ID"), "NPUH10028")
+        self.assertEqual(c_meta.get("TITLE"), "Super Pocket Tennis")
+
+    def test_sfo_disc_id_and_utf8_title_override_volume_fallback(self) -> None:
+        iso_file = self.temp_dir / "utf8-identity.iso"
+        update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 6.20")
+        create_test_iso(
+            iso_file,
+            disc_id="TEST00002",
+            title="Café® ™",
+            volume_id="TEST00001",
+            update_sfo_bytes=update_sfo,
+        )
+
+        py_meta = inspect_iso(iso_file)
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(py_meta.disc_id, "TEST00002")
+        self.assertEqual(py_meta.title, "Café® ™")
+        self.assertEqual(py_meta.matched_profile.id, "synthetic-title2-v1")
+        self.assertEqual(c_meta.get("DISC_ID"), "TEST00002")
+        self.assertEqual(c_meta.get("TITLE"), "Café® ™")
+        self.assertEqual(c_meta.get("MATCHED_ID"), "synthetic-title2-v1")
+
+    def test_catalog_match_uses_game_sfo_identity(self) -> None:
+        from nk_core.title_registry import TitleRegistry
+        from nk_core.types import TitleProfile
+
+        iso_file = self.temp_dir / "catalog-identity.iso"
+        update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 6.20")
+        create_test_iso(
+            iso_file,
+            disc_id="NPUH10028",
+            title="Super Pocket Tennis",
+            volume_id="TYPE_0",
+            update_sfo_bytes=update_sfo,
+        )
+        registry = TitleRegistry(include_defaults=False)
+        registry.register(TitleProfile(
+            id="psn-fixture-v1",
+            name="PSN Fixture",
+            disc_ids=["NPUH10028"],
+            regions=["NA"],
+        ))
+
+        metadata = inspect_iso(iso_file, registry)
+        self.assertTrue(metadata.is_supported)
+        self.assertEqual(metadata.matched_profile.id, "psn-fixture-v1")
+
+    def test_malformed_reachable_sfo_fails_closed(self) -> None:
+        from nk_core.iso_inspect import IsoInspectionError
+
+        iso_file = self.temp_dir / "malformed-sfo.iso"
+        valid_sfo = build_param_sfo("TEST00001", "Malformed Fixture")
+        create_test_iso(
+            iso_file,
+            volume_id="TEST00001",
+            sfo_bytes=valid_sfo[:32],
+        )
+
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(iso_file)
+        native = self._run_native_inspect(iso_file)
+        self.assertTrue(native.get("RESULT", "").startswith("ERROR"))
+
+    def test_sfo_data_length_must_not_exceed_max_length(self) -> None:
+        from nk_core.iso_inspect import IsoInspectionError
+
+        iso_file = self.temp_dir / "bad-max-length.iso"
+        malformed = bytearray(build_param_sfo("TEST00001", "Bad Max Length"))
+        struct.pack_into("<I", malformed, 20 + 8, 4)
+        create_test_iso(
+            iso_file,
+            volume_id="TEST00001",
+            sfo_bytes=bytes(malformed),
+        )
+
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(iso_file)
+        native = self._run_native_inspect(iso_file)
+        self.assertTrue(native.get("RESULT", "").startswith("ERROR"))
+
+    def test_title_id_is_not_used_as_disc_id(self) -> None:
+        iso_file = self.temp_dir / "title-id.iso"
+        sfo = build_custom_param_sfo([
+            ("TITLE_ID", 0x0204, b"UCUS99999\0"),
+            ("DISC_ID", 0x0204, b"TEST00001\0"),
+            ("TITLE", 0x0204, b"Identity Fixture\0"),
+        ])
+        create_test_iso(iso_file, volume_id="VOLUME_ID", sfo_bytes=sfo)
+
+        py_meta = inspect_iso(iso_file)
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(py_meta.disc_id, "TEST00001")
+        self.assertEqual(c_meta.get("DISC_ID"), "TEST00001")
+        self.assertEqual(c_meta.get("TITLE"), "Identity Fixture")
 
     def test_cli_inspect_shows_structured_compatibility_preflight(self) -> None:
         iso_file = self.temp_dir / "cli-preflight.iso"
@@ -725,6 +856,8 @@ int main(int argc, char **argv) {{
         iso_file.write_bytes(data)
 
         metadata = inspect_iso(iso_file)
+        self.assertEqual(metadata.disc_id, "UNKNOWN")
+        self.assertEqual(metadata.title, "Unknown PSP Title")
         runtime_root = self.temp_dir / "empty-runtime-root-non-psp"
         runtime_root.mkdir()
         report = inspect_compatibility_preflight(
