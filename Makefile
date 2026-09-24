@@ -1233,12 +1233,12 @@ sdl3-check:
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
-PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
@@ -1950,8 +1950,14 @@ shader-repro-verify:
 player-state-test-bin:
 	@mkdir -p build
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/player_state.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c \
 		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
+
+input-settings-test-bin:
+	@mkdir -p build
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
+		tests/native/test_input_settings.c -o build/test_input_settings$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
@@ -1972,6 +1978,8 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_launch_resolution$(EXE_EXT)
 	$(MAKE) --no-print-directory player-state-test-bin
 	./build/test_player_state$(EXE_EXT)
+	$(MAKE) --no-print-directory input-settings-test-bin
+	./build/test_input_settings$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c \
 		tests/native/test_xb_parser.c -o build/test_xb_parser$(EXE_EXT)

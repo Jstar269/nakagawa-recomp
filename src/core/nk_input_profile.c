@@ -1267,6 +1267,38 @@ NkResult nk_input_profile_load(
     return res;
 }
 
+NkResult nk_input_profile_resolve_path(char *out_path, size_t out_path_sz) {
+    if (!out_path || out_path_sz == 0) return NK_ERROR_GENERIC;
+    out_path[0] = '\0';
+
+    const char *env_path = getenv("NK_INPUT_PROFILE");
+    if (!env_path || !env_path[0]) {
+        env_path = getenv("SR_INPUT_PROFILE");
+    }
+
+    if (env_path && env_path[0]) {
+        if (strlen(env_path) >= out_path_sz) return NK_ERROR_GENERIC;
+        strncpy(out_path, env_path, out_path_sz - 1);
+        out_path[out_path_sz - 1] = '\0';
+        return NK_OK;
+    }
+
+    char config_dir[1024] = {0};
+    if (nk_platform_get_path(NK_PATH_CONFIG, config_dir, sizeof(config_dir))) {
+        char sep = nk_platform_path_separator();
+        int n = snprintf(out_path, out_path_sz, "%s%cinput_profile.json", config_dir, sep);
+        if (n < 0 || (size_t)n >= out_path_sz) return NK_ERROR_GENERIC;
+        return NK_OK;
+    }
+
+    return NK_ERROR_GENERIC;
+}
+
+bool nk_input_profile_padscript_active(void) {
+    const char *sp = getenv("SR_PADSCRIPT");
+    return sp && sp[0] != '\0';
+}
+
 /* -----------------------------------------------------------------------------
  * Runtime Evaluation Helpers
  * -------------------------------------------------------------------------- */
