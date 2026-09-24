@@ -231,7 +231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "332f551615f720d14e0c48ed3dd0cf785345af08a6e5f43d8af16959d0476964"
+      "sha256": "991097291a55f0889157238c10f617b2adeea3b6f8ef9519da7287899dd35397"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b130f114c1665e553f268ceae6d60e0191d931a723e4805243b5d2e845cc6376"
+      "sha256": "af6bca1043531aafece01b3c2631794fc26723d48e74e21c7da67369931aab58"
     },
     {
       "path": "NOTICE.md",
@@ -471,7 +471,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e13e0103aafffc5949051998cff7ec3ec89a80d507e0e1d9da70a86b63558f3e"
+      "sha256": "eac85d54369b749d6b702a5ccb0bf09fe300945fa4e0492221fc2f3f95771076"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -942,6 +942,15 @@
       "sha256": "79426f844a7b4d52ca66a3d9e3a625dc2edc88de3166a499d7d19712ceb0c07e"
     },
     {
+      "path": "docs/LINUX_DEVELOPMENT.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "1254a5ad9af944f789e4eae2370f71919be5b76eaf196370383fec9028684fe7"
+    },
+    {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1098,7 +1107,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "016ac804a8bceb14135ccae8c0d87ab272d6e24defccb230946a0cd9afd319b9"
+      "sha256": "361bdc90a9260d10c2e6ad9c1a28ac8a80878d1ce96ab195fe5598e87d68fad0"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1116,7 +1125,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3746c187a2a2d858e5a6ac778f9778c66b8a1c1451ee47ded78479bac3969a3e"
+      "sha256": "0c77e86a72e9f2ece535dd937e63c5a308ff30ecf15e84f0e4832f02da64a60a"
     },
     {
       "path": "docs/SMOKE_TEST.md",
@@ -10142,7 +10151,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0f3b2d5a6899b3e8ccb0557c35c8bf51b8c93b371a60445e99e3f929d214739d"
+      "sha256": "b837a5971e965052c4665fa4c94b7ca039387cb9138f44c2f25072d98ba0b341"
     },
     {
       "path": "tools/test_waits_census.py",
@@ -10389,7 +10398,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be28097d8f56d5de7e75c19d7928c735a07bf4826529cb1435e127e3f1285a8f"
+      "sha256": "4d6af9ede07ad444092e21cfb71979ac2ad6781fa14396cdfd0d42f79752c3a4"
     },
     {
       "path": "tools/waits_census.py",
