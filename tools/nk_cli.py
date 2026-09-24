@@ -1188,6 +1188,10 @@ def _bringup_human_summary(report: dict) -> str:
         detail = f" (native runtime reported a crash; exit code {report['process_exit_code']})"
     elif report["failure_class"] == "UNRESOLVED_DISPATCH_TARGET":
         detail = " (the runtime rejected an unresolved dispatch target)"
+    elif report["failure_class"] == "EXITED_ZERO_BEFORE_HLE":
+        detail = " (the runtime exited zero before its first PSP kernel import)"
+    elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
+        detail = " (runtime telemetry did not verify a PSP kernel import)"
     elif report["failure_class"] == "LAUNCH_FAILED":
         kind = report.get("runtime_output_kind")
         if kind == "EMPTY":
@@ -1323,6 +1327,32 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
     return "EMPTY" if not output.strip() else "OTHER"
+
+
+def _flight_has_hle_import(path: Path | None) -> bool | None:
+    """Return whether the private flight bundle proves an HLE import occurred.
+
+    ``None`` means the bundle is missing, malformed, or its ring buffer dropped
+    events before any retained HLE import. The bundle itself is never copied
+    into the sanitized bring-up report.
+    """
+    if path is None:
+        return None
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recorder = bundle.get("recorder") if isinstance(bundle, dict) else None
+    events = bundle.get("events") if isinstance(bundle, dict) else None
+    dropped = recorder.get("dropped") if isinstance(recorder, dict) else None
+    if not isinstance(events, list) or isinstance(dropped, bool) or not isinstance(dropped, int) or dropped < 0:
+        return None
+    if any(
+        isinstance(event, dict) and event.get("class") == "hle" and event.get("kind") == 1
+        for event in events
+    ):
+        return True
+    return False if dropped == 0 else None
 
 
 def _count_instructions(sources: list[dict]) -> int:
@@ -1657,6 +1687,18 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "PSP_ISO": str(iso_path),
             "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
         })
+        flight_output: Path | None = None
+        try:
+            flight_fd, flight_name = tempfile.mkstemp(
+                prefix="bringup-flight-", suffix=".json", dir=work_dir
+            )
+            os.close(flight_fd)
+            flight_output = Path(flight_name)
+            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal;4096"
+            env["SR_FLIGHT_OUTPUT"] = str(flight_output)
+        except OSError:
+            env.pop("SR_FLIGHT", None)
+            env.pop("SR_FLIGHT_OUTPUT", None)
         image = package_dir / f"{Path(package['executable']['path']).stem}_image.bin"
         base = int(manifest["executable"]["base"])
         base_argument = str(base) if base == 0 else f"0x{base:08x}"
@@ -1678,7 +1720,22 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
             report["process_exit_code"] = process.returncode
             report["exit_classification"] = "EXITED_ZERO" if process.returncode == 0 else "EXITED_NONZERO"
-            if process.returncode != 0:
+            if process.returncode == 0:
+                hle_observed = _flight_has_hle_import(flight_output)
+                if hle_observed is False:
+                    _fail_bringup(
+                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [285, 308],
+                        int((time.perf_counter() - started) * 1000),
+                    )
+                elif hle_observed is None:
+                    _fail_bringup(
+                        report, "launch", "GUEST_ACTIVITY_UNVERIFIED", [285, 308],
+                        int((time.perf_counter() - started) * 1000),
+                    )
+                else:
+                    _set_bringup_stage(report, "launch", "PASS",
+                                       int((time.perf_counter() - started) * 1000))
+            else:
                 folded = launch_output.casefold()
                 if "no available video device" in folded or "video driver" in folded:
                     failure, issues = "HEADLESS_UNAVAILABLE", [297]
@@ -1707,9 +1764,6 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     failure, issues = "LAUNCH_FAILED", [297]
                 _fail_bringup(report, "launch", failure, issues,
                               int((time.perf_counter() - started) * 1000))
-            else:
-                _set_bringup_stage(report, "launch", "PASS",
-                                   int((time.perf_counter() - started) * 1000))
         except subprocess.TimeoutExpired:
             process.kill()
             process.communicate()
