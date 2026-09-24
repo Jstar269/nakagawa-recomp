@@ -522,5 +522,19 @@ class CpuStateAbiUpgradeTest(unittest.TestCase):
         self.assertIsNone(dbg._cpu_abi_check())
 
 
+class ExeOptionAndDefaultRejectionTest(unittest.TestCase):
+    def test_default_without_exe_fails_clearly(self):
+        """MemoryDebugger without --simulate or explicit exe must fail clearly instead of assuming HST."""
+        with self.assertRaises(ValueError) as ctx:
+            md.MemoryDebugger(simulate=False)
+        self.assertIn("No target executable", str(ctx.exception))
+        self.assertIn("HST", str(ctx.exception))
+
+    def test_explicit_exe_sets_target_identity(self):
+        """Passing an explicit exe sets expected_exe and expected_exe_name rather than assuming hst.exe."""
+        dbg = md.MemoryDebugger(simulate=True, exe=r"build\custom_title\custom_title.exe")
+        self.assertEqual(dbg.expected_exe_name, "custom_title.exe")
+
+
 if __name__ == "__main__":
     unittest.main()

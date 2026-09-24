@@ -187,6 +187,93 @@ def check_platform(report: Report) -> None:
     check_powershell(report)
 
 
+DEEPEST_EXPECTED_BUILD_PATH = Path("build") / "synthetic" / "vfpu_oracle" / "nakagawa.stdout.txt"
+
+
+def query_windows_long_paths_enabled() -> bool | None:
+    """Read Windows LongPathsEnabled policy from the registry.
+
+    Returns True if enabled, False if disabled or key/value missing,
+    or None on non-Windows platforms. Read-only; never mutates the registry.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\FileSystem",
+            0,
+            winreg.KEY_READ,
+        ) as key:
+            val, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+            return bool(val)
+    except (OSError, ValueError):
+        return False
+
+
+def check_long_paths(
+    report: Report,
+    root: Path | None = None,
+    deepest_rel: Path | str | None = None,
+) -> None:
+    """Advisory diagnostic for Windows MAX_PATH (260) hazards and LongPathsEnabled policy."""
+    resolved_root = (root or report.root).resolve()
+    rel_path = Path(deepest_rel) if deepest_rel is not None else DEEPEST_EXPECTED_BUILD_PATH
+    expected_deepest = resolved_root / rel_path
+    total_len = len(str(expected_deepest))
+    exceeds_260 = total_len > 260
+    is_windows = (platform.system() == "Windows") or (os.name == "nt")
+
+    if not is_windows:
+        report.pass_(
+            "LONG_PATHS",
+            f"Expected build path length ({total_len} chars) within filesystem limits",
+            detail=f"Non-Windows platform; deepest expected path: {expected_deepest}",
+            metadata={"long_paths_enabled": None, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": exceeds_260},
+        )
+        return
+
+    long_paths_enabled = query_windows_long_paths_enabled()
+
+    if exceeds_260 and not long_paths_enabled:
+        report.warn(
+            "LONG_PATHS",
+            f"Deepest expected build path ({total_len} chars) exceeds 260 characters and Windows LongPathsEnabled policy is disabled",
+            path=expected_deepest,
+            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
+            remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem or move the repository to a shorter path (such as C:\\nk).",
+            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": True, "max_path": 260},
+        )
+    elif exceeds_260 and long_paths_enabled:
+        report.warn(
+            "LONG_PATHS",
+            f"Deepest expected build path ({total_len} chars) exceeds 260 characters",
+            path=expected_deepest,
+            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
+            remediation="Windows LongPathsEnabled is enabled, but legacy Win32 tools without long-path manifests may still fail. Consider using a shorter repository root.",
+            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": True, "max_path": 260},
+        )
+    elif not long_paths_enabled:
+        report.warn(
+            "LONG_PATHS",
+            f"Windows LongPathsEnabled policy is disabled (deepest expected build path: {total_len}/260 chars)",
+            path=expected_deepest,
+            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
+            remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem to avoid MAX_PATH issues in deep directories.",
+            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": False, "max_path": 260},
+        )
+    else:
+        report.pass_(
+            "LONG_PATHS",
+            f"Repository path length within 260 characters and Windows LongPathsEnabled is enabled",
+            path=expected_deepest,
+            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
+            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": False, "max_path": 260},
+        )
+
+
 def _shader_provenance_errors(root: Path) -> list[str]:
     shader_root = root / "src" / "rt" / "gpu_sdl3vk"
     manifest = shader_root / "shader_manifest.json"
@@ -362,6 +449,8 @@ def discover_sdl3_provider(
             gcc_path = shutil.which("gcc")
             if gcc_path and "ucrt64" in str(gcc_path).lower():
                 resolved_msys = Path(gcc_path).resolve().parent
+            elif os.environ.get("MSYS_PATH"):
+                resolved_msys = Path(os.environ["MSYS_PATH"]).resolve()
             else:
                 resolved_msys = Path(r"C:\msys64\ucrt64\bin")
 

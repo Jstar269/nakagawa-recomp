@@ -22,7 +22,7 @@ param(
     [switch]$Json,
     [switch]$Strict,
 
-    [string]$MsysPath = "C:\msys64\ucrt64\bin",
+    [string]$MsysPath = $(if ($env:MSYS_PATH) { $env:MSYS_PATH } else { "C:\msys64\ucrt64\bin" }),
     [string]$VulkanSdk = "",
     [string]$TitleManifest = "",
     [string]$GameName = ""

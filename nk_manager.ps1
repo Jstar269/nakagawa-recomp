@@ -106,7 +106,7 @@ Param(
     [string]$FindName,            # symbol name or hex address for FindSymbol
 
     [Parameter(Mandatory=$false)]
-    [string]$MsysPath = "C:\msys64\ucrt64\bin",
+    [string]$MsysPath = $(if ($env:MSYS_PATH) { $env:MSYS_PATH } else { "C:\msys64\ucrt64\bin" }),
 
     # Optional explicit make path for hermetic/non-MSYS2 callers.
     [Parameter(Mandatory=$false)]
