@@ -57,3 +57,55 @@ if (-not $ExcludeOptionalFonts) {
         Copy-Item $fontSrc $fontDst -Recurse -Force
     }
 }
+
+# Discover toolchain directory for MinGW/UCRT runtime DLLs if imported
+$binDir = if ($gccCmd) { Split-Path $gccCmd.Source } elseif (Test-Path "C:\msys64\ucrt64\bin") { "C:\msys64\ucrt64\bin" } else { '' }
+
+if ($binDir) {
+    $runtimeDlls = @('libgcc_s_seh-1.dll', 'libwinpthread-1.dll', 'libstdc++-6.dll')
+    foreach ($dll in $runtimeDlls) {
+        $srcDll = Join-Path $binDir $dll
+        $dstDll = Join-Path $BuildDir $dll
+        if ((Test-Path $srcDll) -and (-not (Test-Path $dstDll))) {
+            $objdumpCmd = Get-Command objdump -ErrorAction SilentlyContinue
+            if ($objdumpCmd) {
+                $binaries = Get-ChildItem -Path $BuildDir -File | Where-Object { $_.Extension -in '.exe', '.dll' }
+                $imported = $false
+                foreach ($bin in $binaries) {
+                    $imports = & $objdumpCmd.Source -p $bin.FullName 2>$null | Select-String "DLL Name:\s*$([regex]::Escape($dll))"
+                    if ($imports) {
+                        $imported = $true
+                        break
+                    }
+                }
+                if ($imported) {
+                    Copy-Item $srcDll $BuildDir -Force
+                }
+            }
+        }
+    }
+}
+
+# Generate third-party notices bundle and relink materials
+$pyCmd = Get-Command python -ErrorAction SilentlyContinue
+$noticesScript = if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'tools\package_notices.py'))) {
+    Join-Path $PSScriptRoot 'tools\package_notices.py'
+} elseif (Test-Path 'tools/package_notices.py') {
+    'tools/package_notices.py'
+} elseif (Test-Path '../tools/package_notices.py') {
+    '../tools/package_notices.py'
+} else {
+    ''
+}
+
+$hasBinaries = Get-ChildItem -Path $BuildDir -File | Where-Object { $_.Extension -in '.exe', '.dll' }
+if ($hasBinaries) {
+    # Fail closed: a run directory that ships binaries must also ship their license notices.
+    if (-not $pyCmd -or -not $noticesScript) {
+        throw "PACKAGE_NOTICES_UNAVAILABLE: python or tools/package_notices.py not found; cannot generate third-party notices for $BuildDir"
+    }
+    & $pyCmd.Source $noticesScript $BuildDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "PACKAGE_NOTICES_FAILED: tools/package_notices.py exited with status $LASTEXITCODE"
+    }
+}
