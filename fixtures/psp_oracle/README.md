@@ -330,9 +330,12 @@ hardware domain.
 
 Four cases isolate the unresolved plain-Mutex cells left open by PR #52. The
 mutex syscalls are absent from the installed PSPSDK headers, so
-`mutex_imports.S` declares the exact ThreadManForUser import stubs and
-`probe.c` mirrors the documented `SceKernelMutexInfo` layout. Only scalar
-return values are treated as evidence.
+`mutex_imports.S` declares a complete `ThreadManForUser` import block (both the
+custom mutex NIDs and every `ThreadManForUser` function referenced by the probe
+and PSPSDK CRT) so that the library's stubs remain contiguous in `.sceStub.text`.
+The Makefile overrides `FIXUP` to fail closed if `psp-fixup-imports` emits
+out-of-order stub warnings (issue #400). `probe.c` mirrors the documented
+`SceKernelMutexInfo` layout. Only scalar return values are treated as evidence.
 
 - `CASE=mutex-refer-unlocked` — creates one unlocked and one locked mutex,
   refers both, unlocks the second, and refers again. The raw `lockThread`
