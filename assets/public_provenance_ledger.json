@@ -7316,7 +7316,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e1e1ebd48e17ae48abdeefb631ec1214460e9262f519b67ababf720989eaffb"
+      "sha256": "0fb6dbeba49a87fa988412cb9b42ba4784611f72f5b8a53ccceef4ab780532c4"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -7328,7 +7328,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c77cf8ce1274a4db759b566e86acfda2b283c07129742c769d2a9933c6f6e787"
+      "sha256": "0cad6fc3d884a283042bc2668cbeebfdeafe3c031c7931c72c3eee5a56c2d4b2"
     },
     {
       "path": "tools/host_stubs.py",
@@ -8762,7 +8762,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d7a9b5e6f2abd12714d07dcea4963d9494253e2f76c8d324d9127c2b82cdda2c"
+      "sha256": "4911c88c0fcf5458501e9cdfdfe132380eba85e0a7f71b491a7ad88c498c1c33"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import re
 import unittest
+from unittest import mock
 
 import hle_manifest
 import hle_registry_meta as meta
@@ -824,6 +825,8 @@ class ModuleBucketTests(unittest.TestCase):
 
     def test_a_reserved_prefix_does_not_hide_the_module(self) -> None:
         self.assertEqual(hle_manifest.derive_module("__sceSasCore"), "sceSas")
+        self.assertEqual(hle_manifest.derive_module("_sceKernelLockLwMutex"), "sceKernel")
+        self.assertEqual(hle_manifest.derive_module("_sceAtracGetContextAddress"), "sceAtrac")
 
     def test_newlib_and_unknown_shapes_are_named_not_guessed(self) -> None:
         self.assertEqual(hle_manifest.derive_module("newlibModuleStreamWrite"), "newlib")
@@ -925,6 +928,88 @@ class LiveTriageTests(unittest.TestCase):
             "STATICALLY_SUPPORTED; if nothing is left in that state the mention "
             "signal has silently become a coverage claim",
         )
+
+
+class CensusTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+        cls.census = hle_manifest.build_census(cls.manifest)
+        cls.raw_regs = [
+            {"nid": int(r["nid"], 16), "handler": r["handler"], "name": r["name"]}
+            for r in cls.manifest["registrations"]
+        ]
+
+    def test_census_covers_every_dedicated_handler(self) -> None:
+        generic = set(meta.GENERIC_SUCCESS_HANDLERS) | {"h_ControlledUnsupported"}
+        expected_handlers = {
+            r["handler"]
+            for r in self.manifest["registrations"]
+            if r["handler"] not in generic and r["classification"] != "fake_success"
+        }
+        census_handlers = {h["handler"] for h in self.census["handlers"]}
+        self.assertEqual(census_handlers, expected_handlers)
+        self.assertGreaterEqual(len(census_handlers), 350)
+        self.assertEqual(self.census["summary"]["total_dedicated_handlers"], len(expected_handlers))
+
+    def test_complete_without_evidence_is_rejected(self) -> None:
+        with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": []}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("has no evidence metadata", str(ctx.exception))
+
+    def test_complete_with_nonexistent_evidence_file_is_rejected(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": ["tools/test_nonexistent_341.py"]}
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("cites non-existent evidence file", str(ctx.exception))
+
+    def test_partial_without_limitation_is_rejected(self) -> None:
+        with mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DmacMemcpy": ""}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("has no named limitation", str(ctx.exception))
+
+    def test_compatibility_without_limitation_is_rejected(self) -> None:
+        with mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_UmdGetErrorStat": ""}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("has no named limitation", str(ctx.exception))
+
+    def test_census_is_deterministic(self) -> None:
+        c1 = hle_manifest.build_census(self.manifest)
+        c2 = hle_manifest.build_census(self.manifest)
+        self.assertEqual(json.dumps(c1, sort_keys=True), json.dumps(c2, sort_keys=True))
+        self.assertEqual(hle_manifest.render_census_markdown(c1), hle_manifest.render_census_markdown(c2))
+
+    def test_census_cli_output(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            json_out = Path(td) / "census.json"
+            md_out = Path(td) / "census.md"
+            rc = hle_manifest.main(["--census", str(json_out), "--census-markdown", str(md_out)])
+            self.assertEqual(rc, 0)
+            self.assertTrue(json_out.exists())
+            self.assertTrue(md_out.exists())
+            loaded = json.loads(json_out.read_text(encoding="ascii"))
+            self.assertEqual(loaded["schema"], hle_manifest.CENSUS_SCHEMA)
+            self.assertGreaterEqual(loaded["summary"]["total_dedicated_handlers"], 350)
+            md_text = md_out.read_text(encoding="utf-8")
+            self.assertIn("# HLE Semantic Status Census", md_text)
+            self.assertIn("| `sceKernel` |", md_text)
+
+    def test_live_metadata_promotion_and_limitation_invariants(self) -> None:
+        for handler, status in meta.HANDLER_STATUS.items():
+            if status == "complete":
+                ev = meta.HANDLER_EVIDENCE.get(handler, [])
+                self.assertTrue(ev, f"{handler} must have evidence")
+                for e in ev:
+                    self.assertTrue(isinstance(e, str) and e.strip(), f"{handler} has empty evidence")
+            elif status in ("partial", "compatibility"):
+                lim = meta.HANDLER_LIMITATIONS.get(handler, "")
+                self.assertTrue(isinstance(lim, str) and lim.strip(), f"{handler} must have limitation")
 
 
 if __name__ == "__main__":
