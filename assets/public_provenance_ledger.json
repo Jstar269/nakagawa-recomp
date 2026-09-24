@@ -9260,7 +9260,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "523eee0aa1afc87e5fbbebca2236173eba6d2dbf4f39832448abd1006e452e95"
+      "sha256": "a6d49af7bc79a5b0ec6e9698060e94f1c43b298e1cced1bb3b6257f7b7fa48c2"
     },
     {
       "path": "tools/test_progress_evidence.py",
