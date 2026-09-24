@@ -200,39 +200,23 @@ measured and what that does and does not establish.
 
 `third_party/` and `place_game_here/` are local-only and ignored by Git. If you use `tools/validate_assets.py`, its optional `tools/reference_hashes.json` reference file is also local-only; it is not required by the normal build.
 
-`pspdecrypt` may be used as an optional, user-supplied GPLv3 extraction/decryption helper; it is
-not shipped by this repository. The currently available build validates/decrypts the main EBOOT,
-but rejects this title's three encrypted `~SCE` library modules, so it does **not** yet make the
-workflow ISO-only.
+### Plain module inputs
 
-### Dump the required PRXs with PPSSPP
+Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
+ELF/PRX files; this repository ships no decryption tools or keys and does not document how to
+obtain decrypted files. Whether any lawful decryption capability can be offered is an open
+maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). When you already have plain modules from your own
+lawfully obtained copy, place them at the paths the local manifest expects, for example:
 
-PPSSPP can decrypt and dump the game-supplied PRXs as it loads them. Use only modules produced
-from your own legally obtained copy of the game:
+```text
+place_game_here/EXTRACTED/decrypted/libfont.prx
+place_game_here/EXTRACTED/decrypted/scePsmf_library.prx
+place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx
+```
 
-1. In a current desktop PPSSPP build, open **Settings > Tools > Developer Tools**. Select the
-   **Dump files** tab and enable **PRX**. This is separate from **Dump Decrypted Eboot**.
-2. Start the supplied PSP title from the same lawful ISO/PBP used for the local
-   build. Run it far enough for the required optional modules to load.
-3. In PPSSPP, use **Settings > System > Show Memory Stick folder**, then open
-   `PSP/SYSTEM/DUMP/`. The emulator prefixes dumps with the disc identity.
-4. Create `place_game_here/EXTRACTED/decrypted/`, copy only the required
-   user-owned module dumps into it, and normalize their names to the paths
-   expected by the local manifest:
-
-   ```text
-   place_game_here/EXTRACTED/decrypted/libfont.prx
-   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx
-   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx
-   ```
-
-5. A valid decrypted module begins with the ELF magic bytes `7F 45 4C 46`; a file beginning with `~SCE` or `~PSP` is still encrypted and will not work as this runtime input.
-
-PPSSPP's current implementation exposes separate EBOOT and PRX dump switches and writes enabled
-dumps beneath the emulated Memory Stick's `PSP/SYSTEM/DUMP` directory. It dumps a PRX only when
-the game actually loads that module, and it does not overwrite an existing dump. Delete an old
-dump first if you need PPSSPP to regenerate it. Preserve the known-good local files once created,
-and never copy game or firmware material into Git history.
+A valid plain module begins with the ELF magic bytes `7F 45 4C 46`; a file beginning with `~SCE`
+or `~PSP` is an encrypted container and is rejected. Never copy game or firmware material into
+Git history.
 
 ### Per-title decrypted input folder (standalone player and CLI)
 

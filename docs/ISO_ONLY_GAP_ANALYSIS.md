@@ -29,8 +29,8 @@ decryption, complete archive mounting, and title acceptance remain open.
 
 | Preparation Surface | Current Manual Requirement | Technical Root Cause | True Low-Level (LLE) Resolution Path | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Main Executable** | Decrypted flat MIPS ELF (`place_game_here/EBOOT.elf`) | `EBOOT.BIN` is encrypted with Kirk tag `0x08000000` | Implement a project-authored KIRK CMD 1/7 engine in runtime; decouple key store to user-supplied keyring | **REQUIRES_NEW_IMPLEMENTATION** (Independent KIRK) |
-| **Encrypted PRXs** | Decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx` | Modules are encrypted `~PSP`/`~SCE` containers; `module_start` previously hung on `WaitSema` | Decrypt modules via local KIRK engine; fix kernel semaphore/scheduler contracts to execute original `module_start` | **REQUIRES_NEW_IMPLEMENTATION** (Kernel synchronization) |
+| **Main Executable** | Decrypted flat MIPS ELF (`place_game_here/EBOOT.elf`) | `EBOOT.BIN` is encrypted with Kirk tag `0x08000000` | Lawful decryption boundary: an open maintainer legal decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); no design is adopted. Public builds accept a plain executable (an unencrypted `BOOT.BIN` on disc is selected automatically) | **OPEN — MAINTAINER LEGAL DECISION** |
+| **Encrypted PRXs** | Decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx` | Modules are encrypted `~PSP`/`~SCE` containers; `module_start` previously hung on `WaitSema` | Same decryption boundary as the main executable ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); fix kernel semaphore/scheduler contracts to execute original `module_start` | **REQUIRES_NEW_IMPLEMENTATION** (Kernel synchronization) |
 | **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` driving it over a bounded PSMF producer (see `docs/LLE_FIDELITY_ARCHITECTURE.md` §3.4) | The host-HLE player works, but the genuine `psmf.prx` / `libpsmfplayer.prx` middleware is not executing yet | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **PARTIAL — CODEC BRIDGE AND PRODUCER LANDED; GUEST MIDDLEWARE EXECUTION OPEN** |
 | **Game Assets** | Unpacked `xbdata_extracted/` (~56k loose files) | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **TARGET — NOT CONNECTED** |
@@ -46,12 +46,10 @@ are not evidence that the paths have landed in the current player.
 ### 3.1 Retail EBOOT and PRX Cryptography
 
 * **The Blocker:** Physical UMDs and PSN packages store executables in `~SCE` and `~PSP` encrypted containers. `tools/codegen.py` disassembles standard MIPS ELF sections and fails closed on encrypted headers.
-* **Why External Decryptors Fall Short:** Standalone tools like `pspdecrypt` only handle standard Kirk Command 1 games and reject dynamic library PRXs signed with secondary Kirk tags (`0x01` / `0x0D`).
-* **The LLE Solution:**
-  1. Implement a project-authored KIRK hardware engine in Nakagawa covering `KIRK_CMD_DECRYPT_PRX` (CMD 1), ECDSA verification (CMD 2/3), and AES-128-CBC (CMD 7).
-  2. To comply with copyright and provenance rules (`PUBLIC_EXPORT.json`, `KEY_HISTORY_SCRUB.md`), the public repository never distributes proprietary Sony console master keys.
-  3. The key material is loaded from the user's local configuration directory (`%LOCALAPPDATA%/nakagawa/keys/kirk_keys.bin`) or extracted locally from a connected PSP via PSPLink.
-  4. The ingestion pipeline decrypts the executables locally into a secure temporary staging folder, validates the ELF32 envelope, and passes the clean MIPS ELFs to the recompiler.
+* **Status:** Whether Nakagawa offers any decryption capability, and in what form, is an open
+  maintainer legal decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). This document proposes no decryption or
+  key-handling design. The public repository never contains keys, and public builds accept only
+  plain (unencrypted) executables and modules.
 
 ---
 
@@ -109,9 +107,9 @@ are not evidence that the paths have landed in the current player.
 ## 4. Summary: The Authentic "Program + ISO" Reality
 
 $$\text{Ideal Target:} \quad \text{Nakagawa} + \text{Game ISO} \implies \text{Play}$$
-$$\text{Authentic Reality:} \quad \text{Nakagawa} + \text{Game ISO} + \text{Firmware PGF (flash0)} + \text{KIRK Keys} \implies \text{Play (100\% Faithful)}$$
+$$\text{Authentic Reality:} \quad \text{Nakagawa} + \text{Game ISO} + \text{User-supplied fonts} + \text{Plain executables} \implies \text{Play}$$
 
-The project can continue automating everything possible (ISO inspection, local KIRK
-decryption, transparent VFS mounting, and dynamic module loading) without compromising
+The project can continue automating everything possible (ISO inspection,
+transparent VFS mounting, and dynamic module loading) without compromising
 fidelity or cutting architectural corners. At this snapshot, only the bounded ISO
 inspection/file-helper slice is present; the other items remain proposed work.
