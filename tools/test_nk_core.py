@@ -1056,6 +1056,7 @@ int main(int argc, char **argv) {
             REPO_ROOT / "src" / "core" / "nk_library.c",
             REPO_ROOT / "src" / "core" / "nk_launch.c",
             REPO_ROOT / "src" / "core" / "nk_title_manifest.c",
+            REPO_ROOT / "src" / "core" / "nk_json.c",
             REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if sys.platform == "win32":
@@ -1295,6 +1296,7 @@ int main(int argc, char **argv) {
                 str(REPO_ROOT / "src" / "core" / "nk_library.c"),
                 str(src_dir / "nk_launch.c"),
                 str(src_dir / "nk_title_manifest.c"),
+                str(REPO_ROOT / "src" / "core" / "nk_json.c"),
                 str(src_dir / "generated" / "nk_title_catalog.c"),
                 str(platform_src),
                 "-o", str(out),
@@ -1504,6 +1506,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
             REPO_ROOT / "src" / "core" / "nk_library.c",
             mutant_c,
             REPO_ROOT / "src" / "core" / "nk_title_manifest.c",
+            REPO_ROOT / "src" / "core" / "nk_json.c",
             REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if sys.platform == "win32":

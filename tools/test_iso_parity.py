@@ -255,6 +255,7 @@ class IsoParityTests(unittest.TestCase):
             ROOT / "src" / "core" / "nk_iso.c",
             ROOT / "src" / "core" / "nk_library.c",
             ROOT / "src" / "core" / "nk_title_manifest.c",
+            ROOT / "src" / "core" / "nk_json.c",
             ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if has_launch:
