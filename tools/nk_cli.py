@@ -463,12 +463,14 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
     return output
 
 
-def _runtime_build_environment() -> dict[str, str]:
+def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, str]:
     env = os.environ.copy()
     if os.name == "nt":
         ucrt_bin = Path("C:/msys64/ucrt64/bin")
         if ucrt_bin.is_dir():
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
+    if instruction_trace:
+        env["TRACE"] = "1"
     return env
 
 
@@ -609,8 +611,16 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             import shlex
             print("COMMAND: " + shlex.join(command))
         compile_started = time.perf_counter()
-        completed = subprocess.run(command, cwd=ROOT, env=_runtime_build_environment(),
-                                   capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=_runtime_build_environment(
+                instruction_trace=bool(getattr(args, "instruction_trace", False))
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if completed.stdout:
             sys.stdout.write(completed.stdout)
         if completed.returncode != 0:
@@ -967,8 +977,12 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (the runtime rejected an unresolved dispatch target)"
     elif report["failure_class"] == "EXITED_ZERO_BEFORE_HLE":
         detail = " (the runtime exited zero before its first PSP kernel import)"
+    elif report["failure_class"] == "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP":
+        detail = " (the runtime exited zero before PSP display framebuffer setup)"
     elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
         detail = " (runtime telemetry did not verify a PSP kernel import)"
+    elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
+        detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
     elif report["failure_class"] == "LAUNCH_FAILED":
         kind = report.get("runtime_output_kind")
         if kind == "EMPTY":
@@ -1126,6 +1140,33 @@ def _flight_has_hle_import(path: Path | None) -> bool | None:
         return None
     if any(
         isinstance(event, dict) and event.get("class") == "hle" and event.get("kind") == 1
+        for event in events
+    ):
+        return True
+    return False if dropped == 0 else None
+
+
+def _flight_has_display_framebuffer_setup(path: Path | None) -> bool | None:
+    """Return whether the private flight bundle proves PSP framebuffer setup.
+
+    This establishes only that the guest configured a display framebuffer; it
+    does not claim that a host frame was presented or visually verified.
+    """
+    if path is None:
+        return None
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recorder = bundle.get("recorder") if isinstance(bundle, dict) else None
+    events = bundle.get("events") if isinstance(bundle, dict) else None
+    dropped = recorder.get("dropped") if isinstance(recorder, dict) else None
+    if (not isinstance(events, list) or isinstance(dropped, bool)
+            or not isinstance(dropped, int) or dropped < 0):
+        return None
+    if any(
+        isinstance(event, dict) and event.get("class") == "hle"
+        and event.get("kind") == 1 and event.get("arg0") == 0x289D82FE
         for event in events
     ):
         return True
@@ -1423,6 +1464,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         user_data_root=user_root,
         module_dir=module_dir,
         psp_header=None,
+        instruction_trace=bool(getattr(args, "instruction_trace", False)),
     )
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
@@ -1479,9 +1521,16 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         image = package_dir / f"{Path(package['executable']['path']).stem}_image.bin"
         base = int(manifest["executable"]["base"])
         base_argument = str(base) if base == 0 else f"0x{base:08x}"
+        instruction_trace_path = (
+            work_dir / "instructions.trace"
+            if bool(getattr(args, "instruction_trace", False))
+            else None
+        )
         launch_command = [
             str(executable), "--image", str(image), base_argument,
-            package["runtime"]["run_entry"], "none", "none", "--sched",
+            package["runtime"]["run_entry"], "none",
+            str(instruction_trace_path) if instruction_trace_path else "none",
+            "--sched",
         ]
         timeout = max(1, min(int(args.launch_timeout), 120))
         process = subprocess.Popen(
@@ -1510,8 +1559,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         int((time.perf_counter() - started) * 1000),
                     )
                 else:
-                    _set_bringup_stage(report, "launch", "PASS",
-                                       int((time.perf_counter() - started) * 1000))
+                    framebuffer_observed = _flight_has_display_framebuffer_setup(flight_output)
+                    if framebuffer_observed is False:
+                        _fail_bringup(
+                            report, "launch", "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [285, 308],
+                            int((time.perf_counter() - started) * 1000),
+                        )
+                    elif framebuffer_observed is None:
+                        _fail_bringup(
+                            report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [285, 308],
+                            int((time.perf_counter() - started) * 1000),
+                        )
+                    else:
+                        _set_bringup_stage(report, "launch", "PASS",
+                                           int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
                 if "no available video device" in folded or "video driver" in folded:
@@ -1611,6 +1672,8 @@ def main() -> int:
                            help="Destination for the public-safe JSON report")
     p_bringup.add_argument("--launch-timeout", type=int, default=20,
                            help="Hard launch limit in seconds (1..120; default 20)")
+    p_bringup.add_argument("--instruction-trace", action="store_true",
+                           help="Write guest instruction trace under --work-dir")
     p_bringup.set_defaults(func=cmd_bringup)
 
     args = parser.parse_args()
