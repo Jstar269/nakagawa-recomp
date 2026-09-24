@@ -43,6 +43,8 @@
 #define SR_PRX_EXPORT_REC_SIZE 16u
 #define SR_PRX_IMPORT_REC_MIN 20u
 #define SR_PRX_MAX_ENTRIES 65536u
+#define SR_PRX_MAX_FILE_BYTES (256u * 1024u * 1024u)
+#define SR_PRX_MAX_IMAGE_BYTES (64u * 1024u * 1024u)
 
 static void set_err(char *err, size_t errlen, const char *msg) {
     size_t i;
@@ -662,6 +664,7 @@ static int do_load(const unsigned char *data, size_t size, uint32_t base,
     uint32_t e_entry, e_phoff, e_shoff;
     uint32_t i;
     PhdrInfo *ph = NULL;
+    uint64_t image_bytes = 0;
     uint32_t seg_idx = 0;
     uint32_t start = 0, end = 0;
     int has_a_phdr = 0;
@@ -701,6 +704,10 @@ static int do_load(const unsigned char *data, size_t size, uint32_t base,
         data[2] == 0x53u && data[3] == 0x50u) {
         set_err(err, errlen,
                 "refused ~PSP container: decryption/decompression out of scope");
+        return -1;
+    }
+    if (size > SR_PRX_MAX_FILE_BYTES) {
+        set_err(err, errlen, "PRX input exceeds 256 MiB");
         return -1;
     }
     if (size < 52) {
@@ -788,6 +795,12 @@ static int do_load(const unsigned char *data, size_t size, uint32_t base,
                 free(ph);
                 return -1;
             }
+            if (ph[i].p_memsz > SR_PRX_MAX_IMAGE_BYTES - image_bytes) {
+                set_err(err, errlen, "PRX image exceeds 64 MiB");
+                free(ph);
+                return -1;
+            }
+            image_bytes += ph[i].p_memsz;
             fr = (uint64_t)ph[i].p_offset + (uint64_t)ph[i].p_filesz;
             if (fr > 0xFFFFFFFFULL) {
                 set_err(err, errlen, "segment file range overflows 32 bits");
@@ -1468,6 +1481,8 @@ fail_entries:
     return -1;
 
 fail_scratch:
+    free(exps);
+    free(imps);
     for (i = 0; i < c.nseg; i++) {
         free(c.segs[i].buf);
     }
@@ -1508,6 +1523,11 @@ int sr_prx_load(const char *host_path, uint32_t base, SrPrxImage *out,
     sz = ftell(f);
     if (sz < 0) {
         set_err(err, errlen, "cannot stat input file");
+        fclose(f);
+        return -1;
+    }
+    if ((unsigned long)sz > SR_PRX_MAX_FILE_BYTES) {
+        set_err(err, errlen, "PRX input exceeds 256 MiB");
         fclose(f);
         return -1;
     }
