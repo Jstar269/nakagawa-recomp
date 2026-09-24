@@ -40,6 +40,8 @@
 #define PSP_W 480
 #define PSP_H 272
 #define PRESENT_FRAMES 3
+#define HUD_W 240
+#define HUD_H 76
 
 typedef struct PresentFrame {
     VkCommandBuffer cmd;
@@ -48,6 +50,9 @@ typedef struct PresentFrame {
     VkBuffer staging;
     VkDeviceMemory staging_mem;
     void *staging_map;
+    VkBuffer hud_staging;
+    VkDeviceMemory hud_staging_mem;
+    void *hud_staging_map;
     VkImage fbimg;
     VkDeviceMemory fbimg_mem;
     VkImage source;
@@ -102,6 +107,29 @@ uint64_t sdl3vk_swapchain_generation(void) {
 
 uint64_t sdl3vk_frame_semaphore_generation(void) {
     return s_frame_sem_gen;
+}
+
+/* ---- performance overlay (HUD) ------------------------------------------------------ */
+
+static int s_hud_enabled = 0;
+static int (*s_audio_active_cb)(void) = NULL;
+static SDL_Surface  *s_hud_surf = NULL;
+static SDL_Renderer *s_hud_ren = NULL;
+static VkFormat      s_hud_fmt = VK_FORMAT_UNDEFINED;
+
+int sdl3vk_hud_is_enabled(void) {
+    return s_hud_enabled;
+}
+
+void sdl3vk_hud_set_enabled(int enabled) {
+    s_hud_enabled = enabled ? 1 : 0;
+    if (s_hud_enabled) {
+        sr_perf_enable_counters();
+    }
+}
+
+void sdl3vk_set_audio_active_cb(int (*cb)(void)) {
+    s_audio_active_cb = cb;
 }
 
 static uint32_t s_buttons;
@@ -383,6 +411,22 @@ int sdl3vk_init(const char *title) {
         VK_TRY(vkBindBufferMemory(s_dev,f->staging,f->staging_mem,0));
         VK_TRY(vkMapMemory(s_dev,f->staging_mem,0,VK_WHOLE_SIZE,0,&f->staging_map));
 
+        VkBufferCreateInfo hbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        hbci.size = HUD_W * HUD_H * 4;
+        hbci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        VK_TRY(vkCreateBuffer(s_dev, &hbci, NULL, &f->hud_staging));
+        VkMemoryRequirements hmr;
+        vkGetBufferMemoryRequirements(s_dev, f->hud_staging, &hmr);
+        VkMemoryAllocateInfo hmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        hmai.allocationSize = hmr.size;
+        hmai.memoryTypeIndex = find_mem_type(hmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (hmai.memoryTypeIndex == UINT32_MAX) {
+            hmai.memoryTypeIndex = find_mem_type(hmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        }
+        VK_TRY(vkAllocateMemory(s_dev, &hmai, NULL, &f->hud_staging_mem));
+        VK_TRY(vkBindBufferMemory(s_dev, f->hud_staging, f->hud_staging_mem, 0));
+        VK_TRY(vkMapMemory(s_dev, f->hud_staging_mem, 0, VK_WHOLE_SIZE, 0, &f->hud_staging_map));
+
         VkImageCreateInfo imi={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         imi.imageType=VK_IMAGE_TYPE_2D;imi.format=VK_FORMAT_B8G8R8A8_UNORM;
         imi.extent.width=PSP_W;imi.extent.height=PSP_H;imi.extent.depth=1;
@@ -399,6 +443,11 @@ int sdl3vk_init(const char *title) {
     }
 
     if (!create_swapchain()) return 0;
+
+    const char *hud_env = getenv("SR_HUD");
+    if (hud_env && hud_env[0] && strcmp(hud_env, "0") != 0) {
+        sdl3vk_hud_set_enabled(1);
+    }
 
     sdl3vk_init_input_profile();
     if (SDL_HasGamepad()) {
@@ -557,6 +606,9 @@ static void poll_input(int *quit) {
         case SDL_EVENT_QUIT: *quit = 1; break;
         case SDL_EVENT_KEY_DOWN:
             if (ev.key.key == SDLK_ESCAPE) *quit = 1;
+            if (ev.key.key == SDLK_F1 && !ev.key.repeat) {
+                sdl3vk_hud_set_enabled(!s_hud_enabled);
+            }
             if (!ev.key.repeat) s_button_pulse |= keyboard_button(ev.key.scancode);
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -1012,6 +1064,82 @@ static VkFilter sdl3vk_present_filter(int srcw, int srch, int vw, int vh) {
     return VK_FILTER_LINEAR;
 }
 
+static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_img, int swap_w, int swap_h) {
+    if (!f || !f->hud_staging_map || swap_w < HUD_W || swap_h < HUD_H) return;
+
+    if (!s_hud_surf || s_hud_fmt != s_swap_fmt) {
+        if (s_hud_ren) { SDL_DestroyRenderer(s_hud_ren); s_hud_ren = NULL; }
+        if (s_hud_surf) { SDL_DestroySurface(s_hud_surf); s_hud_surf = NULL; }
+        s_hud_fmt = s_swap_fmt;
+        SDL_PixelFormat sdl_fmt = (s_swap_fmt == VK_FORMAT_R8G8B8A8_UNORM || s_swap_fmt == VK_FORMAT_R8G8B8A8_SRGB)
+                                  ? SDL_PIXELFORMAT_RGBA32 : SDL_PIXELFORMAT_BGRA32;
+        s_hud_surf = SDL_CreateSurface(HUD_W, HUD_H, sdl_fmt);
+        if (s_hud_surf) {
+            s_hud_ren = SDL_CreateSoftwareRenderer(s_hud_surf);
+        }
+    }
+    if (!s_hud_surf || !s_hud_ren) return;
+
+    double fps = 0.0, frame_ms = 0.0, vblank_hz = 0.0;
+    sr_perf_get_hud_metrics(&fps, &frame_ms, &vblank_hz);
+    /* -1: no backend query registered, so the status is unknown. */
+    int audio_active = s_audio_active_cb ? (s_audio_active_cb() ? 1 : 0) : -1;
+
+    SDL_SetRenderDrawColor(s_hud_ren, 20, 24, 32, 230);
+    SDL_FRect bg = { 0, 0, (float)HUD_W, (float)HUD_H };
+    SDL_RenderFillRect(s_hud_ren, &bg);
+    SDL_SetRenderDrawColor(s_hud_ren, 70, 90, 130, 255);
+    SDL_RenderRect(s_hud_ren, &bg);
+
+    char line[64];
+    SDL_SetRenderDrawColor(s_hud_ren, 240, 240, 240, 255);
+    snprintf(line, sizeof(line), "FPS:     %.1f (%.2f ms)", fps, frame_ms);
+    SDL_RenderDebugText(s_hud_ren, 12, 10, line);
+
+    snprintf(line, sizeof(line), "VBlank:  %.1f Hz", vblank_hz);
+    SDL_RenderDebugText(s_hud_ren, 12, 30, line);
+
+    if (audio_active > 0) {
+        SDL_SetRenderDrawColor(s_hud_ren, 80, 240, 120, 255);
+    } else {
+        SDL_SetRenderDrawColor(s_hud_ren, 200, 200, 200, 255);
+    }
+    snprintf(line, sizeof(line), "Audio:   %s",
+             audio_active > 0 ? "Active" : (audio_active == 0 ? "Inactive" : "Unknown"));
+    SDL_RenderDebugText(s_hud_ren, 12, 50, line);
+
+    SDL_RenderPresent(s_hud_ren);
+
+    const uint8_t *src_px = (const uint8_t *)s_hud_surf->pixels;
+    uint8_t *dst_px = (uint8_t *)f->hud_staging_map;
+    int pitch = s_hud_surf->pitch;
+    for (int y = 0; y < HUD_H; y++) {
+        memcpy(dst_px + y * HUD_W * 4, src_px + y * pitch, HUD_W * 4);
+    }
+
+    int ox = 16, oy = 16;
+    if (swap_w < HUD_W + ox || swap_h < HUD_H + oy) {
+        ox = 0; oy = 0;
+    }
+
+    VkBufferImageCopy bic = {0};
+    bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    bic.imageSubresource.layerCount = 1;
+    bic.imageOffset.x = ox;
+    bic.imageOffset.y = oy;
+    bic.imageOffset.z = 0;
+    bic.imageExtent.width = HUD_W;
+    bic.imageExtent.height = HUD_H;
+    bic.imageExtent.depth = 1;
+
+    /* The frame blit just wrote this region; order the overlay write after it. */
+    barrier(cmd, dst_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    vkCmdCopyBufferToImage(cmd, f->hud_staging, dst_img,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+}
+
 static int present_common(VkImage src, int srcw, int srch, const uint32_t *upload) {
     if (s_renderer_terminal) return -1;
     const char *why = NULL;
@@ -1093,6 +1221,11 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &blt, filter);
+
+        if (s_hud_enabled && f->hud_staging_map) {
+            draw_hud_overlay(cmd, f, s_swap_img[idx], dw, dh);
+        }
+
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -2164,10 +2297,16 @@ void sdl3vk_shutdown(void) {
         if (f->fbimg_mem)   vkFreeMemory(s_dev, f->fbimg_mem, NULL);
         if (f->staging)     vkDestroyBuffer(s_dev, f->staging, NULL);
         if (f->staging_mem) vkFreeMemory(s_dev, f->staging_mem, NULL);
+        if (f->hud_staging_map) vkUnmapMemory(s_dev, f->hud_staging_mem);
+        if (f->hud_staging)     vkDestroyBuffer(s_dev, f->hud_staging, NULL);
+        if (f->hud_staging_mem) vkFreeMemory(s_dev, f->hud_staging_mem, NULL);
         if (f->sem_acq)     vkDestroySemaphore(s_dev, f->sem_acq, NULL);
         if (f->sem_done)    vkDestroySemaphore(s_dev, f->sem_done, NULL);
         if (f->fence)       vkDestroyFence(s_dev, f->fence, NULL);
     }
+    if (s_hud_ren)  { SDL_DestroyRenderer(s_hud_ren); s_hud_ren = NULL; }
+    if (s_hud_surf) { SDL_DestroySurface(s_hud_surf); s_hud_surf = NULL; }
+    s_hud_fmt = VK_FORMAT_UNDEFINED;
     if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     cap_free_buffer();
     s_cap_state = CAP_IDLE;

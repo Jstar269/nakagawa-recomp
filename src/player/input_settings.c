@@ -403,3 +403,134 @@ bool input_settings_toggle_axis_inversion(InputSettingsState *state, int axis_id
     state->profile.axes[axis_idx].inverted = !state->profile.axes[axis_idx].inverted;
     return true;
 }
+
+bool input_settings_start_calibration(InputSettingsState *state) {
+    if (!state) return false;
+    memset(&state->calib, 0, sizeof(state->calib));
+    state->calib.stage = CALIBRATION_STAGE_REST;
+    state->calib.duration_ms = 1000;
+    return true;
+}
+
+void input_settings_cancel_calibration(InputSettingsState *state) {
+    if (!state) return;
+    memset(&state->calib, 0, sizeof(state->calib));
+    state->calib.stage = CALIBRATION_STAGE_INACTIVE;
+}
+
+bool input_settings_is_calibrating(const InputSettingsState *state) {
+    return state && state->calib.stage != CALIBRATION_STAGE_INACTIVE;
+}
+
+GuidedCalibrationStage input_settings_get_calibration_stage(const InputSettingsState *state) {
+    return state ? state->calib.stage : CALIBRATION_STAGE_INACTIVE;
+}
+
+bool input_settings_update_calibration(InputSettingsState *state, int delta_ms, const int16_t host_axes[NK_HOST_AXIS_COUNT]) {
+    if (!state || state->calib.stage == CALIBRATION_STAGE_INACTIVE) return false;
+
+    int ax_x = state->profile.axes[NK_PSP_AXIS_ANALOG_X].host_axis;
+    int ax_y = state->profile.axes[NK_PSP_AXIS_ANALOG_Y].host_axis;
+    int16_t cur_x = (host_axes && ax_x >= 0 && ax_x < NK_HOST_AXIS_COUNT) ? host_axes[ax_x] : 0;
+    int16_t cur_y = (host_axes && ax_y >= 0 && ax_y < NK_HOST_AXIS_COUNT) ? host_axes[ax_y] : 0;
+    int16_t cur_lt = (host_axes && NK_HOST_AXIS_LEFT_TRIGGER < NK_HOST_AXIS_COUNT) ? host_axes[NK_HOST_AXIS_LEFT_TRIGGER] : 0;
+    int16_t cur_rt = (host_axes && NK_HOST_AXIS_RIGHT_TRIGGER < NK_HOST_AXIS_COUNT) ? host_axes[NK_HOST_AXIS_RIGHT_TRIGGER] : 0;
+
+    if (state->calib.stage == CALIBRATION_STAGE_REST) {
+        state->calib.rest_x_acc += cur_x;
+        state->calib.rest_y_acc += cur_y;
+        state->calib.rest_lt_acc += cur_lt;
+        state->calib.rest_rt_acc += cur_rt;
+        state->calib.sample_count++;
+        state->calib.elapsed_ms += delta_ms;
+
+        if (state->calib.elapsed_ms >= state->calib.duration_ms) {
+            if (state->calib.sample_count > 0) {
+                state->calib.sampled_rest_x = (int16_t)(state->calib.rest_x_acc / state->calib.sample_count);
+                state->calib.sampled_rest_y = (int16_t)(state->calib.rest_y_acc / state->calib.sample_count);
+                state->calib.sampled_rest_lt = (int16_t)(state->calib.rest_lt_acc / state->calib.sample_count);
+                state->calib.sampled_rest_rt = (int16_t)(state->calib.rest_rt_acc / state->calib.sample_count);
+            } else {
+                state->calib.sampled_rest_x = cur_x;
+                state->calib.sampled_rest_y = cur_y;
+                state->calib.sampled_rest_lt = cur_lt;
+                state->calib.sampled_rest_rt = cur_rt;
+            }
+
+            state->calib.sampled_min_x = state->calib.sampled_rest_x;
+            state->calib.sampled_max_x = state->calib.sampled_rest_x;
+            state->calib.sampled_min_y = state->calib.sampled_rest_y;
+            state->calib.sampled_max_y = state->calib.sampled_rest_y;
+            state->calib.sampled_max_lt = state->calib.sampled_rest_lt;
+            state->calib.sampled_max_rt = state->calib.sampled_rest_rt;
+
+            state->calib.stage = CALIBRATION_STAGE_EXTREMES;
+            state->calib.elapsed_ms = 0;
+        }
+        return true;
+    }
+
+    if (state->calib.stage == CALIBRATION_STAGE_EXTREMES) {
+        state->calib.elapsed_ms += delta_ms;
+        if (cur_x < state->calib.sampled_min_x) state->calib.sampled_min_x = cur_x;
+        if (cur_x > state->calib.sampled_max_x) state->calib.sampled_max_x = cur_x;
+        if (cur_y < state->calib.sampled_min_y) state->calib.sampled_min_y = cur_y;
+        if (cur_y > state->calib.sampled_max_y) state->calib.sampled_max_y = cur_y;
+        if (cur_lt > state->calib.sampled_max_lt) state->calib.sampled_max_lt = cur_lt;
+        if (cur_rt > state->calib.sampled_max_rt) state->calib.sampled_max_rt = cur_rt;
+        return true;
+    }
+
+    return true;
+}
+
+bool input_settings_finish_calibration_extremes(InputSettingsState *state) {
+    if (!state || state->calib.stage != CALIBRATION_STAGE_EXTREMES) return false;
+
+    state->calib.result_rest_x = state->calib.sampled_rest_x;
+    state->calib.result_min_x = (state->calib.sampled_min_x < state->calib.result_rest_x - 4000)
+                                ? state->calib.sampled_min_x : -32768;
+    state->calib.result_max_x = (state->calib.sampled_max_x > state->calib.result_rest_x + 4000)
+                                ? state->calib.sampled_max_x : 32767;
+
+    state->calib.result_rest_y = state->calib.sampled_rest_y;
+    state->calib.result_min_y = (state->calib.sampled_min_y < state->calib.result_rest_y - 4000)
+                                ? state->calib.sampled_min_y : -32768;
+    state->calib.result_max_y = (state->calib.sampled_max_y > state->calib.result_rest_y + 4000)
+                                ? state->calib.sampled_max_y : 32767;
+
+    int16_t rest_trig = (state->calib.sampled_rest_lt > state->calib.sampled_rest_rt)
+                        ? state->calib.sampled_rest_lt : state->calib.sampled_rest_rt;
+    int16_t ext_trig = (state->calib.sampled_max_lt > state->calib.sampled_max_rt)
+                       ? state->calib.sampled_max_lt : state->calib.sampled_max_rt;
+
+    if (ext_trig <= rest_trig + 1000) {
+        ext_trig = 32767;
+        if (rest_trig >= ext_trig) rest_trig = 0;
+    }
+
+    state->calib.result_trigger_rest = rest_trig;
+    state->calib.result_trigger_extreme = ext_trig;
+
+    state->calib.stage = CALIBRATION_STAGE_RESULT;
+    return true;
+}
+
+bool input_settings_accept_calibration(InputSettingsState *state) {
+    if (!state || state->calib.stage != CALIBRATION_STAGE_RESULT) return false;
+
+    state->profile.axes[NK_PSP_AXIS_ANALOG_X].rest = state->calib.result_rest_x;
+    state->profile.axes[NK_PSP_AXIS_ANALOG_X].min_val = state->calib.result_min_x;
+    state->profile.axes[NK_PSP_AXIS_ANALOG_X].max_val = state->calib.result_max_x;
+
+    state->profile.axes[NK_PSP_AXIS_ANALOG_Y].rest = state->calib.result_rest_y;
+    state->profile.axes[NK_PSP_AXIS_ANALOG_Y].min_val = state->calib.result_min_y;
+    state->profile.axes[NK_PSP_AXIS_ANALOG_Y].max_val = state->calib.result_max_y;
+
+    state->profile.trigger_rest = state->calib.result_trigger_rest;
+    state->profile.trigger_extreme = state->calib.result_trigger_extreme;
+
+    memset(&state->calib, 0, sizeof(state->calib));
+    state->calib.stage = CALIBRATION_STAGE_INACTIVE;
+    return true;
+}
