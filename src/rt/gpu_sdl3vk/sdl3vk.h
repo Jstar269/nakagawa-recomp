@@ -17,6 +17,8 @@
 #define SR_SDL3VK_H
 
 #include <stdint.h>
+#include <stdbool.h>
+#include "nk_input_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -104,6 +106,20 @@ uint32_t sdl3vk_buttons(void);
 void     sdl3vk_consume_button_pulses(void);
 void     sdl3vk_analog(uint8_t *lx, uint8_t *ly);
 int      sdl3vk_pad_present(void);
+
+/* Host input profile mapping and evaluation (#357). */
+void sdl3vk_map_gamepad(
+    const NkInputProfile *profile,
+    const bool host_buttons[NK_HOST_BUTTON_COUNT],
+    const int16_t host_axes[NK_HOST_AXIS_COUNT],
+    uint32_t *out_buttons,
+    uint8_t *out_lx,
+    uint8_t *out_ly
+);
+void sdl3vk_init_input_profile(void);
+void sdl3vk_reset_input_profile(void);
+const NkInputProfile *sdl3vk_get_input_profile(void);
+int  sdl3vk_input_profile_selftest(void);
 
 /* Vulkan objects shared with the Phase-1 GPU rasterizer (ge_gpu.c). Handles are typed
  * void* here so this header stays vulkan.h-free; they are the real VkInstance etc.
