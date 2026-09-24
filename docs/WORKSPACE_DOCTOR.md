@@ -158,7 +158,7 @@ Before implementing those commands, the project should complete the following in
    decode budgets are now repository-owned; `libxb` is no longer an extraction dependency);
 4. determine whether a direct XB virtual filesystem can remove the expanded asset tree entirely;
 5. separate build-time dependencies from the files required only to run a completed local build;
-6. unify the flattened `fs/` and hierarchical `memstick/` mappings under one safe Memory Stick root.
+6. unify the flattened `fs/` and hierarchical `memstick/` mappings under one safe Memory Stick root — **DONE (issue #334)**: ordinary `sceIo*` and savedata share `SR_MEMSTICK` (default `memstick/`) via `sr_ms0_resolve`; `fs/` remains only as a read-only legacy-import source.
 
 ## Deferred build and workspace ergonomics
 

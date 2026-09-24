@@ -146,13 +146,17 @@ For automated or pre-loaded runs that require installed game data:
 
 - Utility savedata uses the hierarchical
   `memstick/PSP/SAVEDATA/<game><save>/` tree.
-- Ordinary guest `sceIoOpen("ms0:...")` calls still use the legacy flat
-  `fs/` mapping. Title-specific cached assets and save identities are private
-  inputs; this public guide deliberately does not enumerate them.
+- Ordinary guest `sceIoOpen("ms0:...")` calls and utility savedata share one
+  canonical host Memory Stick root (`SR_MEMSTICK`, default `memstick/`) and
+  one path resolver. Title-specific cached assets and save identities are
+  private inputs; this public guide deliberately does not enumerate them.
+- Legacy hierarchical trees under `fs/` are no longer listed or auto-migrated;
+  a read-open miss may import a legacy flat `fs/` file once into the unified
+  root, but write/create never creates under `fs/`.
 
-Unifying generic `ms0:` I/O with the savedata storage root is still portability
-work; do not remove `fs/` until that runtime change is implemented and the
-current menu route is revalidated.
+The unified Memory Stick root is the production contract; `fs/` remains only
+as a read-only legacy-import source until existing menu routes are
+revalidated against the unified tree.
 
 To regenerate the extracted asset tree, run the extractor. It has no
 third-party dependency:
