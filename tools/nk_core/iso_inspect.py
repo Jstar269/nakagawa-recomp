@@ -25,6 +25,7 @@ MAX_DIRECTORY_BYTES = 512 * 1024
 MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
+PSP_DEFAULT_MAIN_LOAD_ADDRESS = 0x08804000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
@@ -280,6 +281,7 @@ def write_experimental_profile(
     executable_sha256: str | None = None
     elf_sha256: str | None = None
     executable_entry = 0
+    executable_load_address: int | None = None
     if selected is not None:
         selected_path = f"PSP_GAME/SYSDIR/{selected}"
         digest = hashlib.sha256()
@@ -299,11 +301,13 @@ def write_experimental_profile(
             e_type, machine, version = struct.unpack_from("<HHI", header, 16)
             if machine != 8 or version != 1:
                 raise IsoInspectionError("selected executable is not a supported MIPS ELF32 image")
-            if e_type not in (2, 3):
+            if e_type not in (2, 3, 0xFFA0):
                 raise IsoInspectionError(
-                    "experimental import needs a user-supplied load binding for relocatable ELF input (#308)"
+                    "experimental import needs a user-supplied load binding for unsupported relocatable ELF input (#308)"
                 )
             executable_entry = struct.unpack_from("<I", header, 24)[0]
+            if e_type in (3, 0xFFA0):
+                executable_load_address = PSP_DEFAULT_MAIN_LOAD_ADDRESS
             offset = 0
             while offset < size:
                 count = min(64 * 1024, size - offset)
@@ -315,6 +319,13 @@ def write_experimental_profile(
         executable_sha256 = digest.hexdigest()
         elf_sha256 = executable_sha256
     manifest["executable"]["entry"] = executable_entry
+    if executable_load_address is not None:
+        manifest["executable"].update({
+            "base": executable_load_address,
+            "load_address": executable_load_address,
+            "load_address_evidence": "documented-psp-default",
+        })
+    manifest = title_manifest.validate_manifest(manifest)
 
     profile = {
         "schema_version": EXPERIMENTAL_PROFILE_SCHEMA_VERSION,

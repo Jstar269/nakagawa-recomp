@@ -844,18 +844,30 @@ int main(int argc, char **argv) {{
         self.assertEqual(native_profile["input_identity"]["executable_sha256"], expected_hash)
         self.assertEqual(native_profile["input_identity"]["elf_sha256"], expected_hash)
 
-    def test_experimental_import_requires_load_binding_for_relocatable_elf(self) -> None:
-        """ET_SCE_PRX input must stop before profile creation when no load base is supplied."""
-        iso_file = self.temp_dir / "relocatable_experimental.iso"
-        create_test_iso_with_executables(
-            iso_file, build_plain_mips_elf(e_type=0xFFA0),
-            disc_id="ULUS99997", title="Synthetic Relocatable Fixture",
-        )
-        user_root = self.temp_dir / "relocatable-user-data"
-        metadata = inspect_iso(iso_file)
-        with self.assertRaisesRegex(ValueError, "load binding.*#308"):
-            write_experimental_profile(iso_file, user_root, metadata=metadata)
-        self.assertFalse((user_root / "experimental").exists())
+    def test_experimental_import_uses_documented_load_binding_for_relocatable_elf(self) -> None:
+        """Relocatable main modules use the documented generic PSP load base."""
+        from title_manifest import validate_manifest
+
+        for e_type in (3, 0xFFA0):
+            with self.subTest(e_type=e_type):
+                iso_file = self.temp_dir / f"relocatable_{e_type:04x}.iso"
+                create_test_iso_with_executables(
+                    iso_file, build_plain_mips_elf(e_type=e_type),
+                    disc_id="ULUS99997", title="Synthetic Relocatable Fixture",
+                )
+                user_root = self.temp_dir / f"relocatable-user-data-{e_type:04x}"
+                metadata = inspect_iso(iso_file)
+                profile_path = write_experimental_profile(
+                    iso_file, user_root, metadata=metadata
+                )
+                profile = json.loads(profile_path.read_text(encoding="utf-8"))
+                executable = validate_manifest(profile["manifest"])["executable"]
+                self.assertEqual(executable["base"], 0x08804000)
+                self.assertEqual(executable["load_address"], 0x08804000)
+                self.assertEqual(
+                    executable["load_address_evidence"], "documented-psp-default"
+                )
+                self.assertTrue(profile_path.is_relative_to(user_root))
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""
