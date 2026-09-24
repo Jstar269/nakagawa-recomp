@@ -1,10 +1,11 @@
 # Contributing
 
 Thanks for helping with Nakagawa Recomp. The repository-level project declaration is
-GPL-3.0-or-later, while individual source files and inherited components may retain GPL-2.0-or-later
-or other upstream-specific terms. Applicable third-party notices must be preserved. Specific
-inherited licensing/provenance questions remain unresolved and under qualified review; do not introduce
-or relabel third-party-derived code without resolving its actual source/license chain.
+GPL-3.0-or-later. New project-authored source files use `SPDX-License-Identifier: GPL-3.0-or-later`.
+Inherited and third-party files retain the exact SPDX identifier and notices recorded for their source
+lineage; do not relabel upstream-derived code as project-authored or replace its license identifier.
+Specific inherited licensing/provenance questions remain under qualified review; do not introduce
+third-party-derived code without resolving its actual source/license chain.
 
 ## Before changing code
 
@@ -47,6 +48,7 @@ auto-detected Vulkan SDK/loader. The separate dashboard uses npm and Next.js.
   update the canonical issue and its `ISSUES.md` dashboard link in the same change when applicable;
   label hypotheses and informational notes explicitly.
 - Preserve existing SPDX, copyright, and provenance notices. For a new file, use an SPDX identifier only when its origin/license are actually known; do not invent a copyright owner or provenance claim.
+- For project-authored source, use `GPL-3.0-or-later`; for inherited/upstream-derived source, preserve the SPDX identifier and notices required by its provenance record.
 - Prefer general behavior/correctness fixes over address-specific compatibility overrides. Any unavoidable game-specific behavior needs evidence, a regression/route, and a retirement criterion.
 
 ## Verify

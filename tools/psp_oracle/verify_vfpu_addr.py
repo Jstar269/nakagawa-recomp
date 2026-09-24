@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Verify HQ-1 (#296) measured VFPU register sets against the production decode.
 
 Raw-first: parse the hardware lanes payloads and independently derive the
