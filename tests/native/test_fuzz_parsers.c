@@ -18,6 +18,7 @@
 #undef NDEBUG
 #endif
 #include <assert.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -63,8 +64,60 @@ static void write_file_bytes(const char *path, const void *data, size_t size) {
     fclose(f);
 }
 
+static void put16le(uint8_t *p, uint16_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+}
+
+static void put32le(uint8_t *p, uint32_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+    p[2] = (uint8_t)(value >> 16);
+    p[3] = (uint8_t)(value >> 24);
+}
+
+static uint32_t get32le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void put32_iso_both(uint8_t *p, uint32_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+    p[2] = (uint8_t)(value >> 16);
+    p[3] = (uint8_t)(value >> 24);
+    p[4] = (uint8_t)(value >> 24);
+    p[5] = (uint8_t)(value >> 16);
+    p[6] = (uint8_t)(value >> 8);
+    p[7] = (uint8_t)value;
+}
+
+static void reset_guest_arena(void) {
+    memset(s_guest_arena, 0xA5, sizeof(s_guest_arena));
+}
+
+static int guest_arena_is_guard(void) {
+    for (size_t i = 0; i < sizeof(s_guest_arena); i++) {
+        if (s_guest_arena[i] != 0xA5) return 0;
+    }
+    return 1;
+}
+
 /* Mutate buffer in-place with bit flips, truncations, inserts, deletions,
    and length/offset/integer boundary value corruptions. */
+static void mutate_elf_field(uint8_t *data, size_t size);
+
+static unsigned parse_fuzz_iterations(const char *text, unsigned fallback) {
+    if (!text || !*text) return fallback;
+    errno = 0;
+    char *end = NULL;
+    unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value == 0 || value > 100000ul) {
+        return fallback;
+    }
+    return (unsigned)value;
+}
+
 static void mutate_buffer(uint8_t *data, size_t *size, size_t max_cap) {
     if (*size == 0) return;
 
@@ -389,6 +442,137 @@ static void test_fuzz_iso(unsigned iters) {
     fflush(stdout);
 }
 
+static size_t build_fuzz_elf(uint8_t *buf, size_t cap) {
+    assert(cap >= 256);
+    memset(buf, 0, cap);
+    memcpy(buf, "\x7F" "ELF", 4);
+    buf[4] = 1;
+    buf[5] = 1;
+    buf[6] = 1;
+    put16le(buf + 16, 1u);
+    put16le(buf + 18, 8u);
+    put32le(buf + 20, 1u);
+    put32le(buf + 24, 0x08800000u);
+    put32le(buf + 28, 52u);
+    put32le(buf + 32, 160u);
+    put16le(buf + 40, 52u);
+    put16le(buf + 42, 32u);
+    put16le(buf + 44, 1u);
+    put16le(buf + 46, 40u);
+    put16le(buf + 48, 1u);
+    uint8_t *ph = buf + 52;
+    put32le(ph + 0, 1u);
+    put32le(ph + 4, 84u);
+    put32le(ph + 8, 0x08800000u);
+    put32le(ph + 12, 0x08800000u);
+    put32le(ph + 16, 4u);
+    put32le(ph + 20, 4u);
+    put32le(ph + 24, 1u);
+    put32le(ph + 28, 4u);
+    return 200u;
+}
+
+static size_t build_fuzz_classifier_iso(uint8_t *buf, size_t cap,
+                                         const uint8_t *elf, size_t elf_size) {
+    const size_t sector_size = 2048u;
+    const size_t total_bytes = 22u * sector_size;
+    assert(cap >= total_bytes && elf_size > 0 && elf_size <= sector_size);
+    memset(buf, 0, total_bytes);
+
+    uint8_t *pvd = buf + 16u * sector_size;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    memset(pvd + 40, ' ', 32);
+    memcpy(pvd + 40, "FUZZ_CLASSIFIER_VOLUME", 20);
+    pvd[158] = 17;
+    pvd[162] = 0;
+    pvd[166] = 0;
+    pvd[167] = 8;
+    pvd[170] = 0;
+    pvd[172] = 8;
+    const uint8_t dot = 0;
+    append_iso_record(pvd + 156, &dot, 1, 17, 2048, true);
+
+    uint8_t *root = buf + 17u * sector_size;
+    const uint8_t dotdot = 1;
+    size_t off = 0;
+    off += append_iso_record(root + off, &dot, 1, 17, 2048, true);
+    off += append_iso_record(root + off, &dotdot, 1, 17, 2048, true);
+    off += append_iso_record(root + off, "PSP_GAME", 8, 18, 2048, true);
+
+    uint8_t *game = buf + 18u * sector_size;
+    off = 0;
+    off += append_iso_record(game + off, &dot, 1, 18, 2048, true);
+    off += append_iso_record(game + off, &dotdot, 1, 17, 2048, true);
+    off += append_iso_record(game + off, "SYSDIR", 6, 19, 2048, true);
+
+    uint8_t *sysdir = buf + 19u * sector_size;
+    off = 0;
+    off += append_iso_record(sysdir + off, &dot, 1, 19, 2048, true);
+    off += append_iso_record(sysdir + off, &dotdot, 1, 18, 2048, true);
+    off += append_iso_record(sysdir + off, "EBOOT.BIN", 9, 20, (uint32_t)elf_size, false);
+    off += append_iso_record(sysdir + off, "BOOT.BIN", 8, 21, (uint32_t)elf_size, false);
+    memcpy(buf + 20u * sector_size, elf, elf_size);
+    memcpy(buf + 21u * sector_size, elf, elf_size);
+    return total_bytes;
+}
+
+static void test_fuzz_elf_classifier(unsigned iters) {
+    printf("[FUZZ] Testing ELF32/MIPS executable classifier (%u iterations)...\n", iters);
+    fflush(stdout);
+
+    uint8_t elf_seed[256];
+    size_t elf_size = build_fuzz_elf(elf_seed, sizeof(elf_seed));
+    size_t iso_size = 22u * 2048u;
+    uint8_t *iso_seed = (uint8_t *)malloc(iso_size);
+    uint8_t *iso_mutated = (uint8_t *)malloc(iso_size);
+    uint8_t elf_mutated[512];
+    assert(iso_seed && iso_mutated);
+
+    build_fuzz_classifier_iso(iso_seed, iso_size, elf_seed, elf_size);
+    const char *iso_path = "build/fuzz_classifier_temp.iso";
+    write_file_bytes(iso_path, iso_seed, iso_size);
+    NkIsoExecutableReport report;
+    assert(nk_iso_classify_executables(iso_path, &report) == NK_OK);
+    assert(report.selected == NK_ISO_EXEC_SELECTION_EBOOT);
+    assert(report.eboot.kind == NK_ISO_EXEC_MIPS_ELF32);
+
+    unsigned selected = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        memcpy(elf_mutated, elf_seed, elf_size);
+        size_t cur_size = elf_size;
+        mutate_elf_field(elf_mutated, cur_size);
+        mutate_buffer(elf_mutated, &cur_size, sizeof(elf_mutated));
+        memcpy(iso_mutated, iso_seed, iso_size);
+        uint32_t extent_size = cur_size < 2048u ? (uint32_t)cur_size : 2048u;
+        memcpy(iso_mutated + 20u * 2048u, elf_mutated, extent_size);
+        uint8_t *eboot_size = iso_mutated + 19u * 2048u + 68u + 10u;
+        put32_iso_both(eboot_size, extent_size);
+        write_file_bytes(iso_path, iso_mutated, iso_size);
+
+        assert(nk_iso_classify_executables(iso_path, &report) == NK_OK);
+        if (report.selected == NK_ISO_EXEC_SELECTION_EBOOT) {
+            assert(report.eboot.kind == NK_ISO_EXEC_MIPS_ELF32 && !report.boot_fallback);
+            assert(strcmp(report.selected_path, "EBOOT.BIN") == 0);
+            selected++;
+        } else if (report.selected == NK_ISO_EXEC_SELECTION_BOOT) {
+            assert(report.eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED);
+            assert(report.boot.kind == NK_ISO_EXEC_MIPS_ELF32 && report.boot_fallback);
+            assert(strcmp(report.selected_path, "BOOT.BIN") == 0);
+            selected++;
+        } else {
+            assert(report.selected == NK_ISO_EXEC_SELECTION_NONE);
+        }
+    }
+
+    remove(iso_path);
+    free(iso_seed);
+    free(iso_mutated);
+    printf("[FUZZ] ELF classifier completed: %u/%u selected, 0 crashes\n", selected, iters);
+    fflush(stdout);
+}
+
 /* -----------------------------------------------------------------------------
  * 3. XB Archive Seed Builder & Harness
  * -------------------------------------------------------------------------- */
@@ -613,6 +797,143 @@ static size_t build_fuzz_prx(uint8_t *buf, size_t cap) {
     return rel_file_off + rel_filesz;
 }
 
+static size_t build_fuzz_prx_b(uint8_t *buf, size_t cap) {
+    assert(cap >= 512);
+    memset(buf, 0, cap);
+    memcpy(buf, "\x7F" "ELF", 4);
+    buf[4] = 1;
+    buf[5] = 1;
+    buf[6] = 1;
+    put16le(buf + 16, 0xFFA0u);
+    put16le(buf + 18, 8u);
+    put32le(buf + 20, 1u);
+    put32le(buf + 24, 52u);
+    put32le(buf + 28, 52u);
+    put16le(buf + 40, 52u);
+    put16le(buf + 42, 32u);
+    put16le(buf + 44, 2u);
+
+    uint32_t seg_off = 116u;
+    uint8_t *ph0 = buf + 52;
+    put32le(ph0 + 0, 1u);
+    put32le(ph0 + 4, seg_off);
+    put32le(ph0 + 8, 0x1000u);
+    put32le(ph0 + 12, seg_off);
+    put32le(ph0 + 16, 64u);
+    put32le(ph0 + 20, 64u);
+    put32le(ph0 + 24, 7u);
+    put32le(ph0 + 28, 4u);
+
+    uint32_t rel_off = seg_off + 64u;
+    uint32_t rel_size = 17u;
+    uint8_t *ph1 = buf + 84;
+    put32le(ph1 + 0, 0x700000A1u);
+    put32le(ph1 + 4, rel_off);
+    put32le(ph1 + 16, rel_size);
+    put32le(ph1 + 20, rel_size);
+
+    uint8_t *modinfo = buf + seg_off;
+    modinfo[2] = 1;
+    memcpy(modinfo + 4, "fuzz_b_mod", 10);
+    put32le(buf + seg_off + 52u, 0x12345678u);
+
+    uint8_t *rel = buf + rel_off;
+    static const uint8_t header[] = {0, 0, 3, 2, 3, 4, 1, 2, 2};
+    memcpy(rel, header, sizeof(header));
+    put16le(rel + sizeof(header), (uint16_t)(1u | (52u << 3)));
+    put32le(rel + sizeof(header) + 2u, 52u);
+    put16le(rel + sizeof(header) + 6u, (uint16_t)(2u | (1u << 4)));
+    return rel_off + rel_size;
+}
+
+static size_t build_fuzz_prx_sectioned(uint8_t *buf, size_t cap) {
+    assert(cap >= 1024);
+    memset(buf, 0, cap);
+    memcpy(buf, "\x7F" "ELF", 4);
+    buf[4] = 1;
+    buf[5] = 1;
+    buf[6] = 1;
+    put16le(buf + 16, 0xFFA0u);
+    put16le(buf + 18, 8u);
+    put32le(buf + 20, 1u);
+    put32le(buf + 24, 52u);
+    put32le(buf + 28, 52u);
+    put16le(buf + 40, 52u);
+    put16le(buf + 42, 32u);
+    put16le(buf + 44, 1u);
+    put16le(buf + 46, 40u);
+    put16le(buf + 48, 4u);
+    put16le(buf + 50, 3u);
+
+    uint32_t seg_off = 116u;
+    uint8_t *ph = buf + 52;
+    put32le(ph + 0, 1u);
+    put32le(ph + 4, seg_off);
+    put32le(ph + 8, 0x1000u);
+    put32le(ph + 12, seg_off);
+    put32le(ph + 16, 60u);
+    put32le(ph + 20, 60u);
+    put32le(ph + 24, 7u);
+    put32le(ph + 28, 4u);
+
+    uint8_t *modinfo = buf + seg_off;
+    modinfo[2] = 1;
+    memcpy(modinfo + 4, "fuzz_sectioned", 15);
+    put32le(buf + seg_off + 52u, 0x11111111u);
+    put32le(buf + seg_off + 56u, 0x22222222u);
+
+    uint32_t rel_off = seg_off + 60u;
+    uint8_t *rel = buf + rel_off;
+    put32le(rel + 0, 52u);
+    put32le(rel + 4, 5u);
+    put32le(rel + 8, 56u);
+    put32le(rel + 12, 6u);
+
+    uint32_t shstr_off = rel_off + 16u;
+    uint8_t *shstr = buf + shstr_off;
+    uint32_t info_name = 1u;
+    uint32_t reloc_name = info_name + 22u;
+    uint32_t shstr_name = reloc_name + 7u;
+    memcpy(shstr + info_name, ".rodata.sceModuleInfo", 21);
+    memcpy(shstr + reloc_name, ".reloc", 6);
+    memcpy(shstr + shstr_name, ".shstrtab", 9);
+    uint32_t shstr_size = shstr_name + 10u;
+
+    uint32_t shoff = shstr_off + shstr_size;
+    put32le(buf + 32, shoff);
+    uint8_t *sh = buf + shoff;
+    put32le(sh + 40, 1u);
+    put32le(sh + 44, 1u);
+    put32le(sh + 52, 0x1000u);
+    put32le(sh + 56, seg_off);
+    put32le(sh + 60, 52u);
+    put32le(sh + 80, reloc_name);
+    put32le(sh + 84, 0x700000A0u);
+    put32le(sh + 92, 0x1000u);
+    put32le(sh + 96, rel_off);
+    put32le(sh + 100, 16u);
+    put32le(sh + 120, shstr_name);
+    put32le(sh + 124, 3u);
+    put32le(sh + 136, shstr_off);
+    put32le(sh + 140, shstr_size);
+    return shoff + 4u * 40u;
+}
+
+static void mutate_elf_field(uint8_t *data, size_t size) {
+    static const size_t offsets[] = {
+        16, 18, 20, 24, 28, 32, 40, 42, 44, 46, 48, 50,
+        52, 56, 60, 64, 68, 72, 76, 80, 84, 88, 92, 96
+    };
+    static const uint32_t values[] = {
+        0, 1, 2, 4, 8, 32, 40, 52, 64, 128, 200, 256,
+        0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu
+    };
+    size_t offset = offsets[fuzz_rand32() % (sizeof(offsets) / sizeof(offsets[0]))];
+    uint32_t value = values[fuzz_rand32() % (sizeof(values) / sizeof(values[0]))];
+    if (offset + 4 <= size) put32le(data + offset, value);
+    else if (offset + 2 <= size) put16le(data + offset, (uint16_t)value);
+}
+
 static size_t build_fuzz_psp_container(uint8_t *buf, size_t cap) {
     assert(cap >= 128);
     memset(buf, 0, cap);
@@ -627,46 +948,93 @@ static size_t build_fuzz_psp_container(uint8_t *buf, size_t cap) {
 }
 
 static void test_fuzz_prx(unsigned iters) {
-    printf("[FUZZ] Testing PRX loader and ~PSP container (%u iterations)...\n", iters);
+    printf("[FUZZ] Testing PRX A/B/section walkers and ~PSP container (%u iterations)...\n", iters);
     fflush(stdout);
 
-    uint8_t seed_prx[1024];
-    size_t seed_prx_size = build_fuzz_prx(seed_prx, sizeof(seed_prx));
+    uint8_t seed_a[1024], seed_b[1024], seed_section[1024], seed_psp[256];
+    size_t size_a = build_fuzz_prx(seed_a, sizeof(seed_a));
+    size_t size_b = build_fuzz_prx_b(seed_b, sizeof(seed_b));
+    size_t size_section = build_fuzz_prx_sectioned(seed_section, sizeof(seed_section));
+    size_t size_psp = build_fuzz_psp_container(seed_psp, sizeof(seed_psp));
 
-    uint8_t seed_psp[256];
-    size_t seed_psp_size = build_fuzz_psp_container(seed_psp, sizeof(seed_psp));
-
-    /* Verify clean load of synthetic PRX */
     SrPrxImage base_img;
     char err[256];
-    int rc = sr_prx_load_from_memory(seed_prx, seed_prx_size, 0x08800000u,
+    reset_guest_arena();
+    int rc = sr_prx_load_from_memory(seed_a, size_a, 0x08800000u,
                                      &base_img, err, sizeof(err));
-    assert(rc == 0);
-    assert(strcmp(base_img.modname, "fuzz_module") == 0);
+    assert(rc == 0 && strcmp(base_img.modname, "fuzz_module") == 0);
     sr_prx_image_free(&base_img);
 
-    /* Verify clean rejection of ~PSP container */
-    rc = sr_prx_load_from_memory(seed_psp, seed_psp_size, 0x08800000u,
+    reset_guest_arena();
+    rc = sr_prx_load_from_memory(seed_b, size_b, 0x08800000u,
+                                 &base_img, err, sizeof(err));
+    assert(rc == 0 && strcmp(base_img.modname, "fuzz_b_mod") == 0);
+    assert(get32le(s_guest_arena + 0x1000u + 52u) == 0x12345678u + 0x08801000u);
+    sr_prx_image_free(&base_img);
+
+    reset_guest_arena();
+    rc = sr_prx_load_from_memory(seed_section, size_section, 0x08800000u,
+                                 &base_img, err, sizeof(err));
+    if (rc != 0 || strcmp(base_img.modname, "fuzz_sectioned") != 0) {
+        fprintf(stderr, "sectioned PRX seed failed: %s\n", err);
+    }
+    assert(rc == 0 && strcmp(base_img.modname, "fuzz_sectioned") == 0);
+    sr_prx_image_free(&base_img);
+
+    reset_guest_arena();
+    rc = sr_prx_load_from_memory(seed_psp, size_psp, 0x08800000u,
+                                 &base_img, err, sizeof(err));
+    assert(rc != 0 && strstr(err, "~PSP") != NULL);
+    sr_prx_image_free(&base_img);
+
+    uint8_t bomb[1024];
+    memcpy(bomb, seed_a, size_a);
+    put32le(bomb + 72, UINT32_MAX);
+    reset_guest_arena();
+    rc = sr_prx_load_from_memory(bomb, size_a, 0x08800000u,
                                  &base_img, err, sizeof(err));
     assert(rc != 0);
-    assert(strstr(err, "~PSP") != NULL);
+    assert(strstr(err, "image exceeds 64 MiB") != NULL);
+    assert(guest_arena_is_guard());
+    sr_prx_image_free(&base_img);
 
     uint8_t mutated[2048];
     unsigned accepted = 0;
     for (unsigned i = 0; i < iters; i++) {
-        uint8_t *chosen_seed = (i & 1) ? seed_prx : seed_psp;
-        size_t chosen_size = (i & 1) ? seed_prx_size : seed_psp_size;
+        const uint8_t *chosen_seed = seed_a;
+        size_t chosen_size = size_a;
+        switch (i % 4u) {
+            case 1:
+                chosen_seed = seed_b;
+                chosen_size = size_b;
+                break;
+            case 2:
+                chosen_seed = seed_section;
+                chosen_size = size_section;
+                break;
+            default:
+                if (i % 4u != 3u) {
+                    chosen_seed = seed_a;
+                    chosen_size = size_a;
+                } else {
+                    chosen_seed = seed_psp;
+                    chosen_size = size_psp;
+                }
+                break;
+        }
 
         memcpy(mutated, chosen_seed, chosen_size);
         size_t cur_size = chosen_size;
+        mutate_elf_field(mutated, cur_size);
         mutate_buffer(mutated, &cur_size, sizeof(mutated));
 
         SrPrxImage img;
-        if (sr_prx_load_from_memory(mutated, cur_size, 0x08800000u, &img,
-                                    err, sizeof(err)) == 0) {
-            accepted++;
-            sr_prx_image_free(&img);
-        }
+        reset_guest_arena();
+        rc = sr_prx_load_from_memory(mutated, cur_size, 0x08800000u,
+                                     &img, err, sizeof(err));
+        if (rc == 0) accepted++;
+        else if (strstr(err, "guest write failed") == NULL) assert(guest_arena_is_guard());
+        sr_prx_image_free(&img);
     }
 
     printf("[FUZZ] PRX / ~PSP loader completed: %u/%u accepted, 0 crashes\n", accepted, iters);
@@ -716,6 +1084,107 @@ static void test_fuzz_manifest(unsigned iters) {
     }
 
     printf("[FUZZ] Title Manifest JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
+    fflush(stdout);
+}
+
+static void test_fuzz_package(unsigned iters) {
+    static const char fixture_sha[] =
+        "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
+    static const char disc_id[] = "TEST00001";
+    static const char title_id[] = "synthetic-allegrex-v1";
+    static const char executable_name[] = "synthetic-allegrex-v1.exe";
+    const char *root = "build/fuzz_package_root";
+    char package_dir[512], package_path[640], report_path[640];
+    char executable_path[768], image_path[768], absolute_root[1024];
+    char package_json[4096], report_json[4096];
+    char reason[512];
+
+    snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s", root,
+             nk_platform_path_separator(), nk_platform_path_separator(), disc_id);
+    assert(nk_platform_mkdir_p(package_dir));
+    snprintf(package_path, sizeof(package_path), "%s%cpackage.json", package_dir,
+             nk_platform_path_separator());
+    snprintf(report_path, sizeof(report_path), "%s%cbuild-report.json", package_dir,
+             nk_platform_path_separator());
+    snprintf(executable_path, sizeof(executable_path), "%s%c%s", package_dir,
+             nk_platform_path_separator(), executable_name);
+    snprintf(image_path, sizeof(image_path), "%s%csynthetic-allegrex-v1_image.bin",
+             package_dir, nk_platform_path_separator());
+    assert(nk_platform_absolute_path(root, absolute_root, sizeof(absolute_root)));
+
+    static const uint8_t fixture[] = "fixture";
+    write_file_bytes(executable_path, fixture, sizeof(fixture) - 1u);
+    write_file_bytes(image_path, fixture, sizeof(fixture) - 1u);
+    int report_length = snprintf(report_json, sizeof(report_json),
+        "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
+        "\"title_id\":\"%s\",\"runtime_abi\":{\"name\":\"CpuState\",\"version\":2},"
+        "\"input_hashes\":{\"manifest\":{\"sha256\":\"%064d\"},"
+        "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"tools\":{},\"coverage\":{},\"unsupported\":{\"imports\":[],"
+        "\"instructions\":[],\"regions\":[]},\"analysis_diagnostics\":[],\"artifacts\":{}}\n",
+        title_id, 0, fixture_sha);
+    assert(report_length > 0 && (size_t)report_length < sizeof(report_json));
+    int package_length = snprintf(package_json, sizeof(package_json),
+        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,"
+        "\"title\":{\"id\":\"%s\",\"display_name\":\"Synthetic fixture\","
+        "\"kind\":\"retail\",\"manifest_sha256\":\"%064d\","
+        "\"protected_digest\":\"%064d\"},"
+        "\"inputs\":{\"manifest\":{\"sha256\":\"%064d\"},"
+        "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"runtime\":{\"abi\":\"CpuState\",\"abi_version\":2,"
+        "\"abi_header_sha256\":\"%064d\",\"run_entry\":\"0x00000000\","
+        "\"runtime_contract\":null,\"runtime_bindings\":{},"
+        "\"required_runtime_bindings\":[]},"
+        "\"executable\":{\"path\":\"%s\",\"sha256\":\"%s\","
+        "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
+        "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
+        title_id, 0, 0, 0, fixture_sha, 0, executable_name, fixture_sha);
+    assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
+    write_file_bytes(package_path, package_json, (size_t)package_length);
+    write_file_bytes(report_path, report_json, (size_t)report_length);
+
+    NkRuntimePackageInfo info;
+    assert(nk_title_manifest_validate_aot_package(
+               absolute_root, disc_id, title_id, false, "EBOOT.BIN", 2,
+               &info, reason, sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    assert(info.package_root[0] != '\0');
+
+    uint8_t mutated[4096];
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        bool mutate_package = (i & 1u) == 0;
+        const char *seed = mutate_package ? package_json : report_json;
+        size_t seed_size = mutate_package ? (size_t)package_length : (size_t)report_length;
+        const char *path = mutate_package ? package_path : report_path;
+        const char *valid_json = mutate_package ? report_json : package_json;
+        const char *valid_path = mutate_package ? report_path : package_path;
+        size_t valid_size = mutate_package ? (size_t)report_length : (size_t)package_length;
+
+        memcpy(mutated, seed, seed_size);
+        size_t cur_size = seed_size;
+        mutate_buffer(mutated, &cur_size, sizeof(mutated));
+        write_file_bytes(path, mutated, cur_size);
+        write_file_bytes(valid_path, valid_json, valid_size);
+
+        memset(&info, 0xA5, sizeof(info));
+        NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package(
+            absolute_root, disc_id, title_id, false, "EBOOT.BIN", 2,
+            &info, reason, sizeof(reason));
+        if (status == NK_RUNTIME_PACKAGE_OK) {
+            assert(info.package_root[0] != '\0');
+            accepted++;
+        } else {
+            assert(info.package_root[0] == '\0');
+            assert(info.executable_path[0] == '\0');
+            assert(info.image_path[0] == '\0');
+        }
+    }
+
+    remove(package_path);
+    remove(report_path);
+    remove(executable_path);
+    remove(image_path);
+    printf("[FUZZ] Package v1 JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
     fflush(stdout);
 }
 
@@ -779,15 +1248,11 @@ int main(int argc, char **argv) {
     unsigned iters = 100;
 
     const char *env_iters = getenv("FUZZ_ITERS");
-    if (env_iters && *env_iters) {
-        long val = strtol(env_iters, NULL, 10);
-        if (val > 0) iters = (unsigned)val;
-    }
+    iters = parse_fuzz_iterations(env_iters, iters);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--iters") == 0 && i + 1 < argc) {
-            long val = strtol(argv[++i], NULL, 10);
-            if (val > 0) iters = (unsigned)val;
+            iters = parse_fuzz_iterations(argv[++i], iters);
         }
     }
 
@@ -800,9 +1265,11 @@ int main(int argc, char **argv) {
 
     test_fuzz_param_sfo(iters);
     test_fuzz_iso(iters > 1000 ? 1000 : iters);
+    test_fuzz_elf_classifier(iters > 1000 ? 1000 : iters);
     test_fuzz_xb(iters);
     test_fuzz_prx(iters);
     test_fuzz_manifest(iters);
+    test_fuzz_package(iters > 1000 ? 1000 : iters);
     test_fuzz_library(iters > 500 ? 500 : iters);
 
     printf("=================================================================\n");
