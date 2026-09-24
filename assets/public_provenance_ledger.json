@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6ce2186ce787feeb61cc6c10673828d9b3eaa9e382f52cce2393417f1b58eaa1"
+      "sha256": "bcc72ce1bd0c35843230159d0b282e02010c01e765d0acd0475e92e0309eac5f"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -6159,7 +6159,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e5f80ba2f0837f6930e83cd46611f129caa85411ec0a75187a0c16180b8dcdf2"
+      "sha256": "fb8ed08ddaddbd52ea3e5547c8a261b42d89352e656cfb0d19cd231fd533ca80"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -6183,7 +6183,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dc01285f74fccd6b0569480487812c68ba38a9f0bf33f5f0e053bb9a29c19768"
+      "sha256": "072395c70cc0b7ab31e9606ab7522764ff207f99c3eab06e208d439de84a289d"
     },
     {
       "path": "src/rt/recomp.c",
@@ -9845,11 +9845,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "72efda43a024fe31ddb618949a3507fa3c548608",
-    "candidate_tree": "f2381aa5ea0921823a12a0c23ba16986d2653571",
+    "trusted_tree": "b16aabaacacd6cb207eba55d8f6530d4f5ac79a7",
+    "candidate_tree": "b0804d3168b8d71b506ce25fa7401074e6a60d45",
     "refreshed_paths": [
-      "fixtures/psp_oracle/probe.c",
-      "tools/test_psp_oracle.py"
+      "docs/LLE_FIDELITY_ARCHITECTURE.md",
+      "src/rt/psmf_producer.c",
+      "src/rt/psmf_producer_selftest.c"
     ]
   }
 }
