@@ -12,6 +12,7 @@
 #include "cpu_lle.h"
 
 #include "recomp.h"
+#include "flight_recorder.h"
 
 /* Synthetic defaults (spec 3.3/3.7): fixture contracts, not PSP claims. */
 #define SR_LLE_VECTOR_GENERAL_DEFAULT   0x80000180u
@@ -318,6 +319,8 @@ int sr_cpu_raise_exception(
     if (!s) {
         return -2;
     }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_FAULT, SR_FLIGHT_KIND_FAULT_EXCEPTION,
+                            exception_code, fault_pc, badvaddr, coprocessor);
     exception_code &= 0x1Fu;
     in_delay_slot = in_delay_slot != 0u;
 
@@ -368,6 +371,7 @@ int sr_cpu_raise_exception(
     /* Vectors must be owned, aligned guest spans (spec 3.3). Readable-byte
      * validation is deferred until the dispatcher selects the interpreter tier. */
     if ((vector & 3u) != 0u || !sr_exec_span_owns_fetch(vector)) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_CPU_FLOW, fault_pc, vector, exception_code);
         s->flow_kind = SR_FLOW_FATAL;
         s->flow_target = vector;
         return -2;
@@ -500,6 +504,7 @@ int sr_cpu_eret(CpuState *s, uint32_t instr_pc) {
      * Executable authority is validated here; readable-byte validation is
      * deferred until the dispatcher selects the interpreter tier. */
     if ((target & 3u) != 0u || !sr_exec_span_owns_fetch(target)) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_CPU_FLOW, target, s->cop0[SR_CP0_EPC], 0u);
         s->flow_kind = SR_FLOW_FATAL;
         s->flow_target = target;
         return -2;

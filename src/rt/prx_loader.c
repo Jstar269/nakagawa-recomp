@@ -34,6 +34,7 @@
  */
 
 #include "prx_loader.h"
+#include "flight_recorder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1493,7 +1494,10 @@ fail_scratch:
 int sr_prx_load_from_memory(const unsigned char *data, size_t size,
                             uint32_t base, SrPrxImage *out, char *err,
                             size_t errlen) {
-    return do_load(data, size, base, out, err, errlen);
+    int rc = do_load(data, size, base, out, err, errlen);
+    sr_flight_prx_load(base, (uint32_t)rc, rc == 0 && out ? out->entry : 0u,
+                       rc == 0 && out ? out->nimp : 0u, rc == 0 && out ? out->nexp : 0u);
+    return rc;
 }
 
 int sr_prx_load(const char *host_path, uint32_t base, SrPrxImage *out,
@@ -1546,6 +1550,8 @@ int sr_prx_load(const char *host_path, uint32_t base, SrPrxImage *out,
         return -1;
     }
     rc = do_load(buf, got, base, out, err, errlen);
+    sr_flight_prx_load(base, (uint32_t)rc, rc == 0 && out ? out->entry : 0u,
+                       rc == 0 && out ? out->nimp : 0u, rc == 0 && out ? out->nexp : 0u);
     free(buf);
     return rc;
 }

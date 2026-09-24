@@ -39,6 +39,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "ge_shared.h"
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
 #include "sched.c" /* white-box fixture setup and observable TCB state */
+#include "flight_recorder.h"
 #include "iso.h"
 #include "title_config.h"
 
@@ -13594,6 +13595,136 @@ static void test_real_module_start_lifecycle(void) {
     sr_hle_test_module_reset();
 }
 
+static void test_flight_recorder_trace(void) {
+    const char *output = "flight_recorder_hle_selftest.json";
+    char bundle[16384];
+    CpuState cpu;
+    SrFlightSnapshot snapshot;
+    SrFlightEvent flight_event;
+    TCB *first;
+    uint32_t module_uid;
+    size_t bundle_size;
+
+    remove(output);
+    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_hle_selftest.json");
+    reset_fixture();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_PRX | SR_FLIGHT_CLASS_SCHED |
+                             SR_FLIGHT_CLASS_FATAL,
+                         4u);
+    sr_hle_init();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=0");
+
+    first = fixture_thread(0x310u, TH_READY, 20);
+    s_cur = (int)(first - s_tcb);
+    expect(pick_next() == (int)(first - s_tcb), "recorder fixture emits the first scheduler pick");
+
+    module_uid = sr_hle_test_register_module("recorder.prx", 0u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = module_uid;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "recorder fixture emits an HLE module start");
+
+    s_cur = -1;
+    expect(pick_next() >= 0, "recorder fixture emits a second scheduler pick");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = module_uid;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "recorder fixture emits a second HLE module start");
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0x1234u, 0x5678u, 0u);
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0x1235u, 0x5679u, 0u);
+
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 7u && snapshot.retained == 4u && snapshot.dropped == 3u,
+           "recorder ring keeps the newest four events and counts three drops");
+    expect(snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
+           "recorder trigger and dump each fire once");
+    expect(sr_flight_event_count() == 4, "recorder exposes four retained events");
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        expect(sr_flight_event_at(i, &flight_event) != 0, "recorder retained event is readable");
+        expect(flight_event.sequence == (uint64_t)(i + 4u), "recorder sequence is monotonic after truncation");
+    }
+    expect(sr_flight_event_at(0, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_SCHED,
+           "recorder retains the scheduler event at the truncation boundary");
+    expect(sr_flight_event_at(1, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE,
+           "recorder retains the HLE event after the scheduler event");
+    expect(sr_flight_event_at(2, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_PRX,
+           "recorder retains the PRX event after the HLE event");
+    expect(sr_flight_event_at(3, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_FATAL,
+           "recorder retains the fatal trigger event");
+
+    FILE *bundle_file = fopen(output, "rb");
+    bundle[0] = '\0';
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 1") != NULL,
+           "recorder writes a schema-versioned JSON bundle");
+    expect(strstr(bundle, "\"dropped\": 3") != NULL && strstr(bundle, "\"terminal\"") != NULL,
+           "recorder JSON records truncation and terminal reason");
+    expect(strstr(bundle, "\"guest") == NULL && strstr(bundle, "\"path") == NULL,
+           "recorder JSON contains no guest-derived string or path field");
+    remove(output);
+
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE, 4u);
+    sr_flight_exit(7u);
+    memset(bundle, 0, sizeof(bundle));
+    bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"exit\"") != NULL &&
+               strstr(bundle, "\"arg0\": 7") != NULL,
+           "recorder writes a normal process-exit bundle");
+    remove(output);
+    sr_flight_test_disable();
+
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE, 4u);
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0x2345u, 0u, 0u);
+    memset(bundle, 0, sizeof(bundle));
+    bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"fatal\"") != NULL &&
+               strstr(bundle, "\"recorded\": 0") != NULL,
+           "fatal trigger remains active when the fatal event class is filtered out");
+    remove(output);
+    sr_flight_test_disable();
+
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_PRX, 4u);
+    s_cur = -1;
+    (void)pick_next();
+    module_uid = sr_hle_test_register_module("filter.prx", 0u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = module_uid;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "filtered recorder fixture still records HLE and PRX");
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 2u && sr_flight_event_count() == 2,
+           "recorder class filter excludes scheduler events");
+    expect(sr_flight_event_at(0, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE,
+           "filtered recorder keeps the HLE event");
+    expect(sr_flight_event_at(1, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_PRX,
+           "filtered recorder keeps the PRX event");
+    sr_flight_test_disable();
+
+    remove(output);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 4u);
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+           "controlled unsupported producer returns its named utility error");
+    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+           "controlled unsupported producer remains stable on retry");
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 1u && snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
+           "first unsupported NID triggers exactly one recorder dump");
+    expect(sr_flight_event_at(0, &flight_event) != 0 &&
+               flight_event.event_class == SR_FLIGHT_CLASS_UNSUPPORTED,
+           "unsupported trigger event is retained");
+    remove(output);
+    sr_flight_test_disable();
+    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -13725,6 +13856,7 @@ int main(int argc, char **argv) {
     test_intr_context_conformance();
     test_psp_mutex();
     test_real_module_start_lifecycle();
+    test_flight_recorder_trace();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can

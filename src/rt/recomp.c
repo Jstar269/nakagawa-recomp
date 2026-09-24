@@ -17,6 +17,7 @@
 #include "guest_interp.h"     /* executable-span interpreter floor (issue #116) */
 #include "title_config.h"     /* generic title-binding accessors; no title identity here */
 #include "strbuf.h"
+#include "flight_recorder.h"
 
 uint8_t *g_mem = NULL;
 int sr_hit_hle = 0;
@@ -936,6 +937,7 @@ void sr_break(CpuState *s, uint32_t code, uint32_t pc) {
     const char *fatal = getenv("SR_BREAK_FATAL");
     if (fatal && fatal[0] != '\0' && strcmp(fatal, "0") != 0) {
         fprintf(stderr, "Fatal error: SR_BREAK_FATAL is set; aborting.\n");
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_BREAK, pc, code, 0u);
         abort();
     }
 }
@@ -945,6 +947,7 @@ void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) {
     (void)s;
     /* Production behavior: unsupported raw MIPS syscall is explicit/fatal/diagnostic. */
     fprintf(stderr, "Fatal error: unsupported raw MIPS syscall 0x%x at pc=0x%08x\n", code, pc);
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, pc, code, 0u);
     abort();
 }
 #endif
@@ -2078,6 +2081,7 @@ int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
 
 void dispatch(CpuState *s, uint32_t target) {
     if (dispatch_try(s, target) < 0) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, 0u, 0u);
         fflush(stderr);
         exit(1);
     }
@@ -2085,6 +2089,7 @@ void dispatch(CpuState *s, uint32_t target) {
 
 void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {
     if (dispatch_call_try(s, target, resume_pc) < 0) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, resume_pc, 0u);
         fflush(stderr);
         exit(1);
     }
@@ -2104,6 +2109,7 @@ void sr_hle_call(CpuState *s, uint32_t nid) {
 
 void sr_unimplemented(uint32_t pc, const char *reason) {
     fprintf(stderr, "sr_unimplemented: function 0x%08x: %s\n", pc, reason);
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_UNIMPLEMENTED, pc, 0u, 0u);
     abort();
 }
 
