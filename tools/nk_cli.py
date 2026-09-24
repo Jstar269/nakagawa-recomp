@@ -468,7 +468,14 @@ def cmd_build_package(args: argparse.Namespace) -> int:
                     "fixtures; production package building is in the works (#297)."
                 )
             if "PACKAGE_UNSUPPORTED_PATH" in completed.stderr or "PACKAGE_UNSUPPORTED_PATH" in completed.stdout:
-                raise PackageBuildError("The #296 package route does not yet support a user-data path containing shell-sensitive characters.")
+                output = completed.stderr + completed.stdout
+                for line in output.splitlines():
+                    if "PACKAGE_UNSUPPORTED_PATH:" in line:
+                        raise PackageBuildError(line.split("PACKAGE_UNSUPPORTED_PATH:", 1)[1].strip())
+                raise PackageBuildError(
+                    "A build path contains spaces and 8.3 short names are unavailable on this volume; "
+                    "set NK_BUILD_ROOT to a folder without spaces (#296)."
+                )
             return completed.returncode
         _stage_runtime_assets(build_dir)
 
