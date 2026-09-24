@@ -31,7 +31,6 @@ from nk_core.iso_inspect import (
     _read_iso_extent,
     inspect_compatibility_preflight,
 )
-import title_codegen_plan
 import title_manifest
 
 
