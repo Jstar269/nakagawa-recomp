@@ -82,6 +82,7 @@ void gui_pump(void) {}
 static uint32_t g_test_vblank_handler;
 static unsigned g_test_handler_calls;
 static int g_test_handler_raise_ge;
+static uint32_t g_test_handler_wake_obj;
 static CpuState g_test_handler_seen;
 uint32_t sr_vblank_handler(void) { return g_test_vblank_handler; }
 uint32_t sr_vblank_arg(void) { return 0; }
@@ -129,6 +130,10 @@ void dispatch(CpuState *s, uint32_t target) {
         if (g_test_handler_raise_ge) {
             sched_raise_interrupt(SCHED_INTR_GE);
             g_test_handler_raise_ge = 0;
+        }
+        if (g_test_handler_wake_obj) {
+            sched_wake(g_test_handler_wake_obj);
+            g_test_handler_wake_obj = 0;
         }
         /* Prove that a handler's register mutations are discarded with its frame. */
         s->r[16] = 0xdeadbeefu;
@@ -183,6 +188,7 @@ static void reset_sched(void) {
     g_test_vblank_handler = 0;
     g_test_handler_calls = 0;
     g_test_handler_raise_ge = 0;
+    g_test_handler_wake_obj = 0;
     memset(&g_test_handler_seen, 0, sizeof(g_test_handler_seen));
     s_test_uid_next = 0x110u;
     g_test_body = NULL;
@@ -194,6 +200,9 @@ static void reset_sched(void) {
     s_vbl_next_ns = 0;
     s_vbl_period_rem = 0;
     s_vtime_period_rem = 0;
+#ifdef SR_SCHED_LIVENESS_TEST
+    sched_liveness_reset();
+#endif
 }
 
 /* ---- controlled host monotonic clock ------------------------------------------------
@@ -265,6 +274,39 @@ static void run_one_slice(int idx) {
     }
     sr_coro_switch(t->coro);
     s_cur = -1;
+}
+
+enum {
+    LIVENESS_SEMA_OBJ = 0x53000001u,
+    LIVENESS_EVF_OBJ = 0x45000001u,
+    LIVENESS_REBLOCK_OBJ = 0x52000001u,
+    LIVENESS_REBLOCK_OBJ_2 = 0x52000002u,
+    LIVENESS_CB_OBJ = 0x43000001u,
+    LIVENESS_CB_REBLOCK_OBJ = 0x43000002u,
+    LIVENESS_QUEUE_NOT_FULL = 0x51000001u,
+    LIVENESS_QUEUE_NOT_EMPTY = 0x51000002u
+};
+
+static int g_liveness_reblock_phase;
+static int g_liveness_callback_phase;
+
+static void liveness_reblock_body(CpuState *s) {
+    (void)s;
+    if (g_liveness_reblock_phase++ == 0)
+        sched_block_on(LIVENESS_REBLOCK_OBJ);
+    sched_block_on(LIVENESS_REBLOCK_OBJ_2);
+}
+
+static void liveness_callback_body(CpuState *s) {
+    (void)s;
+    if (g_liveness_callback_phase++ == 0) {
+        sched_set_current_cb_wait(1);
+        sched_block_on(LIVENESS_CB_OBJ);
+        sched_set_current_cb_wait(0);
+    }
+    sched_set_current_cb_wait(1);
+    sched_block_on(LIVENESS_CB_REBLOCK_OBJ);
+    sched_set_current_cb_wait(0);
 }
 
 /* ---- pick_next() decision tests ---------------------------------------------------- */
@@ -1903,6 +1945,382 @@ static void test_expired_timed_wait_enters_strict_priority(void) {
     s_host_ns_fn = NULL;
 }
 
+static void test_liveness_semaphore_handoff(void) {
+    reset_sched();
+    int producer = mk(0x360u, TH_RUNNING, 40);
+    int consumer = mk(0x361u, TH_WAIT_OBJ, 20);
+    s_tcb[consumer].wait_obj = LIVENESS_SEMA_OBJ;
+    s_tcb[consumer].wait_kind = 3;
+    s_cur = producer;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    sched_wake(LIVENESS_SEMA_OBJ);
+    expect(s_tcb[consumer].state == TH_READY,
+           "semaphore handoff readies exactly the blocked consumer");
+    expect(sched_count_waiters(LIVENESS_SEMA_OBJ) == 0,
+           "semaphore handoff removes the consumer from the wait set");
+    expect(pick_next() == consumer,
+           "semaphore handoff selects the higher-priority consumer next");
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    expect(snap.wake_transitions == 1 && snap.waiters_readied == 1,
+           "semaphore handoff records one wake and one readied waiter");
+    expect(snap.last_owner_uid == 0x360u && snap.last_selected_uid == 0x361u,
+           "semaphore decision records producer ownership and consumer selection");
+    uint64_t owner_decisions = 0;
+    uint64_t owner_selections = 0;
+    uint64_t owner_idle = 0;
+    expect(sched_liveness_owner_counts(0x360u, &owner_decisions,
+                                       &owner_selections, &owner_idle) &&
+           owner_decisions == 1u && owner_selections == 0u && owner_idle == 0u,
+           "semaphore handoff exposes exact producer ownership aggregates");
+    expect(sched_liveness_owner_counts(0x361u, &owner_decisions,
+                                       &owner_selections, &owner_idle) &&
+           owner_decisions == 0u && owner_selections == 1u && owner_idle == 0u,
+           "semaphore handoff exposes exact consumer selection aggregates");
+}
+
+static void test_liveness_event_flag_handoff(void) {
+    reset_sched();
+    int producer = mk(0x362u, TH_RUNNING, 40);
+    int consumer = mk(0x363u, TH_WAIT_OBJ, 20);
+    s_tcb[consumer].wait_obj = LIVENESS_EVF_OBJ;
+    s_tcb[consumer].wait_kind = 4;
+    s_cur = producer;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    sched_wake(LIVENESS_EVF_OBJ);
+    expect(s_tcb[consumer].state == TH_READY,
+           "event-flag handoff readies the blocked consumer");
+    expect(sched_count_waiters(LIVENESS_EVF_OBJ) == 0,
+           "event-flag handoff removes the consumer from the wait set");
+    expect(pick_next() == consumer,
+           "event-flag handoff selects the consumer after the producer boundary");
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    expect(snap.last_owner_uid == 0x362u && snap.last_selected_uid == 0x363u,
+           "event-flag decision preserves producer ownership and consumer selection");
+}
+
+static void test_liveness_higher_priority_waiter_becomes_runnable(void) {
+    reset_sched();
+    int low = mk(0x364u, TH_RUNNING, 40);
+    int high = mk(0x365u, TH_READY, 20);
+    int peer = mk(0x366u, TH_READY, 40);
+    s_cur = low;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    sched_preempt();
+    expect(s_tcb[low].state == TH_READY,
+           "a newly runnable higher-priority waiter preempts the current thread");
+    expect(s_tcb[high].state == TH_READY && s_tcb[peer].state == TH_READY,
+           "preemption leaves every runnable peer visible to the next decision");
+    expect(pick_next() == high,
+           "the newly runnable higher-priority waiter wins the next selection");
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    expect(snap.preempt_checks == 1 && snap.last_selected_uid == 0x365u,
+           "the preemption trace identifies the old owner and the selected waiter");
+}
+
+static void test_liveness_equal_priority_rotation_trace(void) {
+    reset_sched();
+    int a = mk(0x367u, TH_READY, 30);
+    int b = mk(0x368u, TH_READY, 30);
+    uint32_t trace[6];
+    for (unsigned i = 0; i < 6; i++) {
+        int selected = pick_next();
+        trace[i] = s_tcb[selected].uid;
+        s_cur = selected;
+    }
+    int alternating = trace[0] == trace[2] && trace[1] == trace[3] &&
+                      trace[2] == trace[4] && trace[3] == trace[5] &&
+                      trace[0] != trace[1];
+    expect(alternating && ((trace[0] == 0x367u && trace[1] == 0x368u) ||
+                           (trace[0] == 0x368u && trace[1] == 0x367u)),
+           "equal-priority workload has a deterministic alternating ownership trace");
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    expect(snap.picks == 6 && snap.starvation_violations == 0,
+           "equal-priority rotation records six decisions without priority starvation");
+    (void)a;
+    (void)b;
+}
+
+static void test_liveness_wake_then_immediate_reblock(void) {
+    reset_sched();
+    uint32_t uid = sched_create_thread(0x9000u, 20, 0x10000u);
+    TCB *waiter = tcb_by_uid(uid);
+    expect(waiter != NULL, "reblock workload creates its waiter");
+    if (!waiter) return;
+    sched_start_thread(uid, 0, 0);
+    g_test_body = liveness_reblock_body;
+    g_liveness_reblock_phase = 0;
+    int idx = index_of_uid(uid);
+    run_one_slice(idx);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == LIVENESS_REBLOCK_OBJ,
+           "the first wait enters the expected object exactly once");
+    expect(sched_count_waiters(LIVENESS_REBLOCK_OBJ) == 1 &&
+           sched_count_waiters(LIVENESS_REBLOCK_OBJ_2) == 0,
+           "the first wait has one membership and no speculative second membership");
+    sched_wake(LIVENESS_REBLOCK_OBJ);
+    expect(waiter->state == TH_READY && sched_count_waiters(LIVENESS_REBLOCK_OBJ) == 0,
+           "waking the first wait removes its old membership");
+    run_one_slice(idx);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == LIVENESS_REBLOCK_OBJ_2,
+           "the woken waiter immediately re-blocks on the second object");
+    expect(sched_count_waiters(LIVENESS_REBLOCK_OBJ) == 0 &&
+           sched_count_waiters(LIVENESS_REBLOCK_OBJ_2) == 1,
+           "immediate re-block neither duplicates nor loses wait membership");
+    sched_wake(LIVENESS_REBLOCK_OBJ_2);
+    run_one_slice(idx);
+    expect(waiter->state == TH_DORMANT && g_liveness_reblock_phase == 1,
+           "the second wake completes the re-block workload");
+    sched_terminate_thread(uid);
+}
+
+static void test_liveness_callback_wait_wake_and_reblock(void) {
+    reset_sched();
+    uint32_t uid = sched_create_thread(0x9004u, 20, 0x10000u);
+    TCB *waiter = tcb_by_uid(uid);
+    expect(waiter != NULL, "callback workload creates its waiter");
+    if (!waiter) return;
+    sched_start_thread(uid, 0, 0);
+    g_test_body = liveness_callback_body;
+    g_liveness_callback_phase = 0;
+    int idx = index_of_uid(uid);
+    run_one_slice(idx);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == LIVENESS_CB_OBJ &&
+           waiter->is_cb_wait == 1,
+           "callback wait preserves its object and callback state while blocked");
+    sched_wake_callbacks(uid);
+    expect(waiter->state == TH_READY,
+           "callback wake readies the callback-capable waiter");
+    run_one_slice(idx);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == LIVENESS_CB_REBLOCK_OBJ &&
+           waiter->is_cb_wait == 1,
+           "callback waiter re-blocks on the new object without losing callback state");
+    expect(sched_count_waiters(LIVENESS_CB_OBJ) == 0 &&
+           sched_count_waiters(LIVENESS_CB_REBLOCK_OBJ) == 1,
+           "callback re-block has exactly one current wait membership");
+    sched_wake_callbacks(uid);
+    run_one_slice(idx);
+    expect(waiter->state == TH_DORMANT && g_liveness_callback_phase == 1,
+           "callback wake and re-block reach a bounded completion");
+    sched_terminate_thread(uid);
+}
+
+static void test_liveness_timeout_cancel_delete_races(void) {
+    reset_sched();
+    int a = mk(0x368u, TH_WAIT_OBJ, 32);
+    int b = mk(0x369u, TH_WAIT_OBJ, 32);
+    s_tcb[a].wait_obj = LIVENESS_SEMA_OBJ;
+    s_tcb[b].wait_obj = LIVENESS_SEMA_OBJ;
+    s_cur = a;
+    sched_wake_with_result(LIVENESS_SEMA_OBJ, 0x800201a9u);
+    expect(s_tcb[a].state == TH_READY && s_tcb[b].state == TH_READY,
+           "cancel wakes every waiter on the object");
+    expect(sched_count_waiters(LIVENESS_SEMA_OBJ) == 0,
+           "cancel removes all object memberships atomically");
+    uint32_t result = 0;
+    s_cur = a;
+    expect(sched_take_wake_result(&result) && result == 0x800201a9u,
+           "first cancelled waiter receives its own cancel result");
+    s_cur = b;
+    expect(sched_take_wake_result(&result) && result == 0x800201a9u,
+           "second cancelled waiter receives its own cancel result");
+    s_cur = a;
+    expect(!sched_take_wake_result(&result),
+           "a cancel result is consumed once per waiter");
+    sched_wake(LIVENESS_SEMA_OBJ);
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    expect(snap.wake_transitions == 1 && snap.waiters_readied == 2,
+           "a repeated wake cannot duplicate a wait-queue membership");
+
+    reset_sched();
+    int timed = mk(0x36au, TH_WAIT_OBJ, 16);
+    s_tcb[timed].wait_obj = LIVENESS_EVF_OBJ;
+    s_tcb[timed].wake = 100u;
+    s_cur = -1;
+    s_vtime_us = 50u;
+    expect(pick_next() < 0, "a timed waiter is not promoted before its deadline");
+    s_vtime_us = 100u;
+    expect(pick_next() == timed && s_tcb[timed].state == TH_READY,
+           "a timed waiter becomes runnable exactly at its deadline");
+    expect(sched_count_waiters(LIVENESS_EVF_OBJ) == 0,
+           "timeout promotion removes the finite wait membership");
+
+    int target = mk(0x36bu, TH_DORMANT, 32);
+    int joiner = mk(0x36cu, TH_WAIT_OBJ, 32);
+    s_tcb[target].started = 1;
+    s_tcb[joiner].wait_obj = 0x36bu;
+    s_tcb[joiner].join_waiting = 1;
+    s_tcb[joiner].join_target = 0x36bu;
+    s_cur = -1;
+    expect(sched_delete_thread(0x36bu) == 0,
+           "delete completes while a join waiter is blocked");
+    expect(s_tcb[joiner].state == TH_READY && s_tcb[joiner].join_result_valid,
+           "delete readies the join waiter with a terminal result");
+    s_cur = joiner;
+    expect(sched_take_current_join_result(0x36bu, &result) &&
+           result == 0x800201acu,
+           "delete race delivers the terminal join result");
+}
+
+static void test_liveness_interrupt_wake_enters_scheduler(void) {
+    reset_sched();
+    int low = mk(0x36du, TH_RUNNING, 40);
+    int waiter = mk(0x36eu, TH_WAIT_OBJ, 10);
+    s_tcb[waiter].wait_obj = LIVENESS_SEMA_OBJ;
+    s_cur = low;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    g_test_vblank_handler = 0x00001234u;
+    g_test_handler_wake_obj = LIVENESS_SEMA_OBJ;
+    s_vbl_next_us = UINT64_MAX;
+
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    deliver_vblank();
+    expect(g_test_handler_calls == 1 && s_tcb[waiter].state == TH_READY,
+           "interrupt-context wake readies the blocked waiter");
+    sched_preempt();
+    expect(s_tcb[low].state == TH_READY && pick_next() == waiter,
+           "interrupt wake enters strict-priority scheduling at the next boundary");
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    int saw_interrupt = 0;
+    int saw_wake = 0;
+    for (unsigned i = 0; i < snap.trace_count; i++) {
+        SrSchedLivenessEvent event;
+        if (!sched_liveness_event(i, &event)) continue;
+        if (event.reason == SR_SCHED_LIVENESS_INTERRUPT &&
+            event.object_uid == SCHED_INTR_VBLANK) saw_interrupt = 1;
+        if (event.reason == SR_SCHED_LIVENESS_WAKE &&
+            event.object_uid == LIVENESS_SEMA_OBJ) saw_wake = 1;
+    }
+    expect(saw_interrupt && saw_wake,
+           "the liveness trace records both interrupt entry and object wake ownership");
+}
+
+static void test_liveness_queue_full_and_empty_without_spin(void) {
+    reset_sched();
+    int producer = mk(0x36fu, TH_READY, 32);
+    int consumer = mk(0x370u, TH_READY, 32);
+    int queue[2] = {0, 0};
+    int count = 0;
+    int producer_attempts = 0;
+    int consumer_attempts = 0;
+    int producer_waited = 0;
+    int consumer_waited = 0;
+    for (int step = 0; step < 12; step++) {
+        if (s_tcb[producer].state != TH_WAIT_OBJ) {
+            if (count == 2) {
+                s_tcb[producer].state = TH_WAIT_OBJ;
+                s_tcb[producer].wait_obj = LIVENESS_QUEUE_NOT_FULL;
+                producer_waited++;
+            } else {
+                producer_attempts++;
+                queue[count++] = step;
+                sched_wake(LIVENESS_QUEUE_NOT_EMPTY);
+                if (s_tcb[consumer].state == TH_WAIT_OBJ) {
+                    s_tcb[consumer].state = TH_READY;
+                    s_tcb[consumer].wait_obj = 0;
+                }
+            }
+        }
+        if ((step & 1) != 0 && count > 0) {
+            consumer_attempts++;
+            (void)queue[--count];
+            if (step >= 7 && count > 0) {
+                consumer_attempts++;
+                (void)queue[--count];
+            }
+            sched_wake(LIVENESS_QUEUE_NOT_FULL);
+            if (s_tcb[producer].state == TH_WAIT_OBJ) {
+                s_tcb[producer].state = TH_READY;
+                s_tcb[producer].wait_obj = 0;
+            }
+        }
+        if (count == 0) {
+            s_tcb[consumer].state = TH_WAIT_OBJ;
+            s_tcb[consumer].wait_obj = LIVENESS_QUEUE_NOT_EMPTY;
+            consumer_waited++;
+        }
+        expect(count >= 0 && count <= 2, "bounded queue never exceeds its capacity");
+    }
+    if (s_tcb[consumer].state == TH_WAIT_OBJ) {
+        s_tcb[consumer].state = TH_READY;
+        s_tcb[consumer].wait_obj = 0;
+    }
+    expect(producer_attempts > 0 && consumer_attempts > 0,
+           "queue workload performs bounded producer and consumer progress");
+    expect(producer_waited > 0 && consumer_waited > 0,
+           "queue workload exercises both full and empty backpressure paths");
+    expect(sched_count_waiters(LIVENESS_QUEUE_NOT_FULL) == 0 &&
+           sched_count_waiters(LIVENESS_QUEUE_NOT_EMPTY) == 0,
+           "queue workload leaves no producer or consumer wait membership behind");
+    (void)producer;
+    (void)consumer;
+}
+
+static void test_liveness_sole_runnable_becomes_nonsole(void) {
+    reset_sched();
+    int current = mk(0x371u, TH_READY, 40);
+    int newcomer = mk(0x372u, TH_WAIT_OBJ, 20);
+    s_tcb[newcomer].wait_obj = LIVENESS_SEMA_OBJ;
+    s_cur = current;
+    expect(pick_next() == current,
+           "the sole runnable thread owns the first scheduling decision");
+    s_tcb[current].state = TH_RUNNING;
+    s_tcb[newcomer].state = TH_READY;
+    sched_preempt();
+    expect(s_tcb[current].state == TH_READY && pick_next() == newcomer,
+           "a sole runnable thread yields when a higher-priority peer becomes runnable");
+}
+
+static void test_liveness_bounded_long_run_starvation(void) {
+    reset_sched();
+    int high = mk(0x373u, TH_READY, 10);
+    int low = mk(0x374u, TH_READY, 50);
+    sched_liveness_set_starvation_limit(4u);
+    for (int i = 0; i < 5; i++)
+        sched_liveness_observe_pick(low);
+    SrSchedLivenessSnapshot negative;
+    sched_liveness_snapshot(&negative);
+    expect(negative.starvation_violations > 0,
+           "the bounded starvation detector fails when a higher-priority waiter is skipped");
+
+    reset_sched();
+    high = mk(0x375u, TH_READY, 10);
+    low = mk(0x376u, TH_READY, 50);
+    s_cur = high;
+    sched_liveness_set_starvation_limit(4u);
+    int skipped = 0;
+    for (int i = 0; i < 512; i++) {
+        int selected = pick_next();
+        if (selected != high) {
+            skipped++;
+            break;
+        }
+        s_cur = selected;
+        s_tcb[high].state = TH_READY;
+    }
+    SrSchedLivenessSnapshot healthy;
+    sched_liveness_snapshot(&healthy);
+    expect(skipped == 0 && healthy.picks == 512,
+           "the long-run workload fails on starvation rather than merely completing");
+    expect(healthy.starvation_violations == 0 && healthy.max_starvation_age == 0,
+           "the long-run high-priority waiter never reaches the starvation bound");
+    uint64_t high_decisions = 0;
+    uint64_t high_selections = 0;
+    uint64_t high_idle = 0;
+    expect(sched_liveness_owner_counts(0x375u, &high_decisions,
+                                       &high_selections, &high_idle) &&
+           high_decisions == 512u && high_selections == 512u && high_idle == 0u,
+           "long-run ownership aggregates account for every deterministic decision");
+    (void)low;
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 /* ---- PSP display-wait semantics -----------------------------------------------------
@@ -2279,6 +2697,17 @@ int main(void) {
     test_paced_vtime_is_host_anchored();
     test_paced_vblank_has_one_authority();
     test_expired_timed_wait_enters_strict_priority();
+    test_liveness_semaphore_handoff();
+    test_liveness_event_flag_handoff();
+    test_liveness_higher_priority_waiter_becomes_runnable();
+    test_liveness_equal_priority_rotation_trace();
+    test_liveness_wake_then_immediate_reblock();
+    test_liveness_callback_wait_wake_and_reblock();
+    test_liveness_timeout_cancel_delete_races();
+    test_liveness_interrupt_wake_enters_scheduler();
+    test_liveness_queue_full_and_empty_without_spin();
+    test_liveness_sole_runnable_becomes_nonsole();
+    test_liveness_bounded_long_run_starvation();
 
     /* PSP display-wait semantics (hardware-pinned; see the block above these). */
     test_waitvblankstart_always_blocks();

@@ -38,11 +38,12 @@
    Both readers must agree: two different limits for the same field mean the
    inspect and extract paths disagree about what a valid image looks like. */
 #define NK_ISO_MAX_DIR_BYTES (512u * 1024u)
+#define NK_ISO_MAX_SFO_BYTES (64u * 1024u)
 #define NK_ISO_MAX_EXECUTABLE_BYTES (512u * 1024u * 1024u)
 #define NK_ISO_MAX_ELF_PROGRAM_HEADERS 128u
 
 /* SFO Header Magic: \x00PSF */
-static const uint8_t SFO_MAGIC[4] = { 0x00, 'P', 'S', 'F' };
+static const uint8_t SFO_MAGIC[8] = { 0x00, 'P', 'S', 'F', 0x01, 0x01, 0x00, 0x00 };
 
 /* Safe helper to read uint32 little-endian */
 static inline uint32_t read_le32(const uint8_t *p) {
@@ -493,171 +494,177 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
 }
 
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
-/* SFO parameter formats. 0x0004 is UTF-8 that is not NUL-terminated and
-   0x0204 is NUL-terminated UTF-8; 0x0404 is a little-endian uint32. Only the
-   two string forms carry text. */
 #define SFO_FMT_UTF8_SPECIAL 0x0004u
 #define SFO_FMT_UTF8         0x0204u
+#define SFO_FMT_UINT32       0x0404u
 
 static bool sfo_key_is_identity(const char *key) {
     return strcmp(key, "DISC_ID") == 0
-        || strcmp(key, "TITLE_ID") == 0
         || strcmp(key, "TITLE") == 0
         || strcmp(key, "DISC_VERSION") == 0;
 }
 
-
-/* Parse SFO buffer and extract DISC_ID, TITLE, DISC_VERSION with rigorous bounds checking */
-bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
-    if (!sfo || sfo_size < 20 || !meta) return false;
-
-    if (memcmp(sfo, SFO_MAGIC, 4) != 0) {
+static bool sfo_utf8_valid(const uint8_t *data, size_t size) {
+    size_t index = 0;
+    while (index < size) {
+        uint8_t first = data[index++];
+        if (first <= 0x7fu) continue;
+        if (first >= 0xc2u && first <= 0xdfu) {
+            if (index >= size || (data[index] & 0xc0u) != 0x80u) return false;
+            index++;
+            continue;
+        }
+        if (first >= 0xe0u && first <= 0xefu) {
+            if (index + 1 >= size || (data[index] & 0xc0u) != 0x80u ||
+                (data[index + 1] & 0xc0u) != 0x80u) return false;
+            if ((first == 0xe0u && data[index] < 0xa0u) ||
+                (first == 0xedu && data[index] >= 0xa0u)) return false;
+            index += 2;
+            continue;
+        }
+        if (first >= 0xf0u && first <= 0xf4u) {
+            if (index + 2 >= size || (data[index] & 0xc0u) != 0x80u ||
+                (data[index + 1] & 0xc0u) != 0x80u ||
+                (data[index + 2] & 0xc0u) != 0x80u) return false;
+            if ((first == 0xf0u && data[index] < 0x90u) ||
+                (first == 0xf4u && data[index] >= 0x90u)) return false;
+            index += 3;
+            continue;
+        }
         return false;
     }
+    return true;
+}
+
+static bool sfo_disc_id_valid(const char *value) {
+    if (!value) return false;
+    size_t count = 0;
+    for (size_t index = 0; value[index] != '\0'; index++) {
+        unsigned char c = (unsigned char)value[index];
+        if (c == '-' || c == '_' || c == ' ') continue;
+        if (count >= 9) return false;
+        if (count < 4 &&
+            !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) return false;
+        if (count >= 4 && !(c >= '0' && c <= '9')) return false;
+        count++;
+    }
+    return count == 9;
+}
+
+static void sfo_copy_disc_id(char *dest, size_t dest_size, const char *value) {
+    size_t output = 0;
+    for (size_t index = 0; value[index] != '\0' && output + 1 < dest_size; index++) {
+        unsigned char c = (unsigned char)value[index];
+        if (c == '-' || c == '_' || c == ' ') continue;
+        dest[output++] = (char)(c >= 'a' && c <= 'z' ? c - ('a' - 'A') : c);
+    }
+    dest[output] = '\0';
+}
+
+bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
+    if (!sfo || sfo_size < 20 || !meta ||
+        memcmp(sfo, SFO_MAGIC, sizeof(SFO_MAGIC)) != 0) return false;
 
     uint32_t key_table_off = read_le32(sfo + 8);
     uint32_t data_table_off = read_le32(sfo + 12);
     uint32_t entry_count = read_le32(sfo + 16);
-
-    /* Validate header offsets and table bounds */
-    if (entry_count > 256 || key_table_off >= sfo_size || data_table_off >= sfo_size) {
-        return false;
-    }
-    if (key_table_off > data_table_off) {
-        return false;
-    }
-    if (20 + (size_t)entry_count * 16 > key_table_off) {
+    if (entry_count > 256 || key_table_off > data_table_off ||
+        data_table_off > sfo_size || 20u + (size_t)entry_count * 16u > key_table_off) {
         return false;
     }
 
-    for (uint32_t i = 0; i < entry_count; i++) {
-        size_t entry_off = 20 + (size_t)i * 16;
-        if (entry_off + 16 > key_table_off) break;
-
+    for (uint32_t index = 0; index < entry_count; index++) {
+        size_t entry_off = 20u + (size_t)index * 16u;
         uint16_t key_off = read_le16(sfo + entry_off);
         uint16_t data_fmt = read_le16(sfo + entry_off + 2);
         uint32_t data_len = read_le32(sfo + entry_off + 4);
+        uint32_t max_len = read_le32(sfo + entry_off + 8);
         uint32_t data_off = read_le32(sfo + entry_off + 12);
 
-        /* Validate key offset and ensure null termination */
-        if (key_off >= data_table_off || (size_t)key_off >= data_table_off - key_table_off) continue;
+        if (key_off > data_table_off - key_table_off) return false;
         size_t abs_key_off = (size_t)key_table_off + key_off;
-        if (abs_key_off >= data_table_off) continue;
         const char *key = (const char *)&sfo[abs_key_off];
-        size_t max_key_len = data_table_off - abs_key_off;
-        size_t actual_key_len = 0;
-        while (actual_key_len < max_key_len && key[actual_key_len] != '\0') {
-            actual_key_len++;
-        }
-        if (actual_key_len == max_key_len) {
-            /* Key string was not null-terminated before data table */
-            continue;
-        }
+        size_t key_limit = (size_t)data_table_off - abs_key_off;
+        size_t key_len = 0;
+        while (key_len < key_limit && key[key_len] != '\0') key_len++;
+        if (key_len == key_limit) return false;
 
-        /* Validate data offset and length bounds */
-        if (data_off > sfo_size || (size_t)data_off > sfo_size - data_table_off) {
-            continue;
-        }
+        if (data_off > sfo_size - data_table_off) return false;
         size_t abs_data_off = (size_t)data_table_off + data_off;
-        if (abs_data_off > sfo_size || (size_t)data_len > sfo_size - abs_data_off) {
-            continue;
-        }
+        if (data_len > sfo_size - abs_data_off || max_len < data_len) return false;
+        const uint8_t *raw_value = &sfo[abs_data_off];
 
-        /* The parameter format field was ignored, so an entry declaring an
-           integer or any unrecognised format still had its bytes decoded as
-           text. tools/nk_core/iso_inspect.py does not do that -- it yields the
-           decoded integer or an empty string -- so a disc whose DISC_ID
-           declared a non-string format could be matched to a catalog title by
-           the native reader and not by the canonical one, which is exactly the
-           divergence the two parsers exist to prevent. Identity fields are
-           decoded only from a UTF-8 string format. */
-        if (sfo_key_is_identity(key)
-            && data_fmt != SFO_FMT_UTF8
-            && data_fmt != SFO_FMT_UTF8_SPECIAL) {
+        if (sfo_key_is_identity(key) && data_fmt != SFO_FMT_UTF8 &&
+            data_fmt != SFO_FMT_UTF8_SPECIAL) {
             snprintf(meta->error_message, sizeof(meta->error_message),
-                "SFO key '%.32s' declares parameter format 0x%04x, which is not a UTF-8 "
-                "string; identity is not decoded from a non-string format",
+                "SFO key '%.32s' declares parameter format 0x%04x, which is not a UTF-8 string",
                 key, (unsigned)data_fmt);
             return false;
         }
 
-        char val_buf[256];
-        size_t copy_len = (size_t)data_len;
-        if (copy_len >= sizeof(val_buf)) {
-            copy_len = sizeof(val_buf) - 1;
+        size_t value_len = data_fmt == SFO_FMT_UTF8 ||
+            data_fmt == SFO_FMT_UTF8_SPECIAL ? (size_t)data_len : 0;
+        if (data_fmt == SFO_FMT_UTF8) {
+            while (value_len > 0 && raw_value[value_len - 1] == 0) value_len--;
         }
-        snprintf(val_buf, sizeof(val_buf), "%.*s", (int)copy_len, (const char *)&sfo[abs_data_off]);
-
-        if (strcmp(key, "DISC_ID") == 0 || strcmp(key, "TITLE_ID") == 0) {
-            if (meta->disc_id[0] != '\0') {
-                if (strcmp(meta->disc_id, val_buf) != 0) {
-                    snprintf(meta->error_message, sizeof(meta->error_message),
-                        "Conflicting duplicate SFO key '%.32s' rejected as ambiguous: '%.32s' vs '%.32s'",
-                        key, meta->disc_id, val_buf);
-                    return false;
-                }
-                /* Identical duplicate: accept per policy */
-                continue;
+        if ((data_fmt == SFO_FMT_UTF8 || data_fmt == SFO_FMT_UTF8_SPECIAL) &&
+            !sfo_utf8_valid(raw_value, value_len)) {
+            snprintf(meta->error_message, sizeof(meta->error_message),
+                "SFO key '%.32s' is not valid UTF-8", key);
+            return false;
+        }
+        if (data_fmt == SFO_FMT_UINT32 && data_len < 4) return false;
+        bool stored_value = strcmp(key, "DISC_ID") == 0 ||
+            strcmp(key, "TITLE") == 0 || strcmp(key, "DISC_VERSION") == 0;
+        if (value_len >= sizeof(meta->title_name)) {
+            if (stored_value) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "SFO key '%.32s' is too long", key);
+                return false;
             }
-            snprintf(meta->disc_id, sizeof(meta->disc_id), "%.31s", val_buf);
+            continue;
+        }
+
+        char value[NK_MAX_TITLE_LEN];
+        if (value_len > 0) memcpy(value, raw_value, value_len);
+        value[value_len] = '\0';
+
+        if (strcmp(key, "DISC_ID") == 0) {
+            if (!sfo_disc_id_valid(value)) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "SFO key 'DISC_ID' does not contain a valid 9-character ID");
+                return false;
+            }
+            char normalized[NK_MAX_DISC_ID_LEN];
+            sfo_copy_disc_id(normalized, sizeof(normalized), value);
+            if (meta->disc_id[0] != '\0' && strcmp(meta->disc_id, normalized) != 0) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "Conflicting duplicate SFO key 'DISC_ID' rejected as ambiguous");
+                return false;
+            }
+            memcpy(meta->disc_id, normalized, strlen(normalized) + 1);
         } else if (strcmp(key, "TITLE") == 0) {
-            if (meta->title_name[0] != '\0') {
-                if (strcmp(meta->title_name, val_buf) != 0) {
-                    snprintf(meta->error_message, sizeof(meta->error_message),
-                        "Conflicting duplicate SFO key '%.32s' rejected as ambiguous: '%.64s' vs '%.64s'",
-                        key, meta->title_name, val_buf);
-                    return false;
-                }
-                /* Identical duplicate: accept per policy */
-                continue;
+            if (meta->title_name[0] != '\0' && strcmp(meta->title_name, value) != 0) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "Conflicting duplicate SFO key 'TITLE' rejected as ambiguous");
+                return false;
             }
-            snprintf(meta->title_name, sizeof(meta->title_name), "%.127s", val_buf);
+            memcpy(meta->title_name, value, strlen(value) + 1);
         } else if (strcmp(key, "DISC_VERSION") == 0) {
-            if (meta->disc_version[0] != '\0') {
-                if (strcmp(meta->disc_version, val_buf) != 0) {
-                    snprintf(meta->error_message, sizeof(meta->error_message),
-                        "Conflicting duplicate SFO key '%.32s' rejected as ambiguous: '%.16s' vs '%.16s'",
-                        key, meta->disc_version, val_buf);
-                    return false;
-                }
-                /* Identical duplicate: accept per policy */
-                continue;
+            if (meta->disc_version[0] != '\0' && strcmp(meta->disc_version, value) != 0) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "Conflicting duplicate SFO key 'DISC_VERSION' rejected as ambiguous");
+                return false;
             }
-            snprintf(meta->disc_version, sizeof(meta->disc_version), "%.15s", val_buf);
+            if (strlen(value) >= sizeof(meta->disc_version)) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "SFO key 'DISC_VERSION' is too long");
+                return false;
+            }
+            memcpy(meta->disc_version, value, strlen(value) + 1);
         }
     }
-
     return true;
-}
-
-/* Helper to scan buffer for standard PSP disc ID strings */
-static bool scan_disc_id_in_buffer(const uint8_t *buf, size_t buf_size, char *out_disc_id, size_t max_len) {
-    static const char *prefixes[] = {
-        "UCUS", "ULUS", "UCES", "ULES", "UCJS", "ULJS", "UCAS", "ULAS", "TEST", NULL
-    };
-
-    for (size_t i = 0; i + 9 <= buf_size; i++) {
-        for (int p = 0; prefixes[p]; p++) {
-            if (memcmp(buf + i, prefixes[p], 4) == 0) {
-                size_t pos = i + 4;
-                if (pos < buf_size && (buf[pos] == '-' || buf[pos] == '_')) {
-                    pos++;
-                }
-                bool digits = true;
-                for (int d = 0; d < 5; d++) {
-                    if (pos + d >= buf_size || !isdigit(buf[pos + d])) {
-                        digits = false;
-                        break;
-                    }
-                }
-                if (digits) {
-                    snprintf(out_disc_id, max_len, "%s%.5s", prefixes[p], (const char *)&buf[pos]);
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
 }
 
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
@@ -798,6 +805,8 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
 
     uint32_t sfo_lba = 0;
     uint32_t sfo_size = 0;
+    bool sfo_found = false;
+    bool sfo_extent_valid = false;
 
     /* True only when disc_id came from a parsed, validated PARAM.SFO structure.
        A disc id recovered by scanning raw image bytes is a guess: the byte
@@ -806,7 +815,7 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
        must never satisfy the catalog and mark the disc supported/verified. */
     bool identity_structured = false;
 
-    if (psp_game_lba > 0) {
+    if (psp_game_size > 0) {
         if (psp_game_size > NK_ISO_MAX_DIR_BYTES || psp_game_size == 0) psp_game_size = 4 * SECTOR_SIZE;
         uint64_t psp_game_offset = (uint64_t)psp_game_lba * SECTOR_SIZE;
 
@@ -855,13 +864,11 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                     uint8_t name_len = dir_buf[off + 32];
 
                     uint64_t ext_off = (uint64_t)extent_lba * SECTOR_SIZE;
-                    if (ext_off <= file_size && (uint64_t)extent_size <= file_size - ext_off) {
-                        /* ECMA-119 7.5.1: a file identifier is NAME;VERSION, so
-                           "PARAM.SFO" may legitimately appear as "PARAM.SFO;1".
-                           Accept only those two forms -- a bare prefix test also
-                           matches PARAM.SFOO and any longer name sharing it. */
-                        if (name_len >= 9 && memcmp(&dir_buf[off + 33], "PARAM.SFO", 9) == 0
-                            && (name_len == 9 || dir_buf[off + 33 + 9] == ';')) {
+                    if (name_len >= 9 && memcmp(&dir_buf[off + 33], "PARAM.SFO", 9) == 0
+                        && (name_len == 9 || dir_buf[off + 33 + 9] == ';')) {
+                        sfo_found = true;
+                        if (ext_off <= file_size && (uint64_t)extent_size <= file_size - ext_off) {
+                            sfo_extent_valid = true;
                             sfo_lba = extent_lba;
                             sfo_size = extent_size;
                             break;
@@ -874,78 +881,54 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
         }
     }
 
-    /* Read SFO if located via directory traversal with bounds validation */
-    if (sfo_lba > 0 && sfo_size > 0 && sfo_size <= 64 * 1024) {
-        uint64_t sfo_offset = (uint64_t)sfo_lba * SECTOR_SIZE;
-        if (sfo_offset <= file_size && (uint64_t)sfo_size <= file_size - sfo_offset) {
-            uint8_t *sfo_buf = (uint8_t *)malloc(sfo_size);
-            if (sfo_buf) {
-                nk_fseek64(f, (int64_t)sfo_offset, SEEK_SET);
-                if (fread(sfo_buf, 1, sfo_size, f) == sfo_size) {
-                    if (nk_iso_parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
-                        out_meta->param_sfo_parsed = true;
-                        if (out_meta->disc_id[0] != 0) identity_structured = true;
-                    } else {
-                        if (out_meta->error_message[0] != '\0') {
-                            free(sfo_buf);
-                            fclose(f);
-                            return NK_ERROR_INVALID_ISO;
-                        }
-                    }
-                }
-                free(sfo_buf);
-            }
-        }
+    if (sfo_found && !sfo_extent_valid) {
+        snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+            "PSP_GAME/PARAM.SFO extent is invalid");
+        fclose(f);
+        return NK_ERROR_INVALID_ISO;
     }
-
-    /* Fallback scan if SFO was not found in directory traversal (e.g. synthetic test ISO) */
-    if (out_meta->disc_id[0] == '\0') {
-        size_t scan_size = (size_t)(file_size < (64 * 1024 * 1024) ? file_size : (64 * 1024 * 1024));
-        uint8_t *scan_buf = (uint8_t *)malloc(scan_size);
-        if (scan_buf) {
-            nk_fseek64(f, 0, SEEK_SET);
-            size_t bytes_read = fread(scan_buf, 1, scan_size, f);
-            /* Search for SFO magic */
-            for (size_t i = 0; i + 20 <= bytes_read; i++) {
-                if (memcmp(scan_buf + i, SFO_MAGIC, 4) == 0) {
-                    if (nk_iso_parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
-                        /* Deliberately does NOT set identity_structured. An SFO
-                           found by scanning raw bytes has no filesystem
-                           provenance: any image can embed a valid SFO blob
-                           inside unrelated file data, and trusting it would let
-                           a crafted disc be matched to a catalog title and
-                           launch title-specific code against the wrong content.
-                           The parsed values stay informational; only an SFO
-                           reached through a validated directory extent may
-                           authorize catalog matching. */
-                    } else {
-                        if (out_meta->error_message[0] != '\0') {
-                            free(scan_buf);
-                            fclose(f);
-                            return NK_ERROR_INVALID_ISO;
-                        }
-                    }
-                    if (out_meta->disc_id[0] != '\0') break;
-                }
-            }
-            /* If still not found, scan for known disc ID pattern */
-            if (out_meta->disc_id[0] == '\0') {
-                scan_disc_id_in_buffer(scan_buf, bytes_read, out_meta->disc_id, sizeof(out_meta->disc_id));
-            }
-            free(scan_buf);
+    if (sfo_found && sfo_size == 0) {
+        snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+            "PSP_GAME/PARAM.SFO is empty");
+        fclose(f);
+        return NK_ERROR_INVALID_ISO;
+    }
+    if (sfo_size > 0) {
+        uint64_t sfo_offset = (uint64_t)sfo_lba * SECTOR_SIZE;
+        if (sfo_size > NK_ISO_MAX_SFO_BYTES || sfo_offset > file_size ||
+            (uint64_t)sfo_size > file_size - sfo_offset) {
+            snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                "PSP_GAME/PARAM.SFO extent is invalid");
+            fclose(f);
+            return NK_ERROR_INVALID_ISO;
         }
+        uint8_t *sfo_buf = (uint8_t *)malloc(sfo_size);
+        if (!sfo_buf) {
+            fclose(f);
+            return NK_ERROR_OUT_OF_MEMORY;
+        }
+        nk_fseek64(f, (int64_t)sfo_offset, SEEK_SET);
+        if (fread(sfo_buf, 1, sfo_size, f) != sfo_size ||
+            !nk_iso_parse_sfo_buffer(sfo_buf, sfo_size, out_meta) ||
+            !sfo_disc_id_valid(out_meta->disc_id)) {
+            if (out_meta->error_message[0] == '\0') {
+                snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                    "PSP_GAME/PARAM.SFO is malformed");
+            }
+            free(sfo_buf);
+            fclose(f);
+            return NK_ERROR_INVALID_ISO;
+        }
+        free(sfo_buf);
+        out_meta->param_sfo_parsed = true;
+        identity_structured = true;
     }
 
     fclose(f);
 
     if (out_meta->disc_id[0] == '\0') {
-        if (out_meta->volume_id[0] != '\0') {
-            snprintf(out_meta->disc_id, sizeof(out_meta->disc_id), "%.*s", (int)(sizeof(out_meta->disc_id) - 1), out_meta->volume_id);
-            snprintf(out_meta->title_name, sizeof(out_meta->title_name), "%s", out_meta->volume_id);
-        } else {
-            snprintf(out_meta->disc_id, sizeof(out_meta->disc_id), "UNKNOWN");
-            snprintf(out_meta->title_name, sizeof(out_meta->title_name), "Unknown PSP Disc");
-        }
+        snprintf(out_meta->disc_id, sizeof(out_meta->disc_id), "UNKNOWN");
+        snprintf(out_meta->title_name, sizeof(out_meta->title_name), "Unknown PSP Title");
     }
 
     /* The SFO carries no DISC_VERSION: record the conventional default now

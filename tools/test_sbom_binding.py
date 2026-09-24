@@ -66,7 +66,7 @@ class BindingFixture(unittest.TestCase):
         self.py_lock = self.tmp_path / "tools" / "requirements-lock.txt"
         self.npm_lock.parent.mkdir(parents=True)
         self.py_lock.parent.mkdir(parents=True)
-        self.py_lock.write_text("compiledb==0.10.7\n", encoding="utf-8", newline="\n")
+        self.py_lock.write_text(PY_LOCK.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
         self.addCleanup(setattr, verify_sbom.verify_release_locks,
                         "last_validated_npm_lock", None)
         self.addCleanup(setattr, verify_sbom.verify_release_locks,
@@ -249,12 +249,12 @@ class TestSingleSnapshotNoTOCTOU(BindingFixture):
         spdx = self.generate_sbom_document()
         self.write_npm_lock(LOCK_A_TEXT)  # unchanged bytes
         original_read = Path.read_bytes
-        reads = {"n": 0}
+        read_counts: dict[Path, int] = {}
         lock_b_bytes = LOCK_B_TEXT.encode("utf-8")
 
         def flippy_read(path_self):
-            reads["n"] += 1
-            if path_self == self.npm_lock and reads["n"] > 1:
+            read_counts[path_self] = read_counts.get(path_self, 0) + 1
+            if path_self == self.npm_lock and read_counts[path_self] > 1:
                 return lock_b_bytes
             return original_read(path_self)
 
@@ -626,7 +626,7 @@ class TestCliBinding(unittest.TestCase):
         npm_lock = sandbox / "interface" / "package-lock.json"
         py_lock = sandbox / "tools" / "requirements-lock.txt"
         npm_lock.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
-        py_lock.write_text("compiledb==0.10.7\n", encoding="utf-8", newline="\n")
+        py_lock.write_text(PY_LOCK.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
         (sandbox / "interface" / "package.json").write_text(
             json.dumps({"devDependencies": {"typescript": "^5.0.0", "eslint": "^9.0.0"}}),
             encoding="utf-8", newline="\n")
@@ -721,7 +721,7 @@ class TestDeclaredLockEnforcement(unittest.TestCase):
         npm_lock.parent.mkdir(parents=True, exist_ok=True)
         py_lock.parent.mkdir(parents=True, exist_ok=True)
         npm_lock.write_text(LOCK_A_TEXT, encoding="utf-8", newline="\n")
-        py_lock.write_text("compiledb==0.10.7\n", encoding="utf-8", newline="\n")
+        py_lock.write_text(PY_LOCK.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
         manifest_data = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
         manifest_data["lockfiles"] = {"npm": npm_rel, "python": py_rel}
         manifest_path = self.tmp_path / "assets" / "release_manifest.json"

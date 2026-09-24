@@ -25,6 +25,52 @@
 #include "title_config.h"   /* optional, validated title bindings (roles + counter words) */
 #include "nested_frames.h"  /* reserved region for nested host->guest call frames */
 
+/* Test-only scheduler liveness instrumentation (#290). Declared here, not in recomp.h, so the
+ * CPU-state ABI header (and every title's generated-code build profile) stays unchanged. */
+
+#ifdef SR_SCHED_LIVENESS_TEST
+#define SR_SCHED_LIVENESS_MAX_OWNERS 256u
+#define SR_SCHED_LIVENESS_TRACE_CAP 4096u
+
+enum {
+    SR_SCHED_LIVENESS_PICK = 1,
+    SR_SCHED_LIVENESS_PREEMPT = 2,
+    SR_SCHED_LIVENESS_BLOCK = 3,
+    SR_SCHED_LIVENESS_WAKE = 4,
+    SR_SCHED_LIVENESS_INTERRUPT = 5
+};
+
+typedef struct SrSchedLivenessSnapshot {
+    uint64_t decisions;
+    uint64_t picks;
+    uint64_t preempt_checks;
+    uint64_t block_transitions;
+    uint64_t wake_transitions;
+    uint64_t waiters_readied;
+    uint64_t interrupt_transitions;
+    uint64_t starvation_violations;
+    uint64_t max_starvation_age;
+    uint32_t last_owner_uid;
+    uint32_t last_selected_uid;
+    uint32_t trace_count;
+} SrSchedLivenessSnapshot;
+
+typedef struct SrSchedLivenessEvent {
+    uint64_t sequence;
+    uint32_t reason;
+    uint32_t owner_uid;
+    uint32_t selected_uid;
+    uint32_t object_uid;
+} SrSchedLivenessEvent;
+
+void sched_liveness_reset(void);
+void sched_liveness_snapshot(SrSchedLivenessSnapshot *out);
+int sched_liveness_event(unsigned index, SrSchedLivenessEvent *out);
+int sched_liveness_owner_counts(uint32_t uid, uint64_t *decisions,
+                                uint64_t *selections, uint64_t *idle);
+void sched_liveness_set_starvation_limit(unsigned limit);
+#endif
+
 #include <SDL3/SDL_timer.h>
 #include <stdio.h>
 #include <string.h>
@@ -156,6 +202,166 @@ static uint32_t s_stack_top = SR_STACK_ARENA_CEIL;  /* sibling thread stacks gro
 static StackRange s_stack_free[SR_STACK_RANGE_MAX];
 static int s_stack_free_count;
 static int s_stack_allocator_ready;
+
+#ifdef SR_SCHED_LIVENESS_TEST
+typedef struct {
+    uint32_t uid;
+    uint64_t decisions;
+    uint64_t selections;
+    uint64_t idle;
+} SrSchedLivenessOwner;
+
+static SrSchedLivenessOwner s_sched_liveness_owners[SR_SCHED_LIVENESS_MAX_OWNERS];
+static unsigned s_sched_liveness_owner_count;
+static SrSchedLivenessEvent s_sched_liveness_events[SR_SCHED_LIVENESS_TRACE_CAP];
+static uint64_t s_sched_liveness_event_total;
+static uint64_t s_sched_liveness_starvation_limit = 64u;
+static uint64_t s_sched_liveness_starvation_ages[MAXTHREADS];
+static uint32_t s_sched_liveness_owner_uid;
+static SrSchedLivenessSnapshot s_sched_liveness;
+
+static int sched_liveness_owner_slot(uint32_t uid) {
+    for (unsigned i = 0; i < s_sched_liveness_owner_count; i++)
+        if (s_sched_liveness_owners[i].uid == uid) return (int)i;
+    if (s_sched_liveness_owner_count >= SR_SCHED_LIVENESS_MAX_OWNERS) return -1;
+    unsigned slot = s_sched_liveness_owner_count++;
+    s_sched_liveness_owners[slot].uid = uid;
+    return (int)slot;
+}
+
+static void sched_liveness_sync_owner(void) {
+    if (s_cur >= 0 && s_cur < s_ntcb && !s_tcb[s_cur].deleted)
+        s_sched_liveness_owner_uid = s_tcb[s_cur].uid;
+}
+
+static uint32_t sched_liveness_uid_at(int index) {
+    return index >= 0 && index < s_ntcb && !s_tcb[index].deleted
+               ? s_tcb[index].uid : 0u;
+}
+
+static void sched_liveness_observe_pick(int selected) {
+    if (selected < 0 || selected >= s_ntcb) return;
+    int selected_priority = s_tcb[selected].priority;
+    for (int i = 0; i < s_ntcb; i++) {
+        if (s_tcb[i].state != TH_READY || i == selected ||
+            s_tcb[i].priority >= selected_priority) {
+            s_sched_liveness_starvation_ages[i] = 0;
+            continue;
+        }
+        s_sched_liveness_starvation_ages[i]++;
+        if (s_sched_liveness_starvation_ages[i] > s_sched_liveness.max_starvation_age)
+            s_sched_liveness.max_starvation_age = s_sched_liveness_starvation_ages[i];
+        if (s_sched_liveness_starvation_ages[i] > s_sched_liveness_starvation_limit)
+            s_sched_liveness.starvation_violations++;
+    }
+}
+
+static void sched_liveness_note(uint32_t reason, int selected, uint32_t object_uid) {
+    sched_liveness_sync_owner();
+    uint32_t owner_uid = s_sched_liveness_owner_uid;
+    uint32_t selected_uid = sched_liveness_uid_at(selected);
+    uint64_t sequence = s_sched_liveness_event_total++;
+    unsigned slot = sequence < SR_SCHED_LIVENESS_TRACE_CAP
+                        ? (unsigned)sequence
+                        : (unsigned)((sequence - SR_SCHED_LIVENESS_TRACE_CAP) %
+                                     SR_SCHED_LIVENESS_TRACE_CAP);
+    s_sched_liveness_events[slot] = (SrSchedLivenessEvent){
+        sequence, reason, owner_uid, selected_uid, object_uid
+    };
+    s_sched_liveness.last_owner_uid = owner_uid;
+    s_sched_liveness.last_selected_uid = selected_uid;
+
+    if (reason == SR_SCHED_LIVENESS_PICK || reason == SR_SCHED_LIVENESS_PREEMPT) {
+        int owner_slot = sched_liveness_owner_slot(owner_uid);
+        if (owner_slot >= 0) s_sched_liveness_owners[owner_slot].decisions++;
+        s_sched_liveness.decisions++;
+        if (selected_uid) {
+            int selected_slot = sched_liveness_owner_slot(selected_uid);
+            if (selected_slot >= 0) s_sched_liveness_owners[selected_slot].selections++;
+        } else {
+            int owner_slot_idle = sched_liveness_owner_slot(owner_uid);
+            if (owner_slot_idle >= 0) s_sched_liveness_owners[owner_slot_idle].idle++;
+        }
+        if (reason == SR_SCHED_LIVENESS_PICK) {
+            s_sched_liveness.picks++;
+            sched_liveness_observe_pick(selected);
+        } else {
+            s_sched_liveness.preempt_checks++;
+        }
+    } else if (reason == SR_SCHED_LIVENESS_BLOCK) {
+        s_sched_liveness.block_transitions++;
+    } else if (reason == SR_SCHED_LIVENESS_WAKE) {
+        s_sched_liveness.wake_transitions++;
+    } else if (reason == SR_SCHED_LIVENESS_INTERRUPT) {
+        s_sched_liveness.interrupt_transitions++;
+    }
+}
+
+static void sched_liveness_record_wake(uint32_t object_uid, uint64_t count) {
+    if (!count) return;
+    s_sched_liveness.waiters_readied += count;
+    sched_liveness_note(SR_SCHED_LIVENESS_WAKE, -1, object_uid);
+}
+
+static void sched_liveness_set_owner(uint32_t uid) {
+    s_sched_liveness_owner_uid = uid;
+}
+
+void sched_liveness_reset(void) {
+    memset(s_sched_liveness_owners, 0, sizeof(s_sched_liveness_owners));
+    memset(s_sched_liveness_events, 0, sizeof(s_sched_liveness_events));
+    memset(s_sched_liveness_starvation_ages, 0, sizeof(s_sched_liveness_starvation_ages));
+    memset(&s_sched_liveness, 0, sizeof(s_sched_liveness));
+    s_sched_liveness_owner_count = 0;
+    s_sched_liveness_event_total = 0;
+    s_sched_liveness_owner_uid = 0;
+    s_sched_liveness_starvation_limit = 64u;
+}
+
+void sched_liveness_snapshot(SrSchedLivenessSnapshot *out) {
+    if (!out) return;
+    *out = s_sched_liveness;
+    uint64_t total = s_sched_liveness_event_total;
+    out->trace_count = (uint32_t)(total < SR_SCHED_LIVENESS_TRACE_CAP
+                                      ? total : SR_SCHED_LIVENESS_TRACE_CAP);
+}
+
+int sched_liveness_event(unsigned index, SrSchedLivenessEvent *out) {
+    if (!out || index >= SR_SCHED_LIVENESS_TRACE_CAP) return 0;
+    uint64_t total = s_sched_liveness_event_total;
+    uint64_t count = total < SR_SCHED_LIVENESS_TRACE_CAP
+                         ? total : SR_SCHED_LIVENESS_TRACE_CAP;
+    if (index >= count) return 0;
+    uint64_t first = total > SR_SCHED_LIVENESS_TRACE_CAP
+                         ? total - SR_SCHED_LIVENESS_TRACE_CAP : 0;
+    uint64_t physical = (first + index) % SR_SCHED_LIVENESS_TRACE_CAP;
+    *out = s_sched_liveness_events[physical];
+    return 1;
+}
+
+int sched_liveness_owner_counts(uint32_t uid, uint64_t *decisions,
+                                uint64_t *selections, uint64_t *idle) {
+    for (unsigned i = 0; i < s_sched_liveness_owner_count; i++) {
+        if (s_sched_liveness_owners[i].uid != uid) continue;
+        if (decisions) *decisions = s_sched_liveness_owners[i].decisions;
+        if (selections) *selections = s_sched_liveness_owners[i].selections;
+        if (idle) *idle = s_sched_liveness_owners[i].idle;
+        return 1;
+    }
+    return 0;
+}
+
+void sched_liveness_set_starvation_limit(unsigned limit) {
+    s_sched_liveness_starvation_limit = limit ? limit : 1u;
+}
+
+#define SCHED_LIVENESS_NOTE(reason, selected, object_uid) \
+    sched_liveness_note((reason), (selected), (object_uid))
+#define SCHED_LIVENESS_OWNER(uid) sched_liveness_set_owner(uid)
+#else
+#define SCHED_LIVENESS_NOTE(reason, selected, object_uid) ((void)0)
+#define SCHED_LIVENESS_OWNER(uid) ((void)0)
+#endif
 
 /* Dynamic role-UID capture. Populated by sched_create_thread: the ROOT thread is the
  * first thread ever created (sched_run's module_start thread); the WORKER and LAUNCHER
@@ -338,6 +544,9 @@ void sched_init(CpuState *cpu) {
     s_last_pick = -1;
     s_root_seen = 0;
     s_tick = 0;
+#ifdef SR_SCHED_LIVENESS_TEST
+    sched_liveness_reset();
+#endif
     stack_ranges_reset();
 }
 
@@ -510,6 +719,7 @@ int sched_current_join_result_pending(uint32_t uid) {
 
 void sched_raise_interrupt(uint32_t source) {
     s_pending_interrupts |= source;
+    SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_INTERRUPT, -1, source);
 }
 
 uint32_t sched_pending_interrupts(void) {
@@ -1807,7 +2017,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
  * to yield or block (#70 slice C). Idempotent, and deliberately state-only: it decides
  * nothing about who runs next, it only restores the truth about who is runnable. */
 static void sched_promote_expired_waits(void) {
-    for (int i = 0; i < s_ntcb; i++)
+    for (int i = 0; i < s_ntcb; i++) {
         if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
             /* An infinite wait has no deadline and can only be released by a
              * signal. Without this guard a virtual clock that reached the
@@ -1816,8 +2026,13 @@ static void sched_promote_expired_waits(void) {
              * VBLANK at all. The clock must never satisfy a wait nothing
              * signalled. */
             s_tcb[i].wake != SCHED_WAIT_FOREVER &&
-            s_vtime_us >= s_tcb[i].wake)
+            s_vtime_us >= s_tcb[i].wake) {
             s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
+#ifdef SR_SCHED_LIVENESS_TEST
+            sched_liveness_record_wake(s_tcb[i].wait_obj, 1u);
+#endif
+        }
+    }
 }
 
 /* Pick the highest-priority runnable thread (lowest PSP priority number). Wakes delayed
@@ -1848,21 +2063,34 @@ static int pick_next(void) {
         if (!have_ready || s_tcb[i].priority < best_pri) best_pri = s_tcb[i].priority;
         have_ready = 1;
     }
-    if (!have_ready) return -1;
+    if (!have_ready) {
+#ifdef SR_SCHED_LIVENESS_TEST
+        SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PICK, -1, 0u);
+#endif
+        return -1;
+    }
     int start = (s_last_pick >= 0) ? (s_last_pick + 1) % s_ntcb : 0;
     for (int step = 0; step < s_ntcb; step++) {
         int i = (start + step) % s_ntcb;
         if (s_tcb[i].state == TH_READY && s_tcb[i].priority == best_pri) {
             s_last_pick = i;
+            SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PICK, i, 0u);
             return i;
         }
     }
+#ifdef SR_SCHED_LIVENESS_TEST
+    SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PICK, -1, 0u);
+#endif
     return -1;   /* unreachable: have_ready guarantees a match above */
 }
 
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
  * next thread. Called from a thread fiber. */
 static void switch_to_scheduler(void) {
+#ifdef SR_SCHED_LIVENESS_TEST
+    if (s_cur >= 0 && s_cur < s_ntcb)
+        SCHED_LIVENESS_OWNER(s_tcb[s_cur].uid);
+#endif
     if (!s_sched_coro || sr_coro_current() == s_sched_coro) return;
     sr_coro_switch(s_sched_coro);
 }
@@ -2673,7 +2901,12 @@ void sr_yield(CpuState *s) {
  * a scheduler/interrupt boundary is reached, and the interrupt-disabled / dispatch-disabled
  * gate above still defers the whole thing to the next eligible one. */
 void sched_preempt(void) {
-    if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) return;
+    if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) {
+#ifdef SR_SCHED_LIVENESS_TEST
+        SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PREEMPT, s_cur, 0u);
+#endif
+        return;
+    }
     sched_promote_expired_waits();
     TCB *cur = &s_tcb[s_cur];
     int best = -1;
@@ -2683,10 +2916,18 @@ void sched_preempt(void) {
             best = i;
     }
     if (best >= 0 && s_tcb[best].priority < cur->priority) {   /* strictly higher priority ready */
+#ifdef SR_SCHED_LIVENESS_TEST
+        SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PREEMPT, best, 0u);
+#endif
         memcpy(&cur->saved, s_cpu, sizeof(CpuState));
         cur->state = TH_READY;
         switch_to_scheduler();
     }
+#ifdef SR_SCHED_LIVENESS_TEST
+    else {
+        SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PREEMPT, s_cur, 0u);
+    }
+#endif
 }
 
 void sched_delay_current(uint32_t usec) {
@@ -2700,6 +2941,7 @@ void sched_delay_current(uint32_t usec) {
     if (usec > 2000000u && getenv("SR_DELAYLOG"))   /* > 2s: catch a bogus huge delay */
         fprintf(stderr, "BIG DELAY uid=0x%x entry=0x%08x usec=%u (%.1fs)\n", t->uid, t->entry, usec, usec / 1e6);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
+    SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, 0u);
     t->state = TH_WAIT_DELAY;
     /* Real microseconds of virtual time; any positive delay yields at least once. */
     t->wake = wake;
@@ -2711,6 +2953,7 @@ void sched_block_on(uint32_t obj) {
     TCB *t = &s_tcb[s_cur];
     if (getenv("SR_BLOCKLOG")) fprintf(stderr, "BLOCK: uid 0x%x on obj 0x%x (pc=0x%x ra=0x%x)\n", t->uid, obj, s_cpu->pc, s_cpu->r[31]);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
+    SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -2728,6 +2971,7 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     vtime_refresh();
     uint64_t deadline = scheduler_deadline_after(usec ? usec : 1u);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
+    SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -2780,6 +3024,9 @@ static void sched_wake_thread_joiners(uint32_t uid, uint32_t result) {
         waiter->join_result_valid = 1;
         waiter->join_waiting = 0;
         waiter->state = TH_READY;
+#ifdef SR_SCHED_LIVENESS_TEST
+        sched_liveness_record_wake(uid, 1u);
+#endif
         waiter->wait_obj = 0;
         waiter->wake = 0;
         waiter->is_cb_wait = 0;
@@ -2787,9 +3034,19 @@ static void sched_wake_thread_joiners(uint32_t uid, uint32_t result) {
 }
 
 void sched_wake(uint32_t obj) {
+#ifdef SR_SCHED_LIVENESS_TEST
+    int readied = 0;
+#endif
     for (int i = 0; i < s_ntcb; i++)
-        if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj)
+        if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj) {
             s_tcb[i].state = TH_READY;
+#ifdef SR_SCHED_LIVENESS_TEST
+            readied++;
+#endif
+        }
+#ifdef SR_SCHED_LIVENESS_TEST
+    sched_liveness_record_wake(obj, (uint64_t)readied);
+#endif
 }
 
 /* PSP-B2-01 (psp-hw-20260917): a cancelled waiter leaves its wait with a kernel
@@ -2801,14 +3058,23 @@ void sched_wake(uint32_t obj) {
  * on each readied waiter, so several waiters all observe it and no other
  * thread can consume it. */
 void sched_wake_with_result(uint32_t obj, uint32_t result) {
+#ifdef SR_SCHED_LIVENESS_TEST
+    int readied = 0;
+#endif
     for (int i = 0; i < s_ntcb; i++) {
         TCB *w = &s_tcb[i];
         if (!w->deleted && w->state == TH_WAIT_OBJ && w->wait_obj == obj) {
             w->wake_result = result;
             w->wake_result_valid = 1;
             w->state = TH_READY;
+#ifdef SR_SCHED_LIVENESS_TEST
+            readied++;
+#endif
         }
     }
+#ifdef SR_SCHED_LIVENESS_TEST
+    sched_liveness_record_wake(obj, (uint64_t)readied);
+#endif
 }
 
 int sched_take_wake_result(uint32_t *result_out) {
@@ -2829,6 +3095,9 @@ int sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && !t->deleted && t->state == TH_WAIT_OBJ && t->wait_obj == obj) {
         t->state = TH_READY;
+#ifdef SR_SCHED_LIVENESS_TEST
+        sched_liveness_record_wake(obj, 1u);
+#endif
         return 1;
     }
     return 0;
@@ -2853,6 +3122,9 @@ int sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t resul
         t->wake_result = result;
         t->wake_result_valid = 1;
         t->state = TH_READY;
+#ifdef SR_SCHED_LIVENESS_TEST
+        sched_liveness_record_wake(t->wait_obj, 1u);
+#endif
         return 1;
     }
     return 0;
@@ -2946,6 +3218,9 @@ void sched_wake_callbacks(uint32_t thread_uid) {
     if (t && (t->state == TH_WAIT_OBJ || t->state == TH_WAIT_DELAY) && t->is_cb_wait) {
         t->state = TH_READY;
         t->wake = s_vtime_us;
+#ifdef SR_SCHED_LIVENESS_TEST
+        sched_liveness_record_wake(t->wait_obj, 1u);
+#endif
     }
 }
 
@@ -3017,14 +3292,26 @@ uint32_t sched_thread_wakeup(uint32_t uid) {
     {
         fprintf(stderr, "DEBUG_WAKEUP: target=0x%x sleeping=%d state=%d wait_obj=0x%x wakeups=%d\n",
                 uid, t->sleeping, t->state, t->wait_obj, t->wakeups);
+#ifdef SR_SCHED_LIVENESS_TEST
+        int readied = 0;
+#endif
         if (t->sleeping && t->state == TH_WAIT_OBJ && t->wait_obj == uid) {
             t->sleeping = 0;
             t->state = TH_READY;
             t->wait_obj = 0;
             t->wake = 0;
+#ifdef SR_SCHED_LIVENESS_TEST
+            readied = 1;
+#endif
         } else {
             t->wakeups++;
         }
+#ifdef SR_SCHED_LIVENESS_TEST
+        if (readied)
+            sched_liveness_record_wake(uid, 1u);
+        else
+            SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_WAKE, -1, uid);
+#endif
     }
     return 0;
 }
@@ -3369,6 +3656,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         }
         TCB *t = &s_tcb[idx];
         s_cur = idx;
+        SCHED_LIVENESS_OWNER(t->uid);
         t->state = TH_RUNNING;
         memcpy(s_cpu, &t->saved, sizeof(CpuState));   /* load this thread's registers */
         /* FRONTIER: r26/k0 is the PSP per-thread kernel-context pointer; libc's _getmodreent
