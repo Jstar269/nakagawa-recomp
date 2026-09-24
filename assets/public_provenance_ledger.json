@@ -7544,7 +7544,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e81df93a2c83aafb203009efa0d8b56decd9e35bac45f62d8571b5e8dabb97e"
+      "sha256": "7eee25089e057dc61429b9300f849e8f2a3bbcc517dca4a1b8ca5c20cb64f958"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -8678,7 +8678,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bd3da9a14e9320bf4f1d93a218b2cff94cd7bcec47d4fbb537e45e5f491419f7"
+      "sha256": "6fed706cce4b1193e6dc918e15a2116d881458704476e3c66e967a1fef5ab0fa"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
