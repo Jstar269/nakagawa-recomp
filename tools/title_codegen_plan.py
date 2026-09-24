@@ -43,6 +43,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from typing import Any
 
 import title_manifest
@@ -453,6 +455,97 @@ def _absolute_path(path: Path, label: str, *, make_safe: bool = True) -> Path:
     return resolved
 
 
+def _windows_short_path(path: Path) -> Path | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+        GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        GetShortPathNameW.restype = wintypes.DWORD
+
+        resolved_str = str(path.resolve())
+        buf_size = 1024
+        buf = ctypes.create_unicode_buffer(buf_size)
+        needed = GetShortPathNameW(resolved_str, buf, buf_size)
+        if needed > buf_size:
+            buf = ctypes.create_unicode_buffer(needed)
+            needed = GetShortPathNameW(resolved_str, buf, needed)
+        if needed == 0:
+            return None
+        return Path(buf.value)
+    except Exception:
+        return None
+
+
+def _resolve_make_safe_build_root(intended_output_dir: Path) -> Path:
+    """Pick a Make-safe build root for an output directory that contains spaces.
+
+    Priority:
+    (a) the environment variable NK_BUILD_ROOT, if set and Make-safe;
+    (b) on Windows, the 8.3 short-path form of the intended build directory's existing parent,
+        if it yields a Make-safe path;
+    (c) otherwise fail with PACKAGE_UNSUPPORTED_PATH and an actionable message.
+    """
+    env_root = os.environ.get("NK_BUILD_ROOT")
+    if env_root:
+        try:
+            cand = Path(env_root).resolve()
+            cand_rendered = cand.as_posix()
+            if not any(ord(c) < 0x20 for c in cand_rendered) and not _make_unsafe(cand_rendered):
+                return cand
+        except OSError:
+            pass
+
+    parent = intended_output_dir.parent
+    if parent.exists():
+        short_parent = _windows_short_path(parent)
+        if short_parent is not None:
+            # Do NOT resolve(): on Windows that expands 8.3 aliases back to the long,
+            # space-containing name. GetShortPathNameW already returns an absolute path.
+            short_rendered = short_parent.as_posix()
+            if not any(ord(c) < 0x20 for c in short_rendered) and not _make_unsafe(short_rendered):
+                return short_parent
+
+    rendered = intended_output_dir.as_posix()
+    raise PackageRouteError(
+        "PACKAGE_UNSUPPORTED_PATH",
+        f"output-dir {rendered!r} contains spaces, 8.3 short names are unavailable "
+        "on this volume, and NK_BUILD_ROOT is unset or invalid; "
+        "set NK_BUILD_ROOT to a folder without spaces (issue #296)",
+    )
+
+
+def _promote_package(build_workspace: Path, destination: Path) -> None:
+    dest_parent = destination.parent
+    dest_parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=dest_parent))
+    backup_dir: Path | None = None
+    try:
+        shutil.copytree(build_workspace, staging_dir, dirs_exist_ok=True)
+        if destination.exists():
+            if destination.is_symlink():
+                raise PackageRouteError(
+                    "PACKAGE_OUTPUT_CONFLICT", "existing package destination is a symlink"
+                )
+            backup_dir = dest_parent / f".{destination.name}.backup-{time.time_ns()}"
+            os.replace(destination, backup_dir)
+        try:
+            os.replace(staging_dir, destination)
+        except Exception:
+            if backup_dir is not None and backup_dir.exists() and not destination.exists():
+                os.replace(backup_dir, destination)
+            raise
+        else:
+            if backup_dir is not None and backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+
 def _require_file(path: Path, label: str) -> None:
     if not path.is_file():
         raise PackageRouteError("PACKAGE_INPUT_MISSING", f"{label} is not a file")
@@ -834,283 +927,309 @@ def build_package(
     selected_name = _package_game_name(normalized, game_name)
     # The output directory is written by the Make recipes, so it must itself be
     # Make-safe. Inputs are staged into it when their own paths are not.
-    output_dir = _absolute_path(output_dir, "output-dir")
+    output_dir = _absolute_path(output_dir, "output-dir", make_safe=False)
     _ensure_untracked_output(output_dir)
-    stage_dir = output_dir / "staged-inputs"
-    manifest_path = _absolute_path(manifest_path, "manifest path", make_safe=False)
-    game_elf = _absolute_path(game_elf, "executable ELF path", make_safe=False)
-    module_dir = (_absolute_path(module_dir, "module-dir", make_safe=False)
-                  if module_dir is not None else None)
-    psp_header = (_absolute_path(psp_header, "PSP-header path", make_safe=False)
-                  if psp_header is not None else None)
-    _require_file(manifest_path, "title manifest")
-    _require_file(game_elf, "executable ELF")
-    manifest_path = _stage_for_make(manifest_path, stage_dir, "title manifest")
-    game_elf = _stage_for_make(game_elf, stage_dir, "executable ELF")
-    if psp_header is not None:
-        psp_header = _stage_for_make(psp_header, stage_dir, "PSP header")
-    if module_dir is not None and _make_unsafe(module_dir.as_posix()):
-        staged_modules = stage_dir / "modules"
-        for module in _selected_guest_modules(normalized, selected_optional):
-            if _make_unsafe(module["name"]):
-                raise PackageRouteError(
-                    "PACKAGE_UNSUPPORTED_PATH",
-                    f"guest PRX name {module['name']!r} is not usable in a Make path",
-                )
-            source = module_dir / module["name"]
-            _require_file(source, f"guest PRX {module['name']}")
-            staged_modules.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, staged_modules / module["name"])
-        module_dir = staged_modules
-    if normalized["executable"]["bss_metadata_source"] == "psp-header" and psp_header is None:
+    output_rendered = output_dir.as_posix()
+    if any(char in _MAKE_UNSAFE_PATH_CHARS for char in output_rendered):
         raise PackageRouteError(
-            "PACKAGE_PSP_HEADER_REQUIRED",
-            "the manifest requires --psp-header for BSS metadata",
+            "PACKAGE_UNSUPPORTED_PATH",
+            f"output-dir {output_rendered!r} contains characters the Make recipes cannot "
+            "quote; choose a location without them (quoting support is in the works, "
+            "issue #296)",
         )
+    has_spaces = any(char.isspace() for char in output_rendered)
+    if has_spaces:
+        build_root = _resolve_make_safe_build_root(output_dir)
+        build_root.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", output_dir.name) or "pkg"
+        build_workspace = Path(tempfile.mkdtemp(prefix=f".build-{safe_name}-", dir=build_root))
+        _ensure_untracked_output(build_workspace)
+    else:
+        build_workspace = output_dir
 
     try:
-        plan = build_plan(
-            normalized,
-            game_name=selected_name,
-            game_elf=game_elf,
-            build_dir=output_dir,
-            module_dir=module_dir,
-            psp_header=psp_header,
-            codegen_profile=codegen_profile,
-            include_optional_modules=selected_optional,
-            funcs_per_chunk=funcs_per_chunk,
-            python_command=python_command,
-        )
-    except (OSError, ValueError) as exc:
-        raise PackageRouteError("PACKAGE_INVALID_PLAN", str(exc)) from exc
-
-    selected_modules = _selected_guest_modules(normalized, selected_optional)
-    module_input_paths: dict[str, Path] = {}
-    for module in selected_modules:
-        if module_dir is None:
+        stage_dir = build_workspace / "staged-inputs"
+        manifest_path = _absolute_path(manifest_path, "manifest path", make_safe=False)
+        game_elf = _absolute_path(game_elf, "executable ELF path", make_safe=False)
+        module_dir = (_absolute_path(module_dir, "module-dir", make_safe=False)
+                      if module_dir is not None else None)
+        psp_header = (_absolute_path(psp_header, "PSP-header path", make_safe=False)
+                      if psp_header is not None else None)
+        _require_file(manifest_path, "title manifest")
+        _require_file(game_elf, "executable ELF")
+        manifest_path = _stage_for_make(manifest_path, stage_dir, "title manifest")
+        game_elf = _stage_for_make(game_elf, stage_dir, "executable ELF")
+        if psp_header is not None:
+            psp_header = _stage_for_make(psp_header, stage_dir, "PSP header")
+        if module_dir is not None and _make_unsafe(module_dir.as_posix()):
+            staged_modules = stage_dir / "modules"
+            for module in _selected_guest_modules(normalized, selected_optional):
+                if _make_unsafe(module["name"]):
+                    raise PackageRouteError(
+                        "PACKAGE_UNSUPPORTED_PATH",
+                        f"guest PRX name {module['name']!r} is not usable in a Make path",
+                    )
+                source = module_dir / module["name"]
+                _require_file(source, f"guest PRX {module['name']}")
+                staged_modules.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, staged_modules / module["name"])
+            module_dir = staged_modules
+        if normalized["executable"]["bss_metadata_source"] == "psp-header" and psp_header is None:
             raise PackageRouteError(
-                "PACKAGE_MODULE_DIR_REQUIRED",
-                f"module_dir is required for guest PRX {module['name']}",
+                "PACKAGE_PSP_HEADER_REQUIRED",
+                "the manifest requires --psp-header for BSS metadata",
             )
-        module_path = _absolute_path(module_dir / module["name"], f"guest PRX {module['name']}")
-        _require_file(module_path, f"guest PRX {module['name']}")
-        module_input_paths[module["name"]] = module_path
-    if psp_header is not None:
-        _require_file(psp_header, "PSP header")
 
-    try:
-        sources, analysis_summary, unsupported_imports, diagnostics = _make_input_images(
-            normalized,
-            game_elf,
-            module_dir,
-            psp_header,
-            selected_optional,
-        )
-    except PackageRouteError:
-        raise
-    except (OSError, ValueError, RuntimeError) as exc:
-        raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
-
-    input_hashes = _hash_package_inputs(
-        manifest_path, game_elf, selected_modules, module_input_paths, psp_header
-    )
-    package_path = output_dir / "package.json"
-    report_path = output_dir / "build-report.json"
-    if package_path.exists():
         try:
-            previous_package = json.loads(package_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PackageRouteError(
-                "PACKAGE_OUTPUT_CONFLICT", "existing package.json is not a valid package"
-            ) from exc
-        if previous_package.get("inputs") != input_hashes:
+            plan = build_plan(
+                normalized,
+                game_name=selected_name,
+                game_elf=game_elf,
+                build_dir=build_workspace,
+                module_dir=module_dir,
+                psp_header=psp_header,
+                codegen_profile=codegen_profile,
+                include_optional_modules=selected_optional,
+                funcs_per_chunk=funcs_per_chunk,
+                python_command=python_command,
+            )
+        except (OSError, ValueError) as exc:
+            raise PackageRouteError("PACKAGE_INVALID_PLAN", str(exc)) from exc
+
+        selected_modules = _selected_guest_modules(normalized, selected_optional)
+        module_input_paths: dict[str, Path] = {}
+        for module in selected_modules:
+            if module_dir is None:
+                raise PackageRouteError(
+                    "PACKAGE_MODULE_DIR_REQUIRED",
+                    f"module_dir is required for guest PRX {module['name']}",
+                )
+            module_path = _absolute_path(module_dir / module["name"], f"guest PRX {module['name']}")
+            _require_file(module_path, f"guest PRX {module['name']}")
+            module_input_paths[module["name"]] = module_path
+        if psp_header is not None:
+            _require_file(psp_header, "PSP header")
+
+        try:
+            sources, analysis_summary, unsupported_imports, diagnostics = _make_input_images(
+                normalized,
+                game_elf,
+                module_dir,
+                psp_header,
+                selected_optional,
+            )
+        except PackageRouteError:
+            raise
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
+
+        input_hashes = _hash_package_inputs(
+            manifest_path, game_elf, selected_modules, module_input_paths, psp_header
+        )
+        dest_package_path = output_dir / "package.json"
+        dest_report_path = output_dir / "build-report.json"
+        if dest_package_path.exists():
+            try:
+                previous_package = json.loads(dest_package_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise PackageRouteError(
+                    "PACKAGE_OUTPUT_CONFLICT", "existing package.json is not a valid package"
+                ) from exc
+            if previous_package.get("inputs") != input_hashes:
+                raise PackageRouteError(
+                    "PACKAGE_OUTPUT_CONFLICT",
+                    "output-dir already contains a package built from different inputs",
+                )
+        elif dest_report_path.exists():
             raise PackageRouteError(
                 "PACKAGE_OUTPUT_CONFLICT",
-                "output-dir already contains a package built from different inputs",
+                "output-dir contains build-report.json without its matching package.json",
             )
-    elif report_path.exists():
-        raise PackageRouteError(
-            "PACKAGE_OUTPUT_CONFLICT",
-            "output-dir contains build-report.json without its matching package.json",
-        )
 
-    make_name = make_command or ("mingw32-make" if os.name == "nt" else "make")
-    make_executable = shutil.which(make_name)
-    if make_executable is None:
-        raise PackageRouteError(
-            "PACKAGE_TOOLCHAIN_MISSING", f"{make_name} is not available on PATH"
-        )
-    cc_name = os.environ.get("CC", "gcc")
-    cc_executable = shutil.which(cc_name)
-    if cc_executable is None:
-        raise PackageRouteError(
-            "PACKAGE_TOOLCHAIN_MISSING", f"CC={cc_name!r} is not available on PATH"
-        )
-    make_display_name, make_identity = _version_identity(make_executable, "Make")
-    cc_display_name, cc_identity = _version_identity(cc_executable, "C compiler")
+        make_name = make_command or ("mingw32-make" if os.name == "nt" else "make")
+        make_executable = shutil.which(make_name)
+        if make_executable is None:
+            raise PackageRouteError(
+                "PACKAGE_TOOLCHAIN_MISSING", f"{make_name} is not available on PATH"
+            )
+        cc_name = os.environ.get("CC", "gcc")
+        cc_executable = shutil.which(cc_name)
+        if cc_executable is None:
+            raise PackageRouteError(
+                "PACKAGE_TOOLCHAIN_MISSING", f"CC={cc_name!r} is not available on PATH"
+            )
+        make_display_name, make_identity = _version_identity(make_executable, "Make")
+        cc_display_name, cc_identity = _version_identity(cc_executable, "C compiler")
 
-    extra_elf_specs = [
-        arg.split("=", 1)[1]
-        for arg in plan["commands"]["codegen"]
-        if arg.startswith("--extra-elf=")
-    ]
-    link_map = output_dir / f"{selected_name}.map"
-    build_environment = os.environ.copy()
-    build_environment.update({
-        "PYTHON": python_command,
-        "GAME_NAME": selected_name,
-        "GAME_ELF": game_elf.as_posix(),
-        "GAME_BASE": plan["environment"]["GAME_BASE"],
-        "GAME_ENTRY": plan["environment"]["GAME_ENTRY"],
-        "GAME_EXTRA_ELFS": " ".join(extra_elf_specs),
-        "GAME_PSP_HEADER": psp_header.as_posix() if psp_header is not None else "",
-        "TITLE_EXTRA_SPANS": plan["environment"]["TITLE_EXTRA_SPANS"],
-        "HST_EXTRA_SPANS": "",
-        "TITLE_MANIFEST": manifest_path.as_posix(),
-        "BUILD_DIR": output_dir.as_posix(),
-        "FUNCS_PER_CHUNK": str(funcs_per_chunk),
-        "CODEGEN_PROFILE_ARG": (
-            f"--profile={plan['codegen_profile']}"
-            if plan["codegen_profile"] != "none"
-            else ""
-        ),
-        "CODEGEN_USER_ARGS": "",
-        "LINK_MAP": link_map.as_posix(),
-        "PUBLIC_SAFE": "1" if public_safe else "0",
-    })
-    try:
-        built = subprocess.run(
-            [make_executable, "--no-print-directory", "all"],
-            cwd=ROOT,
-            env=build_environment,
-            check=False,
-        )
-    except OSError as exc:
-        raise PackageRouteError("PACKAGE_BUILD_FAILED", str(exc)) from exc
-    if built.returncode != 0:
-        raise PackageRouteError(
-            "PACKAGE_BUILD_FAILED", f"{make_display_name} exited with status {built.returncode}"
-        )
+        extra_elf_specs = [
+            arg.split("=", 1)[1]
+            for arg in plan["commands"]["codegen"]
+            if arg.startswith("--extra-elf=")
+        ]
+        link_map = build_workspace / f"{selected_name}.map"
+        build_environment = os.environ.copy()
+        build_environment.update({
+            "PYTHON": python_command,
+            "GAME_NAME": selected_name,
+            "GAME_ELF": game_elf.as_posix(),
+            "GAME_BASE": plan["environment"]["GAME_BASE"],
+            "GAME_ENTRY": plan["environment"]["GAME_ENTRY"],
+            "GAME_EXTRA_ELFS": " ".join(extra_elf_specs),
+            "GAME_PSP_HEADER": psp_header.as_posix() if psp_header is not None else "",
+            "TITLE_EXTRA_SPANS": plan["environment"]["TITLE_EXTRA_SPANS"],
+            "HST_EXTRA_SPANS": "",
+            "TITLE_MANIFEST": manifest_path.as_posix(),
+            "BUILD_DIR": build_workspace.as_posix(),
+            "FUNCS_PER_CHUNK": str(funcs_per_chunk),
+            "CODEGEN_PROFILE_ARG": (
+                f"--profile={plan['codegen_profile']}"
+                if plan["codegen_profile"] != "none"
+                else ""
+            ),
+            "CODEGEN_USER_ARGS": "",
+            "LINK_MAP": link_map.as_posix(),
+            "PUBLIC_SAFE": "1" if public_safe else "0",
+        })
+        try:
+            built = subprocess.run(
+                [make_executable, "--no-print-directory", "all"],
+                cwd=ROOT,
+                env=build_environment,
+                check=False,
+            )
+        except OSError as exc:
+            raise PackageRouteError("PACKAGE_BUILD_FAILED", str(exc)) from exc
+        if built.returncode != 0:
+            raise PackageRouteError(
+                "PACKAGE_BUILD_FAILED", f"{make_display_name} exited with status {built.returncode}"
+            )
 
-    current_input_hashes = _hash_package_inputs(
-        manifest_path, game_elf, selected_modules, module_input_paths, psp_header
-    )
-    if current_input_hashes != input_hashes:
-        raise PackageRouteError(
-            "PACKAGE_INPUT_CHANGED",
-            "a package input changed while the build was running; rerun with a stable input set",
+        current_input_hashes = _hash_package_inputs(
+            manifest_path, game_elf, selected_modules, module_input_paths, psp_header
         )
+        if current_input_hashes != input_hashes:
+            raise PackageRouteError(
+                "PACKAGE_INPUT_CHANGED",
+                "a package input changed while the build was running; rerun with a stable input set",
+            )
 
-    executable_suffix = ".exe" if os.name == "nt" else ""
-    executable_name = f"{selected_name}{executable_suffix}"
-    compiled_executable = output_dir / executable_name
-    image_path = output_dir / f"{selected_name}_image.bin"
-    funcs_header = output_dir / f"{selected_name}_recomp_funcs.h"
-    stub_report = output_dir / f"{selected_name}_recomp_stubs.txt"
-    required_outputs = (compiled_executable, image_path, funcs_header, stub_report, link_map)
-    missing_outputs = [path.name for path in required_outputs if not path.is_file()]
-    if missing_outputs:
-        raise PackageRouteError(
-            "PACKAGE_BUILD_INCOMPLETE", "missing build outputs: " + ", ".join(missing_outputs)
+        executable_suffix = ".exe" if os.name == "nt" else ""
+        executable_name = f"{selected_name}{executable_suffix}"
+        compiled_executable = build_workspace / executable_name
+        image_path = build_workspace / f"{selected_name}_image.bin"
+        funcs_header = build_workspace / f"{selected_name}_recomp_funcs.h"
+        stub_report = build_workspace / f"{selected_name}_recomp_stubs.txt"
+        required_outputs = (compiled_executable, image_path, funcs_header, stub_report, link_map)
+        missing_outputs = [path.name for path in required_outputs if not path.is_file()]
+        if missing_outputs:
+            raise PackageRouteError(
+                "PACKAGE_BUILD_INCOMPLETE", "missing build outputs: " + ", ".join(missing_outputs)
+            )
+
+        entry_symbols = re.findall(
+            r"(?m)^\s*void\s+([fr])_[0-9a-fA-F]+\s*\(",
+            funcs_header.read_text(encoding="ascii"),
         )
-
-    entry_symbols = re.findall(
-        r"(?m)^\s*void\s+([fr])_[0-9a-fA-F]+\s*\(",
-        funcs_header.read_text(encoding="ascii"),
-    )
-    aot_callables = sum(1 for prefix in entry_symbols if prefix == "f")
-    aot_resumes = sum(1 for prefix in entry_symbols if prefix == "r")
-    unsupported_regions, unsupported_instructions = _read_codegen_fallbacks(stub_report, sources)
-    object_files = sorted(
-        (path for path in output_dir.rglob("*.o") if path.is_file()),
-        key=lambda path: path.relative_to(output_dir).as_posix(),
-    )
-    generated_objects = [
-        {
-            "path": path.relative_to(output_dir).as_posix(),
-            "sha256": _sha256_file(path),
+        aot_callables = sum(1 for prefix in entry_symbols if prefix == "f")
+        aot_resumes = sum(1 for prefix in entry_symbols if prefix == "r")
+        unsupported_regions, unsupported_instructions = _read_codegen_fallbacks(stub_report, sources)
+        object_files = sorted(
+            (path for path in build_workspace.rglob("*.o") if path.is_file()),
+            key=lambda path: path.relative_to(build_workspace).as_posix(),
+        )
+        generated_objects = [
+            {
+                "path": path.relative_to(build_workspace).as_posix(),
+                "sha256": _sha256_file(path),
+            }
+            for path in object_files
+        ]
+        executable_sha256 = _sha256_file(compiled_executable)
+        module_hashes = {row["name"]: row["sha256"] for row in input_hashes["modules"]}
+        required_assets = _required_local_assets(
+            normalized, selected_optional, module_hashes, build_workspace
+        )
+        runtime_header_hash = _sha256_file(ROOT / "src" / "rt" / "recomp.h")
+        tools = {
+            "python": platform.python_version(),
+            "planner": {"sha256": _sha256_file(Path(__file__).resolve())},
+            "analyzer": {"sha256": _sha256_file(ROOT / "tools" / "analyze.py")},
+            "codegen": {"sha256": _sha256_file(ROOT / "tools" / "codegen.py")},
+            "make": {"command": make_display_name, "identity": make_identity},
+            "compiler": {"command": cc_display_name, "identity": cc_identity},
         }
-        for path in object_files
-    ]
-    executable_sha256 = _sha256_file(compiled_executable)
-    module_hashes = {row["name"]: row["sha256"] for row in input_hashes["modules"]}
-    required_assets = _required_local_assets(
-        normalized, selected_optional, module_hashes, output_dir
-    )
-    runtime_header_hash = _sha256_file(ROOT / "src" / "rt" / "recomp.h")
-    tools = {
-        "python": platform.python_version(),
-        "planner": {"sha256": _sha256_file(Path(__file__).resolve())},
-        "analyzer": {"sha256": _sha256_file(ROOT / "tools" / "analyze.py")},
-        "codegen": {"sha256": _sha256_file(ROOT / "tools" / "codegen.py")},
-        "make": {"command": make_display_name, "identity": make_identity},
-        "compiler": {"command": cc_display_name, "identity": cc_identity},
-    }
-    unsupported = {
-        "imports": unsupported_imports,
-        "instructions": unsupported_instructions,
-        "regions": unsupported_regions,
-    }
-    coverage = {
-        **analysis_summary,
-        "aot_entries": len(entry_symbols),
-        "aot_callable_entries": aot_callables,
-        "aot_resume_entries": aot_resumes,
-        "fallback_entries": len(unsupported_regions),
-        "unsupported_import_count": len(unsupported_imports),
-        "unsupported_instruction_count": len(unsupported_instructions),
-        "unsupported_region_count": len(unsupported_regions),
-    }
-    report = {
-        "format": BUILD_REPORT_FORMAT,
-        "schema_version": PACKAGE_SCHEMA_VERSION,
-        "title_id": normalized["id"],
-        "runtime_abi": {"name": "CpuState", "version": codegen_abi_version()},
-        "input_hashes": input_hashes,
-        "tools": tools,
-        "coverage": coverage,
-        "unsupported": unsupported,
-        "analysis_diagnostics": sorted(
-            diagnostics, key=lambda row: (row["module"], row["message"])
-        ),
-        "artifacts": {
-            "executable": executable_name,
-            "link_map": link_map.name,
-        },
-    }
-    package = {
-        "format": PACKAGE_FORMAT,
-        "schema_version": PACKAGE_SCHEMA_VERSION,
-        "title": {
-            "id": normalized["id"],
-            "display_name": normalized["display_name"],
-            "kind": normalized["kind"],
-            "manifest_sha256": input_hashes["manifest"]["sha256"],
-            "protected_digest": compute_protected_digest(normalized),
-        },
-        "inputs": input_hashes,
-        "runtime": {
-            "abi": "CpuState",
-            "abi_version": codegen_abi_version(),
-            "abi_header_sha256": runtime_header_hash,
-            "run_entry": _hex(_resolve_run_entry(normalized)),
-            "runtime_contract": normalized.get("runtime_contract"),
-            "runtime_bindings": normalized.get("runtime_bindings", {}),
-            "required_runtime_bindings": normalized.get("required_runtime_bindings", []),
-        },
-        "executable": {
-            "path": executable_name,
-            "sha256": executable_sha256,
-            "guest_entry": _hex(normalized["executable"]["entry"]),
-        },
-        "generated_objects": generated_objects,
-        "required_local_assets": required_assets,
-        "build_report": "build-report.json",
-    }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(canonical_json(report), encoding="utf-8", newline="\n")
-    package_path.write_text(canonical_json(package), encoding="utf-8", newline="\n")
-    return package
+        unsupported = {
+            "imports": unsupported_imports,
+            "instructions": unsupported_instructions,
+            "regions": unsupported_regions,
+        }
+        coverage = {
+            **analysis_summary,
+            "aot_entries": len(entry_symbols),
+            "aot_callable_entries": aot_callables,
+            "aot_resume_entries": aot_resumes,
+            "fallback_entries": len(unsupported_regions),
+            "unsupported_import_count": len(unsupported_imports),
+            "unsupported_instruction_count": len(unsupported_instructions),
+            "unsupported_region_count": len(unsupported_regions),
+        }
+        report = {
+            "format": BUILD_REPORT_FORMAT,
+            "schema_version": PACKAGE_SCHEMA_VERSION,
+            "title_id": normalized["id"],
+            "runtime_abi": {"name": "CpuState", "version": codegen_abi_version()},
+            "input_hashes": input_hashes,
+            "tools": tools,
+            "coverage": coverage,
+            "unsupported": unsupported,
+            "analysis_diagnostics": sorted(
+                diagnostics, key=lambda row: (row["module"], row["message"])
+            ),
+            "artifacts": {
+                "executable": executable_name,
+                "link_map": link_map.name,
+            },
+        }
+        package = {
+            "format": PACKAGE_FORMAT,
+            "schema_version": PACKAGE_SCHEMA_VERSION,
+            "title": {
+                "id": normalized["id"],
+                "display_name": normalized["display_name"],
+                "kind": normalized["kind"],
+                "manifest_sha256": input_hashes["manifest"]["sha256"],
+                "protected_digest": compute_protected_digest(normalized),
+            },
+            "inputs": input_hashes,
+            "runtime": {
+                "abi": "CpuState",
+                "abi_version": codegen_abi_version(),
+                "abi_header_sha256": runtime_header_hash,
+                "run_entry": _hex(_resolve_run_entry(normalized)),
+                "runtime_contract": normalized.get("runtime_contract"),
+                "runtime_bindings": normalized.get("runtime_bindings", {}),
+                "required_runtime_bindings": normalized.get("required_runtime_bindings", []),
+            },
+            "executable": {
+                "path": executable_name,
+                "sha256": executable_sha256,
+                "guest_entry": _hex(normalized["executable"]["entry"]),
+            },
+            "generated_objects": generated_objects,
+            "required_local_assets": required_assets,
+            "build_report": "build-report.json",
+        }
+        build_workspace.mkdir(parents=True, exist_ok=True)
+        report_path = build_workspace / "build-report.json"
+        package_path = build_workspace / "package.json"
+        report_path.write_text(canonical_json(report), encoding="utf-8", newline="\n")
+        package_path.write_text(canonical_json(package), encoding="utf-8", newline="\n")
+        if build_workspace != output_dir:
+            _promote_package(build_workspace, output_dir)
+        return package
+    finally:
+        if build_workspace != output_dir and build_workspace.exists():
+            shutil.rmtree(build_workspace, ignore_errors=True)
 
 
 def codegen_abi_version() -> int:

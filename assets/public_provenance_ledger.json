@@ -1029,7 +1029,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "81ea349b858eb63ecd96a3edf0c2252e726927888657f365571373531d3ca7ba"
+      "sha256": "4dcf2fa266f102369d482f3752bf668f341f53e76da815ad49a16d1bb93c5f05"
     },
     {
       "path": "docs/SETUP.md",
@@ -1038,7 +1038,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f9fc6e71d1c853fda5e1c1e79ecf6135f7a07fdf89f89545d029c4430ec55d6b"
+      "sha256": "13425cba6d0bdf999d53410aa8ed82edfa0a1b1e2895366afecd45ab569a9b27"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -7556,7 +7556,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a415acd6a48cd9434ce91438a046ade7a8eb0273619336fe6e98245f5f93ead1"
+      "sha256": "e67b08deab95ab2349927bc81aac8901944b08d57a4beb4908d7c568405fac72"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -9140,7 +9140,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ad02301ca9a0f28d6c22c26a6652bc51f98a0cde5c04b75a50b99d0f98a27b6e"
+      "sha256": "eabe16080eccc3f3757952592b33893952af5a21dd1af33d4c38debe1940c437"
     },
     {
       "path": "tools/test_progress_evidence.py",
@@ -9542,7 +9542,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "2904555fad96af42c51c08cb25346cff5032eb0a5c228bc316c56b8277aa0aa8"
+      "sha256": "d633b860c5f3a29169a3d5a52210522e4a2feef33c7554890db7742c992b2937"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -9782,7 +9782,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e86f347ff7db998b49c4d06860012a8960c7da125deb2e4213bd562e94db1483"
+      "sha256": "f311ba8e654e53d2e5d6a5990ca12fa9d54e573e3b99d446155747ab22905133"
     },
     {
       "path": "tools/title_manager_plan.ps1",
