@@ -184,6 +184,10 @@ typedef struct {
     bool host_buttons_live[NK_HOST_BUTTON_COUNT];
     int16_t host_axes_live[NK_HOST_AXIS_COUNT];
 
+    /* Settings persistence */
+    char settings_path[MAX_PATH_LEN];
+    char settings_notice[128];
+
     /* Window & layout metrics */
     int window_width;
     int window_height;
@@ -208,11 +212,17 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     size_t reason_size
 );
 
+#define NK_PLAYER_SETTINGS_SCHEMA_VERSION 1
+
 /* Settings mutations. All values are validated and clamped; invalid inputs
  * are ignored so a stray click or keypress can never corrupt launch config.
- * Settings are in-memory launch preferences in this build (applied to the
- * child runtime via nk_launch_prepare_session); they are not yet persisted
- * to disk. */
+ * Settings are persisted to a versioned JSON file (settings.json) in the
+ * per-user config directory and applied to the child runtime where supported
+ * via nk_launch_prepare_session. */
+void player_app_settings_init_default(PlayerSettings *settings);
+NkResult player_app_load_settings(PlayerApp *app, const char *file_path);
+NkResult player_app_save_settings(const PlayerApp *app, const char *file_path);
+
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
