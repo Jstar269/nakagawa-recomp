@@ -96,6 +96,15 @@
       "sha256": "14ab9739735950edba5f463d7295bb469ffce4de9c00e01d9e1619c48a28c3ee"
     },
     {
+      "path": ".github/ISSUE_TEMPLATE/smoke_test_report.yml",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "22734fd44ad1f2e18ae93287d5763c17cd5d9c2bf359d57ab4990467f03f51b4"
+    },
+    {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -302,7 +311,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e456fd1723965431c4aa5cfe7bf6a3fa8da9bf701505b5efce50724e8a4a4d8c"
+      "sha256": "1d041bee197df8631f42386bfd2e0e66ca82592fed83cd6c4312c7a28ce94698"
     },
     {
       "path": "REVIEW.md",
@@ -462,7 +471,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0fe517024e9e7466ad22f85f5fb9774214891aeb76373250d660e2c3b417a3c9"
+      "sha256": "e13e0103aafffc5949051998cff7ec3ec89a80d507e0e1d9da70a86b63558f3e"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -822,6 +831,15 @@
       "sha256": "07c84c7491c03bb2325278e2c2cd95c57c0d068e57f9a5f4461ef5efe6f8a0a7"
     },
     {
+      "path": "docs/COMPATIBILITY.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "997af06eaef1f3aaacb30adaa6ff88d7dea458934ce23f4e5b7aa4c34631f3be"
+    },
+    {
       "path": "docs/DCO_POLICY.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1080,7 +1098,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96872666c0db350471ef5bf1f5f93f810a76d46ff2b98e1a9c6bb93580fc6cae"
+      "sha256": "016ac804a8bceb14135ccae8c0d87ab272d6e24defccb230946a0cd9afd319b9"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1098,7 +1116,16 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a37747a734e01b015cf13b9574ca8aec8cd24c4b80f50f7f5634e14e8ba4535c"
+      "sha256": "3746c187a2a2d858e5a6ac778f9778c66b8a1c1451ee47ded78479bac3969a3e"
+    },
+    {
+      "path": "docs/SMOKE_TEST.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "2c1bfd81f358f170dac09a7e2e19f271115594ca073b8d68a8789e2de36eaab2"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1171,6 +1198,24 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "e99de23bfef60324cd27ec7d116c79fb9d33d9e45c7dbbc9f05a0176a8aeb8ad"
+    },
+    {
+      "path": "docs/YOUR_OWN_GAMES.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "2de43ceb4ababa3c07b75d76f861345838c813ec2b3120367036f2dcf2e0144e"
+    },
+    {
+      "path": "docs/cleanroom/PGF_SPEC.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "b57ac3defc8c0e7d95dc1462671b03a5efc493aa10fe32aa1116c49b903ddcb4"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
