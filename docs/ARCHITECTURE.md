@@ -556,7 +556,8 @@ the maintained references for exact behavior.
 | `SR_PLTLOG` | present/unset | PLT/import-resolution diagnostics |
 | `PSP_VFPU_TABLES` | path | Override VFPU lookup-table directory |
 | `PSP_ISO` | path | Private ISO path where a route consumes it |
-| `SR_FSDIR` | path | Host filesystem mapping root |
+| `SR_MEMSTICK` | path | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
+| `SR_FSDIR` | path | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root (default `fs/`) |
 
 Many legacy Boolean diagnostics are enabled by **presence**, so setting them to the literal string
 `"0"` may still enable them. Remove/unset such variables to disable them. Value-parsed switches

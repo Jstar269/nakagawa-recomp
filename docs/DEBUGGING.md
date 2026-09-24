@@ -412,7 +412,8 @@ committed.
 | `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
 | `SR_FONTDIR=ABSOLUTE_PATH` | Override font directory (relative values are rejected; unset uses the executable's sibling `font`) |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
-| `SR_FSDIR=PATH` | Override writable host storage; relative paths, including `.`/`..`, are resolved against the current directory |
+| `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
+| `SR_MEMSTICK=PATH` | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
 
 ### Scheduling & Behavior
 
@@ -426,7 +427,6 @@ committed.
 | `SR_POSTUMD=1` | Post-UMD processing |
 | `SR_HEAP_BASE=HEX` | Override heap base address |
 | `SR_PARTITION_TOP=HEX` | Override partition top |
-| `SR_MEMSTICK=PATH` | Override memstick path |
 | `SR_CALLCOUNT=1` | Enable call counting |
 | `SR_CBLOG=1` | Log callback create/register/notify/dispatch to stderr |
 | `SR_PGD_KEYS=PATH` | Optional local PSP KIRK/amctrl constants binding; the PGD/amctrl implementation and key guidance are excluded from the public-safe candidate |
