@@ -388,6 +388,30 @@
       "sha256": "5620aee90be59409b5e1b374735f3a4cbd9d605e7543352123ba439d8923b18c"
     },
     {
+      "path": "assets/issue_routing.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "issue-routing-manifest-310",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "467a6a574e2a055f49b3c6e1211d3efc75e73d2dba2a3a92f9a3caa6316115a3"
+    },
+    {
+      "path": "assets/issue_routing.schema.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "issue-routing-manifest-310",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "29682934209d62fe5ca8e1d35ce5648b5343e0120e5877ae52f02b27ab88e74a"
+    },
+    {
       "path": "assets/public_provenance_ledger.json",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -402,7 +426,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b1e54893526645156759f7c98b55196928082b85053523078269b1c05684350a"
+      "sha256": "8fb51f1dc4a25358a36e80a4c140fa7e9b3355f148b320d2c9fb268052185e3b"
     },
     {
       "path": "assets/release_manifest.json",
@@ -1302,7 +1326,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "601e32ba7e09b2a56862ceb48c8511adddd3f21c7df5c5d9c59e32a874259605"
+      "sha256": "8bfe1775c43e24e56086a09bba8a8f706ef84e34cfe5382050d580c447d5e746"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1320,7 +1344,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b2d36ab9fd3308bd4cd745bc9a4c655f8be31eed46943368e8d0aee72bd8b773"
+      "sha256": "42e85786b821939e52e4e8762927873a81be448e6ecaeb835b8aa11aafa9bdb8"
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
@@ -1410,7 +1434,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "02584dfe9154c5f534ff44d5a21f9b59128d48c1c24d6ea0fee8c1b9de6a1ae0"
+      "sha256": "9632088bc279eb014d4312e71776f0a97861c2f369a727e2a094123d7ebb6dd4"
     },
     {
       "path": "fixtures/psp_phaseb/Makefile",
@@ -3357,7 +3381,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93d8945c43b37de1cb232fd764c73507174ece6e600e403badf39aa99130f02b"
+      "sha256": "8a4bf7036d3634d0c5ecdf7a42590b95223ecffda2dc420960ede27710f9f9ee"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.mjs",
@@ -3369,7 +3393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8702a5a908110f34eefedb7beae9faa0368a7c05b20ac1fa1aa96335a51ecacb"
+      "sha256": "de9cc39d97a45547fae280cbc4faad2f08eb864694dfc35163f4b192c122afa8"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-file.test.mjs",
@@ -3381,7 +3405,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "530c198a3463310eefba3a7bdbe4aca63e957233cf7a7a6d939d070bbadb2090"
+      "sha256": "3dad06dee2a90961e4eba385a461940a51c24604e396942b52c77b7e0bbd3a5f"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-route.test.ts",
@@ -3393,7 +3417,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8f3398bf827c16fda7cd98b12961be6bca4df57292d687f7252adb1063664cd"
+      "sha256": "6ce21d2026cce283f5cc5b1344de2e3633cea7162736db1035671ded8b6139ad"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-schema.d.mts",
@@ -3441,7 +3465,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "466a3e16b57432126a46f363563e9e66000b658b833d0a54a9b356fe47b8167e"
+      "sha256": "f8a1b0b6765f5fd6777033b614c981a9a96a23373372f877dc275f9433d5b98e"
     },
     {
       "path": "interface/src/lib/recompiler/watchpoint-store.ts",
@@ -3789,7 +3813,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9c12834a23128581a1fec557de59094c1ad234ded578bcab176bf4720474781"
+      "sha256": "7b3b0ffb330fc30eed304f5b0c5116390d93940c09d8027a19cb8bef1e44c2f4"
     },
     {
       "path": "src/player/player_state.h",
@@ -6589,7 +6613,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0920ad6de4e3aad96f647c7774587433f62a3cd89fd642ed3080fc2453bfd54f"
+      "sha256": "19d8ba43126f91a511b3049ff23b19739822091c9c378d9483ddf977aa5da487"
     },
     {
       "path": "src/rt/watchpoints_file.h",
@@ -6601,7 +6625,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44c6713fc6f9c928f49bc671878290888477ddb3e26d5505726a87b8c413dbd7"
+      "sha256": "8ae80dd565065de5a67b05d9b0a4e8f034eaed9fcb03c0363859a80822466985"
     },
     {
       "path": "src/rt/watchpoints_file_selftest.c",
@@ -6613,7 +6637,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1528dcbac69138aa08e387472117ccba85c0a99e30eed9d0fb6c4b05a1e8bf9e"
+      "sha256": "5f2bd02c31ddfcf12abd4d1651193f380dafd36e84aaa12b923037741b50bd30"
     },
     {
       "path": "tests/native/argv_echo_helper.c",
@@ -6697,7 +6721,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e589bb2984ca32e0d2af1de443055a8bd6f3741625222cefc2855d2969075b3b"
+      "sha256": "71232c09de26b30d327c6836facb5753c6995c1937efbe4bb3fb4a801bc56c4c"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -7424,7 +7448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36b4221b6df68074f43a2e0e5d5d1f709f891a1b988e416927d6dfacee03e5cd"
+      "sha256": "a415acd6a48cd9434ce91438a046ade7a8eb0273619336fe6e98245f5f93ead1"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7448,7 +7472,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49a55152827d35652774e375f4f67b4b77570bfd6c53d60b2b34c1b4c7648661"
+      "sha256": "2854e6c94229d7cf4216b095dc2900655359a04e1d1b0077f0936cdb7951dcdb"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -7739,7 +7763,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c347f150dd81812e5780dbc82ca5e706dc2863a4019e84e45a0f3fcbb0d1165"
+      "sha256": "d35dd22e432e3138d5e94d7a842a459d85182c2543b866f055e5aa6051ea96f2"
     },
     {
       "path": "tools/psp_oracle/__init__.py",
@@ -7775,7 +7799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "75df3b414bce5b1da6d26ddee5be17f8d70ed749f6df4fe3b3dd05b76b317c05"
+      "sha256": "759a530feca782352bda4ec23e1217fcda06e83a3100b175d5a532431b76323a"
     },
     {
       "path": "tools/psp_oracle/parse_audio_query.py",
@@ -8063,7 +8087,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "11d72a03807c8ac03c79c011ab1b42e5e6cd5159b5916a7759fe0edcff00b389"
+      "sha256": "c4d188e231dba9211aa39e45a3e5204b9c8a27d04f17111d73950417ab1f2422"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -8762,7 +8786,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a822dc5840ad769832fd998038b6ad3efa9aa5103cd6ef2827f01604b604f280"
+      "sha256": "aedd1ad21df86f02fc3b67561b728b916194c029fa4981a467e1b49668571216"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -8996,7 +9020,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7b59a60b7907e6b72e74b62e4e15a90c56fb9663454c79d749855f35717d1e2d"
+      "sha256": "ad02301ca9a0f28d6c22c26a6652bc51f98a0cde5c04b75a50b99d0f98a27b6e"
     },
     {
       "path": "tools/test_progress_evidence.py",
@@ -9092,7 +9116,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d192d7bdbc764a84d6587b962a3f4d182ad5ddd77534e27b20c64ec6078412cc"
+      "sha256": "34787bb5c88617a3a02fcf879851e462561608701b7598cce4432b0a4cd8c1f3"
     },
     {
       "path": "tools/test_psp_leaf_parsers.py",
@@ -9230,7 +9254,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "37ee1e29902a0d46418a95256a659873d21647c6add5d9035af7394bbf469bd9"
+      "sha256": "0a491bd341d79cb732e0253e0a9b2085d6fedef949c0860ed9e19d0a08c1fce0"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -9846,10 +9870,19 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
-    "candidate_tree": "7509890a0290cf0b1d12da41dd88601c1d1e1fe2",
+    "candidate_tree": "13bae970e95f86a8d6c0e871d495c4ca274bf90e",
     "refreshed_paths": [
-      "tools/publish_audit.py",
-      "tools/test_publish_audit.py"
+      "fixtures/psp_oracle/Makefile",
+      "fixtures/psp_oracle/mutex_imports.S",
+      "fixtures/psp_oracle/threadman_user_imports.S",
+      "interface/src/lib/recompiler/watchpoint-file.d.mts",
+      "interface/src/lib/recompiler/watchpoint-file.mjs",
+      "interface/src/lib/recompiler/watchpoint-file.test.mjs",
+      "interface/src/lib/recompiler/watchpoint-route.test.ts",
+      "interface/src/lib/recompiler/watchpoint-store.test.ts",
+      "src/rt/watchpoints_file.c",
+      "src/rt/watchpoints_file.h",
+      "src/rt/watchpoints_file_selftest.c"
     ]
   }
 }

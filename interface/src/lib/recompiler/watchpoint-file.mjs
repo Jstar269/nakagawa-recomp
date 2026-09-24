@@ -7,7 +7,7 @@
 // self-describing, bounded, deterministic and verifiable:
 //
 //   {
-//     "format": "hst-watchpoints",
+//     "format": "nk-watchpoints",
 //     "version": 1,
 //     "profileId": null | "<cuid>",
 //     "source": "db" | "direct",
@@ -16,12 +16,14 @@
 //     "watchpoints": [ { "start": ..., "end": ..., "label": "..." }, ... ]
 //   }
 //
-// The native runtime parser (src/rt/watchpoints_file.c) accepts exactly this
-// envelope AND the legacy bare-array form, so old files keep working while new
-// files carry identity. Publication is atomic: content is written to a unique
-// temporary sibling and renamed into place; a failure never leaves a partial
-// file that looks current. Readers never confuse a `*.tmp-*` sibling with the
-// canonical file (the canonical name is exact).
+// The native runtime parser (src/rt/watchpoints_file.c) and this module accept
+// the title-neutral "nk-watchpoints" envelope AND provide backward read compatibility
+// for the legacy "hst-watchpoints" envelope and the legacy bare-array form.
+// Retirement policy: legacy formats are read-only; removal is tracked in #369.
+// Writers must only emit the canonical "nk-watchpoints" format and never the legacy name.
+// Publication is atomic: content is written to a unique temporary sibling and
+// renamed into place; a failure never leaves a partial file that looks current.
+// Readers never confuse a `*.tmp-*` sibling with the canonical file.
 
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -35,7 +37,8 @@ import {
 import path from "node:path";
 import { validateWatchpointList } from "./watchpoint-schema.mjs";
 
-export const WATCHPOINTS_FILE_FORMAT = "hst-watchpoints";
+export const WATCHPOINTS_FILE_FORMAT = "nk-watchpoints";
+export const WATCHPOINTS_LEGACY_FILE_FORMAT = "hst-watchpoints";
 export const WATCHPOINTS_FILE_VERSION = 1;
 export const WATCHPOINTS_FILE_MAX_BYTES = 64 * 1024;
 export const WATCHPOINTS_FILE_NAME = "watchpoints.json";
@@ -128,6 +131,7 @@ export function readWatchpointsFile(filePath) {
   }
 
   // Legacy bare-array files (pre-#188 writer output) remain readable.
+  // Retirement policy: legacy read-only compatibility; removal is tracked in #369.
   if (Array.isArray(parsed)) {
     const result = validateWatchpointList(parsed);
     if (!result.ok) return { status: "corrupt", reason: result.reason };
@@ -138,8 +142,13 @@ export function readWatchpointsFile(filePath) {
     };
   }
 
-  if (!isEnvelope(parsed) || parsed.format !== WATCHPOINTS_FILE_FORMAT) {
-    return { status: "corrupt", reason: "file is neither an hst-watchpoints envelope nor a watchpoint array" };
+  // Retirement policy: legacy "hst-watchpoints" envelope is accepted for read-only
+  // compatibility; removal is tracked in #369. Writers only emit "nk-watchpoints".
+  const isCurrent = isEnvelope(parsed) && parsed.format === WATCHPOINTS_FILE_FORMAT;
+  const isLegacy = isEnvelope(parsed) && parsed.format === WATCHPOINTS_LEGACY_FILE_FORMAT;
+
+  if (!isCurrent && !isLegacy) {
+    return { status: "corrupt", reason: "file is neither an nk-watchpoints envelope nor a watchpoint array" };
   }
   if (typeof parsed.version !== "number" || parsed.version !== WATCHPOINTS_FILE_VERSION) {
     return { status: "unsupported-version", reason: `unsupported watchpoints file version ${String(parsed.version)}` };
