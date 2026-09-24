@@ -91,7 +91,7 @@
       "prx": "nakagawa_psp_oracle.prx",
       "apis": ["open", "seek", "async I/O", "devctl", "filesystem mutation"],
       "invariant": "typed descriptors, offsets, callbacks, and errors are recorded without payloads",
-      "issues": [55, 68, 72, 91],
+      "issues": [55, 68, 72, 91, 311],
       "risk": "medium",
       "reset": "close descriptors and remove only probe-owned files"
     },
@@ -156,7 +156,7 @@
       "apis": ["kuKernelGetModel", "sceKernelDevkitVersion", "scePowerGetCpuClockFrequencyInt"],
       "case_ids": ["model-profile"],
       "invariant": "raw model ordinal, firmware word, and CPU clock accompany the scalar result",
-      "issues": [34, 62, 77, 78, 80, 86, 94],
+      "issues": [34, 62, 77, 78, 80, 86, 94, 311, 356],
       "risk": "low to medium",
       "reset": "return to PSPLINK without changing persistent settings"
     },
@@ -168,7 +168,7 @@
       "prx": "nakagawa_psp_oracle.prx",
       "apis": ["audio channel", "SAS", "ATRAC query"],
       "invariant": "scalar audio configuration/query state is recorded without acoustic claims",
-      "issues": [38, 69, 70, 75],
+      "issues": [38, 69, 70, 75, 311],
       "risk": "medium",
       "reset": "stop channels and return to PSPLINK"
     },

@@ -1284,6 +1284,155 @@ def _spdx_provenance_findings(path: str, record: dict, raw_bytes: bytes) -> list
     return []
 
 
+#: Known, unresolved contradictory lineage claims tracked under Issue #342.
+#: The publication audit gate enforces that any contradiction must be listed
+#: here with a reason and issue tracking, and that no stale exceptions remain.
+LINEAGE_CONTRADICTION_EXCEPTIONS: dict[str, dict[str, str | int]] = {
+    "src/rt/evf.h": {
+        "issue": "#342",
+        "reason": "header declares derivation from PPSSPP while ledger classifies as project_authored_attested (behavior-informed)",
+    },
+    "tools/gen_nidnames.py": {
+        "issue": "#342",
+        "reason": "header declares derivation from sal063 while ledger classifies as project_authored_attested",
+    },
+    "tools/test_funcdiff_cmp.py": {
+        "issue": "#342",
+        "reason": "header declares derivation from sal063 while ledger classifies as project_authored_attested",
+    },
+    "tools/test_nidseq.py": {
+        "issue": "#342",
+        "reason": "header declares derivation from sal063 while ledger classifies as project_authored_attested",
+    },
+}
+
+LINEAGE_DERIVED_LINE = re.compile(
+    r"^\s*(?://|#|/\*|\*)\s*(?:.*?\b)?(?:"
+    r"(?:derived\s+from|ported\s+from)\s+(?!(?:the|this|a|an|its|each|our)\b)([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)"
+    r"|based\s+on\s+(?:.*?\b)?(?:ppsspp|sal063|jpcsp|upstream|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"
+    r"|(?:ports?|porting)\s+(?:of\s+)?(?:ppsspp|sal063|jpcsp)\b"
+    r"|(?:ppsspp|sal063|jpcsp)\s+(?:port|derived|derivative)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+LINEAGE_INDEPENDENT_LINE = re.compile(
+    r"^\s*(?://|#|/\*|\*)\s*(?:.*?\b)?(?:"
+    r"\b(?:independently?\s+(?:authored|implemented|developed|written)"
+    r"|(?:authored|implemented|developed|written)\s+independently"
+    r"|clean[- ]room"
+    r"|independent\s+implementation)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _lineage_contradiction_findings(
+    path: str,
+    record: dict,
+    raw_bytes: bytes,
+    exceptions: dict[str, dict[str, str | int]] | None = None,
+) -> tuple[list[Finding], bool]:
+    """Detect contradictory lineage claims between source headers and ledger classification.
+
+    Flags a source file whose header declares upstream derivation while its public
+    ledger classification is project-authored or independent, or whose header claims
+    independence while its ledger classification is upstream-derived.
+    """
+    pure = PurePosixPath(path)
+    if pure.suffix.lower() not in SPDX_PROVENANCE_SOURCE_EXTENSIONS and pure.name not in SPDX_PROVENANCE_SOURCE_NAMES:
+        return [], False
+
+    if path in SPDX_GENERATED_EMBEDDING_SOURCES:
+        return [], False
+
+    try:
+        lines = raw_bytes.decode("utf-8-sig").splitlines()[:15]
+    except UnicodeDecodeError:
+        return [], False
+
+    derived_match: str | None = None
+    indep_match: str | None = None
+    for line in lines:
+        if derived_match is None and (m := LINEAGE_DERIVED_LINE.search(line)):
+            derived_match = m.group(0).strip()
+        if indep_match is None and (m := LINEAGE_INDEPENDENT_LINE.search(line)):
+            indep_match = m.group(0).strip()
+
+    classification = record.get("classification")
+    is_contradiction = False
+    detail = ""
+
+    if classification == "project_authored_attested" and derived_match is not None:
+        is_contradiction = True
+        detail = (
+            f"source header indicates upstream derivation ({derived_match!r}) "
+            f"while ledger classification is {classification!r}"
+        )
+    elif classification == "upstream_derived" and indep_match is not None:
+        is_contradiction = True
+        detail = (
+            f"source header claims independence ({indep_match!r}) "
+            f"while ledger classification is {classification!r}"
+        )
+
+    if not is_contradiction:
+        return [], False
+
+    effective_exceptions = exceptions if exceptions is not None else LINEAGE_CONTRADICTION_EXCEPTIONS
+    if path in effective_exceptions:
+        exc_entry = effective_exceptions[path]
+        if not isinstance(exc_entry, dict) or not exc_entry.get("issue") or not exc_entry.get("reason"):
+            return [Finding(
+                "LINEAGE_EXCEPTION_INVALID",
+                path,
+                f"lineage contradiction exception for {path} must specify 'issue' and 'reason'",
+            )], True
+        return [], True
+
+    return [Finding("LINEAGE_CONTRADICTION", path, detail)], True
+
+
+def _stale_lineage_exception_findings(
+    exceptions: dict[str, dict[str, str | int]],
+    matched_exceptions: set[str],
+    entry_by_path: dict[str, GitEntry] | None = None,
+    policy_include_paths: set[str] | None = None,
+    is_custom_exceptions: bool = False,
+) -> list[Finding]:
+    """Fail on any lineage contradiction exception whose contradiction no longer exists."""
+    findings: list[Finding] = []
+    for exc_path, info in sorted(exceptions.items()):
+        if not isinstance(info, dict) or not info.get("issue") or not info.get("reason"):
+            findings.append(Finding(
+                "LINEAGE_EXCEPTION_INVALID",
+                exc_path,
+                "lineage contradiction exception must specify 'issue' and 'reason'",
+            ))
+        if exc_path in matched_exceptions:
+            continue
+        if is_custom_exceptions:
+            findings.append(Finding(
+                "LINEAGE_CONTRADICTION_STALE",
+                exc_path,
+                f"lineage contradiction exception for {exc_path} is stale; no contradictory lineage claim found in source header",
+            ))
+        elif entry_by_path is not None and policy_include_paths is not None:
+            if exc_path in entry_by_path and exc_path in policy_include_paths:
+                findings.append(Finding(
+                    "LINEAGE_CONTRADICTION_STALE",
+                    exc_path,
+                    f"lineage contradiction exception for {exc_path} is stale; no contradictory lineage claim found in source header",
+                ))
+            elif len(entry_by_path) > 50:
+                findings.append(Finding(
+                    "LINEAGE_CONTRADICTION_STALE",
+                    exc_path,
+                    f"lineage contradiction exception for {exc_path} is stale; path not found in audited source",
+                ))
+    return findings
+
+
 def _text(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
@@ -1774,6 +1923,7 @@ def _provenance_ledger_findings(
     repo_root: Path,
     trusted_ledger_path: Path | None,
     self_consistency: bool = False,
+    lineage_exceptions: dict[str, dict[str, str | int]] | None = None,
 ) -> list[Finding]:
     """Require explicit, externally trusted provenance for every included path.
 
@@ -1854,6 +2004,11 @@ def _provenance_ledger_findings(
 
     entry_by_path = {entry.path: entry for entry in entries}
     record_phrase = "externally trusted provenance record" if trusted_ledger_path is not None else "provenance record"
+    active_lineage_exceptions = (
+        lineage_exceptions if lineage_exceptions is not None else LINEAGE_CONTRADICTION_EXCEPTIONS
+    )
+    matched_lineage_exceptions: set[str] = set()
+
     for path in sorted(policy.include_paths):
         if path not in entry_by_path:
             continue
@@ -1881,6 +2036,20 @@ def _provenance_ledger_findings(
             or pure.name in SPDX_PROVENANCE_SOURCE_NAMES
         ):
             findings.extend(_spdx_provenance_findings(path, record, raw))
+            lineage_findings, was_contradiction = _lineage_contradiction_findings(
+                path, record, raw, exceptions=active_lineage_exceptions
+            )
+            findings.extend(lineage_findings)
+            if was_contradiction:
+                matched_lineage_exceptions.add(path)
+
+    findings.extend(_stale_lineage_exception_findings(
+        active_lineage_exceptions,
+        matched_lineage_exceptions,
+        entry_by_path=entry_by_path,
+        policy_include_paths=set(policy.include_paths),
+        is_custom_exceptions=(lineage_exceptions is not None),
+    ))
     return findings
 
 

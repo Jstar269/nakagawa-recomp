@@ -22,87 +22,121 @@ PVD_SECTOR = 16
 ISO_MAGIC = b"\x01CD001\x01"
 SFO_MAGIC = b"\x00PSF\x01\x01\x00\x00"
 MAX_DIRECTORY_BYTES = 512 * 1024
+MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
+SFO_FMT_UTF8_SPECIAL = 0x0004
+SFO_FMT_UTF8 = 0x0204
+SFO_FMT_UINT32 = 0x0404
 
 
 class IsoInspectionError(ValueError):
     """Raised when an ISO image is unreadable or malformed."""
 
 
-_IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE_ID", "TITLE", "DISC_VERSION"})
+_IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
+
 
 def parse_param_sfo(data: bytes) -> Dict[str, str]:
-    """Parse Sony PSP PARAM.SFO key/value pairs safely."""
-    if len(data) < 20 or data[0:8] != SFO_MAGIC:
+    """Parse a bounded PSP PARAM.SFO structure."""
+    if len(data) < 20 or data[:8] != SFO_MAGIC:
         return {}
 
-    key_table_start = struct.unpack_from("<I", data, 8)[0]
-    data_table_start = struct.unpack_from("<I", data, 12)[0]
-    entry_count = struct.unpack_from("<I", data, 16)[0]
+    try:
+        key_table_start, data_table_start, entry_count = struct.unpack_from(
+            "<III", data, 8
+        )
+    except struct.error as exc:
+        raise IsoInspectionError("truncated PARAM.SFO header") from exc
 
-    if entry_count > 256 or key_table_start >= len(data) or data_table_start >= len(data):
-        return {}
+    table_end = 20 + entry_count * 16
+    if (
+        entry_count > 256
+        or key_table_start < table_end
+        or key_table_start > data_table_start
+        or data_table_start > len(data)
+    ):
+        raise IsoInspectionError("PARAM.SFO table bounds are invalid")
 
     result: Dict[str, str] = {}
-    for i in range(entry_count):
-        entry_off = 20 + (i * 16)
-        if entry_off + 16 > key_table_start:
-            break
-        key_offset, param_fmt, param_len, max_len, data_offset = struct.unpack_from(
-            "<HHIII", data, entry_off
-        )
-        # Read key name
-        k_start = key_table_start + key_offset
-        if k_start >= len(data):
-            continue
-        k_end = data.find(b"\0", k_start)
-        if k_end == -1:
-            k_end = min(len(data), k_start + 64)
-        key_name = data[k_start:k_end].decode("utf-8", errors="replace")
+    for index in range(entry_count):
+        entry_offset = 20 + index * 16
+        try:
+            key_offset, param_fmt, data_len, max_len, data_offset = struct.unpack_from(
+                "<HHIII", data, entry_offset
+            )
+        except struct.error as exc:
+            raise IsoInspectionError("truncated PARAM.SFO entry table") from exc
 
-        # Read data
-        d_start = data_table_start + data_offset
-        d_end = d_start + param_len
-        if d_end > len(data):
-            continue
-        raw_val = data[d_start:d_end]
+        if key_offset > data_table_start - key_table_start:
+            raise IsoInspectionError("PARAM.SFO key offset is outside the key table")
+        key_start = key_table_start + key_offset
+        key_end = data.find(b"\0", key_start, data_table_start)
+        if key_end < 0:
+            raise IsoInspectionError("PARAM.SFO key is not NUL-terminated")
+        try:
+            key_name = data[key_start:key_end].decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise IsoInspectionError("PARAM.SFO key is not ASCII") from exc
 
-        # Identity fields are decoded only from a UTF-8 string format. The
-        # native reader in src/core/nk_iso.c now refuses a DISC_ID, TITLE_ID,
-        # TITLE or DISC_VERSION that declares an integer or unrecognised
-        # format; yielding a decoded number or an empty string here instead
-        # would put the two parsers back out of step on exactly the field that
-        # decides whether a disc matches a catalog title.
-        if key_name in _IDENTITY_KEYS and param_fmt not in (0x0204, 0x0004):
+        if data_offset > len(data) - data_table_start:
+            raise IsoInspectionError("PARAM.SFO data offset is outside the data table")
+        data_start = data_table_start + data_offset
+        if data_len > len(data) - data_start:
+            raise IsoInspectionError("PARAM.SFO data length exceeds the buffer")
+        if max_len < data_len:
+            raise IsoInspectionError("PARAM.SFO data length exceeds max length")
+        raw_value = data[data_start : data_start + data_len]
+
+        if key_name in _IDENTITY_KEYS and param_fmt not in (
+            SFO_FMT_UTF8,
+            SFO_FMT_UTF8_SPECIAL,
+        ):
             raise IsoInspectionError(
                 f"SFO key '{key_name}' declares parameter format 0x{param_fmt:04x}, "
-                "which is not a UTF-8 string; identity is not decoded from a "
-                "non-string format"
+                "which is not a UTF-8 string"
             )
 
-        if param_fmt in (0x0204, 0x0004):  # UTF-8 string
-            val_str = raw_val.rstrip(b"\0").decode("utf-8", errors="replace")
-        elif param_fmt == 0x0404:  # Integer
-            if len(raw_val) >= 4:
-                val_str = str(struct.unpack_from("<I", raw_val, 0)[0])
-            else:
-                val_str = ""
+        if param_fmt == SFO_FMT_UTF8:
+            value_bytes = raw_value.rstrip(b"\0")
+        elif param_fmt == SFO_FMT_UTF8_SPECIAL:
+            value_bytes = raw_value
         else:
-            val_str = ""
+            value_bytes = b""
+
+        if param_fmt in (SFO_FMT_UTF8, SFO_FMT_UTF8_SPECIAL):
+            try:
+                value = value_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise IsoInspectionError(f"SFO key '{key_name}' is not valid UTF-8") from exc
+        elif param_fmt == SFO_FMT_UINT32:
+            if data_len < 4:
+                raise IsoInspectionError(f"SFO key '{key_name}' has a short integer value")
+            value = str(struct.unpack_from("<I", raw_value, 0)[0])
+        else:
+            value = ""
 
         if key_name in result:
-            if result[key_name] != val_str:
+            if result[key_name] != value:
                 raise IsoInspectionError(
                     f"Conflicting duplicate SFO key '{key_name}' rejected as ambiguous: "
-                    f"'{result[key_name]}' vs '{val_str}'"
+                    f"'{result[key_name]}' vs '{value}'"
                 )
-            # Byte-identical duplicate: accepted per documented policy
             continue
-
-        result[key_name] = val_str
+        result[key_name] = value
 
     return result
+
+
+def _canonical_disc_id(value: str) -> str:
+    normalized = "".join(
+        char for char in value.strip().upper() if char not in "-_ "
+    )
+    if title_manifest.DISC_ID_RE.fullmatch(normalized) is None:
+        raise IsoInspectionError(
+            "PSP_GAME/PARAM.SFO does not contain a valid 9-character DISC_ID"
+        )
+    return normalized
 
 
 def inspect_iso(
@@ -121,67 +155,32 @@ def inspect_iso(
     reg = registry or get_default_registry()
 
     with open(path, "rb") as f:
-        # 1. Read Primary Volume Descriptor (PVD)
         f.seek(PVD_SECTOR * SECTOR_SIZE)
         pvd_data = f.read(SECTOR_SIZE)
         if len(pvd_data) < SECTOR_SIZE or pvd_data[0:7] != ISO_MAGIC:
             raise IsoInspectionError("Not a valid ISO9660 image (missing PVD descriptor)")
 
-        volume_id = pvd_data[40:72].decode("latin-1", errors="replace").strip()
+        volume_id = pvd_data[40:72].decode("latin-1", errors="replace").rstrip("\x00 ")
+        sfo_entry = _lookup_iso_file(f, size_bytes, ("PSP_GAME", "PARAM.SFO"))
 
-        # 2. Search for PARAM.SFO or scan for DISC_ID
-        # Fast scan: scan first 64 MiB for SFO magic or Disc ID pattern
-        scan_limit = min(size_bytes, 64 * 1024 * 1024)
-        f.seek(0)
-        chunk = f.read(scan_limit)
-
-        sfo_dict: Dict[str, str] = {}
-        sfo_idx = chunk.find(SFO_MAGIC)
-        if sfo_idx != -1:
-            # Found PARAM.SFO in the initial sector buffer
-            sfo_data = chunk[sfo_idx : sfo_idx + 16384]
-            sfo_dict = parse_param_sfo(sfo_data)
-
-        disc_id = sfo_dict.get("DISC_ID", "")
-        title = sfo_dict.get("TITLE", "")
-        version = sfo_dict.get("DISC_VERSION", "1.00")
-
-        # Identity provenance. Only a parsed PARAM.SFO structure is evidence of
-        # what this disc is. Every fallback below recovers a *guess* from raw
-        # image bytes -- a disc id occurring somewhere in 64 MiB of data is not
-        # evidence that the disc is that title. A guess may be reported, but it
-        # must never satisfy the registry and mark the disc supported.
-        # The native reader applies the same rule (src/core/nk_iso.c,
-        # identity_structured); the two must agree or ISO parity breaks.
-        identity_structured = bool(disc_id)
-
-        # Fallback if SFO was compressed or not in the first 64 MiB: check known signatures
-        if not disc_id:
-            for profile in reg.all_profiles():
-                for cand in profile.disc_ids:
-                    cand_bytes = cand.replace("-", "").encode("ascii")
-                    cand_dash = cand.encode("ascii")
-                    if cand_bytes in chunk or cand_dash in chunk:
-                        disc_id = cand
-                        title = profile.name
-                        break
-                if disc_id:
-                    break
-
-        if not disc_id:
-            import re
-            m = re.search(rb"(UCUS|ULUS|UCES|ULES|UCJS|ULJS|UCAS|ULAS)[-_]?([0-9]{5})", chunk)
-            if m:
-                prefix = m.group(1).decode("ascii")
-                number = m.group(2).decode("ascii")
-                disc_id = f"{prefix}{number}"
+        if sfo_entry is None:
+            disc_id = "UNKNOWN"
+            title = "Unknown PSP Title"
+            version = "1.00"
+            identity_structured = False
+        else:
+            sfo_lba, sfo_size = sfo_entry
+            if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
+                raise IsoInspectionError("PSP_GAME/PARAM.SFO has an unsupported size")
+            raw_sfo = _read_iso_extent(f, size_bytes, sfo_lba, sfo_size, 0, sfo_size)
+            sfo_dict = parse_param_sfo(raw_sfo)
+            disc_id = _canonical_disc_id(sfo_dict.get("DISC_ID", ""))
+            title = sfo_dict.get("TITLE", "")
+            version = sfo_dict.get("DISC_VERSION", "1.00")
+            identity_structured = True
+            if not title:
                 title = f"PSP Title ({disc_id})"
 
-        if not disc_id:
-            disc_id = volume_id or "UNKNOWN"
-            title = volume_id or "Unknown PSP Title"
-
-        # Determine region from disc ID prefix
         region = "UNKNOWN"
         upper_disc = disc_id.upper()
         if upper_disc.startswith("UCUS") or upper_disc.startswith("ULUS"):
@@ -222,8 +221,6 @@ def write_experimental_profile(
     info = metadata or inspect_iso(path)
     if info.matched_profile is not None:
         raise IsoInspectionError("catalogued titles do not need an experimental profile")
-    if not title_manifest.DISC_ID_RE.fullmatch(info.disc_id):
-        raise IsoInspectionError("PARAM.SFO does not contain a valid PSP disc ID")
 
     user_root = Path(user_data_dir).expanduser()
     try:
@@ -240,6 +237,8 @@ def write_experimental_profile(
     disc_check = next(check for check in report["checks"] if check["code"] == "DISC_SFO")
     if disc_check["status"] != "OK":
         raise IsoInspectionError("experimental import requires PARAM.SFO reached through the disc directory tree")
+    if not title_manifest.DISC_ID_RE.fullmatch(info.disc_id):
+        raise IsoInspectionError("PARAM.SFO does not contain a valid PSP disc ID")
 
     disc_id = info.disc_id.upper()
     profile_id = f"experimental-{disc_id.lower()}"
@@ -446,6 +445,43 @@ def _elf32_mips_usable(stream, file_size: int, lba: int, size: int) -> bool:
     return have_load and entry_executable
 
 
+def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | None:
+    """Return the contained per-title folder for user-supplied decrypted inputs."""
+    canonical_id = str(disc_id).upper()
+    if not title_manifest.DISC_ID_RE.fullmatch(canonical_id):
+        return None
+    root = Path(user_data_root).expanduser().resolve(strict=False)
+    candidate = root / "titles" / canonical_id / "decrypted"
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _classify_decrypted_elf_file(path: Path | str) -> str:
+    """Validate a user-supplied ELF32/MIPS executable using the ISO checks."""
+    candidate = Path(path)
+    try:
+        size = candidate.stat().st_size
+        if size == 0:
+            return "EMPTY_OR_ZERO_FILLED"
+        if size > MAX_EXECUTABLE_BYTES:
+            return "UNKNOWN"
+        with candidate.open("rb") as stream:
+            header = stream.read(min(size, 0x80))
+            if header.startswith(b"\x7fELF"):
+                return (
+                    "PLAIN_MIPS_ELF32"
+                    if _elf32_mips_usable(stream, size, 0, size)
+                    else "UNKNOWN"
+                )
+    except (OSError, IsoInspectionError, struct.error):
+        return "UNKNOWN"
+    return "UNKNOWN"
+
+
 def _classify_iso_executable(stream, file_size: int, path: str) -> dict[str, object]:
     entry = _lookup_iso_file(stream, file_size, ("PSP_GAME", "SYSDIR", path))
     if entry is None:
@@ -504,20 +540,14 @@ def inspect_compatibility_preflight(
         with path.open("rb") as stream:
             sfo_entry = _lookup_iso_file(stream, size_bytes, ("PSP_GAME", "PARAM.SFO"))
             sfo_parsed = False
-            if sfo_entry is not None and sfo_entry[1] <= 64 * 1024:
+            if sfo_entry is not None and 20 <= sfo_entry[1] <= MAX_SFO_BYTES:
                 raw_sfo = _read_iso_extent(stream, size_bytes, *sfo_entry, 0, sfo_entry[1])
-                if len(raw_sfo) >= 20 and raw_sfo[:8] == SFO_MAGIC:
-                    key_start, data_start, count = struct.unpack_from("<III", raw_sfo, 8)
-                    sfo_parsed = (
-                        count <= 256 and key_start <= data_start and
-                        20 + count * 16 <= key_start < len(raw_sfo) and
-                        data_start < len(raw_sfo)
-                    )
-                    if sfo_parsed:
-                        try:
-                            parse_param_sfo(raw_sfo)
-                        except IsoInspectionError:
-                            sfo_parsed = False
+                try:
+                    values = parse_param_sfo(raw_sfo)
+                    _canonical_disc_id(values.get("DISC_ID", ""))
+                    sfo_parsed = True
+                except IsoInspectionError:
+                    sfo_parsed = False
             executables = {
                 "EBOOT.BIN": _classify_iso_executable(stream, size_bytes, "EBOOT.BIN"),
                 "BOOT.BIN": _classify_iso_executable(stream, size_bytes, "BOOT.BIN"),
@@ -537,6 +567,29 @@ def inspect_compatibility_preflight(
     if eboot_kind == "PSP_ENCRYPTED_CONTAINER" and boot_kind == "PLAIN_MIPS_ELF32":
         selected = "BOOT.BIN"
         fallback = True
+    root = Path(runtime_root)
+    module_dir = decrypted_module_dir(root, metadata.disc_id)
+    decrypted_elf: Path | None = None
+    decrypted_elf_kind = "MISSING"
+    if module_dir is not None:
+        candidate_elf = module_dir / "EBOOT.elf"
+        try:
+            candidate_elf.resolve(strict=False).relative_to(root.expanduser().resolve(strict=False))
+        except ValueError:
+            candidate_elf = None
+        if candidate_elf is not None and candidate_elf.is_file():
+            decrypted_elf = candidate_elf
+            decrypted_elf_kind = _classify_decrypted_elf_file(candidate_elf)
+    user_decryptable_kinds = {
+        "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
+    }
+    if (
+        selected is None
+        and eboot_kind in user_decryptable_kinds
+        and decrypted_elf is not None
+        and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
+    ):
+        selected = "EBOOT.elf"
     if directory_error:
         disc_check = {
             "code": "DISC_SFO", "status": "UNSUPPORTED",
@@ -573,6 +626,31 @@ def inspect_compatibility_preflight(
             "message": "EBOOT.BIN is a plain MIPS ELF32 and selected for analysis.",
             "issues": [],
         }
+    elif selected == "EBOOT.elf" and decrypted_elf is not None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "OK",
+            "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+            "issues": [],
+        }
+    elif eboot_kind in user_decryptable_kinds and decrypted_elf is not None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                f"Encrypted executable: {decrypted_elf} is invalid or not a usable MIPS ELF32; "
+                f"supply a valid EBOOT.elf and required PRXs at {module_dir} (#295). "
+                "This container remains in the works."
+            ),
+            "issues": [295],
+        }
+    elif eboot_kind in user_decryptable_kinds and module_dir is not None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
+                "Automatic decryption is in the works."
+            ),
+            "issues": [295],
+        }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
@@ -605,7 +683,6 @@ def inspect_compatibility_preflight(
 
     from .launcher import RuntimeLauncher
 
-    root = Path(runtime_root)
     package_present = RuntimeLauncher(repo_root=root).runtime_package_available(
         metadata.matched_profile
     )
@@ -667,6 +744,12 @@ def inspect_compatibility_preflight(
     return {
         "is_experimental": is_experimental,
         "selected_executable": selected,
+        "decrypted_module_dir": str(module_dir) if module_dir is not None else None,
+        "decrypted_executable": (
+            str(decrypted_elf.resolve(strict=False))
+            if selected == "EBOOT.elf" and decrypted_elf is not None
+            else None
+        ),
         "boot_fallback": fallback,
         "executables": executables,
         "checks": checks,

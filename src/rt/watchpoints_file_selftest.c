@@ -37,6 +37,30 @@ static int g_failures = 0;
  * Changing the writer grammar must regenerate this fixture. */
 static const char *const DASHBOARD_FIXTURE =
     "{\n"
+    "  \"format\": \"nk-watchpoints\",\n"
+    "  \"version\": 1,\n"
+    "  \"profileId\": \"prof-integration\",\n"
+    "  \"source\": \"db\",\n"
+    "  \"writtenAt\": \"2026-08-06T00:00:00.000Z\",\n"
+    "  \"contentHash\": \"a820c68f071a47e4197b85bdae23b70eb4e42a0c0d4ae7c2ad97f1a7809ab9c5\",\n"
+    "  \"watchpoints\": [\n"
+    "    {\n"
+    "      \"start\": 134221824,\n"
+    "      \"end\": 134222080,\n"
+    "      \"label\": \"Font Engine\"\n"
+    "    },\n"
+    "    {\n"
+    "      \"start\": 142606336,\n"
+    "      \"end\": 142606592,\n"
+    "      \"label\": \"Vertex Pool\"\n"
+    "    }\n"
+    "  ]\n"
+    "}\n";
+
+/* Legacy fixture with format "hst-watchpoints". Readers must continue to accept
+ * this for backward compatibility (retirement tracked in #369). */
+static const char *const LEGACY_HST_FIXTURE =
+    "{\n"
     "  \"format\": \"hst-watchpoints\",\n"
     "  \"version\": 1,\n"
     "  \"profileId\": \"prof-integration\",\n"
@@ -88,6 +112,16 @@ int main(void) {
         if (n == 2) {
             expect_watchpoint(&out[0], 0x08001000u, 0x08001100u, "Font Engine", "fixture watch 0");
             expect_watchpoint(&out[1], 0x08800000u, 0x08800100u, "Vertex Pool", "fixture watch 1");
+        }
+    }
+
+    /* 1b. Legacy format reading compatibility (issue #369). */
+    {
+        int n = sr_parse_watchpoints_buffer(LEGACY_HST_FIXTURE, out, 16, errbuf, sizeof(errbuf));
+        CHECK(n == 2, "legacy hst fixture parses to 2 watchpoints");
+        if (n == 2) {
+            expect_watchpoint(&out[0], 0x08001000u, 0x08001100u, "Font Engine", "legacy watch 0");
+            expect_watchpoint(&out[1], 0x08800000u, 0x08800100u, "Vertex Pool", "legacy watch 1");
         }
     }
 
@@ -182,8 +216,11 @@ int main(void) {
     {
         char buf[512];
         snprintf(buf, sizeof(buf),
-                 "{\"format\":\"hst-watchpoints\",\"version\":2,\"watchpoints\":[]}");
+                 "{\"format\":\"nk-watchpoints\",\"version\":2,\"watchpoints\":[]}");
         expect_fail(buf, "unsupported version rejected");
+        snprintf(buf, sizeof(buf),
+                 "{\"format\":\"hst-watchpoints\",\"version\":2,\"watchpoints\":[]}");
+        expect_fail(buf, "legacy unsupported version rejected");
         snprintf(buf, sizeof(buf),
                  "{\"format\":\"other\",\"version\":1,\"watchpoints\":[]}");
         expect_fail(buf, "wrong format rejected");
@@ -191,7 +228,7 @@ int main(void) {
                  "{\"version\":1,\"watchpoints\":[]}");
         expect_fail(buf, "missing format rejected");
         snprintf(buf, sizeof(buf),
-                 "{\"format\":\"hst-watchpoints\",\"version\":1}");
+                 "{\"format\":\"nk-watchpoints\",\"version\":1}");
         expect_fail(buf, "missing watchpoints rejected");
     }
 
@@ -203,9 +240,11 @@ int main(void) {
     expect_fail("[{\"start\":\"0x10\",\"end\":2,\"label\":\"x\"}]", "hex number rejected (decimal only)");
     expect_fail("[{\"start\":1,\"end\":2,\"label\":\"x\"}]extra", "trailing garbage rejected");
 
-    /* 10. Empty list is valid. */
+    /* 10. Empty list is valid in both canonical and legacy formats. */
+    expect_parse("{\"format\":\"nk-watchpoints\",\"version\":1,\"watchpoints\":[]}",
+                 0, "empty watchpoints list (canonical)");
     expect_parse("{\"format\":\"hst-watchpoints\",\"version\":1,\"watchpoints\":[]}",
-                 0, "empty watchpoints list");
+                 0, "empty watchpoints list (legacy)");
 
     /* 11. File-level behavior: missing file and bounded read. */
     {

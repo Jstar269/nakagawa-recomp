@@ -175,18 +175,19 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            tools/requirements-lock.txt
 
       - name: Install Python tooling dependencies
-        # Install the authoritative project contract, including compiledb and
-        # any other declared tooling dependencies used by the suite.
-        run: python -m pip install --disable-pip-version-check .
+        # The hashed lock installs the complete tool closure (Ruff included for
+        # SBOM completeness); this job does not invoke Ruff. The hygiene job's
+        # pre-commit hook is the only Ruff runner, and the pin test keeps both
+        # versions equal.
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r tools/requirements-lock.txt
+          python -m pip install --disable-pip-version-check --no-deps .
 
-      # Ruff is deliberately NOT installed or invoked here. The shared all-files
-      # pre-commit hook in `hygiene` already runs it over every tools/*.py file,
-      # from the version pinned in .pre-commit-config.yaml, so that pin stays the
-      # single source of truth. A second pip-pinned copy here would silently
-      # drift -- it was pinned at 0.15.21 while the hook moved to 0.16.0.
       - name: Run Python unit tests (shard ${{ matrix.shard }} of 4)
         # Same files and sys.path as `python -m unittest discover -s tools -p "test_*.py"`.
         env:
