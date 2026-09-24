@@ -1935,7 +1935,9 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
 	./build/test_fuzz_parsers$(EXE_EXT) --iters 100
 	$(MAKE) --no-print-directory psmf-producer-selftest PSMF_FUZZ_ITERS=100
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \n		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \n		tests/native/test_input_profile.c -o build/test_input_profile$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_input_profile.c -o build/test_input_profile$(EXE_EXT)
 	./build/test_input_profile$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
