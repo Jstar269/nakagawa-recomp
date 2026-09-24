@@ -81,6 +81,7 @@ add_executable(test_player_state
     tests/native/test_player_state.c
     src/player/player_state.c
     src/player/input_settings.c
+    src/player/iso_reader.c
 )
 target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
