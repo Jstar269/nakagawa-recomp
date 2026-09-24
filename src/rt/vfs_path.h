@@ -185,6 +185,65 @@ static inline int sr_vfs_host_flat_path(const char *root, const char *guest, cha
     return (int)n;
 }
 
+/* Canonical host Memory Stick root for ordinary sceIo* I/O and savedata
+ * (issue #334). Both routes share this root and sr_ms0_resolve so one guest
+ * path always maps to one host path. getenv is used (not a Win32-only helper)
+ * so the function stays host-neutral. */
+static inline const char *sr_ms0_root(void) {
+    const char *r = getenv("SR_MEMSTICK");
+    return (r && *r) ? r : "memstick";
+}
+
+enum sr_ms0_kind {
+    SR_MS0_FOREIGN = 0,
+    SR_MS0_OWNED   = 1
+};
+
+/* Classify a guest path for the unified Memory Stick namespace BEFORE any
+ * host-join helper runs: sr_vfs_host_dir_path strips ANY ':', so a foreign
+ * device (disc0:, kemu0:, ...) must be rejected first rather than flattened
+ * into the ms root. Device-less paths are treated as owned relatives under
+ * the root (legacy callers pass bare "PSP/..." strings).
+ * Owned paths advance *rel to the first byte after the device colon. */
+static inline int sr_ms0_classify(const char *guest, const char **rel) {
+    if (!guest) return SR_MS0_FOREIGN;
+    if (rel) *rel = guest;
+    if (!*guest) return SR_MS0_OWNED; /* empty relative: the root itself */
+    const char *colon = strchr(guest, ':');
+    if (!colon) {
+        if (rel) *rel = guest;
+        return SR_MS0_OWNED;
+    }
+    size_t dlen = (size_t)(colon - guest);
+    if ((dlen == 3u && sr_vfs_strnicmp(guest, "ms0", 3) == 0) ||
+        (dlen == 6u && sr_vfs_strnicmp(guest, "fatms0", 6) == 0)) {
+        if (rel) *rel = colon + 1;
+        return SR_MS0_OWNED;
+    }
+    return SR_MS0_FOREIGN;
+}
+
+/* Resolve an owned guest path under the unified Memory Stick root.
+ * Returns 0 for foreign devices / NULL inputs (caller must fail closed);
+ * otherwise writes the host path and returns its length (> 0). Empty or
+ * root-only relatives resolve to the root directory itself. */
+static inline int sr_ms0_resolve(const char *root, const char *guest, char *out,
+                                 size_t max, char sep) {
+    if (!root || !guest || !out || max == 0) return 0;
+    const char *rel = NULL;
+    if (sr_ms0_classify(guest, &rel) != SR_MS0_OWNED) return 0;
+    if (!rel) return 0;
+    while (*rel == '/' || *rel == '\\') rel++;
+    if (*rel == '\0') {
+        size_t root_len = strlen(root);
+        if (root_len + 1u > max) return 0;
+        memcpy(out, root, root_len);
+        out[root_len] = '\0';
+        return (int)root_len;
+    }
+    return sr_vfs_host_dir_path(root, rel, out, max, sep);
+}
+
 #ifdef _WIN32
 
 #ifndef FILE_DISPOSITION_FLAG_DELETE

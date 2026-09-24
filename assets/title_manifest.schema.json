@@ -139,6 +139,13 @@
       "maxLength": 240,
       "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*:)[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
     },
+    "discImagePath": {
+      "description": "Relative disc-image path. Only the runtime consumes it (never Make), so file names may contain spaces and Unicode; Windows-forbidden and control characters, empty/'.'/'..' components, a leading space and a trailing space or dot are rejected.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*//)(?!.*/$)(?!(?:.*/)?\\.\\.?(?:/|$))(?!(?:.*/)? )(?!.*[ .](?:/|$))[^<>:\"\\\\|?*\\u0000-\\u001f\\u007f]+$"
+    },
     "disc": {
       "type": "object",
       "additionalProperties": false,
@@ -243,9 +250,10 @@
       "additionalProperties": false,      "required": ["data_root", "memory_stick_root", "device_prefixes"],
         "properties": {
         "data_root": {"$ref": "#/$defs/relativePath"},
+        "executable": {"$ref": "#/$defs/relativePath"},
         "module_dir": {"$ref": "#/$defs/relativePath"},
         "psp_header": {"$ref": "#/$defs/relativePath"},
-        "disc_image": {"$ref": "#/$defs/relativePath"},
+        "disc_image": {"$ref": "#/$defs/discImagePath"},
         "memory_stick_root": {"$ref": "#/$defs/relativePath"},
         "device_prefixes": {
           "type": "array",

@@ -185,7 +185,21 @@ HANDLER_METADATA = {
     # command pairs remain visible per pair and are summarized under issue #281.
     "h_IoDevctl": {
         "status": "partial",
-        "limitation": "Memory Stick devctl callback events unmodeled and flat I/O root separate from savedata (#281, #334, #341)",
+        "limitation": "Memory Stick devctl callback events unmodeled (#281, #341)",
+    },
+    "h_IoMkdir": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+            "src/rt/hle.c:h_IoMkdir",
+        ],
+    },
+    "h_IoRemove": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+            "src/rt/hle.c:h_IoRemove",
+        ],
     },
     # Mailboxes (issue #339). Measured contracts live in docs/HARDWARE_ORACLE.md
     # (campaign psp-hw-20260917): unknown id 0x8002019B, timeout 0x800201A8 with

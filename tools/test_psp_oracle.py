@@ -740,6 +740,42 @@ class PspMutexProbeTests(unittest.TestCase):
         ):
             self.assertIn(symbol, self.imports)
 
+    def test_mutex_imports_declares_contiguous_threadman_user_stubs(self) -> None:
+        # Mutex cases link custom ThreadManForUser NIDs; declaring IMPORT_START
+        # emits __stub_module_ThreadManForUser which suppresses the SDK library header.
+        # All probe and CRT ThreadManForUser functions must be declared here to keep
+        # the stub section contiguous in .sceStub.text (issue #400).
+        for symbol in (
+            "sceKernelCreateThread",
+            "sceKernelStartThread",
+            "sceKernelExitThread",
+            "sceKernelDelayThread",
+            "sceKernelWaitThreadEnd",
+            "sceKernelCreateSema",
+            "sceKernelWaitSema",
+            "sceKernelSignalSema",
+            "sceKernelCheckCallback",
+            "sceKernelCreateCallback",
+        ):
+            self.assertIn(symbol, self.imports)
+
+    def test_makefile_fails_on_fixup_imports_warning(self) -> None:
+        # Issue #400: psp-fixup-imports warns 'stubs out of order' on disjoint
+        # stub runs while exiting 0. The Makefile post-link hook must treat this as fatal.
+        self.assertIn("FIXUP =", self.makefile)
+        self.assertIn("psp-fixup-imports", self.makefile)
+        self.assertIn("stubs out of order", self.makefile)
+        self.assertIn("exit 1", self.makefile)
+
+    def test_phaseb_makefile_fails_on_fixup_imports_warning(self) -> None:
+        phaseb_makefile = (
+            self.root / "fixtures" / "psp_phaseb" / "Makefile"
+        ).read_text(encoding="utf-8")
+        self.assertIn("FIXUP =", phaseb_makefile)
+        self.assertIn("psp-fixup-imports", phaseb_makefile)
+        self.assertIn("stubs out of order", phaseb_makefile)
+        self.assertIn("exit 1", phaseb_makefile)
+
     def test_probe_implements_all_four_unresolved_mutex_cases(self) -> None:
         self.assertIn("run_mutex_refer_unlocked_case", self.probe)
         self.assertIn("run_mutex_timeout_quanta_case", self.probe)

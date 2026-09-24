@@ -86,6 +86,7 @@ PROVENANCE_CLASSES = frozenset({
 
 FORBIDDEN_PREFIXES = (
     "build/",
+    "cache/",
     "docs/opengrip_ref/",
     "fs/",
     "logs/",

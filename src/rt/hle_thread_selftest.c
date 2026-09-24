@@ -124,6 +124,10 @@ extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
 extern uint32_t sr_hle_test_io_close_async(CpuState *s);
 extern uint32_t sr_hle_test_io_rename(CpuState *s);
+extern uint32_t sr_hle_test_io_mkdir(CpuState *s);
+extern uint32_t sr_hle_test_io_remove(CpuState *s);
+extern uint32_t sr_hle_test_io_getstat(CpuState *s);
+extern uint32_t sr_hle_test_ms0_legacy_import_count(void);
 extern int sr_hle_test_fd_kind(uint32_t fd);
 extern int sr_callback_is_valid(uint32_t uid);
 
@@ -423,6 +427,9 @@ int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
     /* Keep one known ISO directory for the descriptor baseline.  Other paths
      * model an ISO miss so the extracted-data VFS fallback is exercised. */
     return guest_path && strcmp(guest_path, "disc0:/") == 0 ? 0 : -1;
+}
+uint32_t iso_physical_lba(uint32_t lba_or_token) {
+    return lba_or_token; /* selftest ISO stub: tokens are their own LBA */
 }
 
 /* recomp.c is not linked here. The #88 conformance matrix registers the pool
@@ -938,13 +945,23 @@ static void fd_guest_copy(uint32_t address, const void *data, size_t size) {
 }
 
 static void fd_host_path(char *out, size_t capacity, const char *guest) {
-    const char root[] = "build/hle_fd_namespace_fs/";
+    /* Hierarchical path under the unified Memory Stick root (issue #334):
+     * strip a known ms0:/fatms0: device prefix and keep guest separators. */
+    char root[256];
+    const char *env = getenv("SR_MEMSTICK");
+    if (env && env[0]) snprintf(root, sizeof root, "%s", env);
+    else snprintf(root, sizeof root, "%s", "build/hle_fd_namespace_ms");
+    const char *rel = guest ? guest : "";
     size_t at = 0;
     if (!out || capacity == 0) return;
     for (size_t i = 0; root[i] && at + 1 < capacity; i++) out[at++] = root[i];
-    for (size_t i = 0; guest && guest[i] && at + 1 < capacity; i++) {
-        char c = guest[i];
-        out[at++] = (c == '/' || c == ':' || c == '\\' || c == ' ') ? '_' : c;
+    if (_strnicmp(rel, "ms0:", 4) == 0) rel += 4;
+    else if (_strnicmp(rel, "fatms0:", 7) == 0) rel += 7;
+    while (*rel == '/' || *rel == '\\') rel++;
+    if (at + 1 < capacity) out[at++] = '\\';
+    for (size_t i = 0; rel[i] && at + 1 < capacity; i++) {
+        char c = rel[i];
+        out[at++] = (c == '/') ? '\\' : c;
     }
     out[at] = '\0';
 }
@@ -988,15 +1005,16 @@ static void test_fd_namespace(void) {
     static const uint8_t payload[] = "NAKAGAWA_MINIMAL SUM=5050\n";
     char result_host[256];
     CpuState cpu;
-    const char *old_root_value = getenv("SR_FSDIR");
+    const char *old_root_value = getenv("SR_MEMSTICK");
     char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
     if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
 
     fd_host_path(result_host, sizeof(result_host), result_guest);
     DeleteFileA(result_host);
     CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_fs", NULL);
-    SetEnvironmentVariableA("SR_FSDIR", "build/hle_fd_namespace_fs");
+    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
+    SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+    _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms");
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
@@ -1193,8 +1211,8 @@ static void test_fd_namespace(void) {
 
     /* An actual empty overlay directory is successful and immediately at end
      * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
-     * directory. */
-    CreateDirectoryA("build/hle_fd_namespace_fs/empty", NULL);
+     * directory. Lives under the unified Memory Stick root (issue #334). */
+    CreateDirectoryA("build/hle_fd_namespace_ms/empty", NULL);
     memset(&cpu, 0, sizeof cpu);
     fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
     cpu.r[4] = path_addr;
@@ -1210,7 +1228,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = empty_dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the empty overlay directory descriptor closes cleanly");
-    RemoveDirectoryA("build/hle_fd_namespace_fs/empty");
+    RemoveDirectoryA("build/hle_fd_namespace_ms/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -1452,10 +1470,284 @@ static void test_fd_namespace(void) {
     DeleteFileA(rename_dst_host);
 
     DeleteFileA(result_host);
-    RemoveDirectoryA("build/hle_fd_namespace_fs");
-    if (old_root) SetEnvironmentVariableA("SR_FSDIR", old_root);
-    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    RemoveDirectoryA("build/hle_fd_namespace_ms");
+    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
+    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
+    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
+    else _putenv_s("SR_MEMSTICK", "");
     free(old_root);
+}
+
+/* Issue #334: ordinary sceIo* and savedata must share one canonical host
+ * Memory Stick root and one path resolver. Fails before the unification (flat
+ * fs/ vs hierarchical memstick/) and passes after. */
+extern uint32_t sr_savedata_execute(uint32_t param);
+
+static void test_ms0_unified_namespace(void) {
+    enum {
+        PARAM_ADDR = 0x08800000u,
+        DATA_ADDR  = 0x08900000u,
+        PATH_ADDR  = 0x09030000u,
+        PATH2_ADDR = 0x09030100u,
+        STAT_ADDR  = 0x09030200u
+    };
+    static const char ms_root[] = "build/hle_ms0_unified";
+    static const char legacy_root[] = "build/hle_ms0_legacy_fs";
+    static const uint8_t payload[] = "MS0_UNIFIED_OK\n";
+    CpuState cpu;
+    char host[512];
+    const char *old_ms = getenv("SR_MEMSTICK");
+    const char *old_fs = getenv("SR_FSDIR");
+    char *save_ms = old_ms ? (char *)malloc(strlen(old_ms) + 1u) : NULL;
+    char *save_fs = old_fs ? (char *)malloc(strlen(old_fs) + 1u) : NULL;
+    if (save_ms) memcpy(save_ms, old_ms, strlen(old_ms) + 1u);
+    if (save_fs) memcpy(save_fs, old_fs, strlen(old_fs) + 1u);
+
+    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(ms_root, NULL);
+    CreateDirectoryA(legacy_root, NULL);
+    SetEnvironmentVariableA("SR_MEMSTICK", ms_root);
+    SetEnvironmentVariableA("SR_FSDIR", legacy_root);
+    _putenv_s("SR_MEMSTICK", ms_root);
+    _putenv_s("SR_FSDIR", legacy_root);
+    sr_hle_init();
+
+    /* --- ordinary sceIo mkdir/open/write/read/seek/stat/remove --- */
+    static const char dir_guest[] = "ms0:/TESTDIR";
+    static const char file_guest[] = "ms0:/TESTDIR/UNIFIED.TXT";
+    static const char file_guest2[] = "ms0:/TESTDIR/UNIFIED_RENAMED.TXT";
+    fd_host_path(host, sizeof(host), file_guest);
+    DeleteFileA(host);
+    fd_host_path(host, sizeof(host), file_guest2);
+    DeleteFileA(host);
+
+    fd_guest_copy(PATH_ADDR, dir_guest, sizeof(dir_guest));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0u,
+           "sceIoMkdir creates a directory under the unified Memory Stick root");
+    /* mkdir result is hierarchical under SR_MEMSTICK, not flat fs/ */
+    {
+        char mkdir_host[512];
+        snprintf(mkdir_host, sizeof mkdir_host, "%s\\TESTDIR", ms_root);
+        expect(GetFileAttributesA(mkdir_host) != INVALID_FILE_ATTRIBUTES,
+               "mkdir result is hierarchical under SR_MEMSTICK, not flat fs/");
+    }
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0x80010011u,
+           "sceIoMkdir on an existing directory returns EEXIST 0x80010011");
+
+    fd_set_path(&cpu, PATH_ADDR, file_guest);
+    uint32_t fd = sr_hle_test_io_open(&cpu);
+    expect(fd == 3u, "sceIoOpen under unified ms0 root succeeds");
+    fd_guest_copy(DATA_ADDR, payload, sizeof(payload) - 1u);
+    fd_set_write(&cpu, fd, DATA_ADDR, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
+           "write through unified ms0 root reports full payload");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "unified ms0 file closes cleanly");
+
+    fd_guest_copy(PATH_ADDR, dir_guest, sizeof(dir_guest));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) == 0u &&
+               MEM_R32(STAT_ADDR) == (0x1000u | 0x0124u),
+           "sceIoGetstat sees the unified directory via the host ms0 leg");
+
+    fd_guest_copy(PATH_ADDR, file_guest, sizeof(file_guest));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) == 0u &&
+               (MEM_R32(STAT_ADDR + 8u) == (uint32_t)(sizeof(payload) - 1u)),
+           "sceIoGetstat size matches the file written under unified ms0 root");
+
+    fd_guest_copy(PATH2_ADDR, file_guest2, sizeof(file_guest2));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = PATH2_ADDR;
+    expect(sr_hle_test_io_rename(&cpu) == 0u,
+           "sceIoRename moves a file within the unified Memory Stick root");
+    fd_host_path(host, sizeof(host), file_guest2);
+    expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+           "rename destination exists under SR_MEMSTICK hierarchy");
+
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH2_ADDR;
+    expect(sr_hle_test_io_remove(&cpu) == 0u,
+           "sceIoRemove deletes a regular file under the unified root");
+    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+           "removed file is gone from the unified Memory Stick hierarchy");
+
+    /* foreign device / traversal fail closed */
+    fd_guest_copy(PATH_ADDR, "disc0:/PSP_GAME", sizeof("disc0:/PSP_GAME"));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0x80010016u,
+           "sceIoMkdir refuses a foreign device with EINVAL 0x80010016");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) != 0u,
+           "sceIoGetstat does not fabricate stats for foreign devices");
+    fd_guest_copy(PATH_ADDR, "ms0:/../escape", sizeof("ms0:/../escape"));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_remove(&cpu) == 0x80010016u,
+           "sceIoRemove refuses path traversal with EINVAL 0x80010016");
+
+    /* disc0 open does not create under the ms root */
+    fd_host_path(host, sizeof host, "ms0:/PSP_GAME");
+    DeleteFileA(host);
+    fd_guest_copy(PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN",
+                  sizeof("disc0:/PSP_GAME/SYSDIR/EBOOT.BIN"));
+    fd_set_path(&cpu, PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
+    cpu.r[5] = 1u; /* O_RDONLY */
+    uint32_t disc_fd = sr_hle_test_io_open(&cpu);
+    if (disc_fd < 64u) {
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = disc_fd;
+        sr_hle_test_io_close(&cpu);
+    }
+    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+           "foreign disc0 open never materializes a host path under SR_MEMSTICK");
+
+    /* --- legacy flat import (read-open miss copies once) --- */
+    {
+        char legacy_flat[512];
+        snprintf(legacy_flat, sizeof legacy_flat,
+                 "%s\\ms0__LEGACY_FLAT.TXT", legacy_root);
+        FILE *lf = fopen(legacy_flat, "wb");
+        expect(lf != NULL, "legacy flat fixture file can be created");
+        if (lf) {
+            fwrite(payload, 1, sizeof(payload) - 1u, lf);
+            fclose(lf);
+        }
+        /* Guest path whose flat mapping under SR_FSDIR is ms0__LEGACY_FLAT.TXT
+         * (sr_vfs_host_flat_path maps "ms0:/LEGACY_FLAT.TXT" -> "ms0__LEGACY_FLAT.TXT"). */
+        static const char legacy_guest[] = "ms0:/LEGACY_FLAT.TXT";
+        fd_host_path(host, sizeof(host), legacy_guest);
+        DeleteFileA(host);
+        uint32_t before = sr_hle_test_ms0_legacy_import_count();
+        fd_set_path(&cpu, PATH_ADDR, legacy_guest);
+        cpu.r[5] = 1u; /* O_RDONLY: import only on read miss */
+        uint32_t lfd = sr_hle_test_io_open(&cpu);
+        expect(lfd < 64u,
+               "read-open of a legacy flat file imports into the unified root");
+        if (lfd < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = lfd;
+            cpu.r[5] = DATA_ADDR;
+            cpu.r[6] = (uint32_t)(sizeof(payload) - 1u);
+            expect(sr_hle_test_io_read(&cpu) == sizeof(payload) - 1u,
+                   "imported legacy file is readable through sceIoRead");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = lfd;
+            sr_hle_test_io_close(&cpu);
+        }
+        expect(sr_hle_test_ms0_legacy_import_count() == before + 1u,
+               "legacy flat import increments the source-owned counter exactly once");
+        expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+               "imported legacy content lives under SR_MEMSTICK, not SR_FSDIR only");
+        DeleteFileA(host);
+        DeleteFileA(legacy_flat);
+    }
+
+    /* --- savedata SAVE and ordinary sceIoOpen see the same host path --- */
+    {
+        static const char game[] = "NAKAGAWA334";
+        static const char save[] = "NSPACE";
+        static const char data[] = "SAVEDATA_BRIDGE\n";
+        char guest_open[128];
+        memset(g_mem_base + PARAM_ADDR, 0, 0x600);
+        fd_guest_copy(PARAM_ADDR + 0x3c, game, sizeof(game));
+        fd_guest_copy(PARAM_ADDR + 0x4c, save, sizeof(save));
+        fd_guest_copy(PARAM_ADDR + 0x64, "DATA.BIN", sizeof("DATA.BIN"));
+        fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
+        MEM_W32(PARAM_ADDR + 0x30, 3u); /* SD_SAVE */
+        MEM_W32(PARAM_ADDR + 0x74, DATA_ADDR);
+        MEM_W32(PARAM_ADDR + 0x78, (uint32_t)(sizeof(data) - 1u));
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
+        uint32_t sd_rc = sr_savedata_execute(PARAM_ADDR);
+        expect(sd_rc == 0u, "sr_savedata_execute SD_SAVE succeeds under unified root");
+
+        snprintf(guest_open, sizeof guest_open, "ms0:/PSP/SAVEDATA/%s%s/DATA.BIN",
+                 game, save);
+        fd_set_path(&cpu, PATH_ADDR, guest_open);
+        cpu.r[5] = 1u; /* O_RDONLY */
+        uint32_t sfd = sr_hle_test_io_open(&cpu);
+        expect(sfd < 64u,
+               "ordinary sceIoOpen observes the file savedata just wrote (shared root)");
+        if (sfd < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = sfd;
+            cpu.r[5] = DATA_ADDR;
+            cpu.r[6] = (uint32_t)(sizeof(data) - 1u);
+            expect(sr_hle_test_io_read(&cpu) == sizeof(data) - 1u &&
+                       MEM_R8(DATA_ADDR) == (uint8_t)'S',
+                   "cross-route read returns the savedata payload bytes");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = sfd;
+            sr_hle_test_io_close(&cpu);
+        }
+    }
+
+    /* --- junction rejection: open through a planted link fails closed --- */
+    {
+        char victim[512], jpath[512], jcmd[1200];
+        snprintf(victim, sizeof victim, "%s\\..\\ms0_victim_outside.txt", ms_root);
+        FILE *vf = fopen(victim, "wb");
+        if (vf) { fwrite(payload, 1, sizeof(payload) - 1u, vf); fclose(vf); }
+        snprintf(jpath, sizeof jpath, "%s\\JCT_LINK.TXT", ms_root);
+        DeleteFileA(jpath);
+        snprintf(jcmd, sizeof jcmd,
+                 "cmd /c mklink \"%s\" \"%s\" >nul 2>&1", jpath, victim);
+        int made = system(jcmd) == 0 &&
+                   GetFileAttributesA(jpath) != INVALID_FILE_ATTRIBUTES;
+        if (made) {
+            fd_guest_copy(PATH_ADDR, "ms0:/JCT_LINK.TXT", sizeof("ms0:/JCT_LINK.TXT"));
+            fd_set_path(&cpu, PATH_ADDR, "ms0:/JCT_LINK.TXT");
+            cpu.r[5] = 1u;
+            uint32_t jfd = sr_hle_test_io_open(&cpu);
+            expect(jfd == 0x80010002u || jfd >= 64u,
+                   "open through a reparse point outside the unified root fails closed");
+            if (jfd < 64u) {
+                memset(&cpu, 0, sizeof cpu);
+                cpu.r[4] = jfd;
+                sr_hle_test_io_close(&cpu);
+            }
+            DeleteFileA(jpath);
+        } else {
+            fprintf(stderr, "SKIP: junction fixture needs mklink privilege\n");
+        }
+        DeleteFileA(victim);
+    }
+
+    /* cleanup */
+    fd_host_path(host, sizeof(host), file_guest);
+    DeleteFileA(host);
+    fd_host_path(host, sizeof(host), file_guest2);
+    DeleteFileA(host);
+    {
+        char d[512];
+        snprintf(d, sizeof d, "%s\\TESTDIR", ms_root);
+        RemoveDirectoryA(d);
+    }
+    RemoveDirectoryA(ms_root);
+    RemoveDirectoryA(legacy_root);
+    if (save_ms) SetEnvironmentVariableA("SR_MEMSTICK", save_ms);
+    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
+    if (save_fs) SetEnvironmentVariableA("SR_FSDIR", save_fs);
+    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    if (save_ms) _putenv_s("SR_MEMSTICK", save_ms);
+    else _putenv_s("SR_MEMSTICK", "");
+    if (save_fs) _putenv_s("SR_FSDIR", save_fs);
+    else _putenv_s("SR_FSDIR", "");
+    free(save_ms);
+    free(save_fs);
 }
 
 static void test_utility_av_module_state(void) {
@@ -1556,18 +1848,19 @@ static void test_io_devctl_memory_stick(void) {
     static const char ms0[] = "ms0:";
     static const char fatms0[] = "fatms0:";
     static const char unknown_device[] = "devctl-test0:";
-    const char *old_root_value = getenv("SR_FSDIR");
+    const char *old_root_value = getenv("SR_MEMSTICK");
     char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
     CpuState cpu;
     if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
     if (old_root_value && !old_root) {
-        expect(0, "sceIoDevctl test can preserve the configured SR_FSDIR");
+        expect(0, "sceIoDevctl test can preserve the configured SR_MEMSTICK");
         return;
     }
 
     CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_fs", NULL);
-    expect(SetEnvironmentVariableA("SR_FSDIR", "build/hle_fd_namespace_fs"),
+    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
+    expect(SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms") &&
+               _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms") == 0,
            "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
@@ -1638,8 +1931,10 @@ static void test_io_devctl_memory_stick(void) {
                sr_hle_test_io_devctl_refusal_log_count() == logs_before + 2u,
            "sceIoDevctl refuses an unknown command and logs each device/command pair once");
 
-    if (old_root) SetEnvironmentVariableA("SR_FSDIR", old_root);
-    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
+    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
+    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
+    else _putenv_s("SR_MEMSTICK", "");
     free(old_root);
 }
 
@@ -14210,6 +14505,7 @@ int main(int argc, char **argv) {
 
     test_prx_export_relocation_behavior();
     test_fd_namespace();
+    test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_io_devctl_memory_stick();

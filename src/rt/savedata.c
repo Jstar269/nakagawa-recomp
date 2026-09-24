@@ -148,8 +148,7 @@ static void rd_cstr(uint32_t addr, char *out, int max) {
 }
 
 static const char *ms_root(void) {
-    const char *r = getenv("SR_MEMSTICK");
-    return r && *r ? r : "memstick";
+    return sr_ms0_root();
 }
 
 /* `save_dir` and the utility preparation paths are built from the same
@@ -237,7 +236,8 @@ uint32_t sr_savedata_prepare_utility(unsigned kind) {
     return mkdirs(path) ? 0u : 0x80110001u;
 }
 
-/* memstick/PSP/SAVEDATA/<gameName><saveName> */
+/* memstick/PSP/SAVEDATA/<gameName><saveName> — resolved through the shared
+ * sr_ms0_resolve so savedata and ordinary sceIo* agree on one host path. */
 static void save_dir(char *out, int cap, const char *game, const char *save) {
     if (!path_sanitize(game) || (save && *save && !path_sanitize(save))) {
         snprintf(out, cap, "%s/PSP/SAVEDATA/INVALID", ms_root());
@@ -249,7 +249,14 @@ static void save_dir(char *out, int cap, const char *game, const char *save) {
         snprintf(out, cap, "%s/PSP/SAVEDATA/INVALID", ms_root());
         return;
     }
-    snprintf(out, cap, "%s/PSP/SAVEDATA/%s", ms_root(), leaf);
+    char guest[96];
+    if (snprintf(guest, sizeof(guest), "PSP/SAVEDATA/%s", leaf) >= (int)sizeof(guest)) {
+        snprintf(out, cap, "%s/PSP/SAVEDATA/INVALID", ms_root());
+        return;
+    }
+    if (!sr_ms0_resolve(ms_root(), guest, out, (size_t)cap, '/')) {
+        snprintf(out, cap, "%s/PSP/SAVEDATA/INVALID", ms_root());
+    }
 }
 
 /* Root-RELATIVE form of the same location: "PSP/SAVEDATA/<gameName><saveName>".
