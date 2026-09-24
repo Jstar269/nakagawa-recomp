@@ -1311,7 +1311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "5a0838369c85848d93e80623f40c8b98bf2a6fa35371cc447d8e0384f9378cef"
+      "sha256": "bfa16678c5050f21ccf4b4cab8362325bdcceded9221c7587455b3290abbd7cf"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -1329,7 +1329,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8072ae119ebe5f3d812f0e720427f95b53aaf0776cd67ed202f8dcf2bcb71152"
+      "sha256": "e5429e5d918207d0baae38bde96fa5c7f906f38e9259cc2855ce355e5e5a27f2"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -7859,7 +7859,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd1e342266f0b0e91cc9f3ad91b3cd5fb2f1c1002206f5f58c0b6f4cbb85908e"
+      "sha256": "be6957976bc1dfabdd8bc5b67a5a2a3e890c9391a04bf27a9a88517deb118a56"
     },
     {
       "path": "tools/psp_oracle/run_nakagawa.py",
@@ -7895,7 +7895,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "067f3ce16d316af842b5d625e438b6efeb368fd775e5eef1c4afd2d7bbf8c21d"
+      "sha256": "26ed2faf168bc8336ea3bd87872e6059cf7bd595d4b5d288ed34958b1044a786"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -8624,7 +8624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da5c7508d44f1140422109212ed698052b811f1193222f7cbf14218b620ef1f6"
+      "sha256": "008cb2cba5f3e1bd7c3220ae57be9f646353569247e713f49024371fe9e9b9b5"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -9113,7 +9113,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "eacff1ca29db791909999a1b48a9798f0352b55fe441cc75a0830bb72240aca9"
+      "sha256": "bf3be6c08f7ee888f48483640c51c695cca81cdadcab8bc897fd03266b1cf727"
     },
     {
       "path": "tools/test_psp_parsers.py",
