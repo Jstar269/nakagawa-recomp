@@ -47,14 +47,19 @@ SHT_PSP_REL = 0x700000A1
 
 class Elf:
     def __init__(self, path, base=None):
-        with open(path, "rb") as source:
-            self.data = source.read(MAX_ELF_FILE_BYTES + 1)
+        memory_input = isinstance(path, (bytes, bytearray, memoryview))
+        input_label = "<ELF memory buffer>" if memory_input else path
+        if memory_input:
+            self.data = bytes(path)
+        else:
+            with open(path, "rb") as source:
+                self.data = source.read(MAX_ELF_FILE_BYTES + 1)
         if len(self.data) > MAX_ELF_FILE_BYTES:
-            raise ValueError(f"{path}: ELF file exceeds the 256 MiB input bound")
+            raise ValueError(f"{input_label}: ELF file exceeds the 256 MiB input bound")
         self.base = base
         d = self.data
         self.reloc = None
-        envelope = validate_elf32_envelope(d, path)
+        envelope = validate_elf32_envelope(d, input_label)
         self.entry = envelope["entry"]
         self.phoff = envelope["phoff"]
         self.shoff = envelope["shoff"]
@@ -77,7 +82,14 @@ class Elf:
         ]
 
         self.sections = []
-        if self.shnum > 0 and self.shentsize > 0:
+        named_sections_available = False
+        if self.shnum > 0 and self.shentsize > 0 and self.shstrndx > 0:
+            shstr = envelope["shdrs"][self.shstrndx]
+            section_names = d[shstr["off"] : shstr["off"] + shstr["size"]]
+            has_code_section = b".text\x00" in section_names or b".sceStub.text\x00" in section_names
+            has_module_info = b".rodata.sceModuleInfo\x00" in section_names
+            named_sections_available = has_code_section and has_module_info
+        if named_sections_available:
             for section in envelope["shdrs"]:
                 name, typ, flags, addr, off, size, link, info, _align, entsz = (
                     section["name"], section["typ"], section["flags"], section["addr"],
@@ -105,6 +117,20 @@ class Elf:
             if code_seg:
                 seg_data = d[code_seg["off"] : code_seg["off"] + code_seg["filesz"]]
                 module_info_offset = -1
+
+                def file_backed_guest_span(start, end):
+                    if start == 0 and end == 0:
+                        return True
+                    if end < start or end > 0x100000000:
+                        return False
+                    return any(
+                        segment["type"] == 1
+                        and segment["vaddr"] <= start
+                        and end <= segment["vaddr"] + segment["filesz"]
+                        and segment["vaddr"] + segment["filesz"] <= 0x100000000
+                        for segment in self.segments
+                    )
+
                 for o in range(0, len(seg_data) - 52, 4):
                     attr, ver = struct.unpack("<HH", seg_data[o:o+4])
                     name_bytes = seg_data[o+4:o+32]
@@ -118,57 +144,55 @@ class Elf:
                     except Exception:
                         continue
                     gp, ent, entend, stub, stubend = struct.unpack("<5I", seg_data[o+32:o+52])
-                    max_size = len(d) + 0x1000000
-                    if ent < max_size and entend < max_size and stub < max_size and stubend < max_size:
-                        if entend >= ent and stubend >= stub:
-                            if len(name) < 4 or gp == 0 or (ent % 4) != 0 or (stub % 4) != 0:
-                                continue
-                            module_info_offset = code_seg["vaddr"] + o
-                            self.sections.append(dict(name=0, typ=1, flags=2, addr=module_info_offset,
-                                                      off=code_seg["off"] + o, size=52, link=0, info=0, entsz=0, nm=".rodata.sceModuleInfo"))
-                            if stubend > stub:
-                                stub_off = -1
-                                for s in self.segments:
-                                    if s["vaddr"] <= stub < s["vaddr"] + s["memsz"]:
-                                        stub_off = s["off"] + (stub - s["vaddr"])
-                                        break
-                                if stub_off != -1:
-                                    self.sections.append(dict(name=0, typ=1, flags=6, addr=stub,
-                                                              off=stub_off, size=stubend - stub, link=0, info=0, entsz=0, nm=".lib.stub"))
-                            if entend > ent:
-                                ent_off = -1
-                                for s in self.segments:
-                                    if s["vaddr"] <= ent < s["vaddr"] + s["memsz"]:
-                                        ent_off = s["off"] + (ent - s["vaddr"])
-                                        break
-                                if ent_off != -1:
-                                    self.sections.append(dict(name=0, typ=1, flags=2, addr=ent,
-                                                              off=ent_off, size=entend - ent, link=0, info=0, entsz=0, nm=".lib.ent"))
+                    if file_backed_guest_span(ent, entend) and file_backed_guest_span(stub, stubend):
+                        if len(name) < 4 or gp == 0 or (ent % 4) != 0 or (stub % 4) != 0:
+                            continue
+                        module_info_offset = code_seg["vaddr"] + o
+                        self.sections.append(dict(name=0, typ=1, flags=2, addr=module_info_offset,
+                                                  off=code_seg["off"] + o, size=52, link=0, info=0, entsz=0, nm=".rodata.sceModuleInfo"))
+                        if stubend > stub:
+                            stub_off = -1
+                            for s in self.segments:
+                                if s["vaddr"] <= stub < s["vaddr"] + s["memsz"]:
+                                    stub_off = s["off"] + (stub - s["vaddr"])
+                                    break
+                            if stub_off != -1:
+                                self.sections.append(dict(name=0, typ=1, flags=6, addr=stub,
+                                                          off=stub_off, size=stubend - stub, link=0, info=0, entsz=0, nm=".lib.stub"))
+                        if entend > ent:
+                            ent_off = -1
+                            for s in self.segments:
+                                if s["vaddr"] <= ent < s["vaddr"] + s["memsz"]:
+                                    ent_off = s["off"] + (ent - s["vaddr"])
+                                    break
+                            if ent_off != -1:
+                                self.sections.append(dict(name=0, typ=1, flags=2, addr=ent,
+                                                          off=ent_off, size=entend - ent, link=0, info=0, entsz=0, nm=".lib.ent"))
 
-                            meta_start = module_info_offset
-                            if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
-                                meta_start = min(meta_start, ent)
-                            if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
-                                meta_start = min(meta_start, stub)
-                            text_sec = next((s for s in self.sections if s.get("nm") == ".text"), None)
-                            if text_sec:
-                                text_sec["size"] = meta_start - text_sec["addr"]
-                            # Everything in the code segment after the module metadata is
-                            # read-only data (.rodata.sceResident/.sceNid/.rodata): switch
-                            # jump tables and function-pointer tables live there, so expose
-                            # it as .rodata for the data-pointer scan.
-                            meta_end = module_info_offset + 52
-                            if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
-                                meta_end = max(meta_end, entend)
-                            if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
-                                meta_end = max(meta_end, stubend)
-                            seg_end = code_seg["vaddr"] + code_seg["filesz"]
-                            if meta_end < seg_end:
-                                self.sections.append(dict(name=0, typ=1, flags=2, addr=meta_end,
-                                                          off=code_seg["off"] + (meta_end - code_seg["vaddr"]),
-                                                          size=seg_end - meta_end, link=0, info=0, entsz=0,
-                                                          nm=".rodata"))
-                            break
+                        meta_start = module_info_offset
+                        if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
+                            meta_start = min(meta_start, ent)
+                        if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
+                            meta_start = min(meta_start, stub)
+                        text_sec = next((s for s in self.sections if s.get("nm") == ".text"), None)
+                        if text_sec:
+                            text_sec["size"] = meta_start - text_sec["addr"]
+                        # Everything in the code segment after the module metadata is
+                        # read-only data (.rodata.sceResident/.sceNid/.rodata): switch
+                        # jump tables and function-pointer tables live there, so expose
+                        # it as .rodata for the data-pointer scan.
+                        meta_end = module_info_offset + 52
+                        if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
+                            meta_end = max(meta_end, entend)
+                        if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
+                            meta_end = max(meta_end, stubend)
+                        seg_end = code_seg["vaddr"] + code_seg["filesz"]
+                        if meta_end < seg_end:
+                            self.sections.append(dict(name=0, typ=1, flags=2, addr=meta_end,
+                                                      off=code_seg["off"] + (meta_end - code_seg["vaddr"]),
+                                                      size=seg_end - meta_end, link=0, info=0, entsz=0,
+                                                      nm=".rodata"))
+                        break
 
         # PRX (ET_SCE_PRX = 0xFFA0), relocatable (ET_REL), and relocation-bearing
         # ELFs (e.g. the -Wl,-q PSPDEV ET_EXEC form): rebase to `base` and apply
@@ -186,6 +210,8 @@ class Elf:
         if base is not None and (
             e_type == ET_SCE_PRX or (base != 0 and (e_type == ET_REL or has_reloc_sections))
         ):
+            if memory_input:
+                raise ValueError("relocatable ELF input requires a file-backed path")
             from prxload import Prx
             prx = Prx(path, base)
             prx.relocate()

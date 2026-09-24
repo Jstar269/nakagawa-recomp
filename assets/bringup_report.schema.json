@@ -12,6 +12,9 @@
     "failure_class",
     "issue_numbers",
     "unsupported_imports",
+    "runtime_imports",
+    "runtime_output_kind",
+    "process_exit_code",
     "counts",
     "exit_classification"
   ],
@@ -43,6 +46,7 @@
         "NONE",
         "INVALID_ISO",
         "EXECUTABLE_UNSUPPORTED",
+        "MODIFIED_DUMP_CFW_LOADER",
         "EXPERIMENTAL_IMPORT_FAILED",
         "GUEST_MODULE_DECRYPTION_REQUIRED",
         "GUEST_MODULE_FORMAT_UNSUPPORTED",
@@ -58,6 +62,13 @@
         "BUILD_PACKAGE_FAILED",
         "UNSUPPORTED_IMPORT",
         "UNSUPPORTED_INSTRUCTION",
+        "UNRESOLVED_DISPATCH_TARGET",
+        "ENTRY_NOT_COMPILED",
+        "RUNTIME_INPUT_UNAVAILABLE",
+        "RUNTIME_ELF_REJECTED",
+        "RUNTIME_TRACE_UNAVAILABLE",
+        "RUNTIME_ARGUMENT_FAILURE",
+        "NATIVE_RUNTIME_CRASH",
         "LAUNCH_FAILED",
         "LAUNCH_TIMEOUT",
         "HEADLESS_UNAVAILABLE"
@@ -72,6 +83,14 @@
       "type": "array",
       "items": { "$ref": "#/$defs/unsupported_import" }
     },
+    "runtime_imports": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/runtime_import" }
+    },
+    "runtime_output_kind": {
+      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "VIDEO_UNAVAILABLE", "OTHER"]
+    },
+    "process_exit_code": { "type": ["integer", "null"] },
     "counts": {
       "type": "object",
       "additionalProperties": false,
@@ -107,7 +126,7 @@
       "additionalProperties": false,
       "required": ["code", "status", "issue_numbers"],
       "properties": {
-        "code": { "enum": ["DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE", "SYSTEM_FONTS", "AUDIO_OUTPUT"] },
+        "code": { "enum": ["DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE", "SYSTEM_FONTS", "AUDIO_OUTPUT", "MODIFIED_DUMP_CFW_LOADER"] },
         "status": { "enum": ["OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS"] },
         "issue_numbers": {
           "type": "array",
@@ -122,6 +141,16 @@
       "required": ["library", "nid_name"],
       "properties": {
         "library": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.$-]{0,63}$" },
+        "nid_name": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_.$-]{0,95}$" }
+      }
+    },
+    "runtime_import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["library", "nid", "nid_name"],
+      "properties": {
+        "library": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_.$-]{0,63}$" },
+        "nid": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{8}$" },
         "nid_name": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_.$-]{0,95}$" }
       }
     }

@@ -36,6 +36,7 @@ from nk_core.iso_inspect import (
     _lookup_iso_file,
     _read_iso_extent,
     _classify_decrypted_elf_file,
+    _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
     inspect_compatibility_preflight,
     list_iso_directory,
@@ -165,12 +166,18 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                         stream, file_size, entry.lba, entry.size, 0, header_size
                     )
                     if header.startswith(b"\x7fELF"):
-                        kind = (
-                            "plain-elf"
-                            if _elf32_mips_usable(
-                                stream, file_size, entry.lba, entry.size
-                            ) else "unsupported"
-                        )
+                        if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
+                            kind = "unsupported"
+                        else:
+                            module_bytes = _read_iso_extent(
+                                stream, file_size, entry.lba, entry.size, 0, entry.size
+                            )
+                            if len(module_bytes) != entry.size:
+                                kind = "unsupported"
+                            elif _has_cfw_or_kernel_only_imports(module_bytes):
+                                continue
+                            else:
+                                kind = "plain-elf"
                     elif header.startswith(b"~SCE"):
                         kind = "encrypted-prx"
                     elif header.startswith(b"~PSP"):
@@ -497,6 +504,14 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         selected_value = preflight.get("selected_executable")
         uses_decrypted_eboot = selected_value == "EBOOT.elf"
         decrypted_eboot = preflight.get("decrypted_executable") if uses_decrypted_eboot else None
+        if preflight.get("modified_dump_cfw_loader") and not uses_decrypted_eboot:
+            raise PackageBuildError(
+                "This disc image was modified by a custom-firmware patch. The original "
+                "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
+                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+                "This boundary is "
+                "in the works (#308)."
+            )
         if selected_value is None or (uses_decrypted_eboot and not decrypted_eboot):
             module_dir = decrypted_module_dir(user_root, disc_id)
             folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
@@ -831,6 +846,9 @@ def _new_bringup_report() -> dict:
         "failure_class": "NONE",
         "issue_numbers": [],
         "unsupported_imports": [],
+        "runtime_imports": [],
+        "runtime_output_kind": "NOT_RUN",
+        "process_exit_code": None,
         "counts": {
             "functions": None,
             "instructions": None,
@@ -866,7 +884,7 @@ def _fail_bringup(report: dict, stage: str, failure_class: str, issues=(), durat
 def _sanitized_checks(preflight: dict) -> list[dict]:
     known_codes = {
         "DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE",
-        "SYSTEM_FONTS", "AUDIO_OUTPUT",
+        "SYSTEM_FONTS", "AUDIO_OUTPUT", "MODIFIED_DUMP_CFW_LOADER",
     }
     known_status = {"OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS"}
     checks = []
@@ -892,9 +910,44 @@ def _write_bringup_report(report: dict, path: Path) -> None:
 def _bringup_human_summary(report: dict) -> str:
     if report["failure_class"] == "NONE":
         return f"Bring-up reached {report['reached_stage']}; launch {report['exit_classification'].lower()}."
+    if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
+        return (
+            "Bring-up stopped at inspect: this disc image was modified by a custom-firmware "
+            "patch. The original executable is EBOOT.OLD (encrypted); supply its decrypted "
+            "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+            "This boundary is in the works (#308)."
+        )
     issues = " ".join(f"#{number}" for number in report["issue_numbers"])
     suffix = f"; in the works ({issues})" if issues else ""
-    return f"Bring-up stopped at {report['reached_stage']}: {report['failure_class']}{suffix}."
+    detail = ""
+    if report["failure_class"] == "UNSUPPORTED_IMPORT" and report.get("runtime_imports"):
+        imported = report["runtime_imports"][0]
+        library = imported["library"] or "unknown PSP library"
+        detail = f" ({library}, NID {imported['nid']}"
+        if imported["nid_name"]:
+            detail += f", {imported['nid_name']}"
+        detail += ")"
+    elif report["failure_class"] == "ENTRY_NOT_COMPILED":
+        detail = " (the selected executable entry has no generated function)"
+    elif report["failure_class"] == "RUNTIME_INPUT_UNAVAILABLE":
+        detail = f" (runtime could not read a packaged input; exit code {report['process_exit_code']})"
+    elif report["failure_class"] == "RUNTIME_ELF_REJECTED":
+        detail = f" (runtime rejected the selected ELF load layout; exit code {report['process_exit_code']})"
+    elif report["failure_class"] == "RUNTIME_TRACE_UNAVAILABLE":
+        detail = f" (runtime could not read a usable reference trace; exit code {report['process_exit_code']})"
+    elif report["failure_class"] == "RUNTIME_ARGUMENT_FAILURE":
+        detail = f" (runtime rejected its launch arguments; exit code {report['process_exit_code']})"
+    elif report["failure_class"] == "NATIVE_RUNTIME_CRASH":
+        detail = f" (native runtime reported a crash; exit code {report['process_exit_code']})"
+    elif report["failure_class"] == "UNRESOLVED_DISPATCH_TARGET":
+        detail = " (the runtime rejected an unresolved dispatch target)"
+    elif report["failure_class"] == "LAUNCH_FAILED":
+        kind = report.get("runtime_output_kind")
+        if kind == "EMPTY":
+            detail = f" (runtime emitted no diagnostic; exit code {report['process_exit_code']})"
+        elif kind == "OTHER":
+            detail = f" (runtime output did not match a known boundary; exit code {report['process_exit_code']})"
+    return f"Bring-up stopped at {report['reached_stage']}: {report['failure_class']}{detail}{suffix}."
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
@@ -949,6 +1002,80 @@ def _public_import_rows(rows: list[dict]) -> list[dict]:
             "nid_name": name if isinstance(name, str) and symbol.fullmatch(name) else None,
         })
     return sorted(result, key=lambda row: (row["library"], row["nid_name"] or ""))
+
+
+def _runtime_import_rows(output: str, imports: list[dict]) -> list[dict]:
+    """Keep only the runtime's structured unknown-NID line and public import IDs."""
+    line_pattern = re.compile(
+        r"^HLE: unimplemented nid (0x[0-9a-fA-F]{8}) "
+        r"\(([A-Za-z_][A-Za-z0-9_.$-]{0,95}|unknown)\) "
+        r"\(thread uid 0x[0-9a-fA-F]+\)$"
+    )
+    identifier = re.compile(r"^[A-Za-z][A-Za-z0-9_.$-]{0,63}$")
+    symbol = re.compile(r"^[A-Za-z_][A-Za-z0-9_.$-]{0,95}$")
+    by_nid: dict[str, set[str]] = {}
+    for row in imports:
+        nid = row.get("nid")
+        library = row.get("library")
+        if (isinstance(nid, str) and re.fullmatch(r"0x[0-9a-fA-F]{8}", nid)
+                and isinstance(library, str) and identifier.fullmatch(library)):
+            by_nid.setdefault(nid.lower(), set()).add(library)
+
+    result = set()
+    for line in output.splitlines():
+        match = line_pattern.fullmatch(line.strip())
+        if not match:
+            continue
+        nid, name = match.groups()
+        libraries = by_nid.get(nid.lower(), set())
+        result.add((next(iter(libraries)) if len(libraries) == 1 else None,
+                    nid.lower(), name if name != "unknown" and symbol.fullmatch(name) else None))
+    return [
+        {"library": library, "nid": nid, "nid_name": name}
+        for library, nid, name in sorted(result, key=lambda row: (row[1], row[0] or ""))
+    ]
+
+
+def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
+    folded = output.casefold()
+    if runtime_imports:
+        return "UNIMPLEMENTED_IMPORT"
+    if any(re.match(r"^(?:DISPATCH_MISS_NEW\[\d+\]:|--- UNIQUE DISPATCH MISSES SUMMARY \(\d+ entries\) ---)$",
+                    line.strip())
+           for line in output.splitlines()):
+        return "DISPATCH_MISS"
+    if "no available video device" in folded or "video driver" in folded:
+        return "VIDEO_UNAVAILABLE"
+    if "unsupported instruction" in folded or "aot-gap" in folded:
+        return "UNSUPPORTED_INSTRUCTION"
+    if any(re.match(r"^sr_unimplemented: function 0x[0-9a-f]{8}: ", line.strip())
+           for line in output.splitlines()):
+        return "UNSUPPORTED_INSTRUCTION"
+    if "no recompiled function at entry" in folded:
+        return "ENTRY_NOT_COMPILED"
+    lines = [line.strip() for line in output.splitlines()]
+    if any(line == "invalid read_file params"
+           or re.match(r"^(cannot (open|seek|size|rewind) |short read |file too large |allocation failure for )", line)
+           for line in lines):
+        return "DRIVER_INPUT_READ_FAILURE"
+    if any(line in {
+        "not an ELF or truncated header",
+        "ELF program header entry too small",
+        "ELF program header table size overflow",
+        "ELF program header table out of range",
+        "ELF PT_LOAD filesz exceeds memsz",
+        "ELF PT_LOAD data out of range",
+    } or line.startswith(("ELF PT_LOAD guest range invalid:", "image guest span invalid:"))
+           for line in lines):
+        return "DRIVER_ELF_REJECTION"
+    if any(line.startswith("no '# init' in ") for line in lines):
+        return "DRIVER_TRACE_INPUT_FAILURE"
+    if any(line.startswith(("invalid or duplicate --expect-u32 option:", "usage: driver "))
+           for line in lines):
+        return "DRIVER_ARGUMENT_FAILURE"
+    if "=== PSP RECOMPILER CRASH REPORT ===" in output:
+        return "NATIVE_CRASH_REPORT"
+    return "EMPTY" if not output.strip() else "OTHER"
 
 
 def _count_instructions(sources: list[dict]) -> int:
@@ -1016,7 +1143,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
-    if not executable_ok or selected not in {"EBOOT.BIN", "BOOT.BIN"}:
+    if preflight.get("modified_dump_cfw_loader") and selected != "EBOOT.elf":
+        _fail_bringup(report, "inspect", "MODIFIED_DUMP_CFW_LOADER", [308],
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    if not executable_ok or selected not in {"EBOOT.BIN", "BOOT.BIN", "EBOOT.elf"}:
         exec_issues = checks.get("EXECUTABLE", {}).get("issue_numbers", [])
         failure = "EXECUTABLE_UNSUPPORTED" if exec_issues else "INVALID_ISO"
         _fail_bringup(report, "inspect", failure, exec_issues,
@@ -1044,7 +1177,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             title_id = manifest["id"]
             is_experimental = False
         selected_elf = work_dir / "selected.elf"
-        _extract_iso_executable(iso_path, str(selected).upper(), selected_elf)
+        if selected == "EBOOT.elf":
+            decrypted_eboot = preflight.get("decrypted_executable")
+            if not isinstance(decrypted_eboot, str):
+                raise PackageBuildError("User-supplied decrypted EBOOT.elf is unavailable (#295).")
+            _copy_decrypted_elf(Path(decrypted_eboot), selected_elf)
+        else:
+            _extract_iso_executable(iso_path, str(selected).upper(), selected_elf)
         if is_experimental:
             try:
                 module_candidates = _discover_iso_module_candidates(
@@ -1137,8 +1276,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 iso_path, manifest,
                 user_root / "cache" / "bringup" / metadata.disc_id.upper(), None,
             )
+        library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
         _write_bringup_library(
-            user_root, iso_path, metadata, title_id, str(selected).upper(), is_experimental
+            user_root, iso_path, metadata, title_id, library_executable, is_experimental
         )
     except Exception as exc:
         failure = "EXPERIMENTAL_IMPORT_FAILED"
@@ -1270,24 +1410,52 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "PSP_ISO": str(iso_path),
             "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
         })
+        image = package_dir / f"{Path(package['executable']['path']).stem}_image.bin"
+        base = int(manifest["executable"]["base"])
+        base_argument = str(base) if base == 0 else f"0x{base:08x}"
+        launch_command = [
+            str(executable), "--image", str(image), base_argument,
+            package["runtime"]["run_entry"], "none", "none", "--sched",
+        ]
         timeout = max(1, min(int(args.launch_timeout), 120))
         process = subprocess.Popen(
-            [str(executable)], cwd=package_dir, env=env,
+            launch_command, cwd=package_dir, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
+            report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
+            report["runtime_output_kind"] = _runtime_output_kind(
+                launch_output, report["runtime_imports"]
+            )
+            report["process_exit_code"] = process.returncode
             report["exit_classification"] = "EXITED_ZERO" if process.returncode == 0 else "EXITED_NONZERO"
             if process.returncode != 0:
                 folded = launch_output.casefold()
                 if "no available video device" in folded or "video driver" in folded:
                     failure, issues = "HEADLESS_UNAVAILABLE", [297]
                     report["exit_classification"] = "HEADLESS_UNAVAILABLE"
-                elif "unknown nid" in folded or "unimplemented import" in folded:
+                elif (report["runtime_imports"] or "unknown nid" in folded
+                      or "unimplemented import" in folded):
                     failure, issues = "UNSUPPORTED_IMPORT", [71]
-                elif "unsupported instruction" in folded or "aot-gap" in folded:
+                elif (report["runtime_output_kind"] == "UNSUPPORTED_INSTRUCTION"
+                      or "unsupported instruction" in folded or "aot-gap" in folded):
                     failure, issues = "UNSUPPORTED_INSTRUCTION", [118]
+                elif report["runtime_output_kind"] == "ENTRY_NOT_COMPILED":
+                    failure, issues = "ENTRY_NOT_COMPILED", [296]
+                elif report["runtime_output_kind"] == "DRIVER_INPUT_READ_FAILURE":
+                    failure, issues = "RUNTIME_INPUT_UNAVAILABLE", [297]
+                elif report["runtime_output_kind"] == "DRIVER_ELF_REJECTION":
+                    failure, issues = "RUNTIME_ELF_REJECTED", [296]
+                elif report["runtime_output_kind"] == "DRIVER_TRACE_INPUT_FAILURE":
+                    failure, issues = "RUNTIME_TRACE_UNAVAILABLE", [297]
+                elif report["runtime_output_kind"] == "DRIVER_ARGUMENT_FAILURE":
+                    failure, issues = "RUNTIME_ARGUMENT_FAILURE", [297]
+                elif report["runtime_output_kind"] == "NATIVE_CRASH_REPORT":
+                    failure, issues = "NATIVE_RUNTIME_CRASH", [297]
+                elif report["runtime_output_kind"] == "DISPATCH_MISS":
+                    failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
                 else:
                     failure, issues = "LAUNCH_FAILED", [297]
                 _fail_bringup(report, "launch", failure, issues,

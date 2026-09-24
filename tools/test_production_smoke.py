@@ -53,6 +53,50 @@ EXPECTED_PSP_SHA256 = "835e63d84cc41a67a868dd34d57b2cb39fdc153039f1c8c4dba781e54
 GAP_EXPECTED_PRX_SHA256 = "065cfc9092448d5689c922482e1b56d25b2abf56e52568c9582baea7f72f74c4"
 
 
+def build_synthetic_cfw_loader(library: bytes = b"SystemCtrlForKernel") -> bytes:
+    """Build a small source-owned executable with one CFW-only import."""
+    executable, _stub = build_synthetic_import_prx(library, 0)
+    executable = bytearray(executable)
+    struct.pack_into("<H", executable, 16, 2)  # ordinary ET_EXEC EBOOT
+    struct.pack_into("<H", executable, 50, 0)  # no section-name table
+    shoff = struct.unpack_from("<I", executable, 32)[0]
+    shentsize, shnum = struct.unpack_from("<HH", executable, 46)
+    for index in range(shnum):
+        struct.pack_into("<I", executable, shoff + index * shentsize, 0)
+    phoff = struct.unpack_from("<I", executable, 28)[0]
+    struct.pack_into("<I", executable, phoff + 28, 1)  # valid for file offset 0x100
+    module_info = 0x100 + 0x40
+    module_name = b"SyntheticLoader"
+    executable[module_info + 4:module_info + 4 + len(module_name)] = module_name
+    struct.pack_into("<I", executable, module_info + 32, 4)
+    return bytes(executable)
+
+
+def build_synthetic_original_elf() -> bytes:
+    """Build a linked source-owned MIPS ELF suitable for an experimental profile."""
+    executable, _stub = build_synthetic_import_prx(b"sceSynthetic", 0x08804000)
+    executable = bytearray(executable)
+    struct.pack_into("<H", executable, 16, 2)
+    struct.pack_into("<I", executable, 24, 0x08804000)
+    phoff = struct.unpack_from("<I", executable, 28)[0]
+    struct.pack_into("<II", executable, phoff + 8, 0x08804000, 0x08804000)
+    struct.pack_into("<I", executable, phoff + 28, 0x1000)
+    shoff = struct.unpack_from("<I", executable, 32)[0]
+    shentsize, shnum = struct.unpack_from("<HH", executable, 46)
+    for section_index in range(1, shnum - 1):
+        address_offset = shoff + section_index * shentsize + 12
+        section_address = struct.unpack_from("<I", executable, address_offset)[0]
+        struct.pack_into("<I", executable, address_offset, 0x08804000 + section_address)
+    struct.pack_into("<H", executable, 50, 0)  # no section-name table
+    for section_index in range(shnum):
+        struct.pack_into("<I", executable, shoff + section_index * shentsize, 0)
+    module_info = 0x100 + 0x40
+    module_name = b"SyntheticOriginal"
+    executable[module_info + 4:module_info + 4 + len(module_name)] = module_name
+    struct.pack_into("<I", executable, module_info + 32, 4)
+    return bytes(executable)
+
+
 class TestProductionSmoke(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="production_smoke_")
@@ -755,6 +799,7 @@ class TestSanitizedBringup(unittest.TestCase):
             launch_timeout=1,
         )
         globals_timeout = timeout
+        launch_commands = []
 
         class FakeProcess:
             def __init__(self):
@@ -778,9 +823,11 @@ class TestSanitizedBringup(unittest.TestCase):
             package_dir = build_args.user_data_root / "packages" / "ULUS99998"
             package_dir.mkdir(parents=True, exist_ok=True)
             (package_dir / "runtime.exe").write_bytes(b"synthetic runtime marker")
+            (package_dir / "runtime_image.bin").write_bytes(b"synthetic runtime image")
             (package_dir / "package.json").write_text(
                 json.dumps({
                     "executable": {"path": "runtime.exe"},
+                    "runtime": {"run_entry": "0x08800100"},
                     "required_local_assets": [{"path": "data"}],
                 }),
                 encoding="utf-8",
@@ -788,11 +835,15 @@ class TestSanitizedBringup(unittest.TestCase):
             stage_observer("build_package", "PASS", 2)
             return 0
 
+        def fake_popen(command, **_kwargs):
+            launch_commands.append(list(command))
+            return FakeProcess()
+
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(nk_cli.subprocess, "run", return_value=completed))
             stack.enter_context(mock.patch.object(
-                nk_cli.subprocess, "Popen", return_value=FakeProcess()
+                nk_cli.subprocess, "Popen", side_effect=fake_popen
             ))
             stack.enter_context(mock.patch.object(
                 nk_cli, "cmd_build_package", side_effect=fake_package_build
@@ -812,6 +863,7 @@ class TestSanitizedBringup(unittest.TestCase):
                 args.iso = str(broken_iso)
             with mock.patch("builtins.print"):
                 status = nk_cli.cmd_bringup(args)
+        self.last_launch_command = launch_commands[-1] if launch_commands else None
         return status, json.loads(report_path.read_text(encoding="utf-8"))
 
     def test_synthetic_consumer_stages_succeed_and_report_is_sanitized(self):
@@ -822,11 +874,28 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertTrue(all(stage["status"] == "PASS" for stage in report["stages"].values()))
         self.assertGreater(report["counts"]["functions"], 0)
         self.assertGreater(report["counts"]["instructions"], 0)
+        command = self.last_launch_command
+        self.assertIsNotNone(command)
+        self.assertEqual(command[1], "--image")
+        self.assertTrue(command[2].endswith("runtime_image.bin"))
+        self.assertRegex(command[3], r"^(?:0|0x[0-9a-f]{8})$")
+        self.assertRegex(command[4], r"^0x[0-9a-f]{8}$")
+        self.assertEqual(command[5:], ["none", "none", "--sched"])
         nk_cli.validate_bringup_report(report)
 
-    def _run_module_fixture(self, iso_path: Path, work_root: Path):
+    def _run_module_fixture(
+        self, iso_path: Path, work_root: Path, *,
+        user_decrypted_eboot: bytes | None = None,
+        forbid_iso_executable: bool = False,
+    ):
         work_dir = work_root / "work"
         report_path = work_root / "bringup.json"
+        if user_decrypted_eboot is not None:
+            decrypted_dir = (
+                work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
+            )
+            decrypted_dir.mkdir(parents=True, exist_ok=True)
+            (decrypted_dir / "EBOOT.elf").write_bytes(user_decrypted_eboot)
         args = argparse.Namespace(
             iso=str(iso_path),
             work_dir=str(work_dir),
@@ -845,8 +914,13 @@ class TestSanitizedBringup(unittest.TestCase):
             package_dir = build_args.user_data_root / "packages" / "ULUS99998"
             package_dir.mkdir(parents=True, exist_ok=True)
             (package_dir / "runtime.exe").write_bytes(b"synthetic runtime")
+            (package_dir / "runtime_image.bin").write_bytes(b"synthetic runtime image")
             (package_dir / "package.json").write_text(
-                json.dumps({"executable": {"path": "runtime.exe"}}),
+                json.dumps({
+                    "executable": {"path": "runtime.exe"},
+                    "runtime": {"run_entry": "0x08800100"},
+                    "required_local_assets": [{"path": "data"}],
+                }),
                 encoding="utf-8",
             )
             stage_observer("build_package", "PASS", 1)
@@ -863,6 +937,11 @@ class TestSanitizedBringup(unittest.TestCase):
             stack.enter_context(mock.patch.object(
                 nk_cli, "cmd_build_package", side_effect=fake_package_build
             ))
+            if forbid_iso_executable:
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "_extract_iso_executable",
+                    side_effect=AssertionError("CFW loader was selected for analysis"),
+                ))
             with mock.patch("builtins.print"):
                 return nk_cli.cmd_bringup(args), json.loads(
                     report_path.read_text(encoding="utf-8")
@@ -924,6 +1003,90 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertTrue(all(module["required"] and module["role"] == "guest-prx" for module in modules))
         self.assertNotEqual(modules[0]["load_address"], modules[1]["load_address"])
         self.assertTrue(all(module["load_address"] % 0x10000 == 0 for module in modules))
+        nk_cli.validate_bringup_report(report)
+
+    def test_cfw_loader_without_decrypted_original_stops_with_named_finding(self):
+        work_root = self.root / "cfw-loader-no-original-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "cfw-loader.iso"
+        patch_module, _stub = build_synthetic_import_prx(b"KUBridge", 0)
+        patch_module = bytearray(patch_module)
+        phoff = struct.unpack_from("<I", patch_module, 28)[0]
+        struct.pack_into("<I", patch_module, phoff + 28, 1)
+        create_test_iso_with_modules(
+            iso_path,
+            build_synthetic_cfw_loader(),
+            sysdir_modules={"prometheus.prx": bytes(patch_module)},
+            usrdir_modules={},
+            old_eboot=build_psp_container(),
+            disc_id="ULUS99998",
+            title="Synthetic CFW Loader",
+        )
+
+        status, report = self._run_module_fixture(iso_path, work_root)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "inspect")
+        self.assertEqual(report["failure_class"], "MODIFIED_DUMP_CFW_LOADER")
+        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(report["stages"]["prepare_import"]["status"], "NOT_RUN")
+        self.assertIn(
+            "MODIFIED_DUMP_CFW_LOADER",
+            {check["code"] for check in report["preflight_checks"]},
+        )
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("custom-firmware patch", summary)
+        self.assertIn("EBOOT.OLD (encrypted)", summary)
+        self.assertIn("decrypted/EBOOT.elf", summary)
+        self.assertIn("clean dump", summary)
+        nk_cli.validate_bringup_report(report)
+
+    def test_cfw_loader_uses_user_original_and_excludes_patch_module(self):
+        work_root = self.root / "cfw-loader-original-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "cfw-loader.iso"
+        patch_module, _stub = build_synthetic_import_prx(b"KUBridge", 0)
+        patch_module = bytearray(patch_module)
+        phoff = struct.unpack_from("<I", patch_module, 28)[0]
+        struct.pack_into("<I", patch_module, phoff + 28, 1)
+        create_test_iso_with_modules(
+            iso_path,
+            build_synthetic_cfw_loader(),
+            sysdir_modules={"prometheus.prx": bytes(patch_module)},
+            usrdir_modules={},
+            old_eboot=build_psp_container(),
+            disc_id="ULUS99998",
+            title="Synthetic CFW Loader",
+        )
+        decrypted_eboot = build_synthetic_original_elf()
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_eboot=decrypted_eboot,
+            forbid_iso_executable=True,
+        )
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["counts"]["modules"], 0)
+        self.assertEqual(report["counts"]["encrypted_modules"], 0)
+        self.assertIn(
+            "MODIFIED_DUMP_CFW_LOADER",
+            {check["code"] for check in report["preflight_checks"]},
+        )
+        selected_elf = work_root / "work" / "selected.elf"
+        self.assertEqual(selected_elf.read_bytes(), decrypted_eboot)
+        profile = json.loads(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998" / "profile.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["manifest"]["modules"], [])
+        self.assertEqual(
+            profile["input_identity"]["selected_executable"].rsplit("/", 1)[-1],
+            "EBOOT.BIN",
+        )
         nk_cli.validate_bringup_report(report)
 
     def test_module_placement_without_safe_runtime_range_is_named(self):
@@ -993,6 +1156,124 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["failure_class"], failure_class)
                 self.assertEqual(report["stages"][stage]["status"], "FAIL")
                 nk_cli.validate_bringup_report(report)
+
+    def test_runtime_unimplemented_nid_is_reported_as_unsupported_import(self):
+        status, report = self._run_case(
+            "launch",
+            launch_code=7,
+            launch_output=(
+                "HLE: unimplemented nid 0x12345678 (unknown) (thread uid 0x1)\n"
+                "guest detail at 0x08800000 must not be copied to the report\n"
+            ),
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "UNSUPPORTED_IMPORT")
+        self.assertEqual(report["runtime_imports"], [{
+            "library": "sceSynthetic",
+            "nid": "0x12345678",
+            "nid_name": None,
+        }])
+        self.assertEqual(report["runtime_output_kind"], "UNIMPLEMENTED_IMPORT")
+        self.assertEqual(report["process_exit_code"], 7)
+        self.assertNotIn("08800000", json.dumps(report))
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("UNSUPPORTED_IMPORT (sceSynthetic, NID 0x12345678)", summary)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#71", summary)
+        nk_cli.validate_bringup_report(report)
+
+    def test_missing_runtime_entry_is_named_without_reporting_address(self):
+        status, report = self._run_case(
+            "launch",
+            launch_code=2,
+            launch_output=(
+                "no recompiled function at entry 0x08800000 "
+                "(no title fallback entry is configured)\n"
+            ),
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "ENTRY_NOT_COMPILED")
+        self.assertEqual(report["runtime_output_kind"], "ENTRY_NOT_COMPILED")
+        self.assertEqual(report["process_exit_code"], 2)
+        self.assertNotIn("08800000", json.dumps(report))
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#296", summary)
+        nk_cli.validate_bringup_report(report)
+
+    def test_empty_runtime_exit_reports_process_status(self):
+        status, report = self._run_case("launch", launch_code=3)
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["runtime_output_kind"], "EMPTY")
+        self.assertEqual(report["process_exit_code"], 3)
+        self.assertIn("runtime emitted no diagnostic; exit code 3", nk_cli._bringup_human_summary(report))
+        nk_cli.validate_bringup_report(report)
+
+    def test_runtime_input_read_failure_hides_the_path(self):
+        status, report = self._run_case(
+            "launch",
+            launch_code=2,
+            launch_output="cannot open C:\\synthetic\\private-title.elf\n",
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "RUNTIME_INPUT_UNAVAILABLE")
+        self.assertEqual(report["runtime_output_kind"], "DRIVER_INPUT_READ_FAILURE")
+        self.assertNotIn("synthetic\\\\private-title", json.dumps(report))
+        self.assertIn("in the works (", nk_cli._bringup_human_summary(report))
+        nk_cli.validate_bringup_report(report)
+
+    def test_runtime_trace_failure_hides_the_path(self):
+        status, report = self._run_case(
+            "launch",
+            launch_code=2,
+            launch_output="no '# init' in C:\\synthetic\\reference.trace\n",
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "RUNTIME_TRACE_UNAVAILABLE")
+        self.assertEqual(report["runtime_output_kind"], "DRIVER_TRACE_INPUT_FAILURE")
+        self.assertNotIn("reference.trace", json.dumps(report))
+        self.assertIn("#297", nk_cli._bringup_human_summary(report))
+        nk_cli.validate_bringup_report(report)
+
+    def test_runtime_unimplemented_instruction_hides_address_and_reason(self):
+        status, report = self._run_case(
+            "launch",
+            launch_code=1,
+            launch_output=(
+                "sr_unimplemented: function 0x08800000: unsupported guest form\n"
+                "private retail detail must not be copied to the report\n"
+            ),
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "UNSUPPORTED_INSTRUCTION")
+        self.assertEqual(report["runtime_output_kind"], "UNSUPPORTED_INSTRUCTION")
+        self.assertNotIn("08800000", json.dumps(report))
+        self.assertNotIn("private retail detail", json.dumps(report))
+        self.assertIn("#118", nk_cli._bringup_human_summary(report))
+        nk_cli.validate_bringup_report(report)
+
+    def test_runtime_dispatch_miss_is_named_without_guest_addresses(self):
+        status, report = self._run_case(
+            "launch",
+            launch_code=1,
+            launch_output=(
+                "DISPATCH_MISS_NEW[1]: target=0x08800000 caller_pc=0x08800004 "
+                "ra=0x08800008 uid=0x1\n"
+                "--- UNIQUE DISPATCH MISSES SUMMARY (1 entries) ---\n"
+                "  target=0x08800000 pc=0x08800004 ra=0x08800008\n"
+                "--- END UNIQUE DISPATCH MISSES SUMMARY ---\n"
+            ),
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "UNRESOLVED_DISPATCH_TARGET")
+        self.assertEqual(report["runtime_output_kind"], "DISPATCH_MISS")
+        self.assertIn(118, report["issue_numbers"])
+        self.assertNotIn("08800000", json.dumps(report))
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("unresolved dispatch target", summary)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#118", summary)
+        nk_cli.validate_bringup_report(report)
 
     def test_launch_timeout_is_a_bounded_reported_exit(self):
         status, report = self._run_case(timeout=True)

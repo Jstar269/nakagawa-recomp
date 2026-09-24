@@ -26,6 +26,7 @@ MAX_DIRECTORY_BYTES = 512 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
+MAX_CFW_EBOOT_SCAN_BYTES = 256 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
 PSP_DEFAULT_MAIN_LOAD_ADDRESS = 0x08804000
 PSP_CONVENTIONAL_USER_MEMORY_TOP = 0x0A000000
@@ -39,6 +40,22 @@ SFO_FMT_UINT32 = 0x0404
 
 class IsoInspectionError(ValueError):
     """Raised when an ISO image is unreadable or malformed."""
+
+
+def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
+    """Return whether a validated ELF import table names a CFW-only library."""
+    try:
+        from analyze import Elf
+        from imports import parse_imports
+
+        imports = parse_imports(Elf(elf_bytes))
+    except (ImportError, IndexError, OSError, TypeError, ValueError, struct.error):
+        return False
+    cfw_libraries = {"systemctrlforkernel", "kubridge"}
+    return any(
+        library.casefold() in cfw_libraries or library.casefold().endswith("forkernel")
+        for library, _nid in imports.values()
+    )
 
 
 @dataclass(frozen=True)
@@ -410,19 +427,41 @@ def write_experimental_profile(
     executable_entry = 0
     executable_load_address: int | None = None
     if selected is not None:
-        selected_path = f"PSP_GAME/SYSDIR/{selected}"
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
+        uses_decrypted_eboot = selected == "EBOOT.elf"
+        selected_path = (
+            "PSP_GAME/SYSDIR/EBOOT.BIN"
+            if uses_decrypted_eboot
+            else f"PSP_GAME/SYSDIR/{selected}"
+        )
+        decrypted_path: Path | None = None
+        if uses_decrypted_eboot:
+            decrypted_value = report.get("decrypted_executable")
+            if not isinstance(decrypted_value, str):
+                raise IsoInspectionError("selected decrypted EBOOT.elf is unavailable")
+            decrypted_path = Path(decrypted_value)
+            if _classify_decrypted_elf_file(decrypted_path) != "PLAIN_MIPS_ELF32":
+                raise IsoInspectionError("selected decrypted EBOOT.elf is not a usable MIPS ELF32")
+            file_size = decrypted_path.stat().st_size
+            if file_size <= 0 or file_size > MAX_EXECUTABLE_BYTES:
+                raise IsoInspectionError("selected decrypted EBOOT.elf exceeds the supported size bound")
+        else:
             file_size = path.stat().st_size
-            extent = _lookup_iso_file(
-                stream, file_size, ("PSP_GAME", "SYSDIR", selected)
-            )
-            if extent is None:
-                raise IsoInspectionError("selected executable disappeared from the ISO directory tree")
-            lba, size = extent
+        digest = hashlib.sha256()
+        with (decrypted_path if uses_decrypted_eboot else path).open("rb") as stream:
+            if uses_decrypted_eboot:
+                lba = 0
+                size = file_size
+                header = stream.read(min(size, 52))
+            else:
+                extent = _lookup_iso_file(
+                    stream, file_size, ("PSP_GAME", "SYSDIR", selected)
+                )
+                if extent is None:
+                    raise IsoInspectionError("selected executable disappeared from the ISO directory tree")
+                lba, size = extent
+                header = _read_iso_extent(stream, file_size, lba, size, 0, min(size, 52))
             if size <= 0 or size > MAX_EXECUTABLE_BYTES:
                 raise IsoInspectionError("selected executable is outside the supported hashing bound")
-            header = _read_iso_extent(stream, file_size, lba, size, 0, min(size, 52))
             if len(header) < 52 or header[:7] != b"\x7fELF\x01\x01\x01":
                 raise IsoInspectionError("selected executable has no supported little-endian ELF32 header")
             e_type, machine, version = struct.unpack_from("<HHI", header, 16)
@@ -438,7 +477,11 @@ def write_experimental_profile(
             offset = 0
             while offset < size:
                 count = min(64 * 1024, size - offset)
-                chunk = _read_iso_extent(stream, file_size, lba, size, offset, count)
+                if uses_decrypted_eboot:
+                    stream.seek(offset)
+                    chunk = stream.read(count)
+                else:
+                    chunk = _read_iso_extent(stream, file_size, lba, size, offset, count)
                 if len(chunk) != count:
                     raise IsoInspectionError("selected executable could not be read completely")
                 digest.update(chunk)
@@ -642,7 +685,9 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
     return (lba, size) if not is_dir else None
 
 
-def _elf32_mips_usable(stream, file_size: int, lba: int, size: int) -> bool:
+def _elf32_mips_usable(
+    stream, file_size: int, lba: int, size: int, *, require_segment_alignment: bool = True
+) -> bool:
     if size < 52:
         return False
     header = _read_iso_extent(stream, file_size, lba, size, 0, 52)
@@ -680,7 +725,9 @@ def _elf32_mips_usable(stream, file_size: int, lba: int, size: int) -> bool:
         memory_end = p_vaddr + p_memsz
         if p_memsz < p_filesz or memory_end > 0x100000000:
             return False
-        if p_align > 1 and (p_align & (p_align - 1) or p_offset % p_align != p_vaddr % p_align):
+        if require_segment_alignment and p_align > 1 and (
+            p_align & (p_align - 1) or p_offset % p_align != p_vaddr % p_align
+        ):
             return False
         have_load = True
         if p_flags & 1 and p_vaddr <= entry < memory_end:
@@ -704,7 +751,7 @@ def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | Non
 
 
 def _classify_decrypted_elf_file(path: Path | str) -> str:
-    """Validate a user-supplied ELF32/MIPS executable using the ISO checks."""
+    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans."""
     candidate = Path(path)
     try:
         size = candidate.stat().st_size
@@ -715,11 +762,12 @@ def _classify_decrypted_elf_file(path: Path | str) -> str:
         with candidate.open("rb") as stream:
             header = stream.read(min(size, 0x80))
             if header.startswith(b"\x7fELF"):
-                return (
-                    "PLAIN_MIPS_ELF32"
-                    if _elf32_mips_usable(stream, size, 0, size)
-                    else "UNKNOWN"
+                # The original ELF is read by the static analyzer, not a host
+                # ELF loader; its bounded guest spans remain required.
+                usable = _elf32_mips_usable(
+                    stream, size, 0, size, require_segment_alignment=False
                 )
+                return "PLAIN_MIPS_ELF32" if usable else "UNKNOWN"
     except (OSError, IsoInspectionError, struct.error):
         return "UNKNOWN"
     return "UNKNOWN"
@@ -779,6 +827,7 @@ def inspect_compatibility_preflight(
     size_bytes = path.stat().st_size
     directory_error: str | None = None
     sfo_entry: tuple[int, int] | None = None
+    cfw_loader_detected = False
     try:
         with path.open("rb") as stream:
             sfo_entry = _lookup_iso_file(stream, size_bytes, ("PSP_GAME", "PARAM.SFO"))
@@ -795,9 +844,29 @@ def inspect_compatibility_preflight(
                 "EBOOT.BIN": _classify_iso_executable(stream, size_bytes, "EBOOT.BIN"),
                 "BOOT.BIN": _classify_iso_executable(stream, size_bytes, "BOOT.BIN"),
             }
+            eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.BIN")
+            )
+            old_eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.OLD")
+            )
+            if (
+                eboot_entry is not None
+                and old_eboot_entry is not None
+                and eboot_entry[1] <= MAX_CFW_EBOOT_SCAN_BYTES
+                and executables["EBOOT.BIN"]["classification"] == "PLAIN_MIPS_ELF32"
+            ):
+                loader = _read_iso_extent(
+                    stream, size_bytes, *eboot_entry, 0, eboot_entry[1]
+                )
+                cfw_loader_detected = (
+                    len(loader) == eboot_entry[1]
+                    and _has_cfw_or_kernel_only_imports(loader)
+                )
     except (OSError, IsoInspectionError, struct.error) as exc:
         sfo_parsed = False
         directory_error = str(exc)
+        cfw_loader_detected = False
         executables = {
             name: {"classification": "UNKNOWN", "present": False, "size_bytes": 0}
             for name in ("EBOOT.BIN", "BOOT.BIN")
@@ -823,10 +892,18 @@ def inspect_compatibility_preflight(
         if candidate_elf is not None and candidate_elf.is_file():
             decrypted_elf = candidate_elf
             decrypted_elf_kind = _classify_decrypted_elf_file(candidate_elf)
+    if cfw_loader_detected:
+        selected = (
+            "EBOOT.elf"
+            if decrypted_elf is not None and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
+            else None
+        )
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
     if (
+        not cfw_loader_detected
+        and
         selected is None
         and eboot_kind in user_decryptable_kinds
         and decrypted_elf is not None
@@ -857,7 +934,18 @@ def inspect_compatibility_preflight(
             "issues": [],
         }
 
-    if selected == "BOOT.BIN":
+    if cfw_loader_detected and selected is None:
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                "This disc image was modified by a custom-firmware patch. The original "
+                "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
+                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+                "This boundary is in the works (#308)."
+            ),
+            "issues": [308],
+        }
+    elif selected == "BOOT.BIN":
         executable_check = {
             "code": "EXECUTABLE", "status": "OK",
             "message": "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.",
@@ -981,7 +1069,24 @@ def inspect_compatibility_preflight(
                    "With no device, the game runs silently.",
         "issues": [],
     }
-    checks = [disc_check, executable_check, runtime_check, fonts_check, audio_check]
+    checks = [disc_check]
+    if cfw_loader_detected:
+        checks.append({
+            "code": "MODIFIED_DUMP_CFW_LOADER",
+            "status": "IN_PROGRESS" if selected == "EBOOT.elf" else "UNSUPPORTED",
+            "message": (
+                "A custom-firmware patch loader was detected; using the user-supplied "
+                "decrypted original and excluding patch modules. CFW dump support is in "
+                "the works (#308)."
+                if selected == "EBOOT.elf"
+                else "A custom-firmware patch loader was detected. The original executable "
+                     "is EBOOT.OLD (encrypted); supply its decrypted executable at "
+                     "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean "
+                     "dump (#308)."
+            ),
+            "issues": [308],
+        })
+    checks.extend((executable_check, runtime_check, fonts_check, audio_check))
     if experimental_check is not None:
         checks.insert(0, experimental_check)
     return {
@@ -993,6 +1098,7 @@ def inspect_compatibility_preflight(
             if selected == "EBOOT.elf" and decrypted_elf is not None
             else None
         ),
+        "modified_dump_cfw_loader": cfw_loader_detected,
         "boot_fallback": fallback,
         "executables": executables,
         "checks": checks,

@@ -197,6 +197,7 @@ def create_test_iso_with_modules(
     *,
     sysdir_modules: dict[str, bytes],
     usrdir_modules: dict[str, bytes],
+    old_eboot: bytes | None = None,
     disc_id: str = "TEST00001",
     title: str = "Test Game",
 ) -> None:
@@ -238,6 +239,10 @@ def create_test_iso_with_modules(
     sysdir_entries, usrdir_entries = files[0]["entries"], files[1]["entries"]
     sysdir_entries += _dir_record(b"EBOOT.BIN;1", next_lba, len(eboot), False)
     file_records.append((next_lba, eboot))
+    next_lba += max(1, (len(eboot) + sector_size - 1) // sector_size)
+    if old_eboot is not None:
+        sysdir_entries += _dir_record(b"EBOOT.OLD;1", next_lba, len(old_eboot), False)
+        file_records.append((next_lba, old_eboot))
     for entries, lba in ((game_entries, game_lba), (sysdir_entries, sysdir_lba),
                          (usrdir_entries, usrdir_lba)):
         start = lba * sector_size
