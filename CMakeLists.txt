@@ -80,6 +80,7 @@ add_test(NAME xb_parser_test COMMAND test_xb_parser)
 add_executable(test_player_state
     tests/native/test_player_state.c
     src/player/player_state.c
+    src/player/input_settings.c
 )
 target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
@@ -87,6 +88,17 @@ target_include_directories(test_player_state PRIVATE
 )
 target_link_libraries(test_player_state PRIVATE nakagawa_core)
 add_test(NAME player_state_test COMMAND test_player_state)
+
+add_executable(test_input_settings
+    tests/native/test_input_settings.c
+    src/player/input_settings.c
+)
+target_include_directories(test_input_settings PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+)
+target_link_libraries(test_input_settings PRIVATE nakagawa_core)
+add_test(NAME input_settings_test COMMAND test_input_settings)
 
 if(WIN32)
     add_executable(argv_echo_helper tests/native/argv_echo_helper.c)
@@ -133,6 +145,7 @@ if(BUILD_PLAYER)
     set(PLAYER_SOURCES
         src/player/main.c
         src/player/player_state.c
+        src/player/input_settings.c
         src/player/iso_reader.c
         src/player/setup_staging.c
         src/player/ui_renderer.c

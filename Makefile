@@ -656,7 +656,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin sdl3-check vfpu_fuzz_validate_synthetic
+INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin sdl3-check vfpu_fuzz_validate_synthetic
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
