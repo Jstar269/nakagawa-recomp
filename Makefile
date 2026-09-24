@@ -648,7 +648,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin sdl3-check
+INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin sdl3-check vfpu_fuzz_validate_synthetic
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1820,7 +1820,6 @@ $(VFPU_FUZZ_H): $(GAME_INPUT_PREREQ) tools/vfpu_fuzz_gen.py tools/analyze.py too
 	$(PYTHON) tools/vfpu_fuzz_gen.py --env-elf $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)
 endif
 
-.PHONY: vfpu_fuzz_validate_synthetic
 vfpu_fuzz_validate_synthetic:
 	$(PYTHON) tools/vfpu_fuzz_gen.py --require-synthetic "$(VFPU_FUZZ_H)"
 
