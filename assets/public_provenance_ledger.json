@@ -174,7 +174,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "caf046455c92f9a8aef3cfa37b8ba74f35cbe6dc5c743b89b62d5fe9f9ca5cb3"
+      "sha256": "18bb1644462dcf45222673f1ac1376057db98763ba8b9c293472b28571f9a627"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -792,7 +792,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "baac58ab421868e217626e741a8977f12852b0695329e1cc2fcb497b19052175"
+      "sha256": "645eb532064c2b29794b94fde64508bfaad30f9fb8a87c676cef55f2d2f6aec8"
     },
     {
       "path": "docs/HLE_AND_WORKAROUND_INVENTORY.md",
@@ -801,7 +801,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "beacefc68652053e0a35d41a64f2df52e5c81fb25ee07ec76c225cb2bdc5e6b8"
+      "sha256": "6a97052d45a78670bf5f90bbc4c44350c21ea98cec3a0ec72490dc17980395e6"
     },
     {
       "path": "docs/IMPORT_AUDIT.md",
@@ -1275,7 +1275,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84bbe851f4c732c35ffca2dcdb5b3a461f464cf4f036197c27ec919ebe104fbd"
+      "sha256": "5d20c1131a6d3dc8b871e37d8a63ee2109eab81698abe99f6914730acb117f5a"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -5846,7 +5846,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "5185083c7ddc75d63c8c602caf49e62ec853f6d070d387c6a81c5050e2ac544d"
+      "sha256": "93bd68591c11855064f03a0621aec22c295ed0618695d5224a85b7f99750e185"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5908,7 +5908,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae65332cb1158e823437741e8ffefbbe3d0e045e6b1cf647c73becaeac81d9f7"
+      "sha256": "bd2a36bb6ae7956336b802989db2d6d82005fc7a6d97b140c79a23efbe848c5d"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -7208,7 +7208,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a4758573aa1846ad4f6e1ea44c4fb6acce2f7291df4a22b808e1932a83786b64"
+      "sha256": "4b40c7aab8aff39b31725c4e4a8062b79978413bbe9a6a50bdfbe260cf718381"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -7220,7 +7220,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9587fb08b823b5ee4207b7812781304d9fd99d437da8ff0872caf78fd3829947"
+      "sha256": "cf259a51f39537e3a49c8e51c712959a3b1b8c2a0857a1a4ce63432fefb5c767"
     },
     {
       "path": "tools/host_stubs.py",
@@ -7265,7 +7265,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "eb7e25595ad0101a78e2a091a6aa84a2276690271864ba55b55aaf0ac1438d7d"
+      "sha256": "ceca617048a4442f78581e3253e9118780d0d7243c39a2a0c72718cc6a314e4b"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -7895,7 +7895,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7ffeac532db25b7720cbea9e9fa83d2c711a5e3acaaf21a59f15a831897207a5"
+      "sha256": "9ece6f15af546e842b4c1b9db1f8becc9be7c6c11eab2cb55ece96184739f28f"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -8624,7 +8624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "972752bd9aec66c2b7a8d56afbf1fecced21b46e588d8f12113028cb60219ebe"
+      "sha256": "e9b290449300af11e838e74d9aca62202d0f6ed08150cc5673708a50d32ccd97"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -8642,7 +8642,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "15894ea5e287e07e23a14c1043bb71344647b8e9093e421dcfde9c3a20734c7c"
+      "sha256": "d7a9b5e6f2abd12714d07dcea4963d9494253e2f76c8d324d9127c2b82cdda2c"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -9113,7 +9113,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "892d54f6c68adb0f7bffd65fae629194dce24d0e07f5e456a5796eb302b6cc23"
+      "sha256": "944e91dd6e595c376146b6d235edd12ba30804b73fb45ae095b904b32d4f67ab"
     },
     {
       "path": "tools/test_psp_parsers.py",
