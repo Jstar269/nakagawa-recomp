@@ -7160,7 +7160,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1685df6f9d4a36485623fb3b625928af56861d4d3d2ef31fa53fbe9c946032a1"
+      "sha256": "edb4baef9bdb550fe082e3ef8ac54c34829598eca57d7103dd4b8baca344b9e7"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -9311,7 +9311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d8627295ae3c2ce5bab64e03ddf1bd6893d92b4ee59c450565da2917b6f6abb6"
+      "sha256": "b61707493e74d18942819a6fbbe8413ceaa81bab89af85741503fcc576ab1cd9"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9775,7 +9775,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "622d63bbee61399aab5e89dd38676d7133e0e67d9dd491ab2fac04798df56684"
+      "sha256": "6e8cd00d6455f06b035be3ce83983d4e945c1a95a1646e2a955941dd27438391"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
