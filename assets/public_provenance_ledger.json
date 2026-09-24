@@ -1407,7 +1407,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bfa16678c5050f21ccf4b4cab8362325bdcceded9221c7587455b3290abbd7cf"
+      "sha256": "18972ff9cff5932c52da31bb5d4fde6b23ada48ad343bc07c9e6d6a0b1bd6340"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -1518,7 +1518,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b976ed540742c65efc1b180519882718c584213413c07dad6a844c9e6aaa3d52"
+      "sha256": "8501eab07d9703e617603b23da6622c28d2ad31043061e751f8850d7d8797632"
     },
     {
       "path": "fixtures/psp_phaseb/mutex_imports.S",
@@ -9425,7 +9425,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bf3be6c08f7ee888f48483640c51c695cca81cdadcab8bc897fd03266b1cf727"
+      "sha256": "e95d3c4b70ec0b12b99a5171df9b0083e04bc94dc6f9ddec88954efbf6161a58"
     },
     {
       "path": "tools/test_psp_parsers.py",
