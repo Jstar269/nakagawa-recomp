@@ -1226,14 +1226,14 @@ sdl3-check:
 	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
@@ -1262,8 +1262,13 @@ COSIM_GENERATOR  := fixtures/cosim/generate.py
 COSIM_HARNESS    := fixtures/cosim/cosim_selftest.c
 COSIM_BASE_ADDR  := 0x08900000
 # Overridable so the mutation campaign can build the harness against a mutated
-# copy of the interpreter without touching the tree.
+# copy of the interpreter without touching the tree. A pre-included mutated
+# fp_convert.h wins over recomp.h's same-directory include in the final harness
+# and direct production-helper translation units.
 COSIM_INTERP_SRC ?= src/rt/guest_interp.c
+COSIM_FP_CONVERT_PRELUDE ?=
+COSIM_FP_CONVERT_PRELUDE_FLAG = $(if $(strip $(COSIM_FP_CONVERT_PRELUDE)),-include "$(COSIM_FP_CONVERT_PRELUDE)",)
+COSIM_FPU_REFERENCE_SRC ?= fixtures/cosim/fpu_reference.c
 
 # The loader and codegen rules are named directly rather than through `pipeline`.
 # This guest deliberately imports nothing, and tools/imports.py fails closed on an
@@ -1286,7 +1291,9 @@ cosim-selftest:
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
-		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC)
+		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC) \
+		COSIM_FP_CONVERT_PRELUDE=$(COSIM_FP_CONVERT_PRELUDE) \
+		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC)
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.
@@ -1295,17 +1302,17 @@ cosim-selftest:
 # deliberate -- this gate should stay runnable anywhere the toolchain is,
 # not inherit the graphics stack's environment requirements.
 cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
-	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE \
+	$(CC) $(CFLAGS) $(COSIM_FP_CONVERT_PRELUDE_FLAG) -DSR_INSTRUCTION_TRACE \
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
-		$(COSIM_HARNESS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(COSIM_INTERP_SRC) src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
 # Prove the comparator is load-bearing: each mutant is a semantic change to the
-# interpreter that must make the gate FAIL. A mutant that only breaks the build
-# is not a kill and the driver rejects it.
+# interpreter, FPU helper or generator that must make the gate FAIL. A mutant
+# that only breaks the build is not a kill and the driver rejects it.
 cosim-mutants:
 	$(PYTHON) fixtures/cosim/mutate.py --build-dir $(COSIM_DIR)
 
@@ -1561,9 +1568,10 @@ PSMF_MEDIA_LIBS :=
 endif
 
 psmf-media-selftest:
-	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_media_selftest.exe \
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections \
+		-o $(BUILD_DIR)/psmf_media_selftest.exe \
 		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c \
-		$(PSMF_MEDIA_LIBS)
+		$(PSMF_MEDIA_LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
 audio-selftest:

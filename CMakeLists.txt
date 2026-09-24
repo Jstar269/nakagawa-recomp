@@ -19,6 +19,7 @@ endif()
 # Core Recompilation & Platform Library
 # -----------------------------------------------------------------------------
 set(CORE_SOURCES
+    src/core/nk_font.c
     src/core/nk_iso.c
     src/core/nk_library.c
     src/core/nk_launch.c

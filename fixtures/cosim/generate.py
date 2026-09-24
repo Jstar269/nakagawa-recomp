@@ -110,6 +110,22 @@ def _fp(fmt: int, ft: int, fs: int, fd: int, function: int) -> int:
     )
 
 
+def _ccond(ft: int, fs: int, condition: int) -> int:
+    return _fp(0x10, ft, fs, 0, 0x30 | (condition & 0xF))
+
+
+def _cfc1(rt: int) -> int:
+    return _fp(0x02, rt, 31, 0, 0)
+
+
+def _ctc1(rt: int) -> int:
+    return _fp(0x06, rt, 31, 0, 0)
+
+
+def _bc1(tf: int, offset_words: int) -> int:
+    return (0x11 << 26) | (8 << 21) | ((tf & 1) << 16) | (offset_words & 0xFFFF)
+
+
 # Register numbers used by the cells.
 ZERO, AT, V0, V1, A0, A1 = 0, 1, 2, 3, 4, 5
 T0, T1, T2, T3, T4, T5, T6, T7 = 8, 9, 10, 11, 12, 13, 14, 15
@@ -501,8 +517,8 @@ def _cell_fpu() -> list[int]:
 
     Both lanes call the same ``sr_fpu_*`` helpers, so this cell compares operand
     selection, register-file indexing and FCR31 threading -- NOT the arithmetic
-    kernel, which ``src/rt/fp_convert_selftest.c`` owns.  2.5 and -2.5 are chosen
-    because `cvt.w.s` resolves them differently in all four FCR31 rounding modes.
+    kernel. The generated AOT-only oracle below supplies the independent kernel
+    comparison without claiming unsupported forms for the interpreter.
     """
     return [
         _i(0x0F, 0, T0, 0x4020),            # 0x00 lui t0, 0x4020   ->  2.5f
@@ -519,11 +535,58 @@ def _cell_fpu() -> list[int]:
         _i(0x31, A0, 6, 0x10),              # 0x2c lwc1 f6, 0x10(a0)
         _fp(0x00, T2, 6, 0, 0x00),          # 0x30 mfc1 t2, f6
         JR_RA,                              # 0x34
-        NOP,
+        NOP,                                # 0x38
     ]
 
 
+def _cell_fpu_aot() -> list[int]:
+    """AOT-only scalar operations checked against the integer reference lane.
+
+    Inputs are f0/f1, the signed cvt.s.w source in t0, and the two FCR31 branch
+    seeds in t6/t7. Results stay in f2..f15 and named GPRs. The fixture entry
+    calls the cell so codegen discovers it; the FPU oracle then calls the generated
+    body directly. The two-lane cosim never enters it, and the interpreter form
+    census therefore does not claim any of these AOT-only forms.
+    """
+    words = [
+        _fp(0x10, 1, 0, 2, 0x00),           # add.s f2, f0, f1
+        _fp(0x10, 1, 0, 3, 0x01),           # sub.s f3, f0, f1
+        _fp(0x10, 1, 0, 4, 0x02),           # mul.s f4, f0, f1
+        _fp(0x10, 1, 0, 5, 0x03),           # div.s f5, f0, f1
+        _fp(0x10, 0, 0, 6, 0x04),           # sqrt.s f6, f0
+        _fp(0x10, 0, 0, 7, 0x05),           # abs.s f7, f0
+        _fp(0x10, 0, 0, 8, 0x06),           # mov.s f8, f0
+        _fp(0x10, 0, 0, 9, 0x07),           # neg.s f9, f0
+        _fp(0x10, 0, 0, 10, 0x0C),          # round.w.s f10, f0
+        _fp(0x10, 0, 0, 11, 0x0D),          # trunc.w.s f11, f0
+        _fp(0x10, 0, 0, 12, 0x0E),          # ceil.w.s f12, f0
+        _fp(0x10, 0, 0, 13, 0x0F),          # floor.w.s f13, f0
+        _fp(0x04, T0, 14, 0, 0x00),         # mtc1 t0, f14
+        _fp(0x14, 0, 14, 15, 0x20),         # cvt.s.w f15, f14
+        _fp(0x10, 0, 0, 14, 0x24),          # cvt.w.s f14, f0
+    ]
+    compare_registers = (16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 4, 5, 6, 7, 12, 13)
+    for condition, register in enumerate(compare_registers):
+        words.extend((_ccond(1, 0, condition), _cfc1(register)))
+    words.extend((
+        _i(0x09, ZERO, T2, 0x11),           # bc1t marker
+        _ctc1(T6),
+        _bc1(1, 2),
+        NOP,
+        _i(0x09, ZERO, T2, 0x22),           # skipped when FCC0 is true
+        _i(0x09, ZERO, T3, 0x33),           # bc1f marker
+        _ctc1(T7),
+        _bc1(0, 2),
+        NOP,
+        _i(0x09, ZERO, T3, 0x44),           # skipped when FCC0 is false
+        JR_RA,
+        NOP,
+    ))
+    return words
+
+
 def _cell_spleak() -> list[int]:
+
     """POSITIVE CONTROL -- deliberately leaves $sp unbalanced at `jr $ra`.
 
     This is NOT a defect fixture: it pins the one architectural asymmetry the
@@ -591,16 +654,22 @@ CELLS: tuple[tuple[str, str, object], ...] = (
      _cell_xtail),
     ("hilo", "HI/LO multiply", _cell_hilo),
     ("fpu", "scalar FPU over the #120 helper path", _cell_fpu),
+    ("fpu_aot", "AOT-only scalar FPU oracle cell", _cell_fpu_aot),
     ("spleak", "positive control: unbalanced $sp epilogue", _cell_spleak),
     ("negpad", "fail-closed negative corpus scratch", _cell_negpad),
     ("ret", "cosim return trampoline", _cell_ret),
 )
 
-# Cells the harness never enters directly, so no comparison case is built for
-# them.  The leaves still run -- reached through the calls under test.
+# Cells omitted from the two-lane comparison list. Most are reached through calls
+# under test; the AOT/reference oracle enters its generated body directly.
 NON_ENTRY_CELLS = frozenset(
-    {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread"}
+    {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot"}
 )
+
+# Discovered so codegen emits a native body, but entered only by the independent
+# AOT/reference scalar oracle. The production interpreter is not claimed to
+# support these forms and the behavioral form census must not acquire them.
+AOT_ORACLE_ONLY_CELLS = frozenset({"fpu_aot"})
 
 # Cells that are pure data/scratch rather than executable programs, so the
 # "every cell ends in a register transfer" layout rule does not apply.
@@ -618,6 +687,53 @@ CROSS_TIER_OMISSIONS: dict[str, str] = {
 # the guest transfers to it, so the analyzer never claims it and the harness
 # owns that address outright in both lanes.
 UNDISCOVERED_CELLS = frozenset({"ret", "negpad"})
+
+
+# Deterministic binary32 and cvt.s.w boundary values. The C oracle takes the
+# Cartesian product, so each word appears as both operands under all four FCR31
+# RM values and with FS both clear and set. NaN payloads, signed zero, infinity,
+# both denormal edges, conversion limits, directed-rounding ties, and the
+# repository's PSP RM anchor operands are all represented.
+FPU_CORPUS_VALUES: tuple[tuple[int, int], ...] = (
+    (0x00000000, 0x00000000),
+    (0x80000000, 0x80000000),
+    (0x00000001, 0x00000001),
+    (0x80000001, 0xFFFFFFFF),
+    (0x007FFFFF, 0x007FFFFF),
+    (0x807FFFFF, 0x807FFFFF),
+    (0x00800000, 0x01000001),
+    (0x80800000, 0xFEFFFFFF),
+    (0x3EFFFFFF, 0x7FFFFFFE),
+    (0x3F000000, 0x3F800000),
+    (0x3F000001, 0x00800000),
+    (0xBF000000, 0xBF800000),
+    (0x3F800000, 0x40000000),
+    (0xBF800000, 0xC0000000),
+    (0x3FC00000, 0x40400000),
+    (0xBFC00000, 0xC0400000),
+    (0x40200000, 0x40800000),
+    (0xC0200000, 0xC0800000),
+    (0x40300000, 0x40A00000),
+    (0xC0300000, 0xC0A00000),
+    (0x40400000, 0x40E00000),
+    (0x3EAAAAAB, 0x41100000),
+    (0x3EAAAAAA, 0x40F00000),
+    (0x41200000, 0x41300000),
+    (0x4EFFFFFF, 0x7FFFFFFF),
+    (0x4F000000, 0x80000000),
+    (0xCF000000, 0x7FFFFFFF),
+    (0xCF000001, 0x80000001),
+    (0x7F7FFFFF, 0x12345678),
+    (0xFF7FFFFF, 0xFEDCBA98),
+    (0x7F800000, 0x23456789),
+    (0xFF800000, 0x3456789A),
+    (0x7FC00000, 0x456789AB),
+    (0xFFC00000, 0x56789ABC),
+    (0x7F800001, 0x6789ABCD),
+    (0xFF800001, 0x789ABCDE),
+    (0x3E97D668, 0x089ABCDE),
+    (0x42780000, 0x0FEDCBA9),
+)
 
 
 def cell_layout() -> dict[str, tuple[int, list[int]]]:
@@ -872,7 +988,7 @@ def fixture_forms() -> set:
     layout = cell_layout()
     seen = set()
     for name, (_offset, words) in layout.items():
-        if name in NON_PROGRAM_CELLS:
+        if name in NON_PROGRAM_CELLS or name in AOT_ORACLE_ONLY_CELLS:
             continue
         for word in words:
             seen.add(decode_form(word))
@@ -890,6 +1006,28 @@ def _form_literal(form: tuple) -> str:
             f'"cop1:fmt=0x{form[1]:02x},funct=0x{form[2]:02x}")'
         )
     return f'X(PRIMARY, 0x{form[1]:02x}u, 0x00u, "primary:0x{form[1]:02x}")'
+
+
+def fpu_corpus_header() -> bytes:
+    """Emit the deterministic scalar-FPU input corpus consumed by the harness."""
+    lines = [
+        "/* Generated by fixtures/cosim/generate.py. Do not edit by hand. */",
+        "#ifndef NAKAGAWA_COSIM_FPU_CORPUS_H",
+        "#define NAKAGAWA_COSIM_FPU_CORPUS_H",
+        "",
+        "/* X(binary32_bits, cvt_s_w_source) */",
+        "#define COSIM_FPU_VALUE_LIST(X) \\",
+    ]
+    for index, (bits, source) in enumerate(FPU_CORPUS_VALUES):
+        terminator = "" if index == len(FPU_CORPUS_VALUES) - 1 else " \\"
+        lines.append(f"    X(0x{bits:08x}u, 0x{source & 0xFFFFFFFF:08x}u){terminator}")
+    lines.extend((
+        f"#define COSIM_FPU_VALUE_COUNT {len(FPU_CORPUS_VALUES)}u",
+        "",
+        "#endif",
+        "",
+    ))
+    return ("\n".join(lines)).encode("ascii")
 
 
 def manifest_header() -> bytes:
@@ -919,6 +1057,8 @@ def manifest_header() -> bytes:
         # writable, nor covered by any executable span.
         '#define COSIM_UNOWNED       0x0d000000u',
         f"#define COSIM_RETURN        0x{BASE + layout['ret'][0]:08x}u",
+        f"#define COSIM_FPU_ORACLE    0x{BASE + layout['fpu_aot'][0]:08x}u",
+        f"#define COSIM_FPU_ORACLE_FN f_{BASE + layout['fpu_aot'][0]:08x}",
         f"#define COSIM_LEAF_A        0x{BASE + layout['link_leaf'][0]:08x}u",
         f"#define COSIM_LEAF_B        0x{BASE + layout['link_leaf_b'][0]:08x}u",
         f"#define COSIM_XSTORE        0x{BASE + layout['xstore'][0]:08x}u",
@@ -979,6 +1119,7 @@ def manifest_bytes() -> bytes:
         "relocations": [
             {"offset": offset, "info": info} for offset, info in relocation_records()
         ],
+        "fpu_oracle_values": len(FPU_CORPUS_VALUES),
         "cells": [
             {
                 "name": name,
@@ -1014,6 +1155,7 @@ def generate(out_dir: Path) -> int:
         out_dir / "guest.psp": psp_header,
         out_dir / "manifest.json": manifest_bytes(),
         out_dir / "cosim_cells.h": manifest_header(),
+        out_dir / "cosim_fpu_corpus.h": fpu_corpus_header(),
     }
     changed = [str(path) for path, data in outputs.items() if write_if_changed(path, data)]
     # The harness writes one canonical instruction trace per lane per case; create
