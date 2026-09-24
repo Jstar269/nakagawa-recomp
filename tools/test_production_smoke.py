@@ -288,7 +288,7 @@ class TestProductionSmoke(unittest.TestCase):
             "production_smoke_recomp_0.o",
             "production_smoke_recomp_1.o",
             "production_smoke_recomp_2.o",
-            "ge.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
+            "ge.o", "flight_recorder.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
             "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
             "iso_public.o", "pgd_unavailable.o", "mpeg.o", "pgf_unavailable.o",
