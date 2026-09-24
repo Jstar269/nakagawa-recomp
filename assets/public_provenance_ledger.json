@@ -397,7 +397,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1b81ef2992a361e03fe53b447d873cc3c9d813e0009136447612e01bd89484f4"
+      "sha256": "6d311002997a555c3373da109524b176c25341c21840dbf96ffdc67fa9a496f4"
     },
     {
       "path": "assets/flight_recorder_schema.json",
@@ -6972,7 +6972,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "ffb58a0d7c825eb8c1fdb266ef3f2f899ea30d4d00fc37f2fa2cf2ef894a2a1f"
+      "sha256": "b98206bf70b82aec73ab22a30917e8aeaf574248b1a9d16369a7cc9ee0df5227"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -7652,7 +7652,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a1f6abfd638921acf2cc0f924c7d3971dad0f84c83e7ddb5ba90e8a23ac45071"
+      "sha256": "31eb0cca3750116d68ccb5b62c8c0d01cdcf876928939ef3a3d0f37e72fc1b36"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8399,7 +8399,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "2bf0ab7a9bdae3f66a454920a8ab4de9c82cd7ec811fa93ea9229e1403faacba"
+      "sha256": "6070a972d9f1a47135180b62c4cc59da4cdab9adbd39e6fe6b41cfe55d00bcd2"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -9332,7 +9332,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a6d49af7bc79a5b0ec6e9698060e94f1c43b298e1cced1bb3b6257f7b7fa48c2"
+      "sha256": "d1911718c89d580ec4acf5b7000c3f46887bf3c0d60ebff4c5b0a9a3a88c2dd2"
     },
     {
       "path": "tools/test_progress_evidence.py",
