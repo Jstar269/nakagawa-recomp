@@ -57,6 +57,7 @@ _TEST_RECORD_RE = re.compile(
 SHELL_VERIFICATION_ATTEMPTS = 3
 SHELL_VERIFICATION_ATTEMPT_TIMEOUT = 15.0
 DEFAULT_SHELL_VERIFICATION_TIMEOUT = 45.0
+HOST0_MTIME_TOLERANCE_NS = 1_000_000_000
 
 
 def _tool(name: str) -> str | None:
@@ -215,6 +216,63 @@ def _wsl_path(path: Path) -> str:
     if not drive:
         return path.as_posix()
     return f"/mnt/{drive[0].lower()}/{tail.lstrip('\\/').replace('\\', '/')}"
+
+
+def _check_source_tree(source_commit: str) -> str | None:
+    """Require the declared source revision to be the clean repository HEAD."""
+
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            shell=False,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            shell=False,
+        )
+    except OSError as exc:
+        return f"source checkout could not be verified ({type(exc).__name__})"
+    if head.returncode != 0 or status.returncode != 0:
+        return "source checkout could not be verified by Git"
+    current_head = head.stdout.strip()
+    if status.stdout.strip():
+        return "source worktree is dirty"
+    if current_head.casefold() != source_commit.casefold():
+        return "declared source commit does not match the clean checkout HEAD"
+    return None
+
+
+def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
+    """Return the source-owned probe log path for one campaign case."""
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", case_id):
+        raise ValueError("campaign case id must be a simple path component")
+    stem = case_id.replace("-", "_")
+    if stem.startswith("dma_"):
+        stem = "dmac_" + stem[4:]
+    return host0_root / f"{stem}_log.txt"
+
+
+def _parse_campaign_records(text: str, case_id: str):
+    """Apply the stream-specific schema when a campaign case defines one."""
+
+    if case_id in {"dma-size-matrix", "dmac-size-matrix"}:
+        return validate_dmac_size_matrix(text)
+    return parse_output(text)
 
 
 def _render_argv(template: list[str], **values: str) -> list[str]:
@@ -494,6 +552,7 @@ class PsplinkCampaignRunner:
         self.envelopes: list[dict[str, object]] = []
         self.firmware: str | None = None
         self.host0_qualified = False
+        self.source_tree_problem: str | None = None
 
     @staticmethod
     def _ok(result: tuple[int | None, str, str, str]) -> bool:
@@ -692,31 +751,89 @@ class PsplinkCampaignRunner:
         result: tuple[int | None, str, str, str],
         module_uid: str | None,
         cleanup_ok: bool,
+        *,
+        host0_log_path: Path | None,
+        run_started_ns: int | None,
+        run_finished_ns: int,
+        host0_log_cleared: bool,
     ) -> dict[str, object]:
-        record_lines = []
-        if result[3] == "PROCESS_EXITED":
-            record_lines = [
-                line for line in result[1].splitlines()
-                if line.startswith(self._RECORD_PREFIXES)
+        host0_text = ""
+        host0_mtime_ns: int | None = None
+        host0_fresh = False
+        host0_read_problem: str | None = None
+        if host0_log_path is None:
+            host0_read_problem = "host0 root is unavailable for per-case logs"
+        elif not host0_log_cleared:
+            host0_read_problem = "previous host0 log could not be cleared before loading the probe"
+        elif not cleanup_ok:
+            host0_read_problem = "probe unload was not proven; per-case host0 log was not read"
+        else:
+            try:
+                if host0_log_path.is_symlink() or not host0_log_path.is_file():
+                    host0_read_problem = "per-case host0 log is missing or is not a regular file"
+                else:
+                    host0_mtime_ns = host0_log_path.stat().st_mtime_ns
+                    host0_text = host0_log_path.read_text(encoding="utf-8")
+                    # The path was proven absent before launch; keep a small
+                    # boundary margin for host/filesystem timestamp conversion.
+                    host0_fresh = (
+                        run_started_ns is not None
+                        and run_started_ns - HOST0_MTIME_TOLERANCE_NS
+                        <= host0_mtime_ns
+                        <= run_finished_ns + HOST0_MTIME_TOLERANCE_NS
+                    )
+            except FileNotFoundError:
+                host0_read_problem = "per-case host0 log was not produced"
+            except (OSError, UnicodeError) as exc:
+                host0_read_problem = f"per-case host0 log could not be read ({type(exc).__name__})"
+
+        def schema_records(text: str) -> str:
+            lines = [
+                line.strip()
+                for line in text.splitlines()
+                if line.strip().startswith(self._RECORD_PREFIXES)
             ]
-        raw_result = "\n".join(record_lines) + ("\n" if record_lines else "")
+            return "\n".join(lines) + ("\n" if lines else "")
+
+        host0_record_text = schema_records(host0_text)
+        stdout_record_text = schema_records(result[1]) if result[3] == "PROCESS_EXITED" else ""
         blockers: list[str] = []
+        qualification_blockers: list[str] = []
+
+        def disqualify(message: str) -> None:
+            if message not in qualification_blockers:
+                qualification_blockers.append(message)
+            if message not in blockers:
+                blockers.append(message)
+
         if result[3] == "TIMEOUT":
-            blockers.append("per-case timeout; partial output is not a semantic result")
+            disqualify("per-case timeout; partial output is not a semantic result")
         elif result[0] != 0:
-            blockers.append("PSPLink command did not exit successfully")
-        if not record_lines:
-            blockers.append("no complete source-owned scalar record was captured")
+            disqualify("PSPLink command did not exit successfully")
+        if host0_read_problem:
+            disqualify(host0_read_problem)
+        if host0_text and not host0_fresh:
+            disqualify("host0 log modification time is outside this case's run window")
+        if self.source_tree_problem:
+            disqualify(self.source_tree_problem)
         if not module_uid or not cleanup_ok:
-            blockers.append("loaded module was not proven unloaded")
+            disqualify("loaded module was not proven unloaded")
         if not self.host0_qualified:
-            blockers.append("host0 round-trip qualification did not pass")
+            disqualify("host0 round-trip qualification did not pass")
         if self.terminal_reason:
-            blockers.append(self.terminal_reason)
-        binary_sha = self._sha256(case.binary)
-        canonical = raw_result
+            disqualify(self.terminal_reason)
+
+        binary_sha = ""
+        try:
+            binary_sha = self._sha256(case.binary)
+        except OSError as exc:
+            disqualify(f"campaign PRX could not be hashed ({type(exc).__name__})")
+
+        host0_parsed = None
+        stdout_parsed = None
+        canonical = host0_record_text
         parsed_ok = False
-        if raw_result:
+        if host0_text:
             metadata_args = argparse.Namespace(
                 binary=case.binary,
                 model=self.console_model,
@@ -724,31 +841,49 @@ class PsplinkCampaignRunner:
                 firmware=self.firmware,
                 source_commit=self.source_commit,
             )
-            canonical = _canonicalize_psp(raw_result, metadata_args)
             try:
-                parsed = parse_output(canonical)
-                parsed_ok = bool(parsed.results) and all(
-                    result.status == "PASS" for result in parsed.results
+                host0_parsed = _parse_campaign_records(host0_text, case.case_id)
+                canonical = _canonicalize_psp(host0_text, metadata_args)
+                canonical_parsed = _parse_campaign_records(canonical, case.case_id)
+                parsed_ok = bool(canonical_parsed.results) and all(
+                    item.status == "PASS" for item in canonical_parsed.results
                 )
                 if not parsed_ok:
                     blockers.append("one or more scalar result records did not pass")
-                metadata_problems = provenance_issues(parsed.metadata_dict())
+                metadata_problems = provenance_issues(canonical_parsed.metadata_dict())
                 if metadata_problems:
                     blockers.append(
                         "captured metadata is not acceptance-eligible: "
                         + "; ".join(metadata_problems)
                     )
-            except (ProtocolError, OSError, ValueError):
-                blockers.append("captured scalar records failed strict protocol validation")
+            except (ProtocolError, OSError, UnicodeError, ValueError):
+                disqualify("host0 schema records failed strict protocol validation")
+                canonical = host0_record_text
+        else:
+            disqualify("no complete source-owned scalar record was captured from host0")
+
+        if stdout_record_text:
+            try:
+                stdout_parsed = _parse_campaign_records(stdout_record_text, case.case_id)
+            except ProtocolError:
+                disqualify("stdout schema records failed strict protocol validation")
+            else:
+                if host0_parsed is not None and (
+                    stdout_parsed.metadata != host0_parsed.metadata
+                    or stdout_parsed.results != host0_parsed.results
+                ):
+                    disqualify("stdout and host0 schema records disagree")
+
         if case.case_id == "transport-write" and not any(
             "test_id=PSP-TRANSPORT-001" in line
             and "case_id=host0-write-readback" in line
             and "status=PASS" in line
-            for line in record_lines
+            for line in host0_record_text.splitlines()
         ):
             parsed_ok = False
             blockers.append("transport-write probe did not report a passing host0 round-trip")
         acceptance_eligible = parsed_ok and not blockers
+        case_qualified = not qualification_blockers
         return {
             "CONSOLE_MODEL": self.console_model,
             "MODEL_SOURCE": "operator-recorded label; no serial or MAC stored",
@@ -756,11 +891,22 @@ class PsplinkCampaignRunner:
             "FW": self.firmware or "NOT_CAPTURED",
             "TRANSPORT_PROFILE": "standalone-psplink-usbhostfs-host0",
             "SOURCE_COMMIT": self.source_commit,
+            "SOURCE_TREE_STATUS": "CLEAN_COMMITTED" if not self.source_tree_problem else "UNQUALIFIED",
+            "SOURCE_TREE_PROBLEM": self.source_tree_problem,
             "BINARY_SHA256": binary_sha,
             "CASE_ID": case.case_id,
             "RAW_RESULT": canonical,
+            "RAW_STDOUT_RESULT": stdout_record_text,
+            "HOST0_LOG_FILE": host0_log_path.name if host0_log_path else None,
+            "HOST0_LOG_CLEARED": host0_log_cleared,
+            "HOST0_LOG_MTIME_NS": host0_mtime_ns,
+            "HOST0_RUN_STARTED_NS": run_started_ns,
+            "HOST0_RUN_FINISHED_NS": run_finished_ns,
+            "HOST0_LOG_FRESH": host0_fresh,
             "RECOVERY_EVENTS": list(self.recovery_events),
-            "QUALIFICATION_STATUS": "QUALIFIED" if self.state == "READY" else "LOST",
+            "QUALIFICATION_STATUS": "QUALIFIED" if case_qualified else "UNQUALIFIED",
+            "QUALIFICATION_BLOCKERS": qualification_blockers,
+            "SESSION_QUALIFICATION_STATUS": "QUALIFIED" if self.state == "READY" else "LOST",
             "EVIDENCE_CLASS": "PSP_HARDWARE" if acceptance_eligible else "UNQUALIFIED_CAPTURE",
             "ACCEPTANCE_ELIGIBLE": acceptance_eligible,
             "ACCEPTANCE_BLOCKERS": blockers,
@@ -777,6 +923,7 @@ class PsplinkCampaignRunner:
             self.state = "STOPPED"
             self.terminal_reason = "INVALID_CASE_TIMEOUT"
             return self._report()
+        self.source_tree_problem = _check_source_tree(self.source_commit)
         host0_path = getattr(self.transport, "host0_root", None)
         if isinstance(host0_path, Path) and (
             host0_path / "nakagawa_transport_write.bin"
@@ -798,6 +945,40 @@ class PsplinkCampaignRunner:
                     self.terminal_reason = "SHELL_QUALIFICATION_FAILED"
                 return self._report()
             for case in cases:
+                case_host0_log = (
+                    _campaign_host0_log_path(host0_path, case.case_id)
+                    if isinstance(host0_path, Path) else None
+                )
+                host0_log_cleared = False
+                if case_host0_log is not None:
+                    try:
+                        case_host0_log.unlink(missing_ok=True)
+                        host0_log_cleared = not (
+                            case_host0_log.exists() or case_host0_log.is_symlink()
+                        )
+                    except OSError:
+                        host0_log_cleared = False
+                if not host0_log_cleared:
+                    self.state = "STOPPED"
+                    self.terminal_reason = (
+                        "HOST0_LOG_UNAVAILABLE" if case_host0_log is None
+                        else "HOST0_LOG_CLEAR_FAILED"
+                    )
+                    self.envelopes.append(
+                        self._envelope(
+                            case,
+                            (None, "", "", self.terminal_reason),
+                            None,
+                            False,
+                            host0_log_path=case_host0_log,
+                            run_started_ns=None,
+                            run_finished_ns=time.time_ns(),
+                            host0_log_cleared=False,
+                        )
+                    )
+                    break
+
+                run_started_ns = time.time_ns()
                 self.state = "RUN_CASE"
                 result = self._request(
                     f"ldstart host0:/{case.binary.name}", case.timeout
@@ -807,13 +988,23 @@ class PsplinkCampaignRunner:
                 cleanup_ok = bool(module_uid and self._unload(module_uid))
                 if not cleanup_ok and self.terminal_reason is None:
                     self._recover(module_uid, f"cleanup after {case.case_id}")
+                run_finished_ns = time.time_ns()
                 if case.case_id == "transport-write":
                     self.host0_qualified = self._verify_host0_roundtrip()
                     if not self.host0_qualified:
                         self.state = "STOPPED"
                         self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
                 self.envelopes.append(
-                    self._envelope(case, result, module_uid, cleanup_ok)
+                    self._envelope(
+                        case,
+                        result,
+                        module_uid,
+                        cleanup_ok,
+                        host0_log_path=case_host0_log,
+                        run_started_ns=run_started_ns,
+                        run_finished_ns=run_finished_ns,
+                        host0_log_cleared=host0_log_cleared,
+                    )
                 )
                 if self.terminal_reason:
                     break

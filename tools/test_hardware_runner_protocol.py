@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 from io import StringIO
+import os
 from pathlib import Path
 import subprocess
 import struct
@@ -45,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from psp_oracle.run_psplink import (
     CampaignCase,
     PsplinkCampaignRunner,
+    _campaign_host0_log_path,
     _parse_usbipd_psplink_devices,
     _verify_psplink_shell,
     PsplinkProcessTransport,
@@ -135,6 +137,10 @@ class SimulatedPsplinkTransport:
         unknown_command_ver_once: bool = False,
         reset_timeout: bool = False,
         reset_returncode: int = 0,
+        stdout_record_cases: set[str] | None = None,
+        stdout_result_overrides: dict[str, str] | None = None,
+        write_host0_logs: bool = True,
+        stale_host0_mtime: bool = False,
     ):
         self.timeout_cases = timeout_cases or set()
         self.fail_modstun = fail_modstun
@@ -145,6 +151,10 @@ class SimulatedPsplinkTransport:
         self.first_ver_failed = False
         self.reset_timeout = reset_timeout
         self.reset_returncode = reset_returncode
+        self.stdout_record_cases = stdout_record_cases or set()
+        self.stdout_result_overrides = stdout_result_overrides or {}
+        self.write_host0_logs = write_host0_logs
+        self.stale_host0_mtime = stale_host0_mtime
         self.post_case_ver_failed = False
         self.case_started = False
         self.started = False
@@ -152,6 +162,7 @@ class SimulatedPsplinkTransport:
         self.restarts = 0
         self.commands: list[tuple[str, float]] = []
         self.host0_root: Path | None = None
+        self.stale_log_present_at_load = False
         self.current_case = ""
         self.waiting_for_device = False
         self.transport_recoveries = 0
@@ -227,6 +238,15 @@ class SimulatedPsplinkTransport:
                     for index in range(64)
                 )
                 (self.host0_root / "nakagawa_transport_write.bin").write_bytes(pattern)
+            log_stem = case_id.replace("-", "_")
+            if log_stem.startswith("dma_"):
+                log_stem = "dmac_" + log_stem[4:]
+            host0_log = self.host0_root / f"{log_stem}_log.txt" if self.host0_root else None
+            self.stale_log_present_at_load = bool(host0_log and host0_log.exists())
+            metadata_record = (
+                "NAKAGAWA_PSP_META schema=1 source=psp model=fixture firmware=test "
+                "binary_sha256=" + "0" * 64 + " source_commit=" + SOURCE_COMMIT + "\n"
+            )
             if case_id == "transport-write":
                 result_record = (
                     "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-TRANSPORT-001 "
@@ -237,11 +257,23 @@ class SimulatedPsplinkTransport:
                     "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=" + case_id
                     + " status=PASS result=0x1\n"
                 )
+            stdout_record = result_record
+            if case_id in self.stdout_result_overrides and case_id != "transport-write":
+                stdout_record = (
+                    "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=" + case_id
+                    + " status=PASS result=" + self.stdout_result_overrides[case_id] + "\n"
+                )
+            if self.write_host0_logs and self.host0_root is not None:
+                assert host0_log is not None
+                host0_log.write_text(
+                    metadata_record + result_record, encoding="utf-8"
+                )
+                if self.stale_host0_mtime:
+                    os.utime(host0_log, ns=(1, 1))
+            stdout_records = "" if case_id in self.stdout_record_cases else metadata_record + stdout_record
             return 0, (
                 "Load/Start host0:/" + case_id + ".prx UID: 0x04280001\n"
-                "NAKAGAWA_PSP_META schema=1 source=psp model=fixture firmware=test "
-                "binary_sha256=" + "0" * 64 + " source_commit=" + SOURCE_COMMIT + "\n"
-                + result_record
+                + stdout_records
             ), "", "PROCESS_EXITED"
         if command == "modstun 0x04280001":
             if self.fail_modstun and self.current_case != "transport-write":
@@ -516,6 +548,11 @@ class Orchestrator:
 
 
 class HardwareRunnerProtocolTests(unittest.TestCase):
+    def setUp(self):
+        source_check = patch("psp_oracle.run_psplink._check_source_tree", return_value=None)
+        source_check.start()
+        self.addCleanup(source_check.stop)
+
     def build(self, **behavior) -> tuple[Orchestrator, RunnerModel, FakeTransport]:
         runner = RunnerModel(**behavior)
         transport = FakeTransport(runner)
@@ -696,6 +733,120 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(
             [timeout for command, timeout in transport.commands if command.startswith("ldstart")],
             [1.25, 1.25, 1.25],
+        )
+
+    def test_campaign_host0_only_records_qualify_without_stdout_records(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-host0-only-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(
+                stdout_record_cases={"transport-write"}
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        envelope = report["envelopes"][0]
+        self.assertTrue(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertEqual(envelope["QUALIFICATION_STATUS"], "QUALIFIED")
+        self.assertTrue(envelope["HOST0_LOG_FRESH"])
+        self.assertIn("case_id=host0-write-readback", envelope["RAW_RESULT"])
+
+    def test_campaign_stale_host0_log_is_cleared_and_rejected_by_mtime(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-stale-host0-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            log = scratch / "transport_write_log.txt"
+            log.write_text("stale result must not qualify\n", encoding="utf-8")
+            transport = SimulatedPsplinkTransport(stale_host0_mtime=True)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        envelope = report["envelopes"][0]
+        self.assertFalse(transport.stale_log_present_at_load)
+        self.assertFalse(envelope["HOST0_LOG_FRESH"])
+        self.assertEqual(envelope["QUALIFICATION_STATUS"], "UNQUALIFIED")
+        self.assertIn(
+            "host0 log modification time is outside this case's run window",
+            envelope["QUALIFICATION_BLOCKERS"],
+        )
+        self.assertNotIn("stale result must not qualify", envelope["RAW_RESULT"])
+
+    def test_campaign_dirty_source_tree_cannot_qualify_records(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-dirty-source-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            with patch(
+                "psp_oracle.run_psplink._check_source_tree",
+                return_value="source worktree is dirty",
+            ):
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000-04g",
+                    source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        envelope = report["envelopes"][0]
+        self.assertEqual(envelope["SOURCE_TREE_STATUS"], "UNQUALIFIED")
+        self.assertEqual(envelope["QUALIFICATION_STATUS"], "UNQUALIFIED")
+        self.assertIn("source worktree is dirty", envelope["QUALIFICATION_BLOCKERS"])
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+
+    def test_campaign_stdout_host0_disagreement_is_a_named_failure(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-channel-mismatch-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "probe"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+            transport = SimulatedPsplinkTransport(
+                stdout_result_overrides={"probe": "0x2"}
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(envelope["QUALIFICATION_STATUS"], "UNQUALIFIED")
+        self.assertIn(
+            "stdout and host0 schema records disagree",
+            envelope["QUALIFICATION_BLOCKERS"],
+        )
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+
+    def test_campaign_dmac_case_ids_map_to_probe_owned_log_names(self):
+        root = Path("host0-root")
+        self.assertEqual(
+            _campaign_host0_log_path(root, "dma-size-matrix").name,
+            "dmac_size_matrix_log.txt",
+        )
+        self.assertEqual(
+            _campaign_host0_log_path(root, "dma-invalid-tail-memcpy-dst").name,
+            "dmac_invalid_tail_memcpy_dst_log.txt",
         )
 
     def test_18_real_adapter_bounds_timeouts_and_keeps_partial_output_nonsemantic(self):
