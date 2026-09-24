@@ -5,6 +5,7 @@
 #define NK_TITLE_MANIFEST_H
 
 #include "generated/nk_title_catalog.h"
+#include "nk_types.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -26,6 +27,19 @@ extern "C" {
 #define NK_MANIFEST_MAX_BYTES (256 * 1024)
 #define NK_MANIFEST_LIMIT_CLASS "PRODUCT_SECURITY_POLICY"
 #define NK_MANIFEST_MAX_JSON_DEPTH 16
+
+typedef enum {
+    NK_RUNTIME_PACKAGE_OK = 0,
+    NK_RUNTIME_PACKAGE_MISSING,
+    NK_RUNTIME_PACKAGE_INCOMPATIBLE,
+    NK_RUNTIME_PACKAGE_STALE
+} NkRuntimePackageStatus;
+
+typedef struct {
+    char package_root[NK_MAX_PATH];
+    char executable_path[NK_MAX_PATH];
+    char image_path[NK_MAX_PATH];
+} NkRuntimePackageInfo;
 
 /* Parse and validate a manifest from a memory buffer.
  * If allow_override is false, collisions with public catalog entries are rejected.
@@ -77,6 +91,36 @@ bool nk_title_manifest_write_experimental_profile(
     size_t out_profile_id_len,
     char *error_buf,
     size_t error_buf_len
+);
+
+/* Read the private experimental profile for one library identity. The embedded
+ * manifest is fully validated and returned from bounded native overlay
+ * storage; executable SHA-256 and selected-executable identity are returned
+ * only to the caller. */
+bool nk_title_manifest_read_experimental_profile(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    const char *selected_executable,
+    NkTitleEntry *out_title,
+    char out_executable_sha256[65],
+    char *error_buf,
+    size_t error_buf_len
+);
+
+/* Validate the v1 generated package at <user_data_root>/packages/<DISC_ID>.
+ * Experimental entries are additionally bound to their private profile's
+ * selected executable hash. `player_abi_version` comes from recomp.h. */
+NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    bool is_experimental,
+    const char *selected_executable,
+    uint32_t player_abi_version,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
 );
 
 #ifdef __cplusplus

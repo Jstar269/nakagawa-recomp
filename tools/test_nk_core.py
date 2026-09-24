@@ -1055,6 +1055,7 @@ int main(int argc, char **argv) {
             REPO_ROOT / "src" / "core" / "nk_iso.c",
             REPO_ROOT / "src" / "core" / "nk_library.c",
             REPO_ROOT / "src" / "core" / "nk_launch.c",
+            REPO_ROOT / "src" / "core" / "nk_title_manifest.c",
             REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if sys.platform == "win32":
@@ -1258,6 +1259,10 @@ int main(int argc, char **argv) {
             (src_dir / "generated").mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO_ROOT / "src" / "core" / "nk_launch.c", src_dir / "nk_launch.c")
             shutil.copy2(REPO_ROOT / "src" / "core" / "nk_launch.h", src_dir / "nk_launch.h")
+            # nk_launch.c includes nk_title_manifest.h, which quote-includes the
+            # catalog header; copy it too so the mutated header is the one seen.
+            shutil.copy2(REPO_ROOT / "src" / "core" / "nk_title_manifest.c", src_dir / "nk_title_manifest.c")
+            shutil.copy2(REPO_ROOT / "src" / "core" / "nk_title_manifest.h", src_dir / "nk_title_manifest.h")
             header_content = tcg.generate_header(digest, titles)
             source_content = tcg.generate_source(digest, titles)
             (src_dir / "generated" / "nk_title_catalog.h").write_text(
@@ -1289,6 +1294,7 @@ int main(int argc, char **argv) {
                 str(REPO_ROOT / "src" / "core" / "nk_iso.c"),
                 str(REPO_ROOT / "src" / "core" / "nk_library.c"),
                 str(src_dir / "nk_launch.c"),
+                str(src_dir / "nk_title_manifest.c"),
                 str(src_dir / "generated" / "nk_title_catalog.c"),
                 str(platform_src),
                 "-o", str(out),
@@ -1497,6 +1503,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
             REPO_ROOT / "src" / "core" / "nk_iso.c",
             REPO_ROOT / "src" / "core" / "nk_library.c",
             mutant_c,
+            REPO_ROOT / "src" / "core" / "nk_title_manifest.c",
             REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if sys.platform == "win32":

@@ -316,9 +316,8 @@ static bool adopt_existing_staged_root(PlayerApp *app, const char *final_root) {
                            sizeof(app->inspecting_game.prepared_root),
                            final_root)) return false;
     app->inspecting_game.assets_staged = true;
-    app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
-        app->runtime_root[0] ? app->runtime_root : NULL,
-        app->inspecting_game.title_id);
+    app->inspecting_game.is_prepared = player_app_validate_runtime_package(
+        app, &app->inspecting_game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
     app->inspecting_game.status = app->inspecting_game.is_prepared
         ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
     copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
@@ -450,9 +449,8 @@ static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
            available recompiled runtime may make this entry launch-ready; a
            staged retail source without that runtime remains actionable but
            fail-closed when PLAY/LAUNCH PREPARED is activated. */
-        app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
-            app->runtime_root[0] ? app->runtime_root : NULL,
-            app->inspecting_game.title_id);
+        app->inspecting_game.is_prepared = player_app_validate_runtime_package(
+            app, &app->inspecting_game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
         app->inspecting_game.status = app->inspecting_game.is_prepared
             ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
         copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
@@ -541,9 +539,8 @@ static int stage_iso_synchronously(PlayerApp *app) {
     app->inspecting_game.extracted_audio_count = summary.extracted_audio_count;
     app->inspecting_game.extracted_visual_count = summary.extracted_visual_count;
     app->inspecting_game.extracted_layout_count = summary.extracted_layout_count;
-    app->inspecting_game.is_prepared = nk_launch_runtime_package_available(
-        app->runtime_root[0] ? app->runtime_root : NULL,
-        app->inspecting_game.title_id);
+    app->inspecting_game.is_prepared = player_app_validate_runtime_package(
+        app, &app->inspecting_game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
     app->inspecting_game.status = app->inspecting_game.is_prepared
         ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
     copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
@@ -936,7 +933,9 @@ int main(int argc, char *argv[]) {
             return 2;
         }
         app.selected_game_index = launch_index;
-        if (!app.games[launch_index].is_prepared) {
+        if (player_app_validate_runtime_package(
+                &app, &app.games[launch_index], NULL, NULL, 0) !=
+            NK_RUNTIME_PACKAGE_OK) {
             fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
                     launch_index);
             return 3;
