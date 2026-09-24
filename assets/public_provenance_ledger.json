@@ -948,7 +948,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1254a5ad9af944f789e4eae2370f71919be5b76eaf196370383fec9028684fe7"
+      "sha256": "58188f66b24e5e1e2188ec52872ba0e5db244c0537be2038e18995a559977aff"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
