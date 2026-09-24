@@ -480,7 +480,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "366ed4f601fff1b9ca3d3015eb6a7b70eff85e2755f429ba7ecb16c765f96c2b"
+      "sha256": "36fcb9ff9c90672c287ed0637cddd8d2ecc76a239ca02a384d77e51907dec8f2"
     },
     {
       "path": "assets/titles/README.md",
@@ -489,7 +489,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6fec8c7c1d8d3d2e268f6cc6ecf4d22df9700fb0550b0c4e9e4ecb1328522ddb"
+      "sha256": "df5e4b28a53de4d54148169b0e486efba2aea67f0203ef6233548b242aa73e3c"
     },
     {
       "path": "assets/titles/display-smoke.json",
@@ -3636,7 +3636,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5f4d9a0ffebf7542b6f4df4fcd307090a69ee4429fa2383196b9058a0689aac1"
+      "sha256": "4e300fe6d7af6a87db366f5f291e17bff28c731fc44d8e5fae698b93f77fb9cd"
     },
     {
       "path": "pyproject.toml",
@@ -3861,7 +3861,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cc53d793a59ad261f9f5c33422ac62177f308e5e553c33e76091143e22173548"
+      "sha256": "80495c627385c7f7c1fd905dcd0c9b9681121f1b59013edd00e2a1b7902d0c1e"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -9086,7 +9086,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "49c0ceaa64adbd1f2ed1a3ada32fd4fdadeec7dc0b7f6becf439f5e3f97eb4c6"
+      "sha256": "218a61c0435a716393f448b5535daf494650e2794c234b70a4a67872dc77288e"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
@@ -9746,7 +9746,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "18fea86cf330233f6b80643f93da59e7125e5e5b4cf0fc28fcbfcfc7eb77fdd9"
+      "sha256": "abc1d5908ed2f293529b4dbf7d00e720a30d0df1055ab85555f1594c7f668274"
     },
     {
       "path": "tools/test_title_manifest_parity.py",
@@ -9758,7 +9758,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aee6cf884ff9c20d518b6ce846aba6ee4c2b90a5382ea98011b996b241236ecd"
+      "sha256": "fd95c651d8cfd3dfe49562fcb4f7a1f6f410961167e15d7b415026e9d2a2cb1a"
     },
     {
       "path": "tools/test_title_protected_digest.py",
@@ -9998,7 +9998,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "130b6972335f536cf185bc4a5fc9f0509beb9dce5aeb9503209c0f943b31a319"
+      "sha256": "2ebd31ea5bafdd6c5a44d1b83196226240694388a7027546c56c6148dd6433a9"
     },
     {
       "path": "tools/title_runtime_config.py",
