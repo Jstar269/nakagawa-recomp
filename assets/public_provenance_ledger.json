@@ -302,7 +302,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "49fde70c43e5533f993b7af966064110e8f198828e72331692c289a6876bc1e6"
+      "sha256": "c9ff0ecbf652dcd7a3df0c49058b624b8c4aa0e28c2e8d5fa909b50c978ae2de"
     },
     {
       "path": "REVIEW.md",
@@ -1038,7 +1038,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3c5f23e248fb5581986500be837eb97c33e9f00e9ef48296e32ad120a4d73d02"
+      "sha256": "aeb77207c5437ef74628af0e5ab0f00c807a61b4b0d6256990bd95e6c4108d07"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
