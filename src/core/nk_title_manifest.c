@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* lstat is POSIX: without this, -std=c99/c11 on glibc leaves it undeclared. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "nk_title_manifest.h"
 #include "nk_iso.h"
 #include "nk_json.h"
@@ -10,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
@@ -1937,6 +1943,65 @@ static bool json_writer_node(NkJsonWriter *writer, const JsonNode *node,
     return false;
 }
 
+static bool json_writer_canonical_node(NkJsonWriter *writer, const JsonNode *node,
+                                       unsigned int depth) {
+    if (!writer || !node || depth > NK_MANIFEST_MAX_JSON_DEPTH) return false;
+    if (node->type != JSON_OBJECT) return json_writer_node(writer, node, depth);
+    size_t *order = NULL;
+    if (node->u.obj.count > 1) {
+        order = malloc(node->u.obj.count * sizeof(*order));
+        if (!order) return false;
+        for (size_t i = 0; i < node->u.obj.count; i++) order[i] = i;
+        for (size_t i = 1; i < node->u.obj.count; i++) {
+            size_t selected = i;
+            for (size_t j = i + 1; j < node->u.obj.count; j++) {
+                if (strcmp(node->u.obj.members[order[j]].key,
+                           node->u.obj.members[order[selected]].key) < 0) {
+                    selected = j;
+                }
+            }
+            size_t temporary = order[i];
+            order[i] = order[selected];
+            order[selected] = temporary;
+        }
+    }
+    bool ok = json_writer_append(writer, "{");
+    for (size_t i = 0; ok && i < node->u.obj.count; i++) {
+        const JsonMember *member = &node->u.obj.members[order ? order[i] : i];
+        if ((i && !json_writer_append(writer, ",")) ||
+            !json_writer_string(writer, member->key) ||
+            !json_writer_append(writer, ":") ||
+            !json_writer_canonical_node(writer, member->val, depth + 1)) {
+            ok = false;
+        }
+    }
+    free(order);
+    return ok && json_writer_append(writer, "}");
+}
+
+static bool package_hash_json_node(const JsonNode *node, char out_hex[65]) {
+    if (!node || !out_hex) return false;
+    NkJsonWriter writer = {0};
+    if (!json_writer_canonical_node(&writer, node, 0) ||
+        !json_writer_append(&writer, "\n")) {
+        free(writer.data);
+        return false;
+    }
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    nk_sha256_update(&ctx, (const uint8_t *)writer.data, writer.length);
+    uint8_t digest[32];
+    nk_sha256_finish(&ctx, digest);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out_hex[i * 2] = hex[digest[i] >> 4];
+        out_hex[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out_hex[64] = '\0';
+    free(writer.data);
+    return true;
+}
+
 static bool json_nodes_equal(const JsonNode *a, const JsonNode *b) {
     if (!a || !b || a->type != b->type) return a == b;
     switch (a->type) {
@@ -2103,12 +2168,28 @@ static bool package_path_is_within(const char *root, const char *path) {
     return abs_path[root_length] == '/' || abs_path[root_length] == '\\';
 }
 
+static bool package_path_is_symlink(const char *path) {
+    if (!path || !*path) return true;
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                           wide, 32768) <= 0) return true;
+    DWORD attributes = GetFileAttributesW(wide);
+    return attributes == INVALID_FILE_ATTRIBUTES ||
+           (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+    struct stat info;
+    return lstat(path, &info) != 0 || S_ISLNK(info.st_mode);
+#endif
+}
+
 static bool package_direct_file(const char *package_root, const char *relative,
                                 char *out_path, size_t out_size) {
     if (!relative || !is_valid_portable_path(relative)) return false;
     char joined[NK_MAX_PATH * 2];
     if (!package_join_path(joined, sizeof(joined), package_root, relative) ||
         !nk_platform_file_exists(joined) ||
+        package_path_is_symlink(joined) ||
         !package_path_is_within(package_root, joined)) return false;
     char absolute[NK_MAX_PATH * 2];
     if (!nk_platform_absolute_path(joined, absolute, sizeof(absolute)) ||
@@ -2165,7 +2246,8 @@ static void package_rebuild_reason(char *reason, size_t reason_size,
         /* The short library command comes first: UI error fields are bounded
            and the path-heavy developer route may be truncated. */
         snprintf(reason, reason_size,
-            "%s Build it with: python tools/nk_cli.py build-package %s (#296). "
+            "%s Cache component/epoch mismatch or incomplete entry (#316). "
+            "Build it with: python tools/nk_cli.py build-package %s (#296/#297). "
             "Developer route: python tools/title_codegen_plan.py \"%s\" --package --game-elf \"%s\" --output-dir \"%s\".",
             detail ? detail : "Runtime package needs rebuilding.",
             disc_id, manifest_path, executable_path, output_path);
@@ -2185,6 +2267,125 @@ static bool package_check_sha_object(const JsonNode *node, const char *path,
     return true;
 }
 
+static bool package_cache_text(const JsonNode *node) {
+    return node && node->type == JSON_STRING;
+}
+
+static bool package_validate_cache(const JsonNode *package,
+                                   const char *input_executable_hash,
+                                   char *error, size_t error_size) {
+    static const char * const cache_keys[] = {
+        "format", "schema_version", "key", "codegen_options",
+        "runtime_abi_compatibility", NULL
+    };
+    static const char * const key_keys[] = {"schema_version", "aot", "native", NULL};
+    static const char * const aot_keys[] = {"digest", "components", NULL};
+    static const char * const aot_component_keys[] = {
+        "executable_sha256", "manifest_sha256", "modules_sha256", "psp_header_sha256",
+        "analyzer_codegen_epoch", "analyzer_sha256", "codegen_sha256",
+        "codegen_options_sha256", "generated_code_abi_epoch", "runtime_abi_epoch", NULL
+    };
+    static const char * const native_keys[] = {"digest", "components", NULL};
+    static const char * const native_component_keys[] = {
+        "generated_code_digest", "compiler_identity", "compiler_target",
+        "runtime_source_digest", "compile_flags", "link_flags", "runtime_abi_epoch", NULL
+    };
+    static const char * const compatibility_keys[] = {
+        "current_epoch", "generated_code_reusable", NULL
+    };
+    const JsonNode *cache = obj_get(package, "cache");
+    const JsonNode *key = obj_get(cache, "key");
+    const JsonNode *aot = obj_get(key, "aot");
+    const JsonNode *native = obj_get(key, "native");
+    const JsonNode *components = obj_get(aot, "components");
+    const JsonNode *native_components = obj_get(native, "components");
+    const JsonNode *inputs = obj_get(package, "inputs");
+    const char *value = NULL;
+    const char *aot_digest = NULL;
+    const char *native_digest = NULL;
+    const char *manifest_digest = NULL;
+    const char *codegen_options_digest = NULL;
+    const char *modules_digest = NULL;
+    char computed_digest[65];
+    if (!package_check_object(cache, "$.cache", cache_keys, cache_keys, error, error_size) ||
+        !package_check_object(key, "$.cache.key", key_keys, key_keys, error, error_size) ||
+        !package_check_object(aot, "$.cache.key.aot", aot_keys, aot_keys, error, error_size) ||
+        !package_check_object(native, "$.cache.key.native", native_keys, native_keys, error, error_size) ||
+        !package_check_object(components, "$.cache.key.aot.components", aot_component_keys,
+                              aot_component_keys, error, error_size) ||
+        !package_check_object(native_components, "$.cache.key.native.components",
+                              native_component_keys, native_component_keys, error, error_size)) return false;
+    if (!package_string(obj_get(cache, "format"), &value) ||
+        strcmp(value, "nakagawa-aot-cache") != 0 ||
+        !package_number(obj_get(cache, "schema_version"), NK_AOT_CACHE_SCHEMA_VERSION) ||
+        !package_number(obj_get(key, "schema_version"), NK_AOT_CACHE_SCHEMA_VERSION) ||
+
+        obj_get(cache, "codegen_options")->type != JSON_OBJECT ||
+        !package_check_object(obj_get(cache, "runtime_abi_compatibility"),
+                              "$.cache.runtime_abi_compatibility", compatibility_keys,
+                              compatibility_keys, error, error_size) ||
+        !package_number(obj_get(obj_get(cache, "runtime_abi_compatibility"), "current_epoch"),
+                        NK_AOT_RUNTIME_ABI_EPOCH) ||
+        obj_get(obj_get(cache, "runtime_abi_compatibility"), "generated_code_reusable")->type != JSON_BOOL) {
+        snprintf(error, error_size, "package cache metadata does not match the v1 cache contract");
+        return false;
+    }
+    if (!inputs || inputs->type != JSON_OBJECT ||
+        !package_sha256(obj_get(aot, "digest"), &aot_digest) ||
+        !package_sha256(obj_get(native, "digest"), &native_digest) ||
+        !package_hash_json_node(components, computed_digest) ||
+        strcmp(computed_digest, aot_digest) != 0 ||
+        !package_hash_json_node(native_components, computed_digest) ||
+        strcmp(computed_digest, native_digest) != 0 ||
+        !package_sha256(obj_get(components, "executable_sha256"), &value) ||
+        strcmp(value, input_executable_hash) != 0 ||
+        !package_sha256(obj_get(components, "manifest_sha256"), &manifest_digest) ||
+        !package_sha256(obj_get(obj_get(inputs, "manifest"), "sha256"), NULL) ||
+        strcmp(manifest_digest, obj_get(obj_get(inputs, "manifest"), "sha256")->u.str_val) != 0 ||
+        !package_sha256(obj_get(components, "modules_sha256"), &modules_digest) ||
+        !package_hash_json_node(obj_get(inputs, "modules"), computed_digest) ||
+        strcmp(computed_digest, modules_digest) != 0 ||
+        !package_string(obj_get(components, "analyzer_codegen_epoch"), NULL) ||
+        !package_sha256(obj_get(components, "analyzer_sha256"), NULL) ||
+        !package_sha256(obj_get(components, "codegen_sha256"), NULL) ||
+        !package_sha256(obj_get(components, "codegen_options_sha256"), &codegen_options_digest) ||
+        !package_hash_json_node(obj_get(cache, "codegen_options"), computed_digest) ||
+        strcmp(computed_digest, codegen_options_digest) != 0 ||
+        !package_number(obj_get(components, "generated_code_abi_epoch"),
+                        NK_AOT_GENERATED_CODE_ABI_EPOCH) ||
+        !package_number(obj_get(components, "runtime_abi_epoch"), NK_AOT_RUNTIME_ABI_EPOCH)) {
+        snprintf(error, error_size, "package cache AOT key is invalid or incompatible");
+        return false;
+    }
+    const JsonNode *input_psp_header = obj_get(inputs, "psp_header");
+    const JsonNode *key_psp_header = obj_get(components, "psp_header_sha256");
+    if ((!input_psp_header || input_psp_header->type != JSON_NULL) &&
+        (!key_psp_header || key_psp_header->type != JSON_STRING ||
+         !package_sha256(key_psp_header, NULL) ||
+         !input_psp_header || input_psp_header->type != JSON_OBJECT ||
+         !package_sha256(obj_get(input_psp_header, "sha256"), NULL) ||
+         strcmp(key_psp_header->u.str_val, obj_get(input_psp_header, "sha256")->u.str_val) != 0)) {
+        snprintf(error, error_size, "package PSP header digest disagrees with cache key");
+        return false;
+    }
+    if ((input_psp_header && input_psp_header->type == JSON_NULL) &&
+        (!key_psp_header || key_psp_header->type != JSON_NULL)) {
+        snprintf(error, error_size, "package PSP header digest disagrees with cache key");
+        return false;
+    }
+    if (!package_sha256(obj_get(native_components, "generated_code_digest"), NULL) ||
+        !package_cache_text(obj_get(native_components, "compiler_identity")) ||
+        !package_cache_text(obj_get(native_components, "compiler_target")) ||
+        !package_sha256(obj_get(native_components, "runtime_source_digest"), NULL) ||
+        !package_cache_text(obj_get(native_components, "compile_flags")) ||
+        !package_cache_text(obj_get(native_components, "link_flags")) ||
+        !package_number(obj_get(native_components, "runtime_abi_epoch"), NK_AOT_RUNTIME_ABI_EPOCH)) {
+        snprintf(error, error_size, "package cache native key is invalid or incompatible");
+        return false;
+    }
+    return true;
+}
+
 static bool package_validate_contract(const JsonNode *package,
                                       const char *expected_title_id,
                                       uint32_t player_abi_version,
@@ -2193,7 +2394,7 @@ static bool package_validate_contract(const JsonNode *package,
                                       const char **input_exe_hash,
                                       char *error, size_t error_size) {
     static const char * const root_keys[] = {
-        "format", "schema_version", "title", "inputs", "runtime", "executable",
+        "format", "schema_version", "title", "inputs", "runtime", "executable", "cache",
         "generated_objects", "required_local_assets", "build_report", NULL
     };
     static const char * const title_keys[] = {
@@ -2273,6 +2474,7 @@ static bool package_validate_contract(const JsonNode *package,
     const JsonNode *psp_header = obj_get(inputs, "psp_header");
     if (psp_header->type != JSON_NULL &&
         !package_check_sha_object(psp_header, "$.inputs.psp_header", NULL, error, error_size)) return false;
+    if (!package_validate_cache(package, *input_exe_hash, error, error_size)) return false;
 
     const JsonNode *runtime = obj_get(package, "runtime");
     if (!package_check_object(runtime, "$.runtime", runtime_keys, runtime_required, error, error_size)) return false;
@@ -2379,10 +2581,11 @@ static bool package_validate_contract(const JsonNode *package,
 static bool package_validate_build_report(const JsonNode *report,
                                           const char *title_id,
                                           const JsonNode *package_inputs,
+                                          const JsonNode *package_cache,
                                           uint32_t player_abi_version,
                                           char *error, size_t error_size) {
     static const char * const root_keys[] = {
-        "format", "schema_version", "title_id", "runtime_abi", "input_hashes",
+        "format", "schema_version", "title_id", "runtime_abi", "cache", "input_hashes",
         "tools", "coverage", "unsupported", "analysis_diagnostics", "artifacts", NULL
     };
     static const char * const runtime_keys[] = {"name", "version", NULL};
@@ -2402,7 +2605,8 @@ static bool package_validate_build_report(const JsonNode *report,
         if (error && error_size && !error[0]) snprintf(error, error_size, "build report ABI does not match this player");
         return false;
     }
-    if (!json_nodes_equal(obj_get(report, "input_hashes"), package_inputs) ||
+    if (!json_nodes_equal(obj_get(report, "cache"), package_cache) ||
+        !json_nodes_equal(obj_get(report, "input_hashes"), package_inputs) ||
         obj_get(report, "tools")->type != JSON_OBJECT ||
         obj_get(report, "coverage")->type != JSON_OBJECT ||
         obj_get(report, "unsupported")->type != JSON_OBJECT ||
@@ -2418,6 +2622,143 @@ static bool package_validate_build_report(const JsonNode *report,
         if (error && error_size) snprintf(error, error_size, "build report unsupported boundaries must be arrays");
         return false;
     }
+    return true;
+}
+
+static bool package_completion_has_path(const JsonNode *artifacts, const char *path) {
+    if (!artifacts || artifacts->type != JSON_ARRAY || !path) return false;
+    for (size_t i = 0; i < artifacts->u.arr.count; i++) {
+        const char *value = NULL;
+        const JsonNode *record = artifacts->u.arr.items[i];
+        if (package_string(obj_get(record, "path"), &value) && strcmp(value, path) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool package_validate_completion(const char *package_root,
+                                        const JsonNode *package,
+                                        const JsonNode *package_cache,
+                                        const char *exe_relative,
+                                        char *error, size_t error_size) {
+    static const char * const root_keys[] = {
+        "format", "schema_version", "status", "cache_key", "artifacts", NULL
+    };
+    static const char * const artifact_keys[] = {"path", "sha256", NULL};
+    char completion_path[NK_MAX_PATH * 2];
+    char *completion_text = NULL;
+    size_t completion_length = 0;
+    if (!package_direct_file(package_root, NK_AOT_COMPLETION_MANIFEST,
+                             completion_path, sizeof(completion_path)) ||
+        !package_read_json(completion_path, 1024u * 1024u,
+                           &completion_text, &completion_length, error, error_size)) {
+        snprintf(error, error_size, "Runtime package completion manifest is missing or unreadable.");
+        return false;
+    }
+    JsonNode *completion = json_parse(completion_text, completion_length, error, error_size);
+    free(completion_text);
+    if (!completion) {
+        snprintf(error, error_size, "Runtime package completion manifest is malformed.");
+        return false;
+    }
+    const char *value = NULL;
+    if (!package_check_object(completion, "completion-manifest", root_keys, root_keys,
+                              error, error_size) ||
+        !package_string(obj_get(completion, "format"), &value) ||
+        strcmp(value, "nakagawa-aot-cache-completion") != 0 ||
+        !package_number(obj_get(completion, "schema_version"), 1) ||
+        !package_string(obj_get(completion, "status"), &value) ||
+        strcmp(value, "complete") != 0 ||
+        !json_nodes_equal(obj_get(completion, "cache_key"), obj_get(package_cache, "key"))) {
+        snprintf(error, error_size, "Runtime package completion manifest does not match the cache key.");
+        json_free(completion);
+        return false;
+    }
+    const JsonNode *artifacts = obj_get(completion, "artifacts");
+    if (!artifacts || artifacts->type != JSON_ARRAY || artifacts->u.arr.count == 0) {
+        snprintf(error, error_size, "Runtime package completion manifest has no artifacts.");
+        json_free(completion);
+        return false;
+    }
+    bool package_seen = false;
+    bool report_seen = false;
+    bool executable_seen = false;
+    char image_relative[NK_MAX_PATH];
+    const char *extension = strrchr(exe_relative, '.');
+    size_t stem_length = extension && extension != exe_relative
+        ? (size_t)(extension - exe_relative) : strlen(exe_relative);
+    int image_length = snprintf(image_relative, sizeof(image_relative),
+                                "%.*s_image.bin", (int)stem_length, exe_relative);
+    for (size_t i = 0; i < artifacts->u.arr.count; i++) {
+        const JsonNode *record = artifacts->u.arr.items[i];
+        const char *relative = NULL;
+        const char *expected_hash = NULL;
+        if (!package_check_object(record, "completion-manifest.artifacts[]", artifact_keys,
+                                  artifact_keys, error, error_size) ||
+            !package_string(obj_get(record, "path"), &relative) ||
+            !is_valid_portable_path(relative) ||
+            !package_sha256(obj_get(record, "sha256"), &expected_hash)) {
+            if (error && error_size && !error[0]) snprintf(error, error_size,
+                "Runtime package completion manifest contains an invalid artifact path near '%s'.",
+                relative ? relative : "(missing)");
+            json_free(completion);
+            return false;
+        }
+        for (size_t j = 0; j < i; j++) {
+            const char *previous = NULL;
+            if (package_string(obj_get(artifacts->u.arr.items[j], "path"), &previous) &&
+                strcmp(previous, relative) == 0) {
+                snprintf(error, error_size, "Runtime package completion manifest repeats an artifact.");
+                json_free(completion);
+                return false;
+            }
+        }
+        char artifact_path[NK_MAX_PATH * 2];
+        char actual_hash[65];
+        if (!package_direct_file(package_root, relative, artifact_path,
+                                 sizeof(artifact_path)) ||
+            !package_hash_file(artifact_path, actual_hash) ||
+            strcmp(actual_hash, expected_hash) != 0) {
+            if (strcmp(relative, exe_relative) == 0) {
+                snprintf(error, error_size,
+                         "Package executable hash is stale; completion artifact digest mismatch: %s.", relative);
+            } else {
+                snprintf(error, error_size,
+                         "Runtime package completion artifact digest mismatch: %s.", relative);
+            }
+            json_free(completion);
+            return false;
+        }
+        if (strcmp(relative, "package.json") == 0) package_seen = true;
+        if (strcmp(relative, "build-report.json") == 0) report_seen = true;
+        if (strcmp(relative, exe_relative) == 0) executable_seen = true;
+    }
+    bool image_seen = image_length > 0 && (size_t)image_length < sizeof(image_relative) &&
+                      package_completion_has_path(artifacts, image_relative);
+    if (!package_seen || !report_seen || !executable_seen || !image_seen) {
+        snprintf(error, error_size,
+                 "Runtime package completion manifest does not cover required package artifacts.");
+        json_free(completion);
+        return false;
+    }
+    const JsonNode *objects = obj_get(package, "generated_objects");
+    if (!objects || objects->type != JSON_ARRAY) {
+        snprintf(error, error_size, "Runtime package generated object list is invalid.");
+        json_free(completion);
+        return false;
+    }
+    for (size_t i = 0; i < objects->u.arr.count; i++) {
+        const char *relative = NULL;
+        if (!package_string(obj_get(objects->u.arr.items[i], "path"), &relative) ||
+            !package_completion_has_path(artifacts, relative)) {
+            snprintf(error, error_size,
+                     "Runtime package completion manifest omits a generated object.");
+            json_free(completion);
+            return false;
+        }
+    }
+    json_free(completion);
     return true;
 }
 
@@ -2614,6 +2955,12 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         json_free(package);
         return status;
     }
+    if (!package_validate_completion(package_root, package, obj_get(package, "cache"),
+                                     exe_relative, parse_error, sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_STALE;
+    }
 
     if (is_experimental) {
         NkTitleEntry profile_title;
@@ -2686,7 +3033,8 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     JsonNode *report = json_parse(report_text, report_length, parse_error, sizeof(parse_error));
     free(report_text);
     if (!report || !package_validate_build_report(
-            report, title_id, obj_get(package, "inputs"), player_abi_version,
+            report, title_id, obj_get(package, "inputs"), obj_get(package, "cache"),
+            player_abi_version,
             parse_error, sizeof(parse_error))) {
         package_rebuild_reason(reason, reason_size,
             parse_error[0] ? parse_error : "Package build report is invalid.",

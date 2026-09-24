@@ -911,13 +911,54 @@ int main(int argc, char **argv) {{
             captured_command.extend(command)
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
+            module_path = Path(command[command.index("--module-dir") + 1])
+            cache_key = nk_cli._current_package_cache_key(
+                manifest,
+                Path(command[1]),
+                hashlib.sha256(eboot_bytes).hexdigest(),
+                module_path,
+                None,
+            )
+            executable = build_dir / "synthetic.exe"
+            image = build_dir / "synthetic_image.bin"
+            generated = build_dir / "synthetic_recomp.o"
+            executable.write_bytes(b"fake executable")
+            image.write_bytes(b"fake image")
+            generated.write_bytes(b"fake object")
+            cache = nk_cli.package_cache.cache_metadata(
+                cache_key,
+                nk_cli._package_codegen_options(manifest, os.environ),
+            )
             package = {
+                "cache": cache,
                 "title": {"id": title_id},
-                "inputs": {"executable": {"sha256": hashlib.sha256(eboot_bytes).hexdigest()}},
+                "inputs": {
+                    "manifest": {"sha256": cache_key["aot"]["components"]["manifest_sha256"]},
+                    "executable": {"sha256": hashlib.sha256(eboot_bytes).hexdigest()},
+                    "modules": [{
+                        "name": "synthetic2.prx",
+                        "load_address": f"0x{int(manifest['modules'][0]['load_address']):08x}",
+                        "sha256": hashlib.sha256(module_bytes).hexdigest(),
+                    }],
+                    "psp_header": None,
+                },
+                "executable": {
+                    "path": executable.name,
+                    "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                },
+                "generated_objects": [{
+                    "path": generated.name,
+                    "sha256": hashlib.sha256(generated.read_bytes()).hexdigest(),
+                }],
             }
+            report = {"cache": cache}
             (build_dir / "package.json").write_text(
                 json.dumps(package), encoding="utf-8"
             )
+            (build_dir / "build-report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            nk_cli.package_cache.write_completion_manifest(build_dir, cache_key)
             return subprocess.CompletedProcess(command, 0, "", "")
 
         args = type("BuildArgs", (), {
@@ -936,6 +977,13 @@ int main(int argc, char **argv) {{
         module_dir = Path(captured_command[captured_command.index("--module-dir") + 1])
         self.assertEqual(game_elf.read_bytes(), eboot_bytes)
         self.assertEqual((module_dir / "synthetic2.prx").read_bytes(), module_bytes)
+        captured_command.clear()
+        with patch.object(nk_cli, "_load_entry_manifest",
+                          return_value=(manifest_path, manifest, None)), \
+             patch.object(nk_cli.subprocess, "run", side_effect=fake_package_build), \
+             patch.object(nk_cli, "_stage_runtime_assets"):
+            self.assertEqual(nk_cli.cmd_build_package(args), 0)
+        self.assertEqual(captured_command, [])
         (decrypted_dir / "synthetic2.prx").write_bytes(b"not an ELF")
         with self.assertRaisesRegex(nk_cli.PackageBuildError, "not a decrypted ELF"):
             nk_cli._copy_optional_modules(
