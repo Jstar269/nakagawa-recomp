@@ -17,6 +17,7 @@ import subprocess
 import sys
 import uuid
 
+from nk_core import package_cache
 from nk_doctor_core import (
     EXPECTED_VFPU_FILES,
     PRIVATE_EXTENSIONS,
@@ -1488,6 +1489,59 @@ def check_build_products(report: Report, game_name: str = "recomp") -> None:
         report.pass_("BUILD_IMAGE", f"Found nonempty {game_name}_image.bin", path=image, metadata={"bytes": image.stat().st_size})
     else:
         report.fail("BUILD_IMAGE", f"Missing or empty build/{game_name}/{game_name}_image.bin", path=image, remediation="Run the full code-generation pipeline.")
+
+
+def check_runtime_package_cache(
+    report: Report,
+    user_data_root: Path,
+    disc_id: str,
+    expected_key: dict[str, object] | None = None,
+) -> None:
+    if re.fullmatch(r"[A-Za-z]{4}[0-9]{5}", disc_id or "") is None:
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Disc ID is not a valid nine-character PSP identity",
+            remediation="Re-import the ISO before validating its package cache.",
+        )
+        return
+    package_dir = user_data_root / "packages" / disc_id.upper()
+    remediation = f"Run: python tools/nk_cli.py build-package {disc_id.upper()}"
+    if not package_dir.is_dir():
+        report.info(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package is missing; no cache entry is launchable",
+            path=package_dir,
+            remediation=remediation,
+        )
+        return
+    valid, reason = package_cache.validate_package_cache(package_dir)
+    if not valid:
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package cache entry is incomplete or corrupt",
+            path=package_dir,
+            detail=reason,
+            remediation=remediation,
+        )
+        return
+    if expected_key is not None:
+        previous_key = package_cache.package_cache_key(package_dir)
+        decision = package_cache.compare_cache_keys(previous_key, expected_key)
+        if not decision.native_objects_reusable:
+            detail = ", ".join(decision.reasons) or "cache key changed"
+            report.warn(
+                "RUNTIME_PACKAGE_CACHE",
+                "Runtime package requires rebuild because its cache key changed",
+                path=package_dir,
+                detail=detail,
+                remediation=remediation,
+            )
+            return
+    report.pass_(
+        "RUNTIME_PACKAGE_CACHE",
+        "Runtime package completion manifest and cache digests are valid",
+        path=package_dir,
+    )
 
 
 class _GitConfigError(Exception):

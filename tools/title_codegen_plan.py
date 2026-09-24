@@ -48,6 +48,7 @@ import time
 from typing import Any
 
 import title_manifest
+from nk_core import package_cache
 
 GAME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MIN_FUNCS_PER_CHUNK = 1
@@ -901,6 +902,85 @@ def _hash_package_inputs(
     }
 
 
+def _cache_codegen_options(
+    plan: dict[str, Any],
+    *,
+    selected_optional: set[str],
+    funcs_per_chunk: int,
+) -> dict[str, Any]:
+    return {
+        "base": plan["environment"]["GAME_BASE"],
+        "entry": plan["environment"]["GAME_ENTRY"],
+        "title_extra_spans": plan["environment"]["TITLE_EXTRA_SPANS"],
+        "profile": plan["codegen_profile"],
+        "funcs_per_chunk": funcs_per_chunk,
+        "optional_modules": sorted(selected_optional),
+        "codegen_tool": os.environ.get("CODEGEN_TOOL", "tools/codegen.py"),
+        "codegen_user_args": os.environ.get("CODEGEN_USER_ARGS", ""),
+        "lle_cpu": os.environ.get("LLE_CPU", ""),
+        "stale_code_policy": os.environ.get(
+            "STALE_CODE_POLICY", os.environ.get("SR_STALE_POLICY", "")
+        ),
+        "chunk_target_bytes": os.environ.get("CHUNK_TARGET_BYTES", ""),
+    }
+
+
+def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
+    if not source.is_dir() or source.is_symlink():
+        raise PackageRouteError("PACKAGE_REUSE_INVALID", "reusable AOT source is not a directory")
+    destination.mkdir(parents=True, exist_ok=True)
+    exact = {
+        f"{game_name}_recomp.c",
+        f"{game_name}_recomp_funcs.h",
+        f"{game_name}_recomp_stubs.txt",
+        f"{game_name}_image.bin",
+        f"{game_name}_imports.toml",
+    }
+    copied: set[str] = set()
+    for path in source.iterdir():
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.name in exact or (
+            path.name.startswith(f"{game_name}_recomp_")
+            and path.suffix.lower() in {".c", ".h"}
+        ):
+            shutil.copy2(path, destination / path.name)
+            copied.add(path.name)
+    missing = sorted(exact - copied)
+    if missing:
+        raise PackageRouteError(
+            "PACKAGE_REUSE_INVALID",
+            "reusable AOT source is incomplete: " + ", ".join(missing),
+        )
+
+
+def _cache_key_for_build(
+    *,
+    input_hashes: dict[str, Any],
+    plan: dict[str, Any],
+    selected_optional: set[str],
+    funcs_per_chunk: int,
+    public_safe: bool,
+    compiler_name: str,
+) -> dict[str, Any]:
+    options = _cache_codegen_options(
+        plan,
+        selected_optional=selected_optional,
+        funcs_per_chunk=funcs_per_chunk,
+    )
+    return package_cache.build_cache_key(
+        input_hashes=input_hashes,
+        codegen_options=options,
+        analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
+        compiler=package_cache.compiler_identity(compiler_name, repository_root=ROOT),
+        target=package_cache.compiler_target(),
+        runtime_source_digest=package_cache.source_tree_digest(ROOT),
+        compile_flags=package_cache.native_compile_flags(public_safe=public_safe),
+        link_flags=os.environ.get("LDFLAGS", ""),
+    )
+
+
 def build_package(
     manifest: dict[str, Any],
     *,
@@ -916,6 +996,8 @@ def build_package(
     python_command: str = "python",
     make_command: str | None = None,
     public_safe: bool = False,
+    reuse_aot_from: Path | None = None,
+    native_only: bool = False,
 ) -> dict[str, Any]:
     """Run the canonical two-phase Make build and emit package/report JSON."""
     try:
@@ -924,6 +1006,11 @@ def build_package(
         raise PackageRouteError("PACKAGE_INVALID_MANIFEST", str(exc)) from exc
 
     selected_optional = include_optional_modules or set()
+    if native_only and reuse_aot_from is None:
+        raise PackageRouteError(
+            "PACKAGE_REUSE_INVALID",
+            "native-only compilation requires a verified reusable AOT source",
+        )
     selected_name = _package_game_name(normalized, game_name)
     # The output directory is written by the Make recipes, so it must itself be
     # Make-safe. Inputs are staged into it when their own paths are not.
@@ -1060,6 +1147,29 @@ def build_package(
             )
         make_display_name, make_identity = _version_identity(make_executable, "Make")
         cc_display_name, cc_identity = _version_identity(cc_executable, "C compiler")
+        cache_key = _cache_key_for_build(
+            input_hashes=input_hashes,
+            plan=plan,
+            selected_optional=selected_optional,
+            funcs_per_chunk=funcs_per_chunk,
+            public_safe=public_safe,
+            compiler_name=cc_name,
+        )
+        if reuse_aot_from is not None:
+            reuse_source = _absolute_path(reuse_aot_from, "reusable AOT source", make_safe=False)
+            valid_reuse, reuse_reason = package_cache.validate_package_cache(reuse_source)
+            if not valid_reuse:
+                raise PackageRouteError("PACKAGE_REUSE_INVALID", reuse_reason)
+            previous_key = package_cache.package_cache_key(reuse_source)
+            decision = package_cache.compare_cache_keys(previous_key, cache_key)
+            if not decision.generated_c_reusable:
+                detail = ", ".join(decision.reasons) or "cache key mismatch"
+                raise PackageRouteError(
+                    "PACKAGE_REUSE_REFUSED",
+                    "generated C cannot be reused because " + detail,
+                )
+            if native_only:
+                _copy_reusable_aot(reuse_source, build_workspace, selected_name)
 
         extra_elf_specs = [
             arg.split("=", 1)[1]
@@ -1086,13 +1196,14 @@ def build_package(
                 if plan["codegen_profile"] != "none"
                 else ""
             ),
-            "CODEGEN_USER_ARGS": "",
+            "CODEGEN_USER_ARGS": os.environ.get("CODEGEN_USER_ARGS", ""),
             "LINK_MAP": link_map.as_posix(),
             "PUBLIC_SAFE": "1" if public_safe else "0",
+            "NK_AOT_PREGENERATED": "1" if native_only else "0",
         })
         try:
             built = subprocess.run(
-                [make_executable, "--no-print-directory", "all"],
+                [make_executable, "--no-print-directory", "compile" if native_only else "all"],
                 cwd=ROOT,
                 env=build_environment,
                 check=False,
@@ -1173,11 +1284,20 @@ def build_package(
             "unsupported_instruction_count": len(unsupported_instructions),
             "unsupported_region_count": len(unsupported_regions),
         }
+        cache = package_cache.cache_metadata(
+            cache_key,
+            _cache_codegen_options(
+                plan,
+                selected_optional=selected_optional,
+                funcs_per_chunk=funcs_per_chunk,
+            ),
+        )
         report = {
             "format": BUILD_REPORT_FORMAT,
             "schema_version": PACKAGE_SCHEMA_VERSION,
             "title_id": normalized["id"],
             "runtime_abi": {"name": "CpuState", "version": codegen_abi_version()},
+            "cache": cache,
             "input_hashes": input_hashes,
             "tools": tools,
             "coverage": coverage,
@@ -1193,6 +1313,7 @@ def build_package(
         package = {
             "format": PACKAGE_FORMAT,
             "schema_version": PACKAGE_SCHEMA_VERSION,
+            "cache": cache,
             "title": {
                 "id": normalized["id"],
                 "display_name": normalized["display_name"],
@@ -1228,6 +1349,13 @@ def build_package(
         package_path = build_workspace / "package.json"
         report_path.write_text(canonical_json(report), encoding="utf-8", newline="\n")
         package_path.write_text(canonical_json(package), encoding="utf-8", newline="\n")
+        package_cache.write_completion_manifest(build_workspace, cache_key)
+        valid_package, package_reason = package_cache.validate_package_cache(
+            build_workspace,
+            expected_key=cache_key,
+        )
+        if not valid_package:
+            raise PackageRouteError("PACKAGE_BUILD_INCOMPLETE", package_reason)
         if build_workspace != output_dir:
             _promote_package(build_workspace, output_dir)
         return package
@@ -1255,6 +1383,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--psp-header", type=Path)
     parser.add_argument("--make-command", help="Make executable (default: mingw32-make on Windows, make elsewhere)")
     parser.add_argument("--public-safe", action="store_true", help="build with the public-safe runtime backends")
+    parser.add_argument("--reuse-aot-from", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--native-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--profile",
         dest="codegen_profile",
@@ -1307,6 +1437,8 @@ def main(argv: list[str] | None = None) -> int:
                 python_command=args.python_command,
                 make_command=args.make_command,
                 public_safe=args.public_safe,
+                reuse_aot_from=args.reuse_aot_from,
+                native_only=args.native_only,
             )
             return 0
         if args.output_dir is not None or args.make_command is not None or args.public_safe:
