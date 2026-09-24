@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """LLE Phase 1 (PR 2) gates: COP0, exceptions, eret, and interpreter support.
 
 Failing-before evidence (spec section 11, PR 2): on the base tree generated

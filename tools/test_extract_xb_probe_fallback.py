@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the psp-recomp authors
 
 """Verify that extract_xb.py can extract XB archives via xb_probe without libxb."""

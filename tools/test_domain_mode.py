@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """LLE Phase 1 (PR 3) gates: domain mode table and the import-call seam.
 
 Failing-before evidence (spec section 11, PR 3): on the base tree generated

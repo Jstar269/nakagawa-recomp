@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
 
 #include "gpu_sdl3vk/ge_gpu.h"
