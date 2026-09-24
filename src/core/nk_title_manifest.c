@@ -255,6 +255,49 @@ static bool is_valid_portable_path(const char *s) {
     return true;
 }
 
+/* filesystem.disc_image is only handed to the runtime (PSP_ISO), never to Make, so its
+ * components may carry spaces, brackets and UTF-8 (ordinary dump names). Mirrors
+ * tools/title_manifest.py disc_image_path(): Windows-forbidden and control characters,
+ * empty/'.'/'..' components, a leading space, a trailing space or dot, and reserved
+ * device names stay rejected. */
+static bool is_valid_disc_image_path(const char *s) {
+    if (!s || !*s) return false;
+    size_t len = strlen(s);
+    if (len > 240) return false;
+    if (s[0] == '/' || s[len - 1] == '/' || strstr(s, "//") != NULL) return false;
+    const char *part = s;
+    while (*part) {
+        const char *end = strchr(part, '/');
+        size_t plen = end ? (size_t)(end - part) : strlen(part);
+        if (plen == 0) return false;
+        if ((plen == 1 && part[0] == '.') || (plen == 2 && part[0] == '.' && part[1] == '.')) return false;
+        if (part[0] == ' ' || part[plen - 1] == ' ' || part[plen - 1] == '.') return false;
+        for (size_t i = 0; i < plen; i++) {
+            unsigned char c = (unsigned char)part[i];
+            if (c < 0x20 || c == 0x7f || strchr("<>:\"\\|?*", (int)c) != NULL) return false;
+        }
+        /* Reserved device name: the text before the first '.', trailing spaces removed. */
+        size_t pre = 0;
+        while (pre < plen && part[pre] != '.') pre++;
+        while (pre > 0 && part[pre - 1] == ' ') pre--;
+        if (pre <= 4) {
+            char base[5];
+            for (size_t i = 0; i < pre; i++) base[i] = (char)toupper((unsigned char)part[i]);
+            base[pre] = '\0';
+            static const char * const reserved[] = {
+                "CON", "PRN", "AUX", "NUL",
+                "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", NULL
+            };
+            for (int r = 0; reserved[r]; r++) {
+                if (strcmp(base, reserved[r]) == 0) return false;
+            }
+        }
+        part = end ? end + 1 : part + plen;
+    }
+    return true;
+}
+
 static bool is_guest_device_path(const char *s) {
     if (!s || !*s) return false;
     size_t len = strlen(s);
@@ -721,11 +764,11 @@ bool nk_title_manifest_parse_buffer(
 
     /* 9. filesystem validation */
     JsonNode *fs_node = obj_get(root, "filesystem");
-    /* module_dir/psp_header/disc_image are optional input-location declarations
+    /* executable/module_dir/psp_header/disc_image are optional input-location declarations
      * (issue #196 Phase 4): a manifest declares where its private inputs live.
      * The runtime consumes only the required runtime-filesystem contract today;
      * the optional declarations are accepted (and validated) for tool parity. */
-    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "module_dir", "psp_header", "disc_image", NULL};
+    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", NULL};
     static const char * const required_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", NULL};
     if (!check_object_keys(fs_node, "$.filesystem", allowed_fs_keys, required_fs_keys, error_buf, error_buf_len)) {
         json_free(root);
@@ -744,7 +787,8 @@ bool nk_title_manifest_parse_buffer(
         return false;
     }
     {
-        static const char * const optional_fs_paths[] = {"module_dir", "psp_header", "disc_image"};
+        /* Paths the manager hands to Make keep the strict Make-safe component rule. */
+        static const char * const optional_fs_paths[] = {"executable", "module_dir", "psp_header"};
         for (int oi = 0; oi < 3; oi++) {
             JsonNode *opt_node = obj_get(fs_node, optional_fs_paths[oi]);
             if (opt_node && (opt_node->type != JSON_STRING || !is_valid_portable_path(opt_node->u.str_val))) {
@@ -753,6 +797,13 @@ bool nk_title_manifest_parse_buffer(
                 json_free(root);
                 return false;
             }
+        }
+        JsonNode *disc_node = obj_get(fs_node, "disc_image");
+        if (disc_node && (disc_node->type != JSON_STRING || !is_valid_disc_image_path(disc_node->u.str_val))) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.filesystem.disc_image: must be a relative POSIX-style path without Windows-forbidden characters");
+            json_free(root);
+            return false;
         }
     }
     JsonNode *pfx_node = obj_get(fs_node, "device_prefixes");

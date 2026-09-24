@@ -11,9 +11,9 @@ They must not contain:
 
 Private bindings are explicit local inputs — command-line bindings
 (`--game-elf`/`--build-dir`/`--module-dir`/`--psp-header`), `TITLE_MANIFEST=`
-and `GAME_*` on a direct Make line, or `-TitleManifest` plus the
-`place_game_here/` layout for the manager — and are never written back into a
-manifest file. The
+and `GAME_*` on a direct Make line, or `-TitleManifest` plus the manifest's
+declared input locations for the manager (see below) — and are never written
+back into a checked-in manifest file. The
 checked-in synthetic manifests prove the schema and validator without claiming
 that the current runtime is general-purpose. HST title configuration remains
 local-only unless a later, separately reviewed publication decision changes the
@@ -32,6 +32,23 @@ Print deterministic canonical JSON:
 ```powershell
 python tools/title_manifest.py assets/titles/synthetic.json --print-normalized
 ```
+
+## Declared input locations
+
+The manager assumes no input layout. A local manifest declares where its private
+inputs live, as relative paths in the `filesystem` block:
+
+| Key | Needed when | Path rule |
+| --- | --- | --- |
+| `executable` | the title's ELF is not at `eboot.elf` or a fixture path | Make-safe: `[A-Za-z0-9._-]` components |
+| `psp_header` | `executable.bss_metadata_source` is `psp-header` | Make-safe |
+| `module_dir` | any module has role `guest-prx` | Make-safe |
+| `disc_image` | running a retail title | Ordinary file names: spaces, brackets and Unicode are allowed; Windows-forbidden characters, control characters, `.`/`..` components, a leading space and a trailing space or dot are not |
+
+Paths the manager passes to Make keep the strict component rule. The disc image
+reaches only the runtime (`PSP_ISO`), so a dump can keep its original file name.
+When a required declaration is missing, the manager stops before planning and
+names the key to add.
 
 ## Checked-in manifests
 
