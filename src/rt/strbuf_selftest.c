@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // strbuf_selftest.c — unit and adversarial tests for sr_buf_append / strbuf.h.

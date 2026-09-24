@@ -687,18 +687,18 @@ class _RefreshFixture:
         return path
 
     source = (
-        "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+        "// SPDX-License-Identifier: GPL-3.0-or-later\n"
         "/* synthetic fixture - not a retail or private input */\n"
         "int existing(void) { return 0; }\n"
     )
     helper = (
-        "# SPDX-License-Identifier: GPL-2.0-or-later\n"
+        "# SPDX-License-Identifier: GPL-3.0-or-later\n"
         "# synthetic fixture - not a retail or private input\n"
         "def helper():\n    return 0\n"
     )
     route = "interface/src/app/api/recompiler/profiles/[id]/export/route.ts"
     route_source = (
-        "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+        "// SPDX-License-Identifier: GPL-3.0-or-later\n"
         "// synthetic fixture - literal bracketed route path\n"
         "export function route(): number { return 0; }\n"
     )
@@ -1406,7 +1406,7 @@ class TrustedAdmissionTests(unittest.TestCase):
         fixture = _RefreshFixture(self)
         new_src = "src/rt/new_module.c"
         content = (
-            "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+            "// SPDX-License-Identifier: GPL-3.0-or-later\n"
             "// synthetic fixture - independent implementation\n"
             "int new_module(void) { return 0; }\n"
         )

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // LLE Phase 1 (PR 3): per-domain HLE/LLE coexistence and the import-call seam.

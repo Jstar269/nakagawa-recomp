@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Summarize machine-readable native boot milestones from a runtime log.
 
 Exit 0 means the required boot phases occurred in causal order, no disqualifying

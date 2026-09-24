@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
 //
 // fbcap_policy.h - policy governing the frame-capture visual-oracle slot (issue #57)

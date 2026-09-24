@@ -67,6 +67,10 @@ explicit class, evidence reference, and content hash. A missing or unresolved
 record is a publication failure. Generated files remain generated and must not be
 hand-edited.
 
+New project-authored source files use `SPDX-License-Identifier: GPL-3.0-or-later`.
+Files classified as upstream-derived retain the SPDX identifier and notices
+for their recorded source lineage.
+
 ## Trademark and compatibility
 
 Product and game names are used only to identify compatibility and research scope.

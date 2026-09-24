@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 # Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 # Modified by Nakagawa Recomp contributors, 2026-08-10.
