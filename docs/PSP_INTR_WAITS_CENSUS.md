@@ -22,14 +22,14 @@ Live join of every exact `sce*` / `__sce*` API named in
 ## Summary
 
 - total exact APIs: **73**
-- missing: **23**
+- missing: **22**
 - registered (fake success): **0**
-- implemented: **50**
+- implemented: **51**
 - controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #339: 23
+- #339: 22
 - #341: 42
 
 ## Census
@@ -54,7 +54,7 @@ Open-owner counts:
 | `sceGeListSync` | implemented | #341 | dedicated | unreviewed | `h_GeListSync` | `0x03444eb4` |
 | `sceIoGetAsyncStat` | missing | #339 | missing | - | - | - |
 | `sceIoRead` | implemented | #341 | dedicated | unreviewed | `h_IoRead` | `0x6a638d83` |
-| `sceIoRemove` | missing | #339 | missing | - | - | - |
+| `sceIoRemove` | implemented | - | dedicated | complete | `h_IoRemove` | `0xf27a9c51` |
 | `sceIoWaitAsync` | implemented | #341 | dedicated | unreviewed | `h_IoWaitAsync` | `0xe23eec33` |
 | `sceIoWaitAsyncCB` | implemented | #341 | dedicated | unreviewed | `h_IoWaitAsyncCB` | `0x35dbd746` |
 | `sceIoWrite` | implemented | #341 | dedicated | unreviewed | `h_IoWrite` | `0x42ec03ac` |
