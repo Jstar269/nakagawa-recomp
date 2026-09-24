@@ -7,6 +7,42 @@ lineage; do not relabel upstream-derived code as project-authored or replace its
 Specific inherited licensing/provenance questions remain under qualified review; do not introduce
 third-party-derived code without resolving its actual source/license chain.
 
+## Your first contribution
+
+1. Pick an issue labelled
+   [`good first issue`](https://github.com/Jstar269/nakagawa-recomp/labels/good%20first%20issue) or
+   [`help wanted`](https://github.com/Jstar269/nakagawa-recomp/labels/help%20wanted). For anything
+   larger, comment on the issue first so the approach can be agreed.
+2. Fork, create a branch, make one focused change, and sign off each commit (`git commit -s`).
+3. Run the checks for the area you touched (see [Verify](#verify)), then open the pull request and
+   fill in the template.
+4. Leave **Allow edits by maintainers** enabled on the pull request.
+
+**You don't need to handle provenance controls.** Two files, `PUBLIC_EXPORT.json` and
+`assets/public_provenance_ledger.json`, are generated from a private trusted ledger that
+contributors don't have. Don't edit them by hand. If **Trusted provenance attestation** or the
+publication-safety step in **Hygiene and security** reports a provenance mismatch, a maintainer
+refreshes those files on your branch. If you add a new file, say in the pull request where it came
+from: written by you, or derived from which project, at which revision, and under which license. A
+maintainer then admits the path.
+
+### What the pull-request checks mean
+
+| Check | What it verifies | If it fails |
+| --- | --- | --- |
+| Classify change | Which areas your change touches, so only relevant jobs run | Rarely fails; ask a maintainer |
+| Hygiene and security | pre-commit hooks: Ruff, whitespace and encoding, publication safety, secret scanning | Run `python -m pre_commit run --files <your files>` locally |
+| Markdown validation | markdownlint on changed Markdown | Run `npx --yes markdownlint-cli2@0.23.1 <file>` |
+| Python tooling gates (0–3) | The `tools/` unit tests, split into four shards | Run the failing test module with `python -m unittest tools.<module>` |
+| Native and translation gates | Strict C builds (`-std=c99`/`c11 -Werror`) and runtime selftests on Linux | Compile the changed C file with the flags shown in the log |
+| Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
+| Dashboard checks | Only when `interface/` changes | Run the dashboard commands below |
+| Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
+| dependency-review, OSV, CodeQL | Dependency and static security scans | Read the finding; ask if unsure |
+| CI required | The aggregate of the required jobs above | Fix the failing job it names |
+
+Kilo Code Review is an advisory AI review and never blocks a merge.
+
 ## Before changing code
 
 1. Read [AGENTS.md](AGENTS.md) and the maintained documentation relevant to your subsystem.
