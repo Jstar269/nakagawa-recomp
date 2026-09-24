@@ -1044,7 +1044,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b78c285ad1f46219fe287e3817862c511b9d6e414f6c154d359893187fc09c63"
+      "sha256": "504ee5f776db03f88afdbbd573eb44b489534fcf7e0bd08a5920b2950b163a5a"
     },
     {
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
