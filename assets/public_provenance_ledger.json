@@ -9395,7 +9395,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "2d75362dd0d0587e85ec2285263c98d2e92c7b79ed34eb44484a72fbe0876661"
+      "sha256": "490326545b9ce8ebd7b03a03b913dbca50f7b8de691ec5d9ea66812b39c13e99"
     },
     {
       "path": "tools/test_sbom_binding.py",
