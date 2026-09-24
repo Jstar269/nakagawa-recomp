@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT AND GPL-3.0-or-later
 import * as React from "react"
 
 const MOBILE_BREAKPOINT = 768

@@ -49,13 +49,7 @@ VALID_NPM_LOCK = {
     },
 }
 
-VALID_PY_LOCK = (
-    "# SPDX-License-Identifier: GPL-2.0-or-later\n"
-    "# comment lines are ignored\n"
-    "\n"
-    "compiledb==0.10.7 --hash=sha256:d1d36d4df6c5c723ae4e447b973b306b3a0df47a50dfa7243c2c19e5db4d12bb\n"
-    "ruff==0.9.9\n"
-)
+VALID_PY_LOCK = PY_LOCK.read_text(encoding="utf-8")
 
 
 def write(tmp_path: Path, name: str, content: str | bytes) -> Path:
@@ -223,9 +217,13 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
         path = write(self.tmp_path, "valid.txt", VALID_PY_LOCK)
         packages = generate_sbom.parse_python_lockfile(path)
         self.assertEqual(
-            [(p["name"], p["version"], p["sha256"]) for p in packages],
-            [("compiledb", "0.10.7", "d1d36d4df6c5c723ae4e447b973b306b3a0df47a50dfa7243c2c19e5db4d12bb"),
-             ("ruff", "0.9.9", "")],
+            [(p["name"], p["version"], len(p["declared_sha256"])) for p in packages],
+            [
+                ("compiledb", "0.10.7", 2),
+                ("ruff", "0.16.0", 18),
+                ("click", "8.5.0", 2),
+                ("bashlex", "0.18", 2),
+            ],
         )
 
     def test_valid_intentionally_empty_lockfile_parses_to_empty_inventory(self):
@@ -236,39 +234,42 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
 
     def test_malformed_requirement_line_fails_closed(self):
         bad_lines = [
-            "this is not a requirement",
-            "compiledb 0.10.7",                      # missing ==
-            "compiledb>=0.10.7",                      # range specifiers are not pins
-            "compiledb==0.10.*",                      # wildcard version
-            "compiledb==0.10.7 extra-junk",           # unsupported trailing options
-            "compiledb==0.10.7 --hash=md5:aaa",       # unsupported hash algorithm
-            "compiledb==0.10.7 --hash=sha256:abc",    # truncated digest
-            "-e git+https://example.invalid/repo#egg=x",  # editable/VCS requirement
+            ("this is not a requirement", "exact name==version pin"),
+            ("compiledb 0.10.7", "exact name==version pin"),
+            ("compiledb>=0.10.7", "exact name==version pin"),
+            ("compiledb==0.10.*", "exact name==version pin"),
+            ("compiledb==0.10.7 extra-junk", "unsupported token"),
+            ("compiledb==0.10.7 --hash=md5:aaa", "malformed SHA-256 hash"),
+            ("compiledb==0.10.7 --hash=sha256:abc", "malformed SHA-256 hash"),
+            ("-e git+https://example.invalid/repo#egg=x", "exact name==version pin"),
         ]
-        for line in bad_lines:
+        for line, expected in bad_lines:
             with self.subTest(line=line):
                 path = write(self.tmp_path, "bad.txt", line + "\n")
                 with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
                     generate_sbom.parse_python_lockfile(path)
-                self.assertIn("declared pinned format", str(ctx.exception))
+                self.assertIn(expected, str(ctx.exception))
                 self.assertIn("line 1:", str(ctx.exception))
 
     def test_malformed_hash_continuation_line_fails_closed(self):
-        # A pip-style multi-line hash block is NOT the repository's declared
-        # single-line format; the continuation line is a hard error, not a
-        # silently skipped requirement.
         path = write(self.tmp_path, "cont.txt",
-                     "pkg==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n")
+                     "compiledb==0.10.7 \\\n    --hash=sha256:abc\n")
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             generate_sbom.parse_python_lockfile(path)
+        self.assertIn("malformed SHA-256 hash", str(ctx.exception))
         self.assertIn("line 1:", str(ctx.exception))
 
     def test_duplicate_requirement_pin_fails_closed(self):
-        path = write(self.tmp_path, "dup.txt", "ruff==0.9.9\nruff==0.9.9\n")
+        compiledb_entry = next(
+            block + "\n"
+            for block in VALID_PY_LOCK.split("\n\n")
+            if block.startswith("compiledb==")
+        )
+        path = write(self.tmp_path, "dup.txt", compiledb_entry * 2)
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             generate_sbom.parse_python_lockfile(path)
-        self.assertIn("duplicate requirement pin ruff==0.9.9", str(ctx.exception))
-        self.assertIn("line 2", str(ctx.exception))
+        self.assertIn("duplicate requirement pin compiledb==0.10.7", str(ctx.exception))
+        self.assertIn("line 4", str(ctx.exception))
 
     def test_unreadable_path_and_oserror_fail_closed(self):
         missing = self.tmp_path / "missing-requirements.txt"
@@ -281,14 +282,19 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
         self.assertIn("cannot read Python lockfile", str(ctx.exception))
 
     def test_invalid_utf8_fails_closed(self):
-        path = write(self.tmp_path, "utf8.txt", b"ruff==0.9.9\n\xff\xfe garbage\n")
+        path = write(self.tmp_path, "utf8.txt", b"ruff==0.16.0\n\xff\xfe garbage\n")
         assert_lockfile_parse_error(self, path, "not valid UTF-8")
 
     def test_partially_parseable_file_is_all_or_nothing(self):
         # A valid first pin followed by a poisoned line must abort, never
         # return the successfully parsed prefix.
+        compiledb_entry = next(
+            block + "\n"
+            for block in VALID_PY_LOCK.split("\n\n")
+            if block.startswith("compiledb==")
+        )
         path = write(self.tmp_path, "partial.txt",
-                     "compiledb==0.10.7\nthis line is poisoned\n")
+                     compiledb_entry + "this line is poisoned\n")
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             generate_sbom.parse_python_lockfile(path)
         self.assertIn("this line is poisoned", str(ctx.exception))
@@ -305,7 +311,10 @@ class TestRepositoryLockfilesStayValid(unittest.TestCase):
     def test_repository_python_lockfile_parses(self):
         packages = generate_sbom.parse_python_lockfile(PY_LOCK)
         self.assertGreater(len(packages), 0)
-        self.assertEqual([p["name"] for p in packages], ["compiledb", "ruff"])
+        self.assertEqual(
+            [p["name"] for p in packages],
+            ["compiledb", "ruff", "click", "bashlex"],
+        )
 
 
 class TestGenerationAbortsOnParseFailure(unittest.TestCase):
@@ -346,7 +355,7 @@ class TestGenerationAbortsOnParseFailure(unittest.TestCase):
         self.assertFalse(any(exists.values()))
 
     def test_malformed_python_lock_aborts_with_no_outputs(self):
-        bad = write(self.tmp_path, "bad.txt", "ruff==0.9.9\npoisoned line\n")
+        bad = write(self.tmp_path, "bad.txt", "not a requirement\n")
         code, exists = self._run_main(NPM_LOCK, bad)
         self.assertEqual(code, 1)
         self.assertFalse(any(exists.values()))
@@ -416,13 +425,13 @@ class TestVerifySbomFailsClosed(unittest.TestCase):
         bad_rel = "fixtures_hostile/bad-py.txt"
         repo_fixtures = self.tmp_path / "fixtures_hostile"
         repo_fixtures.mkdir()
-        write(repo_fixtures, "bad-py.txt", "ruff==0.9.9\nnot a requirement\n")
+        write(repo_fixtures, "bad-py.txt", "not a requirement\n")
         npm_dir = self.tmp_path / "npmlock"
         npm_dir.mkdir()
         shutil.copy(NPM_LOCK, npm_dir / "package-lock.json")
         manifest = self._manifest_declaring("npmlock/package-lock.json", bad_rel)
         errors = verify_sbom.verify_release_locks(manifest)
-        self.assertTrue(any("declared pinned format" in e for e in errors), str(errors))
+        self.assertTrue(any("exact name==version pin" in e for e in errors), str(errors))
         self.assertIsNone(verify_sbom.verify_release_locks.last_validated_py_lock)
 
     def test_unreadable_declared_lockfile_fails_verification(self):

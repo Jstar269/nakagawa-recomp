@@ -753,6 +753,90 @@ static void test_legacy_feed_take_path(void) {
     free(bytes);
 }
 
+static uint64_t demux_fuzz_state = 0x3194844345584D58ULL;
+
+static uint64_t demux_fuzz_rand64(void) {
+    uint64_t z = (demux_fuzz_state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+static void demux_fuzz_mutate(uint8_t *data, size_t size) {
+    static const uint32_t values[] = {
+        0, 1, 2, 3, 4, 8, 14, 16, 0x40, 0x80, 0xBD, 0xE0, 0xEF,
+        0x7FFFu, 0x8000u, 0xFFFFu, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu
+    };
+    unsigned operations = (unsigned)(demux_fuzz_rand64() % 8u) + 1u;
+    for (unsigned op = 0; op < operations; op++) {
+        unsigned kind = (unsigned)(demux_fuzz_rand64() % 5u);
+        size_t index = (size_t)(demux_fuzz_rand64() % size);
+        if (kind == 0) {
+            data[index] ^= (uint8_t)(1u << (demux_fuzz_rand64() % 8u));
+        } else if (kind == 1) {
+            data[index] = (uint8_t)demux_fuzz_rand64();
+        } else if (kind == 2 && index + 2u <= size) {
+            uint16_t value = values[demux_fuzz_rand64() %
+                                    (sizeof(values) / sizeof(values[0]))];
+            data[index] = (uint8_t)value;
+            data[index + 1] = (uint8_t)(value >> 8);
+        } else if (kind == 3 && index + 4u <= size) {
+            uint32_t value = values[demux_fuzz_rand64() %
+                                    (sizeof(values) / sizeof(values[0]))];
+            data[index] = (uint8_t)value;
+            data[index + 1] = (uint8_t)(value >> 8);
+            data[index + 2] = (uint8_t)(value >> 16);
+            data[index + 3] = (uint8_t)(value >> 24);
+        } else {
+            size_t run = (size_t)(demux_fuzz_rand64() % 16u) + 1u;
+            if (run > size - index) run = size - index;
+            memset(data + index, (demux_fuzz_rand64() & 1u) ? 0u : 0xFFu, run);
+        }
+    }
+}
+
+static void test_legacy_demux_mutations(unsigned iterations) {
+    if (iterations > 128u) iterations = 128u;
+    demux_fuzz_state = 0x3194844345584D58ULL;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint32_t size = 0;
+    uint8_t *bytes = build_psmf(&size, au_off, au_len);
+    CHECK(bytes != NULL, "demux mutation fixture allocated");
+    if (!bytes) return;
+    uint8_t *mutated = (uint8_t *)malloc(size - 2048u);
+    CHECK(mutated != NULL, "demux mutation buffer allocated");
+    if (!mutated) { free(bytes); return; }
+    unsigned attempted = 0;
+    for (unsigned i = 0; i < iterations; i++) {
+        memcpy(mutated, bytes + 2048u, size - 2048u);
+        demux_fuzz_mutate(mutated, size - 2048u);
+        int decoder = sr_h264_create();
+        if (decoder < 0) {
+            if (attempted == 0) fprintf(stderr, "SKIP: hostile legacy demux needs Media Foundation\n");
+            break;
+        }
+        attempted++;
+        sr_h264_feed(decoder, mutated, size - 2048u);
+        for (unsigned take = 0; take < 32u; take++) {
+            uint64_t consumed = 0;
+            int64_t pts = 0;
+            int rc = sr_h264_au_take(decoder, 0, &consumed, &pts);
+            if (rc <= 0) break;
+        }
+        {
+            uint64_t consumed = 0;
+            int64_t pts = 0;
+            (void)sr_h264_au_take(decoder, 1, &consumed, &pts);
+        }
+        (void)sr_h264_frame(decoder, 1, GUEST_BUF, 64, 3);
+        sr_h264_destroy(decoder);
+    }
+    free(mutated);
+    free(bytes);
+    printf("Legacy MPEG-PS/H.264 mutation: %u iterations, %u executed, 0 crashes\n",
+           iterations, attempted);
+}
+
 /* A malformed audio track must leave the video track alone. */
 static void test_track_independence(void) {
     uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
@@ -994,7 +1078,17 @@ static void test_multistream_selection(void) {
     free(bytes);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    unsigned fuzz_iterations = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--fuzz-iters") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            unsigned long value = strtoul(argv[++i], &end, 10);
+            if (end && *end == '\0' && value > 0 && value <= 100000ul) {
+                fuzz_iterations = (unsigned)value;
+            }
+        }
+    }
     static uint8_t arena[ARENA_BYTES];
     g_mem = arena;
     memset(arena, 0, sizeof(arena));
@@ -1007,6 +1101,7 @@ int main(void) {
     test_instance_isolation();
     test_destination_refusal();
     test_legacy_feed_take_path();
+    if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 
     if (failures) {
         fprintf(stderr, "psmf_media_selftest: %d checks, %d FAILURES\n", checks, failures);

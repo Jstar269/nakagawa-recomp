@@ -73,26 +73,9 @@ def _build_param_sfo(disc_id: str, title: str = "Synthetic Test Title",
 
 
 def _create_mock_iso(path: Path, disc_id: str = "TEST00001", volume_id: str = "SYNTHETIC_GAME") -> None:
-    """Create a minimal valid ISO9660 image with PVD and disc ID signature."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        # Pad sectors 0-15 (16 * 2048 = 32768 bytes)
-        f.write(b"\0" * (16 * 2048))
-        # Sector 16: Primary Volume Descriptor
-        pvd = bytearray(2048)
-        pvd[0:7] = b"\x01CD001\x01"
-        vol_bytes = volume_id.encode("latin-1")[:32].ljust(32)
-        pvd[40:72] = vol_bytes
-        f.write(pvd)
-        # Sector 17: a real PARAM.SFO, so identity comes from parsed structure
-        # rather than from a raw byte match somewhere in the image.
-        sfo = _build_param_sfo(disc_id)
-        sec17 = bytearray(2048)
-        sec17[0 : len(sfo)] = sfo
-        f.write(sec17)
-        # Pad up to 1.5 MiB to satisfy min size
-        remaining = (1536 * 1024) - (18 * 2048)
-        f.write(b"\0" * remaining)
+    from test_iso_parity import create_test_iso
+
+    create_test_iso(path, disc_id=disc_id, volume_id=volume_id)
 
 
 def _write_title_runtime(
@@ -1056,6 +1039,7 @@ int main(int argc, char **argv) {
             REPO_ROOT / "src" / "core" / "nk_library.c",
             REPO_ROOT / "src" / "core" / "nk_launch.c",
             REPO_ROOT / "src" / "core" / "nk_title_manifest.c",
+            REPO_ROOT / "src" / "core" / "nk_json.c",
             REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if sys.platform == "win32":
@@ -1295,6 +1279,7 @@ int main(int argc, char **argv) {
                 str(REPO_ROOT / "src" / "core" / "nk_library.c"),
                 str(src_dir / "nk_launch.c"),
                 str(src_dir / "nk_title_manifest.c"),
+                str(REPO_ROOT / "src" / "core" / "nk_json.c"),
                 str(src_dir / "generated" / "nk_title_catalog.c"),
                 str(platform_src),
                 "-o", str(out),
@@ -1504,6 +1489,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
             REPO_ROOT / "src" / "core" / "nk_library.c",
             mutant_c,
             REPO_ROOT / "src" / "core" / "nk_title_manifest.c",
+            REPO_ROOT / "src" / "core" / "nk_json.c",
             REPO_ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if sys.platform == "win32":

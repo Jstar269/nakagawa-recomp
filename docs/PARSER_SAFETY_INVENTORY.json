@@ -1,0 +1,327 @@
+{
+  "schema_version": 1,
+  "issue": 319,
+  "scope": "Public, user-supplied ISO, executable, manifest, package, archive, and media parser boundaries. All named corpora are source-owned synthetic bytes.",
+  "status_values": [
+    "COVERED",
+    "PARTIAL",
+    "GAP"
+  ],
+  "surfaces": [
+    {
+      "boundary": "ISO9660 PVD and directory traversal",
+      "entry": "src/core/nk_iso.c:113 nk_iso_reader_open; src/core/nk_iso.c:323 nk_iso_reader_lookup",
+      "max_input": "One 2048-byte PVD sector and up to 512 KiB per directory lookup; the containing ISO file itself has no campaign-level byte cap.",
+      "tables_nesting": "Directory-record count is bounded by the directory extent; recursive path depth is capped at 16.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_iso.c:984 nk_iso_checked_add_u64",
+          "src/core/nk_iso.c:991 nk_iso_extent_span_valid"
+        ]
+      },
+      "allocation_time": "Per-lookup directory storage is capped at 512 KiB; repeated path components can repeat those bounded scans.",
+      "failure_atomicity": "Reader results fail closed; nk_iso_inspect reports malformed optional metadata without claiming executable support.",
+      "harness": "tests/native/test_fuzz_parsers.c:378 test_fuzz_iso; tests/native/test_parsers_hostile.c",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "PARAM.SFO v1",
+      "entry": "src/core/nk_iso.c:511 nk_iso_parse_sfo_buffer",
+      "max_input": "Extent/buffer size supplied by the ISO path; SFO offsets and counts are checked against that extent.",
+      "tables_nesting": "Entry count and key/data table spans are extent-bounded; no recursive structure.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_iso.c:511"
+        ]
+      },
+      "allocation_time": "Linear in the bounded SFO extent; fixed metadata fields prevent proportional host allocation.",
+      "failure_atomicity": "Callers receive false on truncation, overlap, duplicate required keys, or invalid text; product inspection reports the boundary rather than fabricating metadata.",
+      "harness": "tests/native/test_fuzz_parsers.c:268 test_fuzz_param_sfo",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "~PSP, ~SCE, PBP, and KIRK container preflight",
+      "entry": "src/core/nk_iso.c:1107 nk_iso_classify_executable; src/rt/prx_loader.c:1493 sr_prx_load_from_memory",
+      "max_input": "Executable classification cap is 512 MiB; encrypted inner-image parsing is not implemented.",
+      "tables_nesting": "~PSP segment count is 1..4; ~SCE and PBP are classification-only boundaries.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_iso.c:1144"
+        ]
+      },
+      "allocation_time": "Classification reads at most 128 bytes plus bounded ~PSP segment headers; no inner decrypt/decompress allocation occurs.",
+      "failure_atomicity": "Encrypted containers remain explicitly unsupported; the clean-room loader refuses ~PSP before mutation or guest writes.",
+      "harness": "tests/native/test_fuzz_parsers.c:950 test_fuzz_prx; tests/native/test_parsers_hostile.c",
+      "gap": "KIRK inner decryption/decompression is not implemented and is in the works under issue #295.",
+      "status": "PARTIAL"
+    },
+    {
+      "boundary": "ELF32/MIPS executable preflight classifier",
+      "entry": "src/core/nk_iso.c:1010 nk_iso_elf32_mips_usable; src/core/nk_iso.c:1161 nk_iso_classify_executables",
+      "max_input": "512 MiB executable extent.",
+      "tables_nesting": "Program headers: at most 128 entries of exactly 32 bytes. Section headers: at most 65535 entries of exactly 40 bytes; preflight validates the table extent but does not consume section entries.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_iso.c:984 nk_iso_checked_add_u64",
+          "src/core/nk_iso.c:1031",
+          "src/core/nk_iso.c:1072"
+        ]
+      },
+      "allocation_time": "Program headers use a fixed 4096-byte stack buffer; zero-filled classification scans at most 512 MiB in 8192-byte chunks.",
+      "failure_atomicity": "Each candidate and the aggregate report are cleared before classification; malformed ELF becomes UNKNOWN and cannot be selected.",
+      "harness": "tests/native/test_fuzz_parsers.c:521 test_fuzz_elf_classifier",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "Clean-room PRX ELF, program-header, and section-header walker",
+      "entry": "src/rt/prx_loader.c:660 do_load; src/rt/prx_loader.c:1493 sr_prx_load_from_memory",
+      "max_input": "256 MiB in memory or from a host file; at most 4 PT_LOAD segments and 64 MiB aggregate guest image.",
+      "tables_nesting": "ELF16 program/section counts are input-bounded; exports and imports are each capped at 65536 entries.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/prx_loader.c:761",
+          "src/rt/prx_loader.c:804",
+          "src/rt/prx_loader.c:979",
+          "src/rt/prx_loader.c:1031"
+        ]
+      },
+      "allocation_time": "File and image allocations are capped; table and relocation work is linear in the capped input.",
+      "failure_atomicity": "Parse and relocation failures discard scratch before guest writes. A callback failure after a later segment can leave earlier segment writes visible.",
+      "harness": "tests/native/test_fuzz_parsers.c:950 test_fuzz_prx; tools/test_prx_loader_cleanroom.py",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "PRX relocation format A",
+      "entry": "src/rt/prx_loader.c:235 apply_format_a",
+      "max_input": "8-byte records contained in the 256 MiB PRX input; at most four segments.",
+      "tables_nesting": "Record count is stream_bytes/8; HI16 runs are scanned at most twice.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/prx_loader.c:215 site_ptr",
+          "src/rt/prx_loader.c:235"
+        ]
+      },
+      "allocation_time": "Linear in the declared relocation stream; all sites are checked against scratch segment extents.",
+      "failure_atomicity": "A malformed record terminates parsing before the scratch image is committed.",
+      "harness": "tests/native/test_fuzz_parsers.c:950 test_fuzz_prx; tools/test_prx_loader_cleanroom.py",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "PRX relocation format B",
+      "entry": "src/rt/prx_loader.c:428 apply_format_b",
+      "max_input": "Packed commands and extensions contained in the 256 MiB PRX input; at most four segments.",
+      "tables_nesting": "Flag and kind widths are each 1..8 bits; combined widths are capped at 16 command bits.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/prx_loader.c:428",
+          "src/rt/prx_loader.c:480",
+          "src/rt/prx_loader.c:511",
+          "src/rt/prx_loader.c:551"
+        ]
+      },
+      "allocation_time": "Linear in the declared packed stream; truncation, invalid indices, and out-of-range sites fail closed.",
+      "failure_atomicity": "A malformed command terminates parsing before the scratch image is committed.",
+      "harness": "tests/native/test_fuzz_parsers.c:950 test_fuzz_prx; tools/test_prx_loader_cleanroom.py",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "Canonical title-manifest JSON",
+      "entry": "src/core/nk_title_manifest.c:928 nk_title_manifest_parse_buffer",
+      "max_input": "262144 bytes.",
+      "tables_nesting": "JSON depth 16; modules 32, compatibility IDs 16, executable spans 64, device prefixes 16, feature requirements 64, dispatch aliases 32.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_title_manifest.c:938",
+          "src/core/nk_title_manifest.c:2435"
+        ]
+      },
+      "allocation_time": "AST allocation is bounded indirectly by the byte cap; duplicate-key rejection remains quadratic in unique keys within one object.",
+      "failure_atomicity": "Schema validation completes before overlay publication; direct caller output structs are not a rollback mechanism for externally owned state.",
+      "harness": "tests/native/test_fuzz_parsers.c:test_fuzz_manifest; tests/native/test_manifest_parser.c",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "Generated runtime package v1 JSON",
+      "entry": "src/core/nk_title_manifest.c:3048 nk_title_manifest_validate_aot_package",
+      "max_input": "262144 bytes each for package.json and build-report.json; embedded profile JSON uses the same cap.",
+      "tables_nesting": "JSON depth 16; package arrays have no schema-specific count cap beyond total bytes.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_title_manifest.c:2531 package_read_json",
+          "src/core/nk_title_manifest.c:2540"
+        ]
+      },
+      "allocation_time": "Each AST is byte-bounded; executable hashing and image existence checks are linear but currently have no separate byte cap.",
+      "failure_atomicity": "NkRuntimePackageInfo is cleared on entry and populated only after every contract check passes.",
+      "harness": "tests/native/test_fuzz_parsers.c:1090 test_fuzz_package; tests/native/test_player_state.c",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "Private package-cache manifest producer",
+      "entry": "tools/nk_cli.py:158 _load_entry_manifest; tools/nk_cli.py:305 manifest cache write",
+      "max_input": "Experimental profile reads are capped at 262144 bytes; the cache manifest is a canonical serialization of an already validated manifest.",
+      "tables_nesting": "Inherits title-manifest limits; cache-only producer does not define an independent reader schema.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "tools/nk_cli.py:165",
+          "tools/nk_cli.py:180"
+        ]
+      },
+      "allocation_time": "Profile JSON is byte-bounded; cache replacement is staged and ownership-marked.",
+      "failure_atomicity": "Private-file writes use temporary replacement; package promotion retains a rollback step.",
+      "harness": "GAP",
+      "gap": "The native package consumer is fuzzed, but the Python cache manifest producer has no dedicated seeded mutation harness; track under issues #316/#297.",
+      "status": "GAP"
+    },
+    {
+      "boundary": "XB archive provider",
+      "entry": "src/core/nk_xb.c:909 nk_xb_open_memory",
+      "max_input": "512 MiB archive, 100000 files, 16 MiB string table, 256 MiB per entry, 512 MiB total expanded bytes.",
+      "tables_nesting": "Huffman depth 16 and 4096 codes.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_xb.c:614",
+          "src/core/nk_xb.c:666",
+          "src/core/nk_xb.c:778",
+          "src/core/nk_xb.c:851",
+          "src/core/nk_xb.c:921"
+        ]
+      },
+      "allocation_time": "Archive, entry, total-expanded, nesting, and code-table budgets are explicit.",
+      "failure_atomicity": "The archive object is not published until all FST, name, span, and compressed-header checks pass.",
+      "harness": "tests/native/test_fuzz_parsers.c:test_fuzz_xb; tests/native/test_xb_parser.c",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "Library JSON",
+      "entry": "src/core/nk_library.c:334 nk_library_load_from_file; src/core/nk_library.c:605 nk_library_load",
+      "max_input": "4 MiB.",
+      "tables_nesting": "At most NK_MAX_GAMES entries; each scalar parser writes only fixed-size fields.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/core/nk_library.c:349"
+        ]
+      },
+      "allocation_time": "One bounded file allocation and a linear cursor walk.",
+      "failure_atomicity": "Malformed input returns an error and invokes backup recovery, but entries appended before a later parse error are not rolled back inside the temporary library object.",
+      "harness": "tests/native/test_fuzz_parsers.c:test_fuzz_library",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "PSMF header and stream table",
+      "entry": "src/rt/psmf_producer.c:606 sr_psmf_producer_open",
+      "max_input": "2048-byte header; declared 32-bit stream extent must fit the source.",
+      "tables_nesting": "At most 119 stream entries fit the 2048-byte header; the implementation also rejects counts above 128.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/psmf_producer.c:123 add_u64",
+          "src/rt/psmf_producer.c:621"
+        ]
+      },
+      "allocation_time": "No stream-wide allocation at open; impossible timestamp normalization bases are refused before allocation.",
+      "failure_atomicity": "Invalid headers, extents, stream tables, and presentation bases free the new producer and return NULL.",
+      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_rejects_bad_containers",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "MPEG program stream and PES",
+      "entry": "src/rt/psmf_producer.c:496 parse_one",
+      "max_input": "PES packet length is 16-bit; each selected track buffers at most 4 MiB; queue depth is 8.",
+      "tables_nesting": "No recursive structure; 64 concurrent timestamp marks bound cross-packet AU ownership.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/psmf_producer.c:123 add_u64",
+          "src/rt/psmf_producer.c:529",
+          "src/rt/psmf_producer.c:551"
+        ]
+      },
+      "allocation_time": "Per-PES payload and per-track allocations are bounded; cumulative stream duration and total packet count are not bounded.",
+      "failure_atomicity": "Failure is terminal and observable through stats. Cursor and counters can advance before a selected-track allocation fails, so the producer object is not rolled back.",
+      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_conformance_corpus",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "Portable H.264 access-unit framing",
+      "entry": "src/rt/psmf_producer.c:296 find_aud; src/rt/psmf_producer.c:311 find_next_video_aud",
+      "max_input": "4 MiB live track and 8 queued AUs per selected track.",
+      "tables_nesting": "No recursive structure; incremental scan state is retained across appends and compaction.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/psmf_producer.c:258 track_reserve",
+          "src/rt/psmf_producer.c:296"
+        ]
+      },
+      "allocation_time": "Candidate scanning is incremental and linear in appended bytes; the no-AUD and compaction selftests pin the work bound.",
+      "failure_atomicity": "Only complete bounded AUs enter the queue; queue backpressure stops parsing without dropping buffered bytes.",
+      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_no_aud_scan_work_bound",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "Windows Media Foundation MPEG/H.264 demux seam",
+      "entry": "src/rt/h264_mf.c:177 ps_parse_one; src/rt/h264_mf.c:530 sr_h264_feed",
+      "max_input": "16 MiB unparsed PS buffer, 64 MiB demuxed ES, 1048576 ES chunks, four decoder instances.",
+      "tables_nesting": "Chunk table is explicitly capped; no recursive syntax nesting.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/h264_mf.c:133 es_append",
+          "src/rt/h264_mf.c:199",
+          "src/rt/h264_mf.c:534"
+        ]
+      },
+      "allocation_time": "PS, ES, and chunk buffers are capped; repeated demux loop work is linear in accepted input.",
+      "failure_atomicity": "Failure poisons the decoder instance, but a failed feed can retain appended input and partial ES/chunk state until destruction.",
+      "harness": "src/rt/psmf_media_selftest.c:798 test_legacy_demux_mutations",
+      "gap": "The hostile campaign executes only with the Windows Media Foundation backend; Linux ASan/UBSan covers the portable producer and reports this seam as SKIP.",
+      "status": "PARTIAL"
+    },
+    {
+      "boundary": "ATRAC frame header and framing",
+      "entry": "src/rt/psmf_producer.c:328 audio_frame_at_head",
+      "max_input": "Frame size 16..2824 bytes, 8192-byte resync window, 4 MiB track.",
+      "tables_nesting": "No recursive structure; incomplete frames remain buffered across PES boundaries.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/psmf_producer.c:328"
+        ]
+      },
+      "allocation_time": "Frame and track sizes are bounded; resync scans at most the fixed 8192-byte window per extraction attempt.",
+      "failure_atomicity": "Invalid frame-size fields fail terminally; complete frames are copied into bounded AU storage before queue publication.",
+      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_access_unit_formation",
+      "status": "COVERED"
+    },
+    {
+      "boundary": "PGF font input",
+      "entry": "src/rt/pgf_unavailable.c:18 pgf_open_memory",
+      "max_input": "No public parser accepts PGF bytes in the public-safe tree.",
+      "tables_nesting": "Not applicable.",
+      "arithmetic": {
+        "safe": true,
+        "evidence": [
+          "src/rt/pgf_unavailable.c:14"
+        ]
+      },
+      "allocation_time": "Immediate NULL/0 fail-closed result; no PGF allocation or scan.",
+      "failure_atomicity": "No font object or glyph state is published.",
+      "harness": "GAP",
+      "gap": "The lineage-sensitive PGF backend is excluded from public-safe builds and remains in the works under issue #313.",
+      "status": "GAP"
+    }
+  ]
+}

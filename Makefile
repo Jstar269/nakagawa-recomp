@@ -151,7 +151,7 @@ endif
 # Direct Make remains conservative -O0/-O0. Validated private title adapters may
 # request measured profile-specific values; explicit overrides remain supported.
 RUNTIME_OPT ?= -O0
-CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
+CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -Isrc/core $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
 # The extracted HST archive tree has a title-specific extracted-data census
 # (HST: 56,672 files). The generic build has no census (0 = disabled); a
 # title-configured build carries the expectation via runtime_bindings
@@ -432,6 +432,28 @@ ifndef NK_INFO_ONLY
 _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
 endif
 
+ifeq ($(OS),Windows_NT)
+PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
+PLAYER_EXTRA_LIBS   := -lshell32
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+# The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
+# must derive from the shared VULKAN_SDK resolution above (explicit override,
+# environment, then tools/vulkan_sdk.py discovery) rather than naming one
+# machine's SDK install. The player-vulkan-check order-only prerequisite below
+# fails closed with the one variable to set when discovery found nothing,
+# instead of a hardcoded fallback or a confusing compiler error.
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             := .exe
+else
+PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
+PLAYER_EXTRA_LIBS   :=
+PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_LIB   :=
+EXE_EXT             :=
+endif
+
 RT_GE_O    := $(BUILD_DIR)/ge.o
 RT_SRCS    := src/rt/recomp.c \
               src/rt/cpu_lle.c \
@@ -466,7 +488,10 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/osk_win.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
-              src/rt/gpu_sdl3vk/ge_gpu.c
+              src/rt/gpu_sdl3vk/ge_gpu.c \
+              src/core/nk_input_profile.c \
+              src/core/nk_json.c \
+              $(PLAYER_PLATFORM_SRC)
 
 RT_OBJS    := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
 
@@ -488,7 +513,8 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # RT_SRCS and gpu-capture-selftest but not the other recipes that compile
 # sdl3vk.c directly, silently breaking gpu-coherence-selftest and ge-replay.
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies it.
-SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c
+SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c \
+               src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
 
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
@@ -1156,6 +1182,9 @@ $(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 $(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/%.o: src/core/%.c $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
 # generated include path stops here rather than leaking into CFLAGS.
@@ -1181,28 +1210,6 @@ portable-core-objects: $(PORTABLE_CORE_OBJS)
 
 atrac3p-objects: $(ATRAC3P_OBJS)
 
-ifeq ($(OS),Windows_NT)
-PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
-PLAYER_EXTRA_LIBS   := -lshell32
-PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
-# The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
-# must derive from the shared VULKAN_SDK resolution above (explicit override,
-# environment, then tools/vulkan_sdk.py discovery) rather than naming one
-# machine's SDK install. The player-vulkan-check order-only prerequisite below
-# fails closed with the one variable to set when discovery found nothing,
-# instead of a hardcoded fallback or a confusing compiler error.
-PLAYER_VULKAN_INC   :=
-PLAYER_VULKAN_LIB   :=
-EXE_EXT             := .exe
-else
-PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
-PLAYER_EXTRA_LIBS   :=
-PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
-PLAYER_VULKAN_INC   :=
-PLAYER_VULKAN_LIB   :=
-EXE_EXT             :=
-endif
-
 # A clear player-target failure when no usable SDK resolved (see the Windows
 # branch above). A no-op recipe when VULKAN_SDK is set.
 .PHONY: player-vulkan-check
@@ -1215,14 +1222,14 @@ sdl3-check:
 	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/generated/nk_title_catalog.h
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
@@ -1376,7 +1383,7 @@ SCHED_SELFTEST_CONFIG_ARG := $(if $(strip $(SCHED_SELFTEST_MANIFEST)),--manifest
 
 sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_frames.c src/rt/nested_frames.h
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
-	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
+	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) -DSR_SCHED_LIVENESS_TEST $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
 		src/rt/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
 
@@ -1531,16 +1538,19 @@ coro-selftest:
 # issue #88 interrupt-context conformance matrix in src/rt/intr_conformance.h); the --psp-oracle
 # sub-mode below
 # remains available when only one scalar production-HLE stream is needed.
-HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST
+HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST
 # hle.c includes atrac3p_bridge.h and calls into the PR-B decode bridge, so any
 # target that compiles it needs the same include paths and bridge/decoder
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
 # -I flags this target does not even reach the linker: avcodec.h fails on
 # libavutil/attributes.h.
 
+PSMF_FUZZ_ITERS ?= 0
+MEDIA_FUZZ_ITERS ?= 0
+
 psmf-producer-selftest:
-	$(CC) $(CFLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_producer_selftest.exe src/rt/psmf_producer.c src/rt/psmf_producer_selftest.c
-	$(BUILD_DIR)/psmf_producer_selftest.exe
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_producer_selftest.exe src/rt/psmf_producer.c src/rt/psmf_producer_selftest.c
+	$(BUILD_DIR)/psmf_producer_selftest.exe $(if $(PSMF_FUZZ_ITERS),--fuzz-iters $(PSMF_FUZZ_ITERS),)
 
 # psmf-media-selftest -- the synthetic PSMF fixture through the real H.264 backend and into a
 # guest display buffer.  The fixture is generated by the selftest itself (no retail media, no
@@ -1554,10 +1564,10 @@ PSMF_MEDIA_LIBS :=
 endif
 
 psmf-media-selftest:
-	$(CC) $(CFLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_media_selftest.exe \
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_media_selftest.exe \
 		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c \
 		$(PSMF_MEDIA_LIBS)
-	$(BUILD_DIR)/psmf_media_selftest.exe
+	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
@@ -1566,7 +1576,7 @@ audio-selftest:
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
@@ -1937,7 +1947,12 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
 		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
-	./build/test_fuzz_parsers$(EXE_EXT) 100
+	./build/test_fuzz_parsers$(EXE_EXT) --iters 100
+	$(MAKE) --no-print-directory psmf-producer-selftest PSMF_FUZZ_ITERS=100
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
+		tests/native/test_input_profile.c -o build/test_input_profile$(EXE_EXT)
+	./build/test_input_profile$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
@@ -1955,7 +1970,7 @@ FUZZ_ITERS ?= 5000
 ifeq ($(OS),Windows_NT)
 FUZZ_SAN_FLAGS :=
 else
-FUZZ_SAN_FLAGS := -fsanitize=address,undefined
+FUZZ_SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all
 endif
 
 fuzz-parsers:
@@ -1963,4 +1978,8 @@ fuzz-parsers:
 	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
 		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
-	./build/test_fuzz_parsers$(EXE_EXT) $(FUZZ_ITERS)
+	./build/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
+	$(MAKE) --no-print-directory psmf-producer-selftest \
+		PSMF_FUZZ_ITERS=$(FUZZ_ITERS) FUZZ_SAN_FLAGS="$(FUZZ_SAN_FLAGS)"
+	$(MAKE) --no-print-directory psmf-media-selftest \
+		MEDIA_FUZZ_ITERS=$(FUZZ_ITERS) FUZZ_SAN_FLAGS="$(FUZZ_SAN_FLAGS)"

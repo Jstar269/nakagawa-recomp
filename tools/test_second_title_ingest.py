@@ -37,6 +37,7 @@ class SecondTitleIngestTests(unittest.TestCase):
             ROOT / "src" / "core" / "nk_library.c",
             ROOT / "src" / "core" / "nk_launch.c",
             ROOT / "src" / "core" / "nk_title_manifest.c",
+            ROOT / "src" / "core" / "nk_json.c",
             ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if sys.platform == "win32":
