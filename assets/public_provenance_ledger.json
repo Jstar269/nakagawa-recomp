@@ -3915,7 +3915,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29f62c12b6832c63db771079e52e36cbe7c2af3b19567c18acdf8d6eca9ca528"
+      "sha256": "8ee8c46e44df3944e9300be38593bfc488506fcc7d1e4abddb23d8b88284ce34"
     },
     {
       "path": "src/core/nk_platform_posix.c",
@@ -3927,7 +3927,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d07c20b61eb5ce53a02a9c7a045e839d812bb5a361d196226245a03e59d4f42"
+      "sha256": "5e0a7b81903c845621052e4f4d50c3f02e48822ce73c3e15294dd21c456d9cff"
     },
     {
       "path": "src/core/nk_platform_win32.c",
@@ -3939,7 +3939,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7d51a86ef7fd74be4327cc2535c4cdbe9fd4cb404a66433df44785c6663e4c48"
+      "sha256": "7997ca25cda8856027e8607568592ec2c2bd3d25e86da5a6e8c06445e0424cf0"
     },
     {
       "path": "src/core/nk_title_manifest.c",
@@ -6955,7 +6955,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e10e4900c5b98e640e2a25567c498006f08a653ac7da2c99f5922d4ec220902"
+      "sha256": "8568b72120c94e618fda3904c8d54fa6d2352b01fb8e50ea0f90b9567db49f04"
     },
     {
       "path": "tests/native/test_core_catalog.c",
@@ -7075,7 +7075,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bc4d0ca85d5b436aaaccf666d056842f03aca6472c6d3db5092ec3b1a019ad27"
+      "sha256": "a3b29f01afae570b3a4061a58c7d4ab972b66802f92df52cd84411fccc1bd96b"
     },
     {
       "path": "tests/native/test_win32_process.c",
@@ -7087,7 +7087,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ceb8357fc9996175cee221f5ec5ea725ed55040c14ca9b1ab59f853557beac97"
+      "sha256": "18acce1fcc6dbbe1cacabdf493e856bd5a528069d29a2171f47cab041f961bb3"
     },
     {
       "path": "tests/native/test_xb_parser.c",
