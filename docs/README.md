@@ -14,6 +14,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | When you are about to | Read |
 | --- | --- |
 | Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md) |
+| Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
@@ -28,6 +29,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — runtime, code generation, renderer and
   two-phase build structure.
 - [`SETUP.md`](SETUP.md) — supported toolchain and documented external inputs.
+- [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — what the player needs to play a game you own.
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
@@ -117,6 +119,7 @@ in this slice; classification comes first, directory moves separately.
 | --- | --- | --- |
 | `ARCHITECTURE.md` | CURRENT | Implementation behavior (source/tests remain authoritative) |
 | `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims |
+| `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
 | `DEBUGGING.md` | CURRENT | Diagnostics and safe local troubleshooting |
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
