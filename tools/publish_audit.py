@@ -1171,29 +1171,30 @@ SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS = frozenset({
     "src/rt/atrac3p/libavutil/thread.h",
 })
 
-# These inherited dashboard files retain their checked-in GPL declaration;
-# their separate MIT source notice is preserved in THIRD_PARTY_LICENSES.
-SPDX_UPSTREAM_HEADER_OVERRIDES = frozenset({
-    "interface/src/components/ui/alert-dialog.tsx",
-    "interface/src/components/ui/alert.tsx",
-    "interface/src/components/ui/badge.tsx",
-    "interface/src/components/ui/button.tsx",
-    "interface/src/components/ui/dialog.tsx",
-    "interface/src/components/ui/dropdown-menu.tsx",
-    "interface/src/components/ui/input.tsx",
-    "interface/src/components/ui/label.tsx",
-    "interface/src/components/ui/progress.tsx",
-    "interface/src/components/ui/select.tsx",
-    "interface/src/components/ui/slider.tsx",
-    "interface/src/components/ui/switch.tsx",
-    "interface/src/components/ui/toast.tsx",
-    "interface/src/components/ui/toaster.tsx",
-    "interface/src/components/ui/toggle-group.tsx",
-    "interface/src/components/ui/toggle.tsx",
-    "interface/src/components/ui/tooltip.tsx",
-    "interface/src/hooks/use-mobile.ts",
-    "interface/src/hooks/use-toast.ts",
-})
+# Upstream shadcn/ui files require exact SPDX identifiers: verbatim copies
+# declare MIT; files modified by this project declare MIT AND GPL-3.0-or-later.
+# Their separate MIT source notice is preserved in THIRD_PARTY_LICENSES.
+SPDX_UPSTREAM_HEADER_OVERRIDES = {
+    "interface/src/components/ui/alert-dialog.tsx": "MIT",
+    "interface/src/components/ui/alert.tsx": "MIT",
+    "interface/src/components/ui/badge.tsx": "MIT",
+    "interface/src/components/ui/button.tsx": "MIT",
+    "interface/src/components/ui/dialog.tsx": "MIT",
+    "interface/src/components/ui/dropdown-menu.tsx": "MIT",
+    "interface/src/components/ui/input.tsx": "MIT",
+    "interface/src/components/ui/label.tsx": "MIT",
+    "interface/src/components/ui/progress.tsx": "MIT",
+    "interface/src/components/ui/select.tsx": "MIT",
+    "interface/src/components/ui/slider.tsx": "MIT",
+    "interface/src/components/ui/switch.tsx": "MIT",
+    "interface/src/components/ui/toast.tsx": "MIT",
+    "interface/src/components/ui/toaster.tsx": "MIT",
+    "interface/src/components/ui/toggle-group.tsx": "MIT",
+    "interface/src/components/ui/toggle.tsx": "MIT",
+    "interface/src/components/ui/tooltip.tsx": "MIT",
+    "interface/src/hooks/use-mobile.ts": "MIT AND GPL-3.0-or-later",
+    "interface/src/hooks/use-toast.ts": "MIT AND GPL-3.0-or-later",
+}
 
 PROJECT_SPDX_IDENTIFIER = "GPL-3.0-or-later"
 SPDX_IDENTIFIER_LINE = re.compile(r"SPDX-License-Identifier:\s*(.*?)\s*(?:\*/)?\s*$")
@@ -1260,13 +1261,21 @@ def _spdx_provenance_findings(path: str, record: dict, raw_bytes: bytes) -> list
             return []
         evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
         expected = (
-            PROJECT_SPDX_IDENTIFIER
+            SPDX_UPSTREAM_HEADER_OVERRIDES[path]
             if path in SPDX_UPSTREAM_HEADER_OVERRIDES
             else evidence.get("license")
         )
         if not isinstance(expected, str) or not expected or expected == "see NOTICE.md":
             return [Finding("SPDX_UPSTREAM_LICENSE_UNKNOWN", path, "upstream provenance does not name an SPDX license")]
-        if expected not in identifiers:
+        if path in SPDX_UPSTREAM_HEADER_OVERRIDES:
+            if identifiers != [expected]:
+                actual = ", ".join(identifiers) if identifiers else "missing"
+                return [Finding(
+                    "SPDX_UPSTREAM_LINEAGE",
+                    path,
+                    f"upstream SPDX lineage must declare exactly {expected}; found {actual}",
+                )]
+        elif expected not in identifiers:
             return [Finding(
                 "SPDX_UPSTREAM_LINEAGE",
                 path,

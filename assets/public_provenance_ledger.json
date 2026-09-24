@@ -2559,7 +2559,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "62d57912e1b13a3b42281e22c54bd41a9ee27339979081f0960bd618a42bd29a"
+      "sha256": "a76213c5f62be9c748c2bd6b40c0a5b06a7e9109a12336563dea316c00c8e480"
     },
     {
       "path": "interface/src/components/ui/alert.tsx",
@@ -2574,7 +2574,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "030458764c21a5781be7d4edb6afefee7663f792bc4e3c9662f75b89e8cc3910"
+      "sha256": "19a88d306e9728cc570f1bfa467679726817db8bebbe8fed46eed561abf088c5"
     },
     {
       "path": "interface/src/components/ui/badge.tsx",
@@ -2589,7 +2589,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "6d90a43ffa681824920ad746e1b285e2938a38a8a6d0dacb6a64fd569c38f515"
+      "sha256": "12afd0b9a7eef861e6383b55864be58c2653b346b53cbc393a89ee4e0b70d05c"
     },
     {
       "path": "interface/src/components/ui/button.tsx",
@@ -2604,7 +2604,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "a3b98e591a37350d46394c10c08b7aef15d6acd07f43092152f7795221f1db38"
+      "sha256": "6940872bf122271a604890d88f45e06f05bbe00ef69c6ef358fa37b3b87bacb6"
     },
     {
       "path": "interface/src/components/ui/dialog.tsx",
@@ -2619,7 +2619,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "58ad3288082e5c39f5b665bc4d30335595f7bf3cc64c3b005fc6c247dba55c79"
+      "sha256": "b970adf18bb9f8e445ac10788df19a6110f7125de912ac21f6a033bb3ecd4872"
     },
     {
       "path": "interface/src/components/ui/dropdown-menu.tsx",
@@ -2634,7 +2634,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "f6ac72e410a42c9d637a4d69788f8dae88b7d75a385a51df9fe161bd4ed73bcb"
+      "sha256": "567e5e4f4203adba35501bf064e415c25f93b8f82a5cd8437ebfc7795f5ce007"
     },
     {
       "path": "interface/src/components/ui/input.tsx",
@@ -2649,7 +2649,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "74c9bd6d2acdeb6520769baa1f504119cc0dcb1210ad11f02a59de75cb3f1382"
+      "sha256": "fdcbec3ca95192058a6dc346d19ec46784de106269fab47094b6b48bd2cb99a5"
     },
     {
       "path": "interface/src/components/ui/label.tsx",
@@ -2664,7 +2664,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "ecdcc7475e1f26e85610da14b6b6ddab56e3358ce2a4295762a6ecf522c6c517"
+      "sha256": "cfd6aeb90a34ca42f4fffaeb0861fca27db4e09b752e75d609c7ff1e99c0019c"
     },
     {
       "path": "interface/src/components/ui/progress.tsx",
@@ -2679,7 +2679,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "2ac404732745fe18cb03d23de3858361799a0f13b2907639dec5c32c10774401"
+      "sha256": "a54d55442bb523e095e09ae98e447ef0069c60a98b33d56aa0933f4662accfc3"
     },
     {
       "path": "interface/src/components/ui/select.tsx",
@@ -2694,7 +2694,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "bfe5468c202565759789fbc17e838e091c3f9b534e537c6f1c211f176cd170ae"
+      "sha256": "6718e4810940d758ae5b6fd8e4a99ae7070e4b13aa85dde6e5fa80b0c0311cc7"
     },
     {
       "path": "interface/src/components/ui/slider.tsx",
@@ -2709,7 +2709,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "0be12562c13c51219e311ee755fc8c7adaa1ccd91599bc456272de6ba49a7794"
+      "sha256": "ab8fcea97cd41c01d5bd86864a474d383d1226897daa06ee5b577d288d7133c3"
     },
     {
       "path": "interface/src/components/ui/switch.tsx",
@@ -2724,7 +2724,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "a051713baf73d20299179c0b3663067ba7b39fd61c2ca5abe4971f64bc449b1c"
+      "sha256": "f0fd3c1dd20a3c4948a8e0fa3600442dd0e764ef7493e3f517a5e5173d2e7422"
     },
     {
       "path": "interface/src/components/ui/toast.tsx",
@@ -2739,7 +2739,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "c460b5bda0d080539e251c6874d1b2483f8be561a467abb025c0b6805544d861"
+      "sha256": "a2514d0c0834f60aabd31819e50729fa46c7e15a8d9be8daf54fb126eaf3f832"
     },
     {
       "path": "interface/src/components/ui/toaster.tsx",
@@ -2754,7 +2754,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "461c94d85aa36f211353d6ea7b722730eb22b92275276cafe0ed996b898fff6c"
+      "sha256": "b1254cb1644373db9c9b11a8cd4f4a71eba4b2976968c4e3fd327a53d171ab35"
     },
     {
       "path": "interface/src/components/ui/toggle-group.tsx",
@@ -2769,7 +2769,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "1bce681cde0ac0531c0b2143a388078797e8784c7c7596dcb7268f7505263694"
+      "sha256": "2d306d6af1425766af06a3b1bf775e4d85b2f3659ec247aa154abe4e779fa9f1"
     },
     {
       "path": "interface/src/components/ui/toggle.tsx",
@@ -2784,7 +2784,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "d2c60afd36a1a5d6ce4821eb25db6a5ce04076cd5b8dd936030fd20444b7493d"
+      "sha256": "91b84e07fda8c7b544d908aa2192f312dc31611aed4db779e9fade3853f06ce3"
     },
     {
       "path": "interface/src/components/ui/tooltip.tsx",
@@ -2799,7 +2799,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "873406cd5e4a5b8ff819c78dfca1ab62797ad98067732a10e168120ad51ad275"
+      "sha256": "56ffdf61207a9c48430aa7e8c72158dc4cfdab0b50a3b7539740aceb1bdf9abd"
     },
     {
       "path": "interface/src/hooks/use-gamepads.ts",
@@ -2838,7 +2838,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4f3b51255bdcb95fad367162eccdc2ba5d5be37995db6348d3751921df08826f"
+      "sha256": "4fc1aeccfc4260ad4738690b67f1bafc4fae12e8b35459eb41c9ab05964feaac"
     },
     {
       "path": "interface/src/hooks/use-theme.ts",
@@ -2865,7 +2865,7 @@
         "license": "MIT",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "12fc88ec2266be8599329e29b8d1943578db8de9195f0c9102edaa843fa33261"
+      "sha256": "f9ee2956c278ca95d49675bbc9a630ef19d76c7ea876c765eae58ad218c55779"
     },
     {
       "path": "interface/src/lib/db.ts",
@@ -8063,7 +8063,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c4d188e231dba9211aa39e45a3e5204b9c8a27d04f17111d73950417ab1f2422"
+      "sha256": "2b636a82bac536bf08cf3f34ef4b491ae5c75f6cfac1321636a92ed281e5cf3f"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -9230,7 +9230,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0a491bd341d79cb732e0253e0a9b2085d6fedef949c0860ed9e19d0a08c1fce0"
+      "sha256": "54106b0e20c4965fe89a2b9ed2fca1a4c2032806bd94fb4720361ef40e66bebf"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -9845,12 +9845,30 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "004860bd507bf7dd7f3727e129c0407f5b6777c7",
-    "candidate_tree": "941065439c1031741110adb03d6c77839c58997c",
+    "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
+    "candidate_tree": "e9f4b503ba489b33e39c39f05b95d92167681a05",
     "refreshed_paths": [
-      "docs/LLE_FIDELITY_ARCHITECTURE.md",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "interface/src/components/ui/alert-dialog.tsx",
+      "interface/src/components/ui/alert.tsx",
+      "interface/src/components/ui/badge.tsx",
+      "interface/src/components/ui/button.tsx",
+      "interface/src/components/ui/dialog.tsx",
+      "interface/src/components/ui/dropdown-menu.tsx",
+      "interface/src/components/ui/input.tsx",
+      "interface/src/components/ui/label.tsx",
+      "interface/src/components/ui/progress.tsx",
+      "interface/src/components/ui/select.tsx",
+      "interface/src/components/ui/slider.tsx",
+      "interface/src/components/ui/switch.tsx",
+      "interface/src/components/ui/toast.tsx",
+      "interface/src/components/ui/toaster.tsx",
+      "interface/src/components/ui/toggle-group.tsx",
+      "interface/src/components/ui/toggle.tsx",
+      "interface/src/components/ui/tooltip.tsx",
+      "interface/src/hooks/use-mobile.ts",
+      "interface/src/hooks/use-toast.ts",
+      "tools/publish_audit.py",
+      "tools/test_publish_audit.py"
     ]
   }
 }

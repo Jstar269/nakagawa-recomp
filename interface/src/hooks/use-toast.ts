@@ -1,5 +1,5 @@
 "use client"
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT AND GPL-3.0-or-later
 
 // Inspired by react-hot-toast library
 import * as React from "react"
