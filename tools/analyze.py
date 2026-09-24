@@ -8,7 +8,7 @@
 #
 # Discovers function entry points without using the symbol table, by combining:
 #   - the ELF entry point and the module's start/stop exports,
-#   - direct-call targets (jal) found by sweeping the executable sections,
+#   - direct-call targets (jal) found while tracing reachable instructions,
 #   - constructor/destructor pointer arrays (.ctors/.dtors),
 #   - function-pointer tables in read-only/data sections (pointers into code),
 #   - recursive descent from each entry to bound the function and find more calls.
@@ -397,6 +397,19 @@ def in_ranges(addr, ranges):
     return any(lo <= addr < hi for lo, hi in ranges)
 
 
+def _file_backed_exec_ranges(elf):
+    """Executable bytes that are file-backed, including bytes outside named code sections."""
+    cached = getattr(elf, "_file_backed_exec_ranges", None)
+    if cached is None:
+        cached = [
+            (segment["vaddr"], segment["vaddr"] + segment["filesz"])
+            for segment in elf.segments
+            if segment["type"] == 1 and (segment.get("flags", 0) & 1) and segment["filesz"] > 0
+        ]
+        elf._file_backed_exec_ranges = cached
+    return cached
+
+
 def trace_function(elf, start, ranges, covered, calls, hc):
     # Recursive descent over one function's intra-procedural control flow from `start`.
     # Adds every instruction address reached to `covered`, and every direct-call (jal) target
@@ -451,7 +464,7 @@ def trace_function(elf, start, ranges, covered, calls, hc):
             funct = word & 0x3F
             if op == 3:  # jal: direct call, returns -> continue past delay slot
                 target = (pc & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
-                if in_ranges(target, ranges):
+                if in_ranges(target, ranges) or in_ranges(target, _file_backed_exec_ranges(elf)):
                     calls.add(target)
                 covered.add(pc + 4)
                 pc += 8
@@ -2048,6 +2061,24 @@ def code_pointer_evidence(elf, ranges):
 
 def analyze(elf, extra_spans=None):
     ranges = exec_ranges(elf, extra_spans=extra_spans)
+    file_exec_ranges = _file_backed_exec_ranges(elf)
+
+    def trace_ranges_for_entry(entry):
+        if in_ranges(entry, ranges):
+            return ranges
+        containing = next(
+            (span for span in file_exec_ranges if span[0] <= entry < span[1]), None
+        )
+        if containing is None:
+            return ranges
+        spans = sorted([*ranges, containing])
+        merged = []
+        for lo, hi in spans:
+            if merged and lo <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            else:
+                merged.append((lo, hi))
+        return merged
 
     def in_text(a):
         return in_ranges(a, ranges) and (a & 3) == 0
@@ -2156,10 +2187,9 @@ def analyze(elf, extra_spans=None):
             if in_ranges(val, ranges) and (val & 3) == 0:
                 hc.add(val)
 
-    # Sweep executable sections: jal targets are calls (high-confidence functions); la-style
-    # address materialization into code is an indirect-call target. j targets, prologues, and
-    # the instruction after an unconditional terminator are weaker "block boundary" signals
-    # kept separately and used only to fill gaps the call graph does not cover.
+    # Sweep executable sections for weaker "block boundary" signals and possible indirect
+    # targets. Direct JAL targets are collected by trace_function only after their source
+    # instruction is reached; a linear sweep can mistake data inside .text for a call.
     sys.stderr.write(f"SCANNING RANGES: {ranges}\n")
     for lo, hi in ranges:
         blob = elf.read_at_vaddr(lo, hi - lo)
@@ -2174,11 +2204,7 @@ def analyze(elf, extra_spans=None):
             word = int.from_bytes(blob[off:off + 4], 'little')
             addr = lo + off
             op = word >> 26
-            if op == 3:  # jal: direct call
-                target = (addr & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
-                if in_ranges(target, ranges):
-                    hc.add(target)
-            elif op == 2:  # j: tail call or intra-function goto -> weak
+            if op == 2:  # j: tail call or intra-function goto -> weak
                 target = (addr & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
                 if in_ranges(target, ranges):
                     noisy.add(target)
@@ -2286,10 +2312,12 @@ def analyze(elf, extra_spans=None):
     work = list(hc)
     while work:
         s = work.pop()
-        if in_ranges(s, ranges):
-            trace_function(elf, s, ranges, covered, calls, hc)
+        if in_ranges(s, ranges) or in_ranges(s, file_exec_ranges):
+            trace_function(elf, s, trace_ranges_for_entry(s), covered, calls, hc)
         for t in list(calls):
-            if t not in functions and in_ranges(t, ranges):
+            if t not in functions and (
+                in_ranges(t, ranges) or in_ranges(t, file_exec_ranges)
+            ):
                 functions.add(t)
                 work.append(t)
 
@@ -2355,7 +2383,34 @@ def analyze(elf, extra_spans=None):
                         trace_function(elf, t, ranges, covered, calls, hc)
                 changed = True
 
-    return functions, ranges
+    # A direct call can prove that code exists outside named .text sections. Grant the
+    # interpreter floor only the instructions reached from those roots, never the
+    # surrounding executable PT_LOAD's unowned gaps.
+    extra_addresses = sorted({
+        address for address in covered
+        if not in_ranges(address, ranges)
+        and in_ranges(address, file_exec_ranges)
+        and elf.read_at_vaddr(address, 4) is not None
+    })
+    owned_spans = list(ranges)
+    if extra_addresses:
+        span_start = extra_addresses[0]
+        span_end = span_start + 4
+        for address in extra_addresses[1:]:
+            if address == span_end:
+                span_end += 4
+            else:
+                owned_spans.append((span_start, span_end))
+                span_start, span_end = address, address + 4
+        owned_spans.append((span_start, span_end))
+    owned_spans.sort()
+    merged_ranges = []
+    for lo, hi in owned_spans:
+        if merged_ranges and lo <= merged_ranges[-1][1]:
+            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], hi))
+        else:
+            merged_ranges.append((lo, hi))
+    return functions, merged_ranges
 
 
 # ---- TOML model: a function inventory the codegen reads and a human can correct ----------
