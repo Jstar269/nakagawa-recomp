@@ -47,6 +47,12 @@
     "name": "sceGeUnsetCallback",
     "status": "unreviewed"
   },
+  "0x06a70004": {
+    "classification": "dedicated",
+    "handler": "h_IoMkdir",
+    "name": "sceIoMkdir",
+    "status": "complete"
+  },
   "0x07f58c24": {
     "classification": "dedicated",
     "handler": "h_SasGetAllEnvelopeHeights",
@@ -2290,6 +2296,12 @@
     "handler": "h_MpegAvcDecodeYCbCr",
     "name": "sceMpegAvcDecodeYCbCr",
     "status": "partial"
+  },
+  "0xf27a9c51": {
+    "classification": "dedicated",
+    "handler": "h_IoRemove",
+    "name": "sceIoRemove",
+    "status": "complete"
   },
   "0xf2930c9c": {
     "classification": "dedicated",
