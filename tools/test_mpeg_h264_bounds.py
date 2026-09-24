@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Static contracts and small independent arithmetic fixtures for issue #170.
+"""Static contracts and small independent arithmetic fixtures for issues #170 and #302.
 
 The MPEG ring code is part of the native runtime and the Media Foundation backend is Windows-
 only.  These tests therefore keep the production source shape fail-closed and exercise the
@@ -16,6 +16,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 MPEG = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
 H264 = (ROOT / "src" / "rt" / "h264_mf.c").read_text(encoding="utf-8")
+PSMF_MEDIA = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
 
 
 def checked_mul_u32(a: int, b: int) -> int | None:
@@ -123,6 +124,65 @@ class TestMpegArithmeticFixtures(unittest.TestCase):
         requested = min(0xFFFFFFFF, total - avail)
         self.assertEqual(requested, 0x10)
         self.assertLessEqual(avail + requested, total)
+
+
+class TestMpegYcbcrContracts(unittest.TestCase):
+    def test_ycbcr_geometry_is_guest_or_stream_supplied(self) -> None:
+        block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
+        self.assertNotIn("#define YCBCR_W", block)
+        self.assertNotIn("#define YCBCR_H\n", block)
+        self.assertNotIn("frameWidth ? 512", MPEG)
+        self.assertNotIn("frameWidth ? (uint32_t)ctx->defaultFrameWidth : 512u", MPEG)
+        self.assertNotIn("272u", MPEG)
+        self.assertIn("streamHeight", MPEG)
+        self.assertIn("b->width", block)
+        self.assertIn("b->height", block)
+
+    def test_ycbcr_guest_state_is_checked_before_hidden_picture_use(self) -> None:
+        block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
+        for contract in (
+            "ycbcr_fingerprint",
+            "guest_tag",
+            "ycbcr_state_usable",
+            "mpeg_contract_error",
+            "sr_guest_span_writable(addr, size)",
+            "if (!from || !to ||",
+            "ycbcr_state_usable(b, 1)",
+        ):
+            self.assertIn(contract, block)
+        guard = block[block.index("static int ycbcr_state_usable") : block.index("static YcbcrBuf *ycbcr_slot_for_init")]
+        self.assertIn("ycbcr_fingerprint(b->buf, b->size) != b->guest_tag", guard)
+        self.assertIn("modified guest YCbCr state", block)
+        self.assertIn("test_mpeg_ycbcr_guest_contract", PSMF_MEDIA)
+        self.assertIn("guest mutation cannot reuse hidden RGBA state", PSMF_MEDIA)
+
+    def test_ycbcr_operations_preflight_ranges_and_modes(self) -> None:
+        block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
+        for contract in (
+            "sr_guest_rect_writable",
+            "rangeAddr & 3u",
+            "frameWidth == 0",
+            "ctx->pixelMode < 0 || ctx->pixelMode > 3",
+            "(uint32_t)w > b->width",
+            "(uint32_t)h > b->height",
+        ):
+            self.assertIn(contract, block)
+
+    def test_mpeg_nid_statuses_are_explicit(self) -> None:
+        import hle_registry_meta as meta
+
+        expected = {
+            "h_MpegAvcQueryYCbCrSize": "partial",
+            "h_MpegAvcInitYCbCr": "partial",
+            "h_MpegAvcDecodeYCbCr": "partial",
+            "h_MpegAvcDecodeStopYCbCr": "partial",
+            "h_MpegAvcCopyYCbCr": "partial",
+            "h_MpegAvcCsc": "partial",
+            "h_MpegQueryPcmEsSize": "partial",
+            "h_MpegGetPcmAu": "controlled_unsupported",
+            "h_MpegChangeGetAuMode": "partial",
+        }
+        self.assertEqual({k: meta.HANDLER_STATUS.get(k) for k in expected}, expected)
 
 
 if __name__ == "__main__":
