@@ -2687,11 +2687,13 @@ static void package_rebuild_reason(char *reason, size_t reason_size,
              nk_platform_path_separator());
     (void)package_join_path(output_path, sizeof(output_path), root, relative);
     if (reason && reason_size) {
+        /* The short library command comes first: UI error fields are bounded
+           and the path-heavy developer route may be truncated. */
         snprintf(reason, reason_size,
-            "%s Rebuild with: python tools/title_codegen_plan.py \"%s\" --package --game-elf \"%s\" --output-dir \"%s\". "
-            "Library command: python tools/nk_cli.py build-package %s (#296).",
+            "%s Build it with: python tools/nk_cli.py build-package %s (#296). "
+            "Developer route: python tools/title_codegen_plan.py \"%s\" --package --game-elf \"%s\" --output-dir \"%s\".",
             detail ? detail : "Runtime package needs rebuilding.",
-            manifest_path, executable_path, output_path, disc_id);
+            disc_id, manifest_path, executable_path, output_path);
     }
 }
 
