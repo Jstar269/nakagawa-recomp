@@ -162,6 +162,66 @@ int main(int argc, char *argv[]) {
                       saved_len > 0 && saved_len < 32768 ? saved_lad : L"") == 0);
     printf("[PROCESS_TEST] Non-code-page profile directory resolved as UTF-8.\n");
 
+    /* Process tree termination:
+     * A child process spawns a grandchild process. When the child process is
+     * terminated via nk_platform_terminate_process, the grandchild must also
+     * be terminated (not left running). */
+    printf("[PROCESS_TEST] Testing process tree termination...\n");
+    const char *pid_file = "build\\test_grandchild.pid";
+    remove(pid_file);
+
+    const char *tree_argv[] = {
+        helper_exe,
+        "--spawn-grandchild",
+        helper_exe,
+        pid_file,
+        NULL
+    };
+
+    NkProcessHandle tree_proc;
+    bool tree_ok = nk_platform_spawn_process(
+        helper_exe,
+        tree_argv,
+        NULL,
+        NULL,
+        &tree_proc
+    );
+    assert(tree_ok);
+    assert(tree_proc.is_active);
+
+    DWORD grandchild_pid = 0;
+    for (int i = 0; i < 200; i++) {
+        FILE *pf = fopen(pid_file, "r");
+        if (pf) {
+            if (fscanf(pf, "%lu", &grandchild_pid) == 1 && grandchild_pid > 0) {
+                fclose(pf);
+                break;
+            }
+            fclose(pf);
+        }
+        Sleep(20);
+    }
+    assert(grandchild_pid > 0);
+
+    HANDLE hGrandchild = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, grandchild_pid);
+    assert(hGrandchild != NULL);
+    assert(WaitForSingleObject(hGrandchild, 0) == WAIT_TIMEOUT);
+
+    nk_platform_terminate_process(&tree_proc);
+    nk_platform_close_process(&tree_proc);
+
+    DWORD wait_res = WaitForSingleObject(hGrandchild, 2000);
+    if (wait_res != WAIT_OBJECT_0) {
+        TerminateProcess(hGrandchild, 1);
+        CloseHandle(hGrandchild);
+        remove(pid_file);
+        fprintf(stderr, "[PROCESS_TEST] Grandchild PID %lu survived child termination!\n", grandchild_pid);
+        assert(wait_res == WAIT_OBJECT_0);
+    }
+    CloseHandle(hGrandchild);
+    remove(pid_file);
+    printf("[PROCESS_TEST] Process tree termination verified: grandchild terminated!\n");
+
     printf("[PROCESS_TEST] Process & quoting test PASSED successfully!\n");
 #else
     printf("[PROCESS_TEST] Skipping Windows-specific tests on non-Windows host.\n");
