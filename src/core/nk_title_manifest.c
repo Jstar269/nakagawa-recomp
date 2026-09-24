@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* lstat is POSIX: without this, -std=c99/c11 on glibc leaves it undeclared. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "nk_title_manifest.h"
 #include "nk_iso.h"
 #include "nk_json.h"
