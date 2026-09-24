@@ -65,7 +65,7 @@ def live_metadata_requested() -> bool:
     }
 
 
-def _trusted_metadata_map(document: object, source_label: str) -> PythonArtifactMetadata:
+def _parse_pypi_release_index(document: object, source_label: str) -> PythonArtifactMetadata:
     if not isinstance(document, dict):
         raise LockfileParseError(f"trusted Python metadata {source_label} must be a JSON object")
     expected_keys = {"schema_version", "retrieved_utc", "sources"}
@@ -181,7 +181,7 @@ def load_trusted_python_metadata(path: Path) -> PythonArtifactMetadata:
         raise LockfileParseError(
             f"trusted Python artifact metadata {path} is not valid UTF-8 JSON: {exc}"
         ) from exc
-    return _trusted_metadata_map(document, str(path))
+    return _parse_pypi_release_index(document, str(path))
 
 
 def fetch_live_python_metadata(
@@ -236,7 +236,7 @@ def fetch_live_python_metadata(
             "version": info["version"],
             "artifacts": artifacts,
         })
-    return _trusted_metadata_map(
+    return _parse_pypi_release_index(
         {"schema_version": 1, "retrieved_utc": date.today().isoformat(), "sources": sources},
         "live PyPI API",
     )
