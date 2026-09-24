@@ -253,6 +253,7 @@ Authentic in-game typography requires PSP system fonts in Sony's PlayStation Gly
 #### What the user supplies
 
 From your own lawfully owned PSP console or firmware dump, supply genuine PGF font files:
+
 - `jpn0.pgf`: Japanese and baseline font required by the runtime font manager.
 - Optional Latin and regional fonts: `kr0.pgf` and `ltn0.pgf` through `ltn15.pgf`.
 
@@ -269,6 +270,7 @@ python tools/nk_cli.py fonts import <folder>
 The `<folder>` argument can point directly to the directory containing your `.pgf` files, or to a dump directory containing `font/`, `FONT/`, `flash0/font/`, or `flash0/FONT/` subdirectories.
 
 Available options:
+
 - `--user-data-root <path>`: Override the target per-user data directory (default: `%LOCALAPPDATA%\Nakagawa\data` on Windows, `~/Library/Application Support/NakagawaRecomp/data` on macOS, `$XDG_DATA_HOME/nakagawa-recomp` or `~/.local/share/nakagawa-recomp` on Linux).
 - `--json`: Emit a machine-readable JSON report of the imported files, sizes, and SHA-256 digests.
 
@@ -288,9 +290,11 @@ Along with the `.pgf` files, the command writes a validated `manifest.json` reco
 To verify that system fonts are correctly installed:
 
 1. **CLI verification:** Run `python tools/nk_cli.py inspect <iso>` (or add `--root <user_data>`). Under the compatibility preflight checklist, verify the `SYSTEM_FONTS` check:
+
    ```text
    OK: User-supplied PSP system font jpn0.pgf is available.
    ```
+
 2. **Player preflight checklist:** In `build/nakagawa_player.exe`, select your game card. The preflight checklist reports:
    - `OK` with `"User-supplied PSP system font jpn0.pgf is available."` when the cache is valid and contains `jpn0.pgf`.
    - `MISSING` with `"PSP font jpn0.pgf missing; run fonts import <folder> (#300)."` when no font cache or fallback font is detected.
