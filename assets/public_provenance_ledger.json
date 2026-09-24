@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e0d935dd9894531ce09e68f4af82fec435c6b17a27a0a01952c76cf16846a7b6"
+      "sha256": "ada9b98eaca644ebf537b036176883d86820c078b3e10579ae892c3ea4553ee5"
     },
     {
       "path": "NOTICE.md",
@@ -438,7 +438,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0fea2bd2a99f62afff21583ee86f0f1caeef70cb1c3dc63bf1f558eaa38e9d1e"
+      "sha256": "908bc8c86488e0f279cb28b9ada0c3c1d6cd47f56b13f16e4f0a71a0dcfbe25f"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -1122,7 +1122,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "928d9f9542591a084f0ed104ca620b4874e6f48ae395b1af31412b7b763a61ea"
+      "sha256": "c7910b8e776e9c7f1d0b9b26a92908158e254bc822ce446ed070b1a15090d3ec"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -3612,7 +3612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6b5f39289969a436b58617592072a1ac2d4a39914b09434b3b21cc40ad249190"
+      "sha256": "f8690d6ed57793817d085bb60f67b9375f3459307c354dae3165e790a7d7b82e"
     },
     {
       "path": "nk_manager.ps1",
@@ -7619,6 +7619,18 @@
       "sha256": "d9f18a84c5243a1d7e2c35732561502713342246a6c856b7c7d6704846c3074c"
     },
     {
+      "path": "tools/nk_clean.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "preview-first-clean-368",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "cdc122a968b6ef7478312ef2e9345e1b73321cea39122f497309c4729c0d6c9d"
+    },
+    {
       "path": "tools/nk_cli.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9164,6 +9176,18 @@
       "sha256": "b47867bd034d3e239573fb115cd17505f483f6bfba38b12198e67feed2849ea9"
     },
     {
+      "path": "tools/test_nk_clean.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "preview-first-clean-368",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "5f37b620fa7e2c3ed6c64760a3bffe04158843c8a2f9abd8f3bd6f8bd600462c"
+    },
+    {
       "path": "tools/test_nk_core.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9870,6 +9894,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "0f3b2d5a6899b3e8ccb0557c35c8bf51b8c93b371a60445e99e3f929d214739d"
+    },
+    {
+      "path": "tools/test_workspace_paths.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "preview-first-clean-368",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "0d79d32eec0e81bed5d2ee2adc1053037df6e399a7cf1829150629d41bad4e64"
     },
     {
       "path": "tools/test_xb_probe.py",
