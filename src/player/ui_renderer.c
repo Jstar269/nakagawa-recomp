@@ -1428,14 +1428,20 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
-        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "PACKAGE STALE - REBUILD (#297)");
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "REBUILD PACKAGE", true, in, primary_focused)) {
+            player_app_start_package_build(app, app->selected_game_index);
+        }
+        focus++;
+    } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "BUILD PACKAGE", true, in, primary_focused)) {
+            player_app_start_package_build(app, app->selected_game_index);
+        }
+        focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                          "PACKAGE INCOMPATIBLE (#297)");
-    } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
-        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "PACKAGE MISSING (#296/#297)");
     } else if (game->assets_staged) {
         /* Disc extraction is useful progress, but it is not a runnable
          * recompiled title. Keep this state visible without exposing a
@@ -2227,6 +2233,135 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
         content_y += 24.0f;
     }
 
+    if (input_settings_is_calibrating(&app->input_settings)) {
+        GuidedCalibrationStage stage = input_settings_get_calibration_stage(&app->input_settings);
+        float cal_card_x = card_x + 32.0f;
+        float cal_card_y = content_y + 8.0f;
+        float cal_card_w = card_w - 64.0f;
+        float cal_btn_y = card_y + card_h - 52.0f;
+
+        switch (stage) {
+            case CALIBRATION_STAGE_REST: {
+                draw_badge(ren, cal_card_x, cal_card_y, "STEP 1 OF 3: RESTING POSITIONS", COLOR_BLUE);
+                draw_text(ren, cal_card_x, cal_card_y + 30.0f, "Leave Analog Stick and Triggers at Rest", 1.8f, COLOR_TEXT_WHITE);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 70.0f, cal_card_w,
+                                  "Please do not touch the analog stick or triggers for about 1 second.\n"
+                                  "The system is sampling the neutral resting values of your controller hardware.",
+                                  1.1f, COLOR_TEXT_MUTED, 3);
+                int ms = app->input_settings.calib.elapsed_ms;
+                if (ms > 1000) ms = 1000;
+                float pct = (float)ms / 10.0f;
+                float bar_w = cal_card_w > 400.0f ? 400.0f : cal_card_w;
+                draw_progress_bar(ren, cal_card_x, cal_card_y + 140.0f, bar_w, 24.0f, pct);
+                char prog_text[64];
+                snprintf(prog_text, sizeof(prog_text), "Sampling resting values: %d / 1000 ms (%d%%)", ms, (int)pct);
+                draw_text(ren, cal_card_x, cal_card_y + 175.0f, prog_text, 1.0f, COLOR_TEXT_DIM);
+
+                char live_rest_info[256];
+                snprintf(live_rest_info, sizeof(live_rest_info),
+                         "Live Neutral: Stick X=%d, Stick Y=%d | L-Trig=%d, R-Trig=%d",
+                         app->input_settings.calib.sampled_rest_x,
+                         app->input_settings.calib.sampled_rest_y,
+                         app->input_settings.calib.sampled_rest_lt,
+                         app->input_settings.calib.sampled_rest_rt);
+                draw_text(ren, cal_card_x, cal_card_y + 205.0f, live_rest_info, 0.95f, COLOR_LIME);
+
+                bool cancel_focused = (app->focus_index == 0);
+                if (draw_button_focused(ren, cal_card_x, cal_btn_y, 220.0f, 38.0f, "CANCEL CALIBRATION", false, in, cancel_focused)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                }
+                break;
+            }
+            case CALIBRATION_STAGE_EXTREMES: {
+                draw_badge(ren, cal_card_x, cal_card_y, "STEP 2 OF 3: SAMPLE EXTREMES", COLOR_AMBER);
+                draw_text(ren, cal_card_x, cal_card_y + 30.0f, "Move Stick in Circles & Press Triggers Fully", 1.8f, COLOR_TEXT_WHITE);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 70.0f, cal_card_w,
+                                  "Rotate the analog stick in full circles around its boundaries,\n"
+                                  "and squeeze both the left and right triggers down completely.\n"
+                                  "When finished capturing maximum ranges, click 'Finish Sampling'.",
+                                  1.1f, COLOR_TEXT_MUTED, 4);
+
+                char ext_stick_info[256];
+                snprintf(ext_stick_info, sizeof(ext_stick_info),
+                         "Stick X: min = %6d, max = %6d (live: %6d)\nStick Y: min = %6d, max = %6d (live: %6d)",
+                         app->input_settings.calib.sampled_min_x,
+                         app->input_settings.calib.sampled_max_x,
+                         app->host_axes_live[NK_HOST_AXIS_LEFTX],
+                         app->input_settings.calib.sampled_min_y,
+                         app->input_settings.calib.sampled_max_y,
+                         app->host_axes_live[NK_HOST_AXIS_LEFTY]);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 155.0f, cal_card_w, ext_stick_info, 1.0f, COLOR_TEXT_WHITE, 2);
+
+                char ext_trig_info[256];
+                snprintf(ext_trig_info, sizeof(ext_trig_info),
+                         "Left Trigger:  rest = %6d, extreme = %6d (live: %6d)\nRight Trigger: rest = %6d, extreme = %6d (live: %6d)",
+                         app->input_settings.calib.sampled_rest_lt,
+                         app->input_settings.calib.sampled_max_lt,
+                         app->host_axes_live[NK_HOST_AXIS_LEFT_TRIGGER],
+                         app->input_settings.calib.sampled_rest_rt,
+                         app->input_settings.calib.sampled_max_rt,
+                         app->host_axes_live[NK_HOST_AXIS_RIGHT_TRIGGER]);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 205.0f, cal_card_w, ext_trig_info, 1.0f, COLOR_TEXT_WHITE, 2);
+
+                bool finish_focused = (app->focus_index == 0);
+                if (draw_button_focused(ren, cal_card_x, cal_btn_y, 200.0f, 38.0f, "FINISH SAMPLING", true, in, finish_focused)) {
+                    input_settings_finish_calibration_extremes(&app->input_settings);
+                }
+
+                bool cancel_focused = (app->focus_index == 1);
+                if (draw_button_focused(ren, cal_card_x + 220.0f, cal_btn_y, 140.0f, 38.0f, "CANCEL", false, in, cancel_focused)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                }
+                break;
+            }
+            case CALIBRATION_STAGE_RESULT: {
+                draw_badge(ren, cal_card_x, cal_card_y, "STEP 3 OF 3: REVIEW & ACCEPT", COLOR_EMERALD);
+                draw_text(ren, cal_card_x, cal_card_y + 30.0f, "Review Calibration Results", 1.8f, COLOR_TEXT_WHITE);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 70.0f, cal_card_w,
+                                  "Check the recorded neutral resting points and extreme ranges below.\n"
+                                  "Click 'Accept Calibration' to apply these transforms to the active profile.",
+                                  1.1f, COLOR_TEXT_MUTED, 3);
+
+                char res_x[128], res_y[128], res_tl[128], res_tr[128];
+                snprintf(res_x, sizeof(res_x), "Stick X-Axis:  Rest = %6d,  Min = %6d,  Max = %6d",
+                         app->input_settings.calib.result_rest_x,
+                         app->input_settings.calib.result_min_x,
+                         app->input_settings.calib.result_max_x);
+                snprintf(res_y, sizeof(res_y), "Stick Y-Axis:  Rest = %6d,  Min = %6d,  Max = %6d",
+                         app->input_settings.calib.result_rest_y,
+                         app->input_settings.calib.result_min_y,
+                         app->input_settings.calib.result_max_y);
+                snprintf(res_tl, sizeof(res_tl), "Left Trigger:  Rest = %6d,  Extreme = %6d",
+                         app->input_settings.calib.result_trigger_rest,
+                         app->input_settings.calib.result_trigger_extreme);
+                snprintf(res_tr, sizeof(res_tr), "Right Trigger: Rest = %6d,  Extreme = %6d",
+                         app->input_settings.calib.result_trigger_rest,
+                         app->input_settings.calib.result_trigger_extreme);
+
+                draw_text(ren, cal_card_x, cal_card_y + 140.0f, res_x, 1.05f, COLOR_TEXT_WHITE);
+                draw_text(ren, cal_card_x, cal_card_y + 170.0f, res_y, 1.05f, COLOR_TEXT_WHITE);
+                draw_text(ren, cal_card_x, cal_card_y + 200.0f, res_tl, 1.05f, COLOR_LIME);
+                draw_text(ren, cal_card_x, cal_card_y + 230.0f, res_tr, 1.05f, COLOR_LIME);
+
+                bool accept_focused = (app->focus_index == 0);
+                if (draw_button_focused(ren, cal_card_x, cal_btn_y, 220.0f, 38.0f, "ACCEPT CALIBRATION", true, in, accept_focused)) {
+                    input_settings_accept_calibration(&app->input_settings);
+                }
+
+                bool cancel_focused = (app->focus_index == 1);
+                if (draw_button_focused(ren, cal_card_x + 240.0f, cal_btn_y, 140.0f, 38.0f, "CANCEL", false, in, cancel_focused)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+
+        render_footer_hints(ren, app);
+        return;
+    }
+
     int focus = 0;
 
     if (!two_col) {
@@ -2299,6 +2434,13 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
         bool trig_plus_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 80.0f, y, 40.0f, 28.0f, "+", false, in, trig_plus_focused)) {
             input_settings_adjust_trigger_threshold(&app->input_settings, 1000);
+        }
+        focus++;
+        y += 36.0f;
+
+        bool cal_btn_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, y, 260.0f, 32.0f, "CALIBRATE STICK & TRIGGERS", false, in, cal_btn_focused)) {
+            input_settings_start_calibration(&app->input_settings);
         }
         focus++;
         y += 40.0f;
@@ -2418,8 +2560,14 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
     }
     focus++;
 
+    bool cal_btn_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, right_x, cal_y + 82.0f, 260.0f, 32.0f, "CALIBRATE STICK & TRIGGERS", false, in, cal_btn_focused)) {
+        input_settings_start_calibration(&app->input_settings);
+    }
+    focus++;
+
     /* Live Monitor & Deadzone Visualizer Box */
-    float mon_y = cal_y + 88.0f;
+    float mon_y = cal_y + 122.0f;
     draw_text(ren, right_x, mon_y, "LIVE INPUT & DEADZONE MONITOR", 1.0f, COLOR_TEXT_DIM);
 
     int16_t rx = app->host_axes_live[NK_HOST_AXIS_LEFTX];
@@ -2520,32 +2668,160 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
     render_footer_hints(ren, app);
 }
 
+/* --- View: Building Runtime Package --- */
+static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float cx = w * 0.5f;
+    float cy = h * 0.5f;
+    float card_w = dialog_card_w(w, 720.0f);
+    float card_h = 460.0f;
+    if (card_h > h - 40.0f && h > 300.0f) card_h = h - 40.0f;
+    float card_x = centered_card_x(w, card_w);
+    if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
+    float card_y = cy - card_h * 0.5f;
+    if (card_y < 70.0f) card_y = 70.0f;
+
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+
+    /* Badge & Title */
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "BUILDING RUNTIME PACKAGE", COLOR_BLUE);
+
+    char title_buf[256];
+    if (app->build_session.title_name[0]) {
+        snprintf(title_buf, sizeof(title_buf), "%s (%s)",
+                 app->build_session.title_name, app->build_session.disc_id);
+    } else {
+        snprintf(title_buf, sizeof(title_buf), "Package Build (%s)",
+                 app->build_session.disc_id);
+    }
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 64.0f, title_buf, 1.8f, card_w - 64.0f, COLOR_TEXT_WHITE);
+
+    /* Stages row: Preflight -> Extract -> Compile -> Package */
+    static const char *stages[] = { "Preflight", "Extract", "Compile", "Package" };
+    static const PackageBuildStage stage_enums[] = {
+        PACKAGE_BUILD_STAGE_PREFLIGHT,
+        PACKAGE_BUILD_STAGE_EXTRACT,
+        PACKAGE_BUILD_STAGE_COMPILE,
+        PACKAGE_BUILD_STAGE_PACKAGE
+    };
+    float stage_x = card_x + 32.0f;
+    float stage_y = card_y + 106.0f;
+    float chip_w = (card_w - 64.0f - 30.0f) / 4.0f;
+    if (chip_w > 150.0f) chip_w = 150.0f;
+
+    for (int i = 0; i < 4; i++) {
+        SDL_Color bg = (SDL_Color){ 20, 26, 32, 255 };
+        SDL_Color text_col = COLOR_TEXT_MUTED;
+        SDL_Color border_col = COLOR_CARD_BORDER;
+        if (app->build_session.current_stage == stage_enums[i]) {
+            bg = COLOR_BLUE;
+            text_col = COLOR_TEXT_WHITE;
+            border_col = COLOR_BLUE;
+        } else if (app->build_session.current_stage > stage_enums[i] || app->build_session.is_complete) {
+            text_col = COLOR_EMERALD;
+            border_col = COLOR_EMERALD;
+        }
+        float cur_x = stage_x + (float)i * (chip_w + 10.0f);
+        draw_rounded_fill(ren, cur_x, stage_y, chip_w, 28.0f, 6.0f, bg);
+        draw_rounded_outline(ren, cur_x, stage_y, chip_w, 28.0f, 6.0f, border_col);
+        float t_w = 0.0f, t_h = 0.0f;
+        text_size_at_scale(stages[i], 1.0f, &t_w, &t_h);
+        draw_text(ren, cur_x + (chip_w - t_w) * 0.5f, stage_y + (28.0f - t_h) * 0.5f,
+                  stages[i], 1.0f, text_col);
+    }
+
+    /* Progress bar */
+    float bar_y = stage_y + 40.0f;
+    draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
+
+    /* Current status message & elapsed time */
+    float info_y = bar_y + 24.0f;
+    const char *msg = app->build_session.current_message[0]
+        ? app->build_session.current_message : "Building package...";
+    draw_text_ellipsized(ren, card_x + 32.0f, info_y, msg, 1.1f, card_w - 180.0f, COLOR_TEXT_WHITE);
+
+    char elapsed_str[64];
+    unsigned int sec = app->build_session.elapsed_ms / 1000;
+    unsigned int tenths = (app->build_session.elapsed_ms % 1000) / 100;
+    snprintf(elapsed_str, sizeof(elapsed_str), "Elapsed: %u.%u s", sec, tenths);
+    draw_text(ren, card_x + card_w - 150.0f, info_y, elapsed_str, 1.0f, COLOR_TEXT_MUTED);
+
+    /* Output log box */
+    float log_y = info_y + 28.0f;
+    float log_h = 100.0f;
+    draw_rounded_fill(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, (SDL_Color){ 14, 18, 22, 255 });
+    draw_rounded_outline(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, COLOR_CARD_BORDER);
+
+    int count = app->build_session.output_line_count;
+    int display_lines = count > 4 ? 4 : count;
+    int start_idx = count > 4 ? count - 4 : 0;
+    float text_y = log_y + 8.0f;
+    for (int i = 0; i < display_lines; i++) {
+        const char *l = package_builder_get_output_line(&app->build_session, start_idx + i);
+        draw_text_ellipsized(ren, card_x + 44.0f, text_y, l, 0.95f, card_w - 88.0f, COLOR_TEXT_MUTED);
+        text_y += 22.0f;
+    }
+
+    /* Cancel button */
+    float btn_y = card_y + card_h - 58.0f;
+    bool focused = (app->focus_index == 0);
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 180.0f, 44.0f, "CANCEL BUILD", false, in, focused)) {
+        player_app_cancel_package_build(app);
+        player_app_set_view(app, VIEW_LIBRARY);
+    }
+}
+
 /* --- View: Error Dialog --- */
 static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
     float cx = w * 0.5f;
     float cy = h * 0.5f;
-    float card_w = dialog_card_w(w, 640.0f);
-    float card_h = 340.0f;
+    float card_w = dialog_card_w(w, 680.0f);
+    bool has_build_details = (app->last_error.failed_stage[0] != '\0' ||
+                              app->last_error.log_file_path[0] != '\0');
+    float card_h = has_build_details ? 420.0f : 340.0f;
+    if (card_h > h - 32.0f && h > 340.0f) card_h = h - 32.0f;
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
     float card_y = cy - card_h * 0.5f;
-    if (card_y < 80.0f) card_y = 80.0f;
-    if (card_y + card_h > h - 32.0f && h > 440.0f) card_y = h - 32.0f - card_h;
+    if (card_y < 60.0f) card_y = 60.0f;
 
     draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, app->last_error.error_code, COLOR_RED);
-    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 72.0f, app->last_error.title,
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, app->last_error.error_code, COLOR_RED);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 66.0f, app->last_error.title,
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
-    draw_text_wrapped(ren, card_x + 32.0f, card_y + 116.0f, card_w - 64.0f,
-                      app->last_error.message, 1.1f, COLOR_TEXT_MUTED, 4);
+
+    float text_y = card_y + 110.0f;
+    if (app->last_error.failed_stage[0]) {
+        char stage_str[128];
+        snprintf(stage_str, sizeof(stage_str), "FAILED STAGE: %s", app->last_error.failed_stage);
+        draw_badge(ren, card_x + 32.0f, text_y, stage_str, COLOR_AMBER);
+        text_y += 34.0f;
+    }
+
+    const char *err_msg = app->last_error.boundary_text[0]
+        ? app->last_error.boundary_text
+        : app->last_error.message;
+    draw_text_wrapped(ren, card_x + 32.0f, text_y, card_w - 64.0f,
+                      err_msg, 1.1f, COLOR_TEXT_MUTED, 4);
+    text_y += 76.0f;
+
+    if (app->last_error.log_file_path[0]) {
+        char log_str[NK_MAX_PATH + 32];
+        snprintf(log_str, sizeof(log_str), "LOG FILE: %s", app->last_error.log_file_path);
+        draw_text_ellipsized(ren, card_x + 32.0f, text_y, log_str, 0.95f, card_w - 64.0f, COLOR_TEXT_MUTED);
+    }
 
     bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 250.0f, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
+    float btn_y = card_y + card_h - 58.0f;
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
         player_app_set_view(app, app->last_error.return_view);
     }
 }
@@ -3049,6 +3325,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_SETUP_WIZARD:
             render_setup_wizard(renderer, app, input);
+            break;
+        case VIEW_BUILDING_PACKAGE:
+            render_building_package(renderer, app, input);
             break;
         default:
             render_empty_library(renderer, app, input);

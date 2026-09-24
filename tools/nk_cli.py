@@ -627,12 +627,96 @@ def _report_reused_package_stages(stage_observer) -> None:
         stage_observer(stage, "PASS", 0)
 
 
+class _BuildProgressReporter:
+    def __init__(self, dest: str | Path | None, log_file: Path | None = None):
+        self.dest = dest
+        self.log_file = log_file
+        self.current_stage = "preflight"
+        self._out_stream = None
+        self._log_stream = None
+        self._failed = False
+        self.is_json_stdout = False
+        self._saved_stdout = None
+
+        if log_file:
+            lf = Path(log_file)
+            lf.parent.mkdir(parents=True, exist_ok=True)
+            self._log_stream = lf.open("a", encoding="utf-8")
+
+        if dest:
+            if str(dest) == "-":
+                self.is_json_stdout = True
+                self._out_stream = sys.__stdout__ or sys.stdout
+                self._saved_stdout = sys.stdout
+                sys.stdout = self._log_stream if self._log_stream is not None else io.StringIO()
+            else:
+                p = Path(dest)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                self._out_stream = p.open("a", encoding="utf-8")
+
+    def report(self, stage: str, status: str, message: str) -> None:
+        self.current_stage = stage
+        if status == "FAIL":
+            self._failed = True
+        payload = {"stage": stage, "status": status, "message": message}
+        line = json.dumps(payload, ensure_ascii=False) + "\n"
+        if self._out_stream is not None:
+            self._out_stream.write(line)
+            self._out_stream.flush()
+        if self._log_stream is not None:
+            self._log_stream.write(f"[{stage}] {status}: {message}\n")
+            self._log_stream.flush()
+
+    def report_failure(self, message: str) -> None:
+        if not self._failed:
+            self.report(self.current_stage, "FAIL", message)
+
+    def log(self, text: str) -> None:
+        if self._log_stream is not None:
+            self._log_stream.write(text)
+            if not text.endswith("\n"):
+                self._log_stream.write("\n")
+            self._log_stream.flush()
+
+    def close(self) -> None:
+        if self._saved_stdout is not None:
+            sys.stdout = self._saved_stdout
+            self._saved_stdout = None
+        if self._out_stream is not None and self._out_stream is not sys.__stdout__ and self._out_stream is not sys.stdout:
+            try:
+                self._out_stream.close()
+            except OSError:
+                pass
+            self._out_stream = None
+        if self._log_stream is not None:
+            try:
+                self._log_stream.close()
+            except OSError:
+                pass
+            self._log_stream = None
+
+
 def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
+    reporter = _BuildProgressReporter(getattr(args, "progress_json", None),
+                                      getattr(args, "log_file", None))
+    try:
+        return _build_package(args, stage_observer, reporter)
+    finally:
+        # Restores stdout even on an unexpected exception; close() is idempotent.
+        reporter.close()
+
+
+def _build_package(args: argparse.Namespace, stage_observer,
+                   reporter: _BuildProgressReporter) -> int:
     disc_id = args.disc_id.upper()
     if not re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id):
-        sys.stderr.write("Build refused: disc ID must be a nine-character PSP ID.\n")
+        msg = "Build refused: disc ID must be a nine-character PSP ID."
+        reporter.report("preflight", "FAIL", msg)
+        reporter.close()
+        sys.stderr.write(msg + "\n")
         return 2
     try:
+        reporter.report("preflight", "START", f"Inspecting library entry for {disc_id}...")
         user_root = _user_data_root(args.user_data_root)
         entry = _load_library_entry(user_root, disc_id)
         iso_path = Path(entry["iso_path"]).expanduser()
@@ -685,6 +769,8 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         manifest_source, manifest, expected_hash = _load_entry_manifest(
             user_root, entry, disc_id, manifest_selected
         )
+        reporter.report("preflight", "PASS", "Library entry and manifest validated")
+        reporter.report("extract", "START", "Extracting executable and guest modules...")
         cache_dir = _require_child(user_root, user_root / "cache" / "packages" / disc_id,
                                    "Package cache")
         cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -725,6 +811,7 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             args.module_dir.expanduser().resolve() if args.module_dir else None,
             decrypted_module_dir(user_root, disc_id),
         )
+        reporter.report("extract", "PASS", "Executable and modules prepared")
 
         target_dir = user_root / "packages" / disc_id
         _require_child(user_root, target_dir, "Package destination")
@@ -748,12 +835,20 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             )
         if target_valid and decision.action == "reuse":
             _prune_package_cache(cache_dir)
-            print(f"PACKAGE_REUSED: {target_dir}")
-            print("CACHE: unchanged key; AOT and native objects reused")
+            if not reporter.is_json_stdout:
+                print(f"PACKAGE_REUSED: {target_dir}")
+                print("CACHE: unchanged key; AOT and native objects reused")
+            reporter.log(f"PACKAGE_REUSED: {target_dir}")
+            reporter.log("CACHE: unchanged key; AOT and native objects reused")
+            reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
+            reporter.report("package", "PASS", f"Package reused: {target_dir}")
             _report_reused_package_stages(stage_observer)
+            reporter.close()
             return 0
         if previous_key is not None and decision.reasons:
-            print("CACHE_CHANGED: " + ", ".join(decision.reasons))
+            if not reporter.is_json_stdout:
+                print("CACHE_CHANGED: " + ", ".join(decision.reasons))
+            reporter.log("CACHE_CHANGED: " + ", ".join(decision.reasons))
 
         entry_root = (
             cache_dir / "entries" / cache_key["aot"]["digest"] / cache_key["native"]["digest"]
@@ -769,9 +864,15 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             if entry_valid:
                 _promote_cache_entry(entry_package, target_dir, cache_dir, cache_key, user_root, disc_id)
                 _prune_package_cache(cache_dir, entry_root)
-                print(f"PACKAGE: {target_dir}")
-                print("CACHE: content-addressed entry reused")
+                if not reporter.is_json_stdout:
+                    print(f"PACKAGE: {target_dir}")
+                    print("CACHE: content-addressed entry reused")
+                reporter.log(f"PACKAGE: {target_dir}")
+                reporter.log("CACHE: content-addressed entry reused")
+                reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
+                reporter.report("package", "PASS", f"Package promoted: {target_dir}")
                 _report_reused_package_stages(stage_observer)
+                reporter.close()
                 return 0
             if entry_package.is_symlink():
                 raise PackageBuildError("Package cache entry is a symlink; refusing to replace it.")
@@ -790,6 +891,7 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             if build_dir.is_symlink():
                 raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
             shutil.rmtree(build_dir)
+        reporter.report("compile", "START", "Compiling package with AOT codegen...")
         command = [
             sys.executable,
             str(ROOT / "tools" / "title_codegen_plan.py"),
@@ -809,10 +911,13 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         if native_only:
             command.append("--native-only")
         if os.name == "nt":
-            print("COMMAND: " + subprocess.list2cmdline(command))
+            cmd_line = "COMMAND: " + subprocess.list2cmdline(command)
         else:
             import shlex
-            print("COMMAND: " + shlex.join(command))
+            cmd_line = "COMMAND: " + shlex.join(command)
+        if not reporter.is_json_stdout:
+            print(cmd_line)
+        reporter.log(cmd_line)
         compile_started = time.perf_counter()
         completed = subprocess.run(
             command,
@@ -825,7 +930,9 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             check=False,
         )
         if completed.stdout:
-            sys.stdout.write(completed.stdout)
+            reporter.log(completed.stdout)
+            if not reporter.is_json_stdout:
+                sys.stdout.write(completed.stdout)
         if completed.returncode != 0:
             if stage_observer is not None:
                 stage_observer(
@@ -833,30 +940,45 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
                     int((time.perf_counter() - compile_started) * 1000),
                 )
             if completed.stderr:
-                sys.stderr.write(completed.stderr)
+                reporter.log(completed.stderr)
+                if not reporter.is_json_stdout:
+                    sys.stderr.write(completed.stderr)
             if "PUBLIC_SAFE=0 requires the private PGF and PGD backends" in (
                 completed.stderr + completed.stdout
             ):
-                raise PackageBuildError(
+                boundary_err = (
                     "This checkout lacks the production PGF/PGD runtime backends required "
                     "for retail packages. Public-safe packages are limited to synthetic "
                     "fixtures; production package building is in the works (#297)."
                 )
+                reporter.report("compile", "FAIL", boundary_err)
+                reporter.close()
+                raise PackageBuildError(boundary_err)
             if "PACKAGE_UNSUPPORTED_PATH" in completed.stderr or "PACKAGE_UNSUPPORTED_PATH" in completed.stdout:
                 output = completed.stderr + completed.stdout
+                path_err = None
                 for line in output.splitlines():
                     if "PACKAGE_UNSUPPORTED_PATH:" in line:
-                        raise PackageBuildError(line.split("PACKAGE_UNSUPPORTED_PATH:", 1)[1].strip())
-                raise PackageBuildError(
-                    "A build path contains spaces and 8.3 short names are unavailable on this volume; "
-                    "set NK_BUILD_ROOT to a folder without spaces (#296)."
-                )
+                        path_err = line.split("PACKAGE_UNSUPPORTED_PATH:", 1)[1].strip()
+                        break
+                if not path_err:
+                    path_err = (
+                        "A build path contains spaces and 8.3 short names are unavailable on this volume; "
+                        "set NK_BUILD_ROOT to a folder without spaces (#296)."
+                    )
+                reporter.report("compile", "FAIL", path_err)
+                reporter.close()
+                raise PackageBuildError(path_err)
+            reporter.report("compile", "FAIL", f"Subprocess exited with code {completed.returncode}")
+            reporter.close()
             return completed.returncode
         if stage_observer is not None:
             stage_observer(
                 "compile", "PASS",
                 int((time.perf_counter() - compile_started) * 1000),
             )
+        reporter.report("compile", "PASS", "Compilation completed successfully")
+        reporter.report("package", "START", "Staging runtime assets and validating package...")
         package_started = time.perf_counter()
         _stage_runtime_assets(build_dir)
         package_cache.write_completion_manifest(build_dir, cache_key)
@@ -901,18 +1023,24 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         if backup is not None:
             shutil.rmtree(backup, ignore_errors=True)
         _prune_package_cache(cache_dir, entry_root)
-        print(f"PACKAGE: {target_dir}")
-        if native_only:
-            print("CACHE: generated C reused; native objects recompiled")
-        else:
-            print("CACHE: AOT regenerated for changed cache key")
+        if not reporter.is_json_stdout:
+            print(f"PACKAGE: {target_dir}")
+            if native_only:
+                print("CACHE: generated C reused; native objects recompiled")
+            else:
+                print("CACHE: AOT regenerated for changed cache key")
+        reporter.log(f"PACKAGE: {target_dir}")
+        reporter.report("package", "PASS", f"Package verified and promoted to {target_dir}")
         if stage_observer is not None:
             stage_observer(
                 "build_package", "PASS",
                 int((time.perf_counter() - package_started) * 1000),
             )
+        reporter.close()
         return 0
     except (PackageBuildError, OSError, ValueError, KeyError, TypeError) as exc:
+        reporter.report_failure(str(exc))
+        reporter.close()
         sys.stderr.write(f"Package build refused: {exc}\n")
         return 1
 
@@ -1883,6 +2011,10 @@ def main() -> int:
                          help="Optional directory containing required guest PRXs")
     p_build.add_argument("--psp-header", type=Path,
                          help="PSP header required by some title manifests")
+    p_build.add_argument("--progress-json", nargs="?", const="-", default=None,
+                         help="Emit machine-readable progress JSON objects (one per line)")
+    p_build.add_argument("--log-file", type=Path, default=None,
+                         help="Write build log to the specified file")
     p_build.set_defaults(func=cmd_build_package)
 
     p_bringup = subparsers.add_parser(
