@@ -227,7 +227,8 @@ int sr_parse_watchpoints_buffer(const char *json, SrWatchpointEntry *out, int ou
     }
     const char *s = sr_wp_skip_ws(json);
     if (*s == '[') {
-        /* Legacy bare array (pre-#188 writer output). */
+        /* Legacy bare array (pre-#188 writer output).
+         * Retirement policy: legacy read-only compatibility; removal is tracked in #369. */
         int n = sr_wp_parse_array(&s, out, out_cap, errbuf, errbuf_size);
         if (n >= 0) {
             const char *tail = sr_wp_skip_ws(s);
@@ -269,8 +270,11 @@ int sr_parse_watchpoints_buffer(const char *json, SrWatchpointEntry *out, int ou
         s = sr_wp_skip_ws(s + 1);
         if (strcmp(key, "format") == 0) {
             char fmt[32];
+            /* Retirement policy: "hst-watchpoints" is accepted for legacy read-only
+             * compatibility; removal is tracked in #369. Writers only emit "nk-watchpoints". */
             if (sr_wp_parse_string(&s, fmt, sizeof(fmt)) != 0 ||
-                strcmp(fmt, SR_WATCHPOINTS_FILE_FORMAT) != 0) {
+                (strcmp(fmt, SR_WATCHPOINTS_FILE_FORMAT) != 0 &&
+                 strcmp(fmt, SR_WATCHPOINTS_LEGACY_FILE_FORMAT) != 0)) {
                 sr_wp_error(errbuf, errbuf_size, "unexpected watchpoints file format");
                 goto done;
             }
