@@ -651,13 +651,51 @@ class TestPublishAudit(unittest.TestCase):
 
     def test_provenance_audit_preserves_inherited_dashboard_spdx_declaration(self):
         source_path = "interface/src/components/ui/button.tsx"
-        valid = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const button = true;\n"
+        valid = b"// SPDX-License-Identifier: MIT\nexport const button = true;\n"
         valid_findings = self._spdx_provenance_findings(
             source_path, valid, "upstream_derived", "MIT"
         )
         self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
 
+        bare_gpl = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const button = true;\n"
+        gpl_findings = self._spdx_provenance_findings(
+            source_path, bare_gpl, "upstream_derived", "MIT"
+        )
+        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in gpl_findings), gpl_findings)
+
+        dual_on_verbatim = b"// SPDX-License-Identifier: MIT AND GPL-3.0-or-later\nexport const button = true;\n"
+        dual_findings = self._spdx_provenance_findings(
+            source_path, dual_on_verbatim, "upstream_derived", "MIT"
+        )
+        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in dual_findings), dual_findings)
+
         removed = b"export const button = true;\n"
+        findings = self._spdx_provenance_findings(
+            source_path, removed, "upstream_derived", "MIT"
+        )
+        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
+    def test_provenance_audit_requires_dual_license_for_modified_dashboard_source(self):
+        source_path = "interface/src/hooks/use-mobile.ts"
+        valid = b"// SPDX-License-Identifier: MIT AND GPL-3.0-or-later\nexport const useMobile = true;\n"
+        valid_findings = self._spdx_provenance_findings(
+            source_path, valid, "upstream_derived", "MIT"
+        )
+        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
+
+        bare_gpl = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const useMobile = true;\n"
+        gpl_findings = self._spdx_provenance_findings(
+            source_path, bare_gpl, "upstream_derived", "MIT"
+        )
+        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in gpl_findings), gpl_findings)
+
+        bare_mit = b"// SPDX-License-Identifier: MIT\nexport const useMobile = true;\n"
+        mit_findings = self._spdx_provenance_findings(
+            source_path, bare_mit, "upstream_derived", "MIT"
+        )
+        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in mit_findings), mit_findings)
+
+        removed = b"export const useMobile = true;\n"
         findings = self._spdx_provenance_findings(
             source_path, removed, "upstream_derived", "MIT"
         )
