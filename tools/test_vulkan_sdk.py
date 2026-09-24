@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -138,8 +139,10 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
                     masked.append(child.name)
         env = dict(os.environ)
         env.pop("VULKAN_SDK", None)
+        msys_bin = os.environ.get("MSYS_PATH") or r"C:\msys64\ucrt64\bin"
+        py_bin = str(Path(sys.executable).parent)
         env["PATH"] = os.pathsep.join(
-            [r"C:\Program Files\Python314", r"C:\msys64\ucrt64\bin", env.get("PATH", "")]
+            [py_bin, msys_bin, env.get("PATH", "")]
         )
         try:
             proc = subprocess.run(
@@ -169,8 +172,10 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
             sdk = self.make_sdk(Path(tmp), "9.9.9.9")
             env = dict(os.environ)
             env["VULKAN_SDK"] = str(sdk)
+            msys_bin = os.environ.get("MSYS_PATH") or r"C:\msys64\ucrt64\bin"
+            py_bin = str(Path(sys.executable).parent)
             env["PATH"] = os.pathsep.join(
-                [r"C:\Program Files\Python314", r"C:\msys64\ucrt64\bin", env.get("PATH", "")]
+                [py_bin, msys_bin, env.get("PATH", "")]
             )
             proc = subprocess.run(
                 [make, "--no-print-directory", "-n", "CC=gcc", "player",

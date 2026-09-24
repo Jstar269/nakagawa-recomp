@@ -1507,9 +1507,14 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertIn("SDL3_DIR=", proc.stdout)
         self.assertIn("SDL3_PROVIDER=", proc.stdout)
         self.assertIn("SDL3_VERSION=", proc.stdout)
-        if os.name == "nt" and Path(r"C:\msys64\ucrt64\include\SDL3\SDL.h").is_file():
+        msys_prefix = os.environ.get("MSYS_PATH")
+        if msys_prefix:
+            msys_root = Path(msys_prefix).parent if Path(msys_prefix).name.lower() == "bin" else Path(msys_prefix)
+        else:
+            msys_root = Path(r"C:\msys64\ucrt64")
+        if os.name == "nt" and (msys_root / "include" / "SDL3" / "SDL.h").is_file():
             self.assertIn("SDL3_PROVIDER=msys2_ucrt64", proc.stdout)
-            self.assertIn("SDL3_DIR=C:/msys64/ucrt64", proc.stdout)
+            self.assertIn(f"SDL3_DIR={msys_root.as_posix()}", proc.stdout)
 
     def test_sdl3_search_flags_precede_vulkan_sdk_in_makefile(self) -> None:
         """SDL3 include and library flags must precede Vulkan SDK flags in CFLAGS, PLAYER_INCLUDES, and LDFLAGS."""

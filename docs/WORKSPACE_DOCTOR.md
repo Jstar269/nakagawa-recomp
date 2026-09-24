@@ -166,9 +166,15 @@ The governance work intentionally leaves these as separate, evidence-backed foll
 
 1. replace mixed cmd/sh Make recipes with a Windows-native wrapper that preserves the current
    dependency and fail-closed semantics;
-2. remove hardcoded machine paths from VS Code, `mem_debug`, and tool discovery;
+2. [DONE - #368] remove hardcoded machine paths from VS Code, `mem_debug`, and tool discovery:
+   resolved via an explicit `MSYS_PATH` override (never `MSYSTEM_PREFIX`, which Git Bash points at its own MinGW) with documented defaults in `nk.ps1`, `nk_manager.ps1`,
+   `tools/nk_doctor.py`, and `tools/nk_doctor_checks.py`; `tools/mem_debug.py` requires an explicit `--exe`
+   target and dynamically resolves `nm` rather than assuming HST or hardcoded directories;
 3. make worktree asset resolution explicit and independent of the invoking checkout;
-4. add a long-path diagnostic to the workspace doctor;
+4. [DONE - #368] add a long-path diagnostic to the workspace doctor:
+   implemented in `tools/nk_doctor_checks.py` (`check_long_paths`, `query_windows_long_paths_enabled`)
+   under code `LONG_PATHS`, reporting Windows `LongPathsEnabled` registry policy and MAX_PATH (260) margin
+   for the deepest expected build path as an advisory `WARN`;
 5. define bounded artifact accumulation and a safe, scoped `clean-all` workflow;
 6. stop root-level artifact pollution and document the intended output roots;
 7. eliminate absolute paths from generated `compile_commands.json` where tooling permits;
