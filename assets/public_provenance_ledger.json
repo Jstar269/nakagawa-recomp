@@ -1050,7 +1050,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4b547000e9c8b7c9b83eb246b03fd92d2e9b0faa4e43981978469ffd6b565c44"
+      "sha256": "116cc6591523977f29212882220750742e3050c51fad8ed4992efd5f24ad68a2"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
