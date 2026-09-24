@@ -47,6 +47,10 @@ void player_app_init(PlayerApp *app) {
     if (lib_res == NK_OK && app->library.count > 0) {
         player_app_sync_library(app);
     }
+
+    /* Initialize controller input settings (#357) */
+    input_settings_init(&app->input_settings);
+    input_settings_load(&app->input_settings, NULL);
 }
 
 void player_app_set_runtime_root(PlayerApp *app, const char *root) {
@@ -170,9 +174,14 @@ int player_app_focus_count(const PlayerApp *app) {
             return 1;
         case VIEW_SETTINGS:
             /* Resolution (4) + frame cap (3) + display toggles (3: vsync,
-             * fullscreen, reduce-motion) + volume stepper (2) + close (1),
+             * fullscreen, reduce-motion) + volume stepper (2) + controller settings (1) + close (1),
              * in draw order. */
-            return 13;
+            return 14;
+        case VIEW_CONTROLLER_SETTINGS:
+            /* 14 digital controls rebind buttons + deadzone [-]/[+] (2) +
+             * trigger threshold [-]/[+] (2) + save (1) + reset (1) + back (1),
+             * in draw order. */
+            return 21;
         case VIEW_ERROR:
             return 1;
         case VIEW_SETUP_WIZARD:

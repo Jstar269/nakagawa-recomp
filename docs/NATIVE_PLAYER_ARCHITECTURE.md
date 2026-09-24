@@ -193,6 +193,18 @@ Instead of exposing raw exception stack traces or compiler lines, errors provide
 - **High-DPI Scaling**: DPI-aware raster text uses density-specific SDL_ttf size buckets. Vector/SDF typography remains a target.
 - **Theme**: Modern dark court palette with crisp contrast, soft glass panels, and clear visual hierarchy.
 
+### 6.1 Controller Settings
+
+The native player provides a dedicated Controller Settings screen (`VIEW_CONTROLLER_SETTINGS`), reachable from the main Settings menu via the "CONTROLLER SETTINGS" action:
+
+- **Interactive Remapping**: Allows rebinding each of the 14 standard PSP digital controls (D-Pad, action buttons, L/R shoulders, Start, Select, Home, Hold) and analog stick axes. Activating a binding button begins a 5-second capture window; pressing any host gamepad button assigns the new mapping. Captures can be cancelled at any time with keyboard Escape.
+- **Conflict Visibility**: When the same host button is mapped to multiple PSP controls, a prominent conflict warning banner identifies the conflicting controls without silently dropping or unbinding either one.
+- **Deadzone & Trigger Calibration**: Dedicated steppers adjust stick inner deadzone (range 0–32766) and trigger threshold (range 0–32767) in bounded increments.
+- **Live Input Monitor**: A real-time visualizer panel displays active host button presses, numerical stick coordinates, and an interactive 2D deadzone box so users can immediately observe calibration effects.
+- **Safe Navigation & Defaults**: Keyboard Escape always backs out or cancels capture, preventing navigation lockouts. "RESET DEFAULTS" restores the baseline profile.
+- **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the profile via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime.
+- **In the Works**: Continuous trigger resting/extreme value calibration (#357) and in-game pause overlay controller configuration remain in the works.
+
 ---
 
 ## 7. Open-Source UI Typography & Font Strategy

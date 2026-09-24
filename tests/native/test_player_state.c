@@ -795,7 +795,9 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 13);
+        assert(player_app_focus_count(stops) == 14);
+        stops->active_view = VIEW_CONTROLLER_SETTINGS;
+        assert(player_app_focus_count(stops) == 21);
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 

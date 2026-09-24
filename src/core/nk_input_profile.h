@@ -305,6 +305,26 @@ NkResult nk_input_profile_save(
 );
 
 /**
+ * @brief Resolve the active input profile file path.
+ *
+ * Checks NK_INPUT_PROFILE and SR_INPUT_PROFILE environment variables.
+ * If unset or empty, resolves <config_dir>/input_profile.json via nk_platform_get_path.
+ *
+ * @param out_path Buffer to receive resolved null-terminated path.
+ * @param out_path_sz Capacity of out_path.
+ * @return NK_OK (0) on success, or NK_ERROR_* (<0) on failure.
+ */
+NkResult nk_input_profile_resolve_path(char *out_path, size_t out_path_sz);
+
+/**
+ * @brief Check whether automated deterministic script input is active.
+ *
+ * When SR_PADSCRIPT is set and non-empty, scripted input takes precedence
+ * and host input profiles must not override default input mappings.
+ */
+bool nk_input_profile_padscript_active(void);
+
+/**
  * @brief Evaluate the 14 PSP digital buttons from host gamepad state.
  */
 uint32_t nk_input_profile_eval_buttons(

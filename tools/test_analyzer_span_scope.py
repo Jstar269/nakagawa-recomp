@@ -63,6 +63,95 @@ def write_elf(path: Path, *, load_addr: int = PRIMARY_BASE, words=(0x03E00008, 0
     path.write_bytes(blob)
 
 
+def write_elf_with_called_code_outside_text(path: Path) -> int:
+    """Fabricate executable bytes beyond a deliberately narrow named .text section."""
+    base = 0x1000
+    target = base + 0x20
+    words = [
+        0x0C000000 | ((target >> 2) & 0x03FFFFFF),  # jal target
+        0x00000000,                                # delay slot
+        0x03E00008,                                # jr $ra
+        0x00000000,                                # delay slot
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x03E00008,                                # hidden leaf: jr $ra
+        0x00000000,                                # delay slot
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+        0x00000000,
+    ]
+    payload_off = 52 + 32
+    filesz = len(words) * 4
+    shstr = b"\x00.text\x00.shstrtab\x00"
+    shstr_off = payload_off + filesz
+    shoff = shstr_off + len(shstr)
+    blob = bytearray(shoff + 3 * 40)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, base, 52, shoff, 0, 52, 32, 1, 40, 3, 2,
+    )
+    struct.pack_into(
+        "<8I", blob, 52,
+        1, payload_off, base, base, filesz, filesz, 5, 4,
+    )
+    for index, word in enumerate(words):
+        struct.pack_into("<I", blob, payload_off + index * 4, word)
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into("<10I", blob, shoff + 40, 1, 1, 6, base, payload_off, 16, 0, 0, 4, 0)
+    struct.pack_into(
+        "<10I", blob, shoff + 80,
+        7, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0,
+    )
+    path.write_bytes(blob)
+    return target
+
+
+def write_elf_with_data_jal_in_text_to_rodata(path: Path) -> int:
+    """Place a data word in .text that decodes as a JAL into same-segment .rodata."""
+    base = 0x1000
+    text_addr = base + 0x20
+    target = base + 0x40
+    payload_off = 52 + 32
+    filesz = 0x44
+    shstr = b"\x00.text\x00.rodata\x00.shstrtab\x00"
+    shstr_off = payload_off + filesz
+    shoff = shstr_off + len(shstr)
+    blob = bytearray(shoff + 4 * 40)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, base, 52, shoff, 0, 52, 32, 1, 40, 4, 3,
+    )
+    struct.pack_into(
+        "<8I", blob, 52,
+        1, payload_off, base, base, filesz, filesz, 5, 4,
+    )
+    jal = 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
+    struct.pack_into("<I", blob, payload_off + text_addr - base, jal)
+    struct.pack_into("<I", blob, payload_off + target - base, 0x03E00008)
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into(
+        "<10I", blob, shoff + 40,
+        1, 1, 6, text_addr, payload_off + text_addr - base, 4, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 80,
+        7, 1, 2, target, payload_off + target - base, 4, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 120,
+        15, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0,
+    )
+    path.write_bytes(blob)
+    return target
+
+
 class AnalyzerSpanScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._saved_environ = os.environ.copy()
@@ -94,6 +183,26 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         starts, ranges = analyze.analyze(loaded)
         self.assertEqual(ranges, [(PRIMARY_BASE, PRIMARY_BASE + 8)])
         self.assertIn(PRIMARY_BASE, starts)
+
+    def test_direct_call_owns_only_reachable_code_outside_named_text(self) -> None:
+        called_elf = self.root / "called-outside-text.elf"
+        target = write_elf_with_called_code_outside_text(called_elf)
+        loaded = analyze.Elf(str(called_elf), base=0)
+
+        starts, ranges = analyze.analyze(loaded)
+
+        self.assertIn(target, starts)
+        self.assertIn((target, target + 8), ranges)
+        self.assertFalse(analyze.in_ranges(target + 8, ranges))
+
+    def test_linear_sweep_does_not_treat_jal_data_as_rodata_function(self) -> None:
+        data_elf = self.root / "data-jal-to-rodata.elf"
+        target = write_elf_with_data_jal_in_text_to_rodata(data_elf)
+        loaded = analyze.Elf(str(data_elf), base=0)
+
+        starts, _ = analyze.analyze(loaded)
+
+        self.assertNotIn(target, starts)
 
     def test_generic_analyzer_source_carries_no_title_constant(self) -> None:
         source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
