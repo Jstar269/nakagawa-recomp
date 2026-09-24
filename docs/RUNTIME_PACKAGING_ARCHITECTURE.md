@@ -120,9 +120,10 @@ manifest remains unchanged. Make's `all` target still runs the generation and
 compile phases separately so generated chunks are linked on a clean build.
 Current Make recipes cannot transport whitespace or shell-sensitive characters
 in bound paths. Inputs at such paths are copied byte-for-byte into
-`<output-dir>/staged-inputs/` (hashes are unchanged); an output directory at
-such a path is rejected as `PACKAGE_UNSUPPORTED_PATH` while quoting support
-remains in progress under #296.
+`<output-dir>/staged-inputs/` (hashes are unchanged). When the output directory
+contains spaces, packaging builds in a Make-safe workspace (`NK_BUILD_ROOT` or
+Windows 8.3 short paths) and atomically promotes into the destination; otherwise
+an unsupported path is rejected as `PACKAGE_UNSUPPORTED_PATH` (#296).
 
 `package.json` is canonical JSON with this versioned shape:
 

@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -284,6 +286,47 @@ class TitleCodegenPlanTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(json.loads(proc.stdout)["game_name"], "synthetic")
             self.assertFalse(out_c.exists())
+
+    def test_resolve_make_safe_build_root_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            spaced_dest = temp_path / "spaced folder" / "output_package"
+            spaced_dest.parent.mkdir(parents=True)
+            safe_env_root = temp_path / "safe_env_root"
+            safe_env_root.mkdir()
+            short_mock = temp_path / "SHORTP~1"
+            short_mock.mkdir()
+
+            # Priority 1: NK_BUILD_ROOT wins when set and safe
+            with mock.patch.dict(os.environ, {"NK_BUILD_ROOT": str(safe_env_root)}):
+                with mock.patch("title_codegen_plan._windows_short_path", return_value=short_mock):
+                    res = title_codegen_plan._resolve_make_safe_build_root(spaced_dest)
+                    self.assertEqual(res, safe_env_root.resolve())
+
+            # Priority 2: When NK_BUILD_ROOT contains spaces, it is skipped and short_path wins
+            unsafe_env_root = temp_path / "unsafe env root"
+            with mock.patch.dict(os.environ, {"NK_BUILD_ROOT": str(unsafe_env_root)}):
+                with mock.patch("title_codegen_plan._windows_short_path", return_value=short_mock):
+                    res = title_codegen_plan._resolve_make_safe_build_root(spaced_dest)
+                    self.assertEqual(res, short_mock.resolve())
+
+            # Priority 3: When NK_BUILD_ROOT is unset, short_path wins
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("NK_BUILD_ROOT", None)
+                with mock.patch("title_codegen_plan._windows_short_path", return_value=short_mock):
+                    res = title_codegen_plan._resolve_make_safe_build_root(spaced_dest)
+                    self.assertEqual(res, short_mock.resolve())
+
+            # Priority 4: When neither is available, fails with actionable PACKAGE_UNSUPPORTED_PATH
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("NK_BUILD_ROOT", None)
+                with mock.patch("title_codegen_plan._windows_short_path", return_value=None):
+                    with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
+                        title_codegen_plan._resolve_make_safe_build_root(spaced_dest)
+                    self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
+                    self.assertIn("contains spaces", str(caught.exception))
+                    self.assertIn("8.3 short names are unavailable on this volume", str(caught.exception))
+                    self.assertIn("set NK_BUILD_ROOT to a folder without spaces", str(caught.exception))
 
 
 if __name__ == "__main__":
