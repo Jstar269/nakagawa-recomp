@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bcc72ce1bd0c35843230159d0b282e02010c01e765d0acd0475e92e0309eac5f"
+      "sha256": "6ce2186ce787feeb61cc6c10673828d9b3eaa9e382f52cce2393417f1b58eaa1"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -990,7 +990,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "89f49724ea16513cceaf5d11211f9a9dfa57d0ffa97ae1a199e59c00e8fe2cf6"
+      "sha256": "3c5f23e248fb5581986500be837eb97c33e9f00e9ef48296e32ad120a4d73d02"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -5846,7 +5846,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "3459ebce71fc63a4927fbfc62fd34aed442b4eef8f16b9941cb89d6222e81908"
+      "sha256": "b9214be56d70f991d8adc5626e6ae5e5a8f84b4b68c52dc0c907a8f5684d787e"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6159,7 +6159,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eef1eb12da5f918dff449ef00f69e4857dcb53b4de58ec0f9ed550dfb076b249"
+      "sha256": "e689afdfcb5d5c95390201fb7290fa807f4b9d0e8056290406edab68d5b6b7d5"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -6183,7 +6183,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c0b5aeb6641df7be284f4d9adf0fe6cf424a700542e06e4192866922b07a8037"
+      "sha256": "ad06795ff96c71eed9a73392e43c7196ca515b2399521c16c44012bdd43cc182"
     },
     {
       "path": "src/rt/recomp.c",
@@ -7544,7 +7544,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7eee25089e057dc61429b9300f849e8f2a3bbcc517dca4a1b8ca5c20cb64f958"
+      "sha256": "81c874b4cb5acc227c6c5ac52382417ac0990d850a7a64cfe134ed7a401a66da"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -8585,7 +8585,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "461a919a8bf7ce803fefcbb376355909d2394613603066fb56f2d39215e91521"
+      "sha256": "10a201b4a5b01b6021e75c0f9dafd3d4c91b6d26c1aa40d1e258b86d9866a72b"
     },
     {
       "path": "tools/test_guest_printf.py",
@@ -9846,11 +9846,12 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "cfb6bff45e12fd9041f491f538abbcc6edd1189e",
-    "candidate_tree": "77eec13242a033c0022d5afe207b2faed180badc",
+    "candidate_tree": "a2f9a1fcce350fca67d0050ed2879cbd06c0a9d7",
     "refreshed_paths": [
-      "docs/LLE_FIDELITY_ARCHITECTURE.md",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "docs/SETUP.md",
+      "src/rt/hle.c",
+      "tools/nk_doctor_checks.py",
+      "tools/test_generic_title_planning_proof.py"
     ]
   }
 }

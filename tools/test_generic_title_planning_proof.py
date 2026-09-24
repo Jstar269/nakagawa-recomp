@@ -763,13 +763,13 @@ class PowershellGenericEnvironmentTests(unittest.TestCase):
         self.assertIn("PASS", proc.stdout)
 
     def test_document_absent_vs_empty(self):
-        # PowerShell cannot distinguish absent from empty: setting to "" removes.
+        # Assigning "" removes the variable on PowerShell 7.4 (.NET 8) and keeps an
+        # empty value on 7.5+ (.NET 9+). Both hosts are supported, so the analyzer
+        # helpers normalize empty to removal and this test accepts either form.
         proc = self._run("\n".join([
             "Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue",
             "$env:TITLE_EXTRA_SPANS=''",
-            "# PowerShell 5.1 removes empty, pwsh keeps it; both are valid but empty value is always empty string.",
-            "# Document real behavior: empty and absent are not reliably distinguishable across hosts.",
-            "if ($env:TITLE_EXTRA_SPANS -ne '') { Write-Output \"FAIL_EMPTY_VALUE:$env:TITLE_EXTRA_SPANS\"; exit 1 }",
+            "if (-not [string]::IsNullOrEmpty($env:TITLE_EXTRA_SPANS)) { Write-Output \"FAIL_EMPTY_VALUE:$env:TITLE_EXTRA_SPANS\"; exit 1 }",
             "Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue",
             "if (Test-Path -LiteralPath 'Env:TITLE_EXTRA_SPANS') { Write-Output 'FAIL_AFTER_REMOVE'; exit 1 }",
             "Write-Output 'PASS'",

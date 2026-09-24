@@ -3526,7 +3526,7 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *
  * The size-before-address ordering below is a runtime ordering; the combined
  * size-zero-plus-invalid-pointer case was not part of the probe.
- * The measured ~376â€“382 us observation for a large call is caller wall time;
+ * The measured ~376–382 us observation for a large call is caller wall time;
  * no guest-time rate law is inferred from it.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
  * does not currently translate guest self-modifying code or maintain a separate
@@ -6113,7 +6113,7 @@ static int s_osk_status = 0;
 static uint32_t s_osk_param = 0;
 /* PPSSPP keeps a "current dialog type": OskGetStatus is WRONG_TYPE only while a DIFFERENT
  * utility dialog owns the slot. After an OSK shuts down it stays the current dialog and
- * GetStatus returns NONE(0) â€” a game spinning "while (OskGetStatus() != 0)" after name entry
+ * GetStatus returns NONE(0) — a game spinning "while (OskGetStatus() != 0)" after name entry
  * hangs forever if we keep returning WRONG_TYPE there. */
 static int s_osk_current = 0;
 static int s_osk_current_clear(void) { s_osk_current = 0; return 0; }
@@ -6498,7 +6498,7 @@ int sr_thread_dispatch_callbacks(void) {
 int sr_vblank_dispatch_registered(void) {
     return 0;
 }
-/* h_NotifyCallback: 0xc11ba8c4 â€” synchronously dispatch a registered callback entry from
+/* h_NotifyCallback: 0xc11ba8c4 — synchronously dispatch a registered callback entry from
  * the calling thread context. The PSP firmware exposes this so the game can manually pump
  * a callback instead of waiting for the vblank IRQ. We honour the uid; the dispatched entry
  * receives the ABI packed by sr_callback_pack_args ($a0 = count, $a1 = notify arg,
@@ -6553,7 +6553,7 @@ static uint32_t h_ReferCallbackStatus(CpuState *s) {
     }
     return 0;
 }
-/* h_CreateNotifyCallback: 0x9f9b46b9 â€” same as sceKernelCreateCallback but the callback uid
+/* h_CreateNotifyCallback: 0x9f9b46b9 — same as sceKernelCreateCallback but the callback uid
  * is registered for NOTIFY semantics: the game calls sceKernelNotifyCallback (0xc11ba8c4) on
  * it, OR the kernel auto-fires it when triggered programmatically. The PSMF modules and the
  * PSP-LDD-aware HL code paths use this variant to install their ring-fill and stream-event
@@ -6561,7 +6561,7 @@ static uint32_t h_ReferCallbackStatus(CpuState *s) {
  * audio thread models assume one uid per NamedCallback binding). We register against the
  * same s_callbacks[] table as h_CreateCallback, so h_NotifyCallback and the callback-aware
  * wait paths (sr_thread_dispatch_callbacks) surface it the same way; the raw vblank IRQ does
- * NOT dispatch callbacks (sr_vblank_dispatch_registered() is a deliberate no-op â€” see its
+ * NOT dispatch callbacks (sr_vblank_dispatch_registered() is a deliberate no-op — see its
  * comment above). */
 static uint32_t h_CreateNotifyCallback(CpuState *s) {
     uint32_t error = 0;
@@ -6573,14 +6573,14 @@ static uint32_t h_CreateNotifyCallback(CpuState *s) {
     }
     return uid ? uid : error;
 }
-/* h_DeleteCallback: 0xedba5844 â€” release a callback uid from the s_callbacks[] table.
+/* h_DeleteCallback: 0xedba5844 — release a callback uid from the s_callbacks[] table.
  * h_CreateCallback returns these uids (they're real s_callbacks[] slots, not module uid
  * pool). Returning success without freeing would leave a stale entry that fires every
  * vblank against deleted code. */
 static uint32_t h_DeleteCallback(CpuState *s) {
     return sr_callback_table_unregister(A0) ? 0u : 0x800201A1u;
 }
-/* h_DeleteNotifyCallback: 0x0ed48fe2 â€” release a Notify-flavored callback uid
+/* h_DeleteNotifyCallback: 0x0ed48fe2 — release a Notify-flavored callback uid
  * (allocated by h_CreateNotifyCallback). Same backing table; identical semantics. */
 static uint32_t h_DeleteNotifyCallback(CpuState *s) {
     return sr_callback_table_unregister(A0) ? 0u : 0x800201A1u;
@@ -11406,7 +11406,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     s_ge_lists[slot].cbarg = cbarg;
     s_ge_lists[slot].status = 1;
 
-    /* stall == list means the ring buffer is empty â€” the game will fill it and advance the
+    /* stall == list means the ring buffer is empty — the game will fill it and advance the
      * stall via sceGeListUpdateStallAddr. Running it now would read uninitialized eDRAM;
      * just record as stalled and let UpdateStallAddr drive it.
      * Also treat stall == 0 as "run to completion" (no stall fence). */
@@ -11434,7 +11434,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
         s_ge_lists[slot].status = 2; // completed
         ge_finish_callback(s, cbid, list_id, cbarg);
     } else {
-        /* List stalled at a non-start stall â€” game will advance via UpdateStallAddr.
+        /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
          * Do NOT drain here: that runs past the game's write head into uninitialized eDRAM. */
         s_ge_lists[slot].current_pc = next_pc;
         /* status stays 1 (stalled) */
@@ -13856,7 +13856,7 @@ static uint32_t h_SetEventFlag(CpuState *s) {
 static uint32_t h_ClearEventFlag(CpuState *s) {
     /* sceKernelClearEventFlag(evfid, bits): A1 is the mask of bits to KEEP
      * (currentPattern &= bits), matching PSP/PPSSPP. It is NOT a mask of bits
-     * to remove â€” inverting A1 here inverts the contract. */
+     * to remove — inverting A1 here inverts the contract. */
     Sync *m = sync_find(A0); if (!m) return 0x80020000;
     m->pattern = sr_evf_clear_pattern(m->pattern, A1); return 0;
 }
