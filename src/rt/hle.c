@@ -381,7 +381,12 @@ static uint32_t stack_arg(CpuState *s, int idx) {
 #define SCE_KERNEL_ERROR_UNKNOWN_SEMID 0x80020199u
 #define SCE_KERNEL_ERROR_ILLEGAL_COUNT 0x800201bdu
 #define SCE_KERNEL_ERROR_WAIT_TIMEOUT  0x800201a8u
+#ifndef SCE_KERNEL_ERROR_WAIT_DELETE
 #define SCE_KERNEL_ERROR_WAIT_DELETE   0x800201b5u
+#endif
+#ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
+#define SCE_KERNEL_ERROR_WAIT_CANCEL   0x800201a9u
+#endif
 
 /* ---- kernel object UID + user-memory bump allocator ---- */
 
@@ -13364,6 +13369,306 @@ uint32_t sr_hle_test_msgpipe_max_capacity(void) { return MSG_PIPE_MAX_CAPACITY; 
 
 #endif /* SR_HLE_THREAD_SELFTEST */
 
+/* ---- mailboxes (sceKernel*Mbx), campaign psp-hw-20260917 + PSPSDK ABI ---- */
+
+#define MBX_MAX 32
+#define MBX_MAX_WAITERS 64
+#define MBX_MAX_MSGS 128
+#define SCE_KERNEL_ERROR_UNKNOWN_MBXID 0x8002019bu
+#define SCE_KERNEL_ERROR_MBX_EMPTY     0x800201b2u
+#define PSP_MBX_ATTR_PRIORITY          0x400u
+
+typedef struct {
+    int used;
+    uint32_t uid;
+    uint32_t attr;
+    char name[32];
+    uint32_t msgs[MBX_MAX_MSGS];   /* guest SceKernelMsgPacket addresses, delivery order */
+    int nmsgs;
+    uint32_t waiters[MBX_MAX_WAITERS];
+    int nwaiters;
+} Mbx;
+static Mbx s_mbx[MBX_MAX];
+
+static Mbx *mbx_find(uint32_t uid) {
+    for (int i = 0; i < MBX_MAX; i++)
+        if (s_mbx[i].used && s_mbx[i].uid == uid) return &s_mbx[i];
+    return NULL;
+}
+
+/* Rewrite guest-visible circular next links so first->...->last->first matches
+ * host delivery order (HARDWARE_ORACLE.md: FIFO mailboxes link packets circularly). */
+static void mbx_relink(Mbx *m) {
+    if (m->nmsgs <= 0) return;
+    for (int i = 0; i < m->nmsgs; i++)
+        MEM_W32(m->msgs[i] + 0, m->msgs[(i + 1) % m->nmsgs]);
+}
+
+static void mbx_remove_waiter(Mbx *m, uint32_t thid) {
+    for (int i = 0; i < m->nwaiters; i++) {
+        if (m->waiters[i] == thid) {
+            for (int j = i; j + 1 < m->nwaiters; j++) m->waiters[j] = m->waiters[j + 1];
+            m->nwaiters--;
+            break;
+        }
+    }
+}
+
+/* Attr 0x400 delivers by ascending msgPriority, FIFO among equals; otherwise append. */
+static void mbx_enqueue(Mbx *m, uint32_t msg) {
+    if (m->nmsgs >= MBX_MAX_MSGS) return;
+    int pos = m->nmsgs;
+    if (m->attr & PSP_MBX_ATTR_PRIORITY) {
+        int32_t pri = (int32_t)MEM_R32(msg + 4);
+        for (int i = 0; i < m->nmsgs; i++) {
+            if (pri < (int32_t)MEM_R32(m->msgs[i] + 4)) { pos = i; break; }
+        }
+    }
+    for (int j = m->nmsgs; j > pos; j--) m->msgs[j] = m->msgs[j - 1];
+    m->msgs[pos] = msg;
+    m->nmsgs++;
+    mbx_relink(m);
+}
+
+static uint32_t mbx_dequeue(Mbx *m) {
+    if (m->nmsgs <= 0) return 0;
+    uint32_t msg = m->msgs[0];
+    for (int i = 0; i + 1 < m->nmsgs; i++) m->msgs[i] = m->msgs[i + 1];
+    m->nmsgs--;
+    mbx_relink(m);
+    return msg;
+}
+
+static uint32_t h_CreateMbx(CpuState *s) {
+    /* a0=name, a1=attr, a2=option (PSPSDK SceKernelMbxOptParam, unused). */
+    (void)A2;
+    char name[32];
+    name[0] = '\0';
+    if (A0) {
+        if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    for (int i = 0; i < MBX_MAX; i++) {
+        Mbx *m = &s_mbx[i];
+        if (m->used) continue;
+        memset(m, 0, sizeof *m);
+        m->used = 1;
+        m->uid = sr_alloc_uid();
+        m->attr = A1;
+        memcpy(m->name, name, sizeof m->name);
+        return m->uid;
+    }
+    return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+}
+
+static uint32_t h_DeleteMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    int waiters = m->nwaiters;
+    m->used = 0;
+    if (waiters) {
+        sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_DELETE);
+        sched_preempt();
+    }
+    return 0;
+}
+
+static uint32_t h_SendMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t msg = A1;
+    /* Validate the whole accessed packet span: the circular relink writes
+     * next@0 and priority mailboxes read msgPriority@4. */
+    if (!msg || !sr_guest_span_writable(msg, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (m->nmsgs >= MBX_MAX_MSGS) return 0x80020190u;
+    mbx_enqueue(m, msg);
+    if (m->nwaiters > 0) {
+        uint32_t thid = m->waiters[0];
+        for (int j = 0; j + 1 < m->nwaiters; j++) m->waiters[j] = m->waiters[j + 1];
+        m->nwaiters--;
+        sched_wake_one_object_waiter(A0, thid);
+        sched_preempt();
+    }
+    return 0;
+}
+
+static uint32_t h_PollMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t pmsg = A1;
+    if (!pmsg || !sr_guest_span_writable(pmsg, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (m->nmsgs <= 0) return SCE_KERNEL_ERROR_MBX_EMPTY;
+    MEM_W32(pmsg, mbx_dequeue(m));
+    return 0;
+}
+
+static uint32_t receive_mbx_common(CpuState *s, int is_cb) {
+    uint32_t uid = A0, pmsg = A1, toptr = A2;
+    Mbx *m = mbx_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    if (!pmsg || !sr_guest_span_writable(pmsg, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    if (m->nmsgs > 0) {
+        MEM_W32(pmsg, mbx_dequeue(m));
+        return 0;
+    }
+
+    uint64_t end_time = 0;
+    int has_timeout = 0;
+    if (toptr) {
+        if (!sr_guest_span_writable(toptr, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        uint32_t usec = MEM_R32(toptr);
+        if (usec == 0) {
+            MEM_W32(toptr, 0u);
+            return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+        }
+        sched_vtime_refresh();
+        end_time = sched_vtime_deadline_after((uint64_t)usec);
+        has_timeout = 1;
+    }
+
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+
+    uint32_t cur_thid = sched_current_uid();
+    if (cur_thid == 0) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    if (m->nwaiters >= MBX_MAX_WAITERS) return 0x80020190u;
+    m->waiters[m->nwaiters++] = cur_thid;
+
+    for (;;) {
+        if (is_cb && sr_thread_has_pending_callbacks(cur_thid)) {
+            sr_thread_dispatch_callbacks();
+            m = mbx_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            sched_vtime_refresh();
+            continue;
+        }
+
+        sched_set_current_wait_kind(5); /* PSP waitType 5 = mailbox */
+
+        if (has_timeout) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= end_time) {
+                m = mbx_find(uid);
+                if (m) mbx_remove_waiter(m, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+            uint32_t remaining = (uint32_t)(end_time - now);
+            if (is_cb) sched_set_current_cb_wait(1);
+            int timed_out = sched_block_on_timeout(uid, remaining);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) {
+                m = mbx_find(uid);
+                if (m) mbx_remove_waiter(m, cur_thid);
+                return woken;
+            }
+
+            m = mbx_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (m->nmsgs > 0) {
+                mbx_remove_waiter(m, cur_thid);
+                MEM_W32(pmsg, mbx_dequeue(m));
+                sched_vtime_refresh();
+                now = sched_vtime_us();
+                uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0u;
+                MEM_W32(toptr, rem);
+                return 0;
+            }
+
+            if (timed_out) {
+                mbx_remove_waiter(m, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+            /* Spurious wake: requeue at head so FIFO order is preserved. */
+            mbx_remove_waiter(m, cur_thid);
+            if (m->nwaiters < MBX_MAX_WAITERS) {
+                for (int j = m->nwaiters; j > 0; j--) m->waiters[j] = m->waiters[j - 1];
+                m->waiters[0] = cur_thid;
+                m->nwaiters++;
+            }
+        } else {
+            if (is_cb) sched_set_current_cb_wait(1);
+            sched_block_on(uid);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) {
+                m = mbx_find(uid);
+                if (m) mbx_remove_waiter(m, cur_thid);
+                return woken;
+            }
+
+            m = mbx_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (m->nmsgs > 0) {
+                mbx_remove_waiter(m, cur_thid);
+                MEM_W32(pmsg, mbx_dequeue(m));
+                return 0;
+            }
+
+            mbx_remove_waiter(m, cur_thid);
+            if (m->nwaiters < MBX_MAX_WAITERS) {
+                for (int j = m->nwaiters; j > 0; j--) m->waiters[j] = m->waiters[j - 1];
+                m->waiters[0] = cur_thid;
+                m->nwaiters++;
+            }
+        }
+    }
+}
+
+static uint32_t h_ReceiveMbx(CpuState *s) { return receive_mbx_common(s, 0); }
+static uint32_t h_ReceiveMbxCB(CpuState *s) { return receive_mbx_common(s, 1); }
+
+static uint32_t h_CancelReceiveMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t nump = A1;
+    if (nump && !sr_guest_span_writable(nump, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    int waiters = m->nwaiters;
+    m->nwaiters = 0;
+    if (nump) MEM_W32(nump, (uint32_t)waiters);
+    if (waiters) {
+        sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
+        sched_preempt();
+    }
+    return 0;
+}
+
+/* sceKernelReferMbxStatus: SceKernelMbxInfo is 52 bytes — size(0), name[32](4),
+ * attr(36), numWaitThreads(40), numMessages(44), firstMessage(48). */
+static uint32_t h_ReferMbxStatus(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t info = A1;
+    if (!info || !sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(info + 0, 52u);
+    for (int i = 0; i < 32; i++) MEM_W8(info + 4 + (uint32_t)i, 0);
+    for (int i = 0; i < 31 && m->name[i]; i++) MEM_W8(info + 4 + (uint32_t)i, (uint8_t)m->name[i]);
+    MEM_W32(info + 36, m->attr);
+    MEM_W32(info + 40, (uint32_t)m->nwaiters);
+    MEM_W32(info + 44, (uint32_t)m->nmsgs);
+    MEM_W32(info + 48, m->nmsgs ? m->msgs[0] : 0u);
+    return 0;
+}
+
+/* Shared by production and the executable HLE selftest so both dispatch the
+ * same NID→handler mapping (issue #339). */
+static void hle_register_mbx_handlers(void) {
+    sr_hle_register(0x8125221d, "sceKernelCreateMbx", h_CreateMbx);
+    sr_hle_register(0x86255ada, "sceKernelDeleteMbx", h_DeleteMbx);
+    sr_hle_register(0xe9b3061e, "sceKernelSendMbx", h_SendMbx);
+    sr_hle_register(0x18260574, "sceKernelReceiveMbx", h_ReceiveMbx);
+    sr_hle_register(0xf3986382, "sceKernelReceiveMbxCB", h_ReceiveMbxCB);
+    sr_hle_register(0x0d81716a, "sceKernelPollMbx", h_PollMbx);
+    sr_hle_register(0x87d4dd36, "sceKernelCancelReceiveMbx", h_CancelReceiveMbx);
+    sr_hle_register(0xa8e8c846, "sceKernelReferMbxStatus", h_ReferMbxStatus);
+}
+
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */
 
 typedef struct {
@@ -15317,6 +15622,7 @@ void sr_hle_init(void) {
     hle_register_utility_module_handlers();
     hle_register_kernel_module_handlers();
     hle_register_msgpipe_handlers();
+    hle_register_mbx_handlers();
     /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
      * branches so the selftest exercises the production mapping. */
     hle_register_cancel_release_handlers();
@@ -15566,6 +15872,7 @@ void sr_hle_init(void) {
     /* InterruptManager Disable/Release pair: shared with the executable harness
      * through hle_register_wait_conformance_handlers(), next to Register/Enable. */
     hle_register_msgpipe_handlers();
+    hle_register_mbx_handlers();
     /* semaphores */
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */

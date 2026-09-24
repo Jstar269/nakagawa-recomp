@@ -140,6 +140,16 @@ def _is_cache_digest(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
+def _path_key(path: Path) -> str:
+    """Comparison key for filesystem paths.
+
+    MSYS2's Windows Python joins iterdir() children with a backslash while
+    resolve() returns forward slashes, and its Path equality does not treat the
+    two spellings as the same path. Normalise separators and case explicitly.
+    """
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
 def prune_cache(
     cache_root_path: Path | str,
     *,
@@ -169,13 +179,13 @@ def prune_cache(
     except OSError:
         return 0, 0
     protected = (
-        Path(protected_entry).expanduser().resolve(strict=False)
+        _path_key(Path(protected_entry).expanduser().resolve(strict=False))
         if protected_entry is not None else None
     )
-    candidates.sort(key=lambda item: (item[1] == protected, item[0]), reverse=True)
+    candidates.sort(key=lambda item: (_path_key(item[1]) == protected, item[0]), reverse=True)
     removed = 0
     for _, entry in candidates[max_entries:]:
-        if protected is not None and entry == protected:
+        if protected is not None and _path_key(entry) == protected:
             continue
         if entry.is_symlink():
             continue

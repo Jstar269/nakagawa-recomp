@@ -1958,7 +1958,7 @@ shader-repro-verify:
 player-state-test-bin:
 	@mkdir -p build
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c \
 		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
