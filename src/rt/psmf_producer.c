@@ -753,4 +753,3 @@ uint32_t sr_psmf_producer_selected_video_stream(const SrPsmfProducer *p) {
 uint32_t sr_psmf_producer_selected_audio_stream(const SrPsmfProducer *p) {
     return p ? p->selected_audio_stream : SR_PSMF_STREAM_NONE;
 }
-
