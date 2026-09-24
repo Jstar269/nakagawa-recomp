@@ -39,6 +39,7 @@ from nk_core.iso_inspect import (
     decrypted_module_dir,
     inspect_compatibility_preflight,
     list_iso_directory,
+    plan_provisional_module_bindings,
     write_experimental_profile,
 )
 import title_manifest
@@ -920,6 +921,20 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
                                                 sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
+def _write_experimental_module_bindings(profile_path: Path, profile: dict,
+                                         module_bindings: list[dict]) -> dict:
+    manifest = title_manifest.validate_manifest({
+        **profile["manifest"], "modules": module_bindings,
+    })
+    profile["manifest"] = manifest
+    _write_private_file(
+        profile_path,
+        (json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+        .encode("utf-8"),
+    )
+    return manifest
+
+
 def _public_import_rows(rows: list[dict]) -> list[dict]:
     identifier = re.compile(r"^[A-Za-z][A-Za-z0-9_.$-]{0,63}$")
     symbol = re.compile(r"^[A-Za-z_][A-Za-z0-9_.$-]{0,95}$")
@@ -1013,6 +1028,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
 
     started = time.perf_counter()
     try:
+        profile_path: Path | None = None
+        profile: dict | None = None
         if metadata.matched_profile is None:
             profile_path = write_experimental_profile(
                 iso_path, user_root, metadata=metadata
@@ -1026,9 +1043,6 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             _manifest_source, manifest = _find_public_manifest(metadata.matched_profile.id)
             title_id = manifest["id"]
             is_experimental = False
-        _write_bringup_library(
-            user_root, iso_path, metadata, title_id, str(selected).upper(), is_experimental
-        )
         selected_elf = work_dir / "selected.elf"
         _extract_iso_executable(iso_path, str(selected).upper(), selected_elf)
         if is_experimental:
@@ -1071,7 +1085,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     if candidate["kind"] == "plain-elf"
                 ]
                 try:
-                    _stage_iso_modules(iso_path, user_root, metadata.disc_id, plain_modules)
+                    module_dir = _stage_iso_modules(
+                        iso_path, user_root, metadata.disc_id, plain_modules
+                    )
                 except (OSError, IsoInspectionError, PackageBuildError):
                     _fail_bringup(
                         report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
@@ -1080,13 +1096,40 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     _write_bringup_report(report, report_path)
                     print(_bringup_human_summary(report))
                     return 1
-                _fail_bringup(
-                    report, "prepare_import", "GUEST_MODULE_LOAD_BINDING_REQUIRED",
-                    [308], int((time.perf_counter() - started) * 1000),
-                )
-                _write_bringup_report(report, report_path)
-                print(_bringup_human_summary(report))
-                return 1
+                try:
+                    module_inputs = [
+                        (
+                            candidate["name"],
+                            module_dir / candidate["name"],
+                            "disc0:/" + "/".join((*candidate["directory"], candidate["name"])),
+                        )
+                        for candidate in plain_modules
+                    ]
+                    module_bindings = plan_provisional_module_bindings(
+                        selected_elf, module_inputs
+                    )
+                except (IsoInspectionError, OSError):
+                    _fail_bringup(
+                        report, "prepare_import", "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+                        [308], int((time.perf_counter() - started) * 1000),
+                    )
+                    _write_bringup_report(report, report_path)
+                    print(_bringup_human_summary(report))
+                    return 1
+                if profile_path is None or profile is None:
+                    raise PackageBuildError("Experimental guest-module profile is unavailable.")
+                try:
+                    manifest = _write_experimental_module_bindings(
+                        profile_path, profile, module_bindings
+                    )
+                except (OSError, KeyError, ValueError):
+                    _fail_bringup(
+                        report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
+                        [296], int((time.perf_counter() - started) * 1000),
+                    )
+                    _write_bringup_report(report, report_path)
+                    print(_bringup_human_summary(report))
+                    return 1
         else:
             report["counts"]["modules"] = len(manifest.get("modules", []))
             report["counts"]["encrypted_modules"] = 0
@@ -1094,6 +1137,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 iso_path, manifest,
                 user_root / "cache" / "bringup" / metadata.disc_id.upper(), None,
             )
+        _write_bringup_library(
+            user_root, iso_path, metadata, title_id, str(selected).upper(), is_experimental
+        )
     except Exception as exc:
         failure = "EXPERIMENTAL_IMPORT_FAILED"
         issues = [308]

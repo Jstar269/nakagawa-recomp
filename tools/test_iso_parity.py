@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from nk_core.iso_inspect import (
     inspect_compatibility_preflight,
     inspect_iso,
+    plan_provisional_module_bindings,
     write_experimental_profile,
 )
 import nk_cli
@@ -247,13 +248,15 @@ def create_test_iso_with_modules(
     path.write_bytes(data)
 
 
-def build_plain_mips_elf(e_type: int = 2) -> bytes:
+def build_plain_mips_elf(
+    e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4
+) -> bytes:
     elf = bytearray(88)
     elf[:7] = b"\x7fELF\x01\x01\x01"
     struct.pack_into("<HHI", elf, 16, e_type, 8, 1)
-    struct.pack_into("<III", elf, 24, 0x08800000, 52, 0)
+    struct.pack_into("<III", elf, 24, vaddr, 52, 0)
     struct.pack_into("<HHHHH", elf, 40, 52, 32, 1, 0, 0)
-    struct.pack_into("<8I", elf, 52, 1, 84, 0x08800000, 0x08800000, 4, 4, 5, 4)
+    struct.pack_into("<8I", elf, 52, 1, 84, vaddr, vaddr, 4, memsz, 5, 4)
     elf[84:88] = b"\x34\x12\x00\x00"
     return bytes(elf)
 
@@ -1065,6 +1068,47 @@ int main(int argc, char **argv) {{
                     executable["load_address_evidence"], "documented-psp-default"
                 )
                 self.assertTrue(profile_path.is_relative_to(user_root))
+
+    def test_provisional_guest_module_placement_is_deterministic_and_disjoint(self) -> None:
+        main_elf = self.temp_dir / "placement-main.elf"
+        alpha = self.temp_dir / "alpha.prx"
+        beta = self.temp_dir / "beta.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, memsz=0x40000))
+        alpha.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x21001))
+        beta.write_bytes(build_plain_mips_elf(e_type=3, vaddr=0, memsz=0x17001))
+        inputs = [
+            ("beta.prx", beta, "disc0:/PSP_GAME/USRDIR/beta.prx"),
+            ("alpha.prx", alpha, "disc0:/PSP_GAME/SYSDIR/alpha.prx"),
+        ]
+
+        first = plan_provisional_module_bindings(main_elf, inputs)
+        second = plan_provisional_module_bindings(main_elf, list(reversed(inputs)))
+        self.assertEqual(first, second)
+        self.assertEqual([module["name"] for module in first], ["alpha.prx", "beta.prx"])
+        self.assertTrue(all(module["load_address_evidence"] == "provisional" for module in first))
+        self.assertTrue(all(module["role"] == "guest-prx" and module["required"] for module in first))
+        spans = {"alpha.prx": 0x21001, "beta.prx": 0x17001}
+        ranges = sorted(
+            (module["load_address"], module["load_address"] + spans[module["name"]])
+            for module in first
+        )
+        self.assertGreaterEqual(ranges[0][0], 0x08800000 + 0x40000 + 0x00100000)
+        self.assertLessEqual(ranges[-1][1], 0x09EF0000)
+        self.assertLess(ranges[0][1], ranges[1][0])
+
+    def test_provisional_guest_module_placement_fails_when_no_safe_span_remains(self) -> None:
+        main_elf = self.temp_dir / "placement-full-main.elf"
+        huge_a = self.temp_dir / "huge-a.prx"
+        huge_b = self.temp_dir / "huge-b.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        huge_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
+        huge_b.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
+        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve"):
+            plan_provisional_module_bindings(
+                main_elf,
+                [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
+                 ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
+            )
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""

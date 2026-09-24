@@ -71,6 +71,7 @@ extern uint32_t sr_hle_test_stop_module(CpuState *s);
 extern uint32_t sr_hle_test_unload_module(CpuState *s);
 extern uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop);
 extern void sr_hle_test_module_reset(void);
+extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
 extern void ge_finish_latch_assist(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
@@ -585,6 +586,8 @@ static void title_hle_write_cstr(uint32_t addr, const char *text) {
     } while (text[i++] != '\0');
 }
 
+static void test_guest_module_load_binding(void);
+
 /* The title-configured HLE probe enters the actual hle.c handlers and the
  * actual nested guest-call marshaller. Only the three analyzer-owned guest
  * bodies are intercepted; all address qualification and side effects remain
@@ -696,6 +699,7 @@ static void test_title_config_hle_bindings(void) {
         expect(MEM_R32(frame_latch) == 4u,
                "configured GE completion decrements the frame latch");
     }
+    test_guest_module_load_binding();
     s_title_hle_probe = 0;
 }
 
@@ -721,6 +725,10 @@ static int write_synthetic_prx(const char *path, int malformed) {
         static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
         memcpy(image, magic, sizeof(magic));
     }
+    fixture_wr16(image + 16, 0xFFA0);   /* ET_SCE_PRX */
+    fixture_wr16(image + 18, 8);        /* EM_MIPS */
+    fixture_wr32(image + 20, 1);        /* ELF version */
+    fixture_wr32(image + 24, 0);        /* entry relative to module base */
     fixture_wr16(image + 40, 52);       /* ELF header size */
     fixture_wr32(image + 28, PHOFF);    /* program-header table */
     fixture_wr16(image + 42, 32);       /* sizeof Elf32_Phdr */
@@ -729,22 +737,23 @@ static int write_synthetic_prx(const char *path, int malformed) {
     uint8_t *ph = image + PHOFF;
     fixture_wr32(ph + 0, 1);            /* PT_LOAD */
     fixture_wr32(ph + 4, 0x80);         /* file offset */
-    fixture_wr32(ph + 8, 0x1000);       /* virtual address */
+    fixture_wr32(ph + 8, 0);            /* virtual address, base-relative */
     fixture_wr32(ph + 12, MODOFF);     /* stripped-PRX module-info file hint */
     fixture_wr32(ph + 16, 0x1a0);      /* file size: 0x80..0x220 is file-backed */
     fixture_wr32(ph + 20, 0x1a0);      /* memory size */
     fixture_wr32(ph + 24, 5);           /* executable/readable */
     fixture_wr32(ph + 28, 4);           /* alignment */
 
+    fixture_wr32(image + 0x80, 0x285D00D1u); /* synthetic image marker */
     memcpy(image + MODOFF + 4, "synthetic", 9);
-    fixture_wr32(image + MODOFF + 36, 0x1100); /* export-table virtual start */
-    fixture_wr32(image + MODOFF + 40, malformed ? 0x21101 : 0x1110);
+    fixture_wr32(image + MODOFF + 36, 0x100); /* export-table virtual start */
+    fixture_wr32(image + MODOFF + 40, malformed ? 0x21101 : 0x110);
 
     uint8_t *entry = image + ENTOFF;
     entry[8] = 4;                       /* words per export entry */
     entry[9] = 0;                       /* variable exports */
     fixture_wr16(entry + 10, 3);        /* three function exports */
-    fixture_wr32(entry + 12, 0x1140);   /* NID/target pair table */
+    fixture_wr32(entry + 12, 0x140);    /* NID/target pair table */
 
     fixture_wr32(image + TABLEOFF + 0, 0x11111111); /* target base + 0 */
     fixture_wr32(image + TABLEOFF + 4, 0x22222222); /* target base + 0x20 */
@@ -758,6 +767,120 @@ static int write_synthetic_prx(const char *path, int malformed) {
     size_t written = fwrite(image, 1, sizeof(image), f);
     int close_result = fclose(f);
     return written == sizeof(image) && close_result == 0;
+}
+
+static int write_synthetic_guest_prx(const char *path) {
+    enum { SIZE = 0x240, PHOFF = 0x34, MODOFF = 0x100, SHSTR_OFF = 0x140 };
+    static const char section_names[] = "\0.rodata.sceModuleInfo\0.shstrtab\0";
+    uint32_t shoff = (SHSTR_OFF + (uint32_t)sizeof(section_names) + 3u) & ~3u;
+    uint8_t image[SIZE];
+    memset(image, 0, sizeof(image));
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 16, 0xFFA0);
+    fixture_wr16(image + 18, 8);
+    fixture_wr32(image + 20, 1);
+    fixture_wr32(image + 24, 0);
+    fixture_wr32(image + 28, PHOFF);
+    fixture_wr32(image + 32, shoff);
+    fixture_wr16(image + 40, 52);
+    fixture_wr16(image + 42, 32);
+    fixture_wr16(image + 44, 1);
+    fixture_wr16(image + 46, 40);
+    fixture_wr16(image + 48, 3);
+    fixture_wr16(image + 50, 2);
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);
+    fixture_wr32(ph + 4, 0x80);
+    fixture_wr32(ph + 8, 0);
+    fixture_wr32(ph + 12, MODOFF);
+    fixture_wr32(ph + 16, 0xC0);
+    fixture_wr32(ph + 20, 0xC0);
+    fixture_wr32(ph + 24, 5);
+    fixture_wr32(ph + 28, 4);
+    fixture_wr32(image + 0x80, 0x285D00D1u);
+    memcpy(image + MODOFF + 4, "runtime", 8);
+    memcpy(image + SHSTR_OFF, section_names, sizeof(section_names));
+
+    uint8_t *modinfo = image + shoff + 40;
+    fixture_wr32(modinfo + 0, 1);
+    fixture_wr32(modinfo + 4, 1);
+    fixture_wr32(modinfo + 8, 2);
+    fixture_wr32(modinfo + 12, 0x80);
+    fixture_wr32(modinfo + 16, MODOFF);
+    fixture_wr32(modinfo + 20, 52);
+    fixture_wr32(modinfo + 32, 4);
+    uint8_t *strtab = modinfo + 40;
+    fixture_wr32(strtab + 0, 1u + (uint32_t)sizeof(".rodata.sceModuleInfo"));
+    fixture_wr32(strtab + 4, 3);
+    fixture_wr32(strtab + 16, SHSTR_OFF);
+    fixture_wr32(strtab + 20, (uint32_t)sizeof(section_names));
+    fixture_wr32(strtab + 32, 1);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
+static void test_guest_module_load_binding(void) {
+    const char *mode = getenv("SR_TEST_GUEST_MODULE_LOAD");
+    if (!mode || !mode[0]) return;
+
+    const char *name = NULL, *guest_path = NULL;
+    uint32_t base = 0;
+    int required = 0;
+    expect(sr_title_config_guest_module_at(0, &name, &guest_path, &base, &required),
+           "synthetic manifest exposes a guest-module load binding");
+    if (!name || !guest_path || strcmp(name, "c285-runtime.prx") != 0) {
+        expect(0, "runtime regression selects the declared synthetic PRX");
+        return;
+    }
+    expect(required == 1, "synthetic manifest marks the guest module as required");
+    const char *root = getenv("SR_MODULE_DIR");
+    char path[1024];
+    int written = snprintf(path, sizeof(path), "%s/%s", root ? root : "", name);
+    expect(written > 0 && (size_t)written < sizeof(path),
+           "synthetic guest-module path fits the test buffer");
+    if (written <= 0 || (size_t)written >= sizeof(path)) return;
+    const uint32_t sentinel = 0xA17E285Du;
+    int collision = strcmp(mode, "collision") == 0;
+    int missing = strcmp(mode, "missing") == 0;
+    if (!missing) {
+        expect(write_synthetic_guest_prx(path),
+               "runtime PRX fixture is written outside the repository");
+    } else {
+        MEM_W32(base, sentinel);
+    }
+    if (collision) {
+        MEM_W32(base, sentinel);
+        expect(sr_alloc_block_at(base, 0x100u, "synthetic collision") != 0xFFFFFFFFu,
+               "runtime collision fixture occupies the manifest-declared range");
+    }
+
+    title_hle_write_cstr(0x08906000u, guest_path);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x08906000u;
+    uint32_t result = sr_hle_test_load_module(&cpu);
+    if (collision) {
+        expect(result == 0x80020190u,
+               "occupied manifest module address returns SCE_KERNEL_ERROR_NO_MEMORY");
+        expect(MEM_R32(base) == sentinel,
+               "address collision leaves the occupied guest bytes untouched");
+    } else if (missing) {
+        expect(result == 0x80020190u,
+               "missing required module returns SCE_KERNEL_ERROR_NO_MEMORY");
+        expect(MEM_R32(base) == sentinel,
+               "missing required module leaves the declared guest range untouched");
+    } else {
+        expect(result != 0u && MEM_R32(base) == 0x285D00D1u,
+               "runtime loads PRX bytes at exactly the manifest-declared address");
+    }
+    remove(path);
 }
 
 static void test_prx_export_relocation_behavior(void) {

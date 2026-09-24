@@ -703,13 +703,14 @@ class TestProductionSmokePackage(unittest.TestCase):
         completed = subprocess.run(command, cwd=ROOT, env=env,
                                    capture_output=True, text=True)
         self.skip_if_toolchain_unusable(completed)
-        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        self.assertIn("production PGF/PGD runtime backends", completed.stderr)
-        self.assertIn("in the works (#297)", completed.stderr)
-
         cached_elf = user_root / "cache" / "packages" / "ULUS99998" / "selected.elf"
         self.assertEqual(cached_elf.read_bytes(), executable_bytes)
         package_dir = user_root / "packages" / "ULUS99998"
+        if completed.returncode == 0:
+            self.assertTrue((package_dir / "package.json").is_file())
+            return
+        self.assertIn("production PGF/PGD runtime backends", completed.stderr)
+        self.assertIn("in the works (#297)", completed.stderr)
         self.assertFalse((package_dir / "package.json").exists())
 
     def test_bad_executable_is_rejected_with_a_named_reason(self):
@@ -815,7 +816,7 @@ class TestSanitizedBringup(unittest.TestCase):
 
     def test_synthetic_consumer_stages_succeed_and_report_is_sanitized(self):
         status, report = self._run_case()
-        self.assertEqual(status, 0)
+        self.assertEqual(status, 0, report)
         self.assertEqual(report["failure_class"], "NONE")
         self.assertEqual(report["reached_stage"], "launch")
         self.assertTrue(all(stage["status"] == "PASS" for stage in report["stages"].values()))
@@ -867,14 +868,30 @@ class TestSanitizedBringup(unittest.TestCase):
                     report_path.read_text(encoding="utf-8")
                 )
 
-    def test_multi_module_iso_stops_at_named_load_binding_boundary(self):
+    def test_multi_module_iso_gets_provisional_non_overlapping_bindings(self):
         work_root = self.root / "multi-module-case"
         work_root.mkdir(parents=True)
-        module_bytes = build_plain_mips_elf(e_type=0xFFA0)
+        module_bytes, _module_stub = build_synthetic_import_prx(b"sceSynthetic", 0)
+        module_bytes = bytearray(module_bytes)
+        module_phoff = struct.unpack_from("<I", module_bytes, 28)[0]
+        struct.pack_into("<I", module_bytes, module_phoff + 28, 0x100)
+        main_bytes, _main_stub = build_synthetic_import_prx(b"sceSynthetic", 0x08804000)
+        main_bytes = bytearray(main_bytes)
+        struct.pack_into("<H", main_bytes, 16, 2)
+        struct.pack_into("<I", main_bytes, 24, 0x08804000)
+        main_phoff = struct.unpack_from("<I", main_bytes, 28)[0]
+        struct.pack_into("<II", main_bytes, main_phoff + 8, 0x08804000, 0x08804000)
+        struct.pack_into("<I", main_bytes, main_phoff + 28, 0x100)
+        main_shoff = struct.unpack_from("<I", main_bytes, 32)[0]
+        main_shentsize, main_shnum = struct.unpack_from("<HH", main_bytes, 46)
+        for section_index in range(1, main_shnum - 1):
+            address_offset = main_shoff + section_index * main_shentsize + 12
+            section_address = struct.unpack_from("<I", main_bytes, address_offset)[0]
+            struct.pack_into("<I", main_bytes, address_offset, 0x08804000 + section_address)
         iso_path = work_root / "multi-module.iso"
         create_test_iso_with_modules(
             iso_path,
-            build_plain_mips_elf(e_type=2),
+            bytes(main_bytes),
             sysdir_modules={"alpha.prx": module_bytes},
             usrdir_modules={"beta.elf": module_bytes},
             disc_id="ULUS99998",
@@ -882,10 +899,10 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         status, report = self._run_module_fixture(iso_path, work_root)
 
-        self.assertEqual(status, 1)
-        self.assertEqual(report["reached_stage"], "prepare_import")
-        self.assertEqual(report["failure_class"], "GUEST_MODULE_LOAD_BINDING_REQUIRED")
-        self.assertEqual(report["issue_numbers"], [285, 308])
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertTrue(all(stage["status"] == "PASS" for stage in report["stages"].values()))
         self.assertEqual(report["counts"]["modules"], 2)
         self.assertEqual(report["counts"]["encrypted_modules"], 0)
         serialized = json.dumps(report)
@@ -900,6 +917,37 @@ class TestSanitizedBringup(unittest.TestCase):
             sorted(path.name for path in module_dirs[0].iterdir()),
             ["alpha.prx", "beta.elf"],
         )
+        profile = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+        modules = profile["manifest"]["modules"]
+        self.assertEqual([module["name"] for module in modules], ["alpha.prx", "beta.elf"])
+        self.assertTrue(all(module["load_address_evidence"] == "provisional" for module in modules))
+        self.assertTrue(all(module["required"] and module["role"] == "guest-prx" for module in modules))
+        self.assertNotEqual(modules[0]["load_address"], modules[1]["load_address"])
+        self.assertTrue(all(module["load_address"] % 0x10000 == 0 for module in modules))
+        nk_cli.validate_bringup_report(report)
+
+    def test_module_placement_without_safe_runtime_range_is_named(self):
+        work_root = self.root / "no-module-range-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "no-module-range.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_plain_mips_elf(e_type=2, vaddr=0x09E00000, memsz=0x10000),
+            sysdir_modules={
+                "module.prx": build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x100),
+            },
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic No Module Range",
+        )
+        status, report = self._run_module_fixture(iso_path, work_root)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "prepare_import")
+        self.assertEqual(report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertEqual(report["counts"]["modules"], 1)
+        self.assertEqual(report["stages"]["analyze"]["status"], "NOT_RUN")
+        self.assertIn(308, report["issue_numbers"])
         nk_cli.validate_bringup_report(report)
 
     def test_encrypted_iso_module_is_counted_at_crypto_boundary(self):

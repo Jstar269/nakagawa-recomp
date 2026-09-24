@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 import struct
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import title_manifest
 from .title_registry import TitleRegistry, get_default_registry
@@ -28,6 +28,10 @@ MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
 PSP_DEFAULT_MAIN_LOAD_ADDRESS = 0x08804000
+PSP_CONVENTIONAL_USER_MEMORY_TOP = 0x0A000000
+PSP_MODULE_ADDRESS_TOP = 0x09EF0000
+PSP_MODULE_ADDRESS_ALIGNMENT = 0x00010000
+PSP_MODULE_HEAP_RESERVE = 0x00100000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
@@ -46,6 +50,116 @@ class IsoDirectoryEntry:
     size: int
     is_directory: bool
     multi_extent: bool
+
+
+def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
+    """Return (ELF type, lowest PT_LOAD address, highest PT_LOAD end)."""
+    try:
+        image_path = Path(path)
+        file_size = image_path.stat().st_size
+        with image_path.open("rb") as stream:
+            header = stream.read(52)
+            if len(header) < 52 or header[:7] != b"\x7fELF\x01\x01\x01":
+                raise IsoInspectionError("ELF32 load binding needs a little-endian ELF32 image")
+            e_type, machine, version = struct.unpack_from("<HHI", header, 16)
+            _entry, phoff = struct.unpack_from("<II", header, 24)
+            ehsize, phentsize, phnum = struct.unpack_from("<HHH", header, 40)
+            if machine != 8 or version != 1 or ehsize != 52 or phentsize != 32:
+                raise IsoInspectionError("ELF32 load binding needs a supported MIPS program-header table")
+            if not 1 <= phnum <= 128 or phoff < ehsize:
+                raise IsoInspectionError("ELF32 load binding has an unsupported program-header count")
+            ph_end = phoff + phentsize * phnum
+            if ph_end < phoff or ph_end > file_size:
+                raise IsoInspectionError("ELF32 program headers exceed the input image")
+            stream.seek(phoff)
+            table = stream.read(phentsize * phnum)
+    except OSError as exc:
+        raise IsoInspectionError("ELF32 image could not be read for guest-module placement") from exc
+    if len(table) != phentsize * phnum:
+        raise IsoInspectionError("ELF32 program headers are truncated")
+
+    low: int | None = None
+    high = 0
+    for index in range(phnum):
+        p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _flags, _align = \
+            struct.unpack_from("<8I", table, index * phentsize)
+        if p_offset + p_filesz < p_offset or p_offset + p_filesz > file_size:
+            raise IsoInspectionError("ELF32 segment file range exceeds the input image")
+        if p_type != 1:
+            continue
+        end = p_vaddr + p_memsz
+        if p_memsz < p_filesz or end < p_vaddr or end > 0xFFFFFFFF:
+            raise IsoInspectionError("ELF32 segment memory range is invalid")
+        low = p_vaddr if low is None else min(low, p_vaddr)
+        high = max(high, end)
+    if low is None or high <= low:
+        raise IsoInspectionError("ELF32 image has no non-empty loadable segment")
+    return e_type, low, high
+
+
+def plan_provisional_module_bindings(
+    main_elf: Path | str,
+    module_inputs: Sequence[tuple[str, Path | str, str]],
+) -> list[dict]:
+    """Place relocatable modules below the conventional partition top.
+
+    The lowest address leaves at least 1 MiB after the main image (including
+    PT_LOAD BSS) for the initial user heap. Modules then occupy ascending,
+    64-KiB-aligned ranges in filename order, below 0x09EF0000. That ceiling is
+    the runtime's VBlank-stack base; the 64-KiB VBlank stack and the 1-MiB
+    nested-call frame arena above it remain reserved. The HLE allocator
+    reserves the exact manifest address when each module is loaded; provisional
+    evidence records that this deterministic layout is a project policy, not a
+    measured firmware placement.
+    """
+    main_type, _main_low, main_high = _elf32_load_span(main_elf)
+    if main_type in (3, 0xFFA0):
+        main_end = PSP_DEFAULT_MAIN_LOAD_ADDRESS + main_high
+    elif main_type == 2:
+        main_end = main_high
+    else:
+        raise IsoInspectionError("main executable type has no supported guest-module layout")
+    if main_end > PSP_CONVENTIONAL_USER_MEMORY_TOP:
+        raise IsoInspectionError("main executable exceeds the conventional user-memory ceiling")
+
+    floor_unaligned = max(
+        main_end + PSP_MODULE_HEAP_RESERVE,
+        title_manifest.GUEST_MODULE_RAM_LO,
+    )
+    alignment = PSP_MODULE_ADDRESS_ALIGNMENT
+    floor = (floor_unaligned + alignment - 1) & ~(alignment - 1)
+    if floor < floor_unaligned or floor >= PSP_MODULE_ADDRESS_TOP:
+        raise IsoInspectionError("main image leaves no safe guest-module address range")
+
+    modules: list[tuple[str, str, int]] = []
+    folded_names: set[str] = set()
+    for name, module_path, guest_path in module_inputs:
+        folded = name.casefold()
+        if folded in folded_names:
+            raise IsoInspectionError("guest-module filenames collide under the placement policy")
+        folded_names.add(folded)
+        module_type, module_low, module_high = _elf32_load_span(module_path)
+        if module_type not in (3, 0xFFA0) or module_low != 0:
+            raise IsoInspectionError("guest module is not a base-zero relocatable ELF/PRX")
+        modules.append((name, guest_path, module_high))
+
+    cursor = floor
+    placed: list[dict] = []
+    for name, guest_path, span in sorted(modules, key=lambda item: item[0].casefold()):
+        address = (cursor + alignment - 1) & ~(alignment - 1)
+        end = address + span
+        if address < cursor or end < address or end > PSP_MODULE_ADDRESS_TOP:
+            raise IsoInspectionError("guest modules do not fit above the main-image heap reserve")
+        placed.append({
+            "name": name,
+            "load_address": address,
+            "required": True,
+            "role": "guest-prx",
+            "guest_path": guest_path,
+            "load_address_evidence": "provisional",
+        })
+        cursor = end
+    return placed
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
