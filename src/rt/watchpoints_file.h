@@ -6,12 +6,21 @@
 //
 // The dashboard (interface/src/lib/recompiler/watchpoint-file.mjs) writes a
 // versioned envelope and the database is canonical; this parser is the runtime
-// consumer side of that contract. It accepts exactly two shapes:
+// consumer side of that contract. It accepts:
 //
-//   1. the envelope:
-//        { "format": "hst-watchpoints", "version": 1, ..., "watchpoints": [...] }
+//   1. the title-neutral versioned envelope:
+//        { "format": "nk-watchpoints", "version": 1, ..., "watchpoints": [...] }
 //      where format/version MUST match and every other field is ignored;
-//   2. a legacy bare array: [ {"start":N,"end":N,"label":"..."}, ... ].
+//   2. the legacy title-branded envelope:
+//        { "format": "hst-watchpoints", "version": 1, ..., "watchpoints": [...] }
+//      accepted for read-only backward compatibility (retirement policy: legacy
+//      read-only; removal is tracked in #369);
+//   3. a legacy bare array: [ {"start":N,"end":N,"label":"..."}, ... ].
+//      accepted for read-only backward compatibility (retirement policy: legacy
+//      read-only; removal is tracked in #369).
+//
+// Writers must only emit the canonical "nk-watchpoints" format (version 1)
+// and never emit the legacy name or bare-array form.
 //
 // Every watchpoint must satisfy the runtime matching contract
 // (guest_addr >= start && guest_addr < end) with 0 <= start < end <= UINT32_MAX,
@@ -28,7 +37,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SR_WATCHPOINTS_FILE_FORMAT "hst-watchpoints"
+#define SR_WATCHPOINTS_FILE_FORMAT "nk-watchpoints"
+#define SR_WATCHPOINTS_LEGACY_FILE_FORMAT "hst-watchpoints"
 #define SR_WATCHPOINTS_FILE_VERSION 1
 #define SR_WATCHPOINTS_FILE_MAX_BYTES (64u * 1024u)
 #define SR_WATCHPOINT_MAX_SPAN (1u << 24)
