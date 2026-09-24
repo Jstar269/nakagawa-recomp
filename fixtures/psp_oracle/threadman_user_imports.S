@@ -98,6 +98,7 @@
     IMPORT_FUNC "ThreadManForUser", 0xFCCFAD26, sceKernelCancelWakeupThread
     IMPORT_FUNC "ThreadManForUser", 0x2C34E053, sceKernelReleaseWaitThread
     IMPORT_FUNC "ThreadManForUser", 0x369ED59D, sceKernelGetSystemTimeLow
+    IMPORT_FUNC "ThreadManForUser", 0x82BC5777, sceKernelGetSystemTimeWide
     IMPORT_FUNC "ThreadManForUser", 0x6652B8CA, sceKernelSetAlarm
     IMPORT_FUNC "ThreadManForUser", 0x7E65B999, sceKernelCancelAlarm
     IMPORT_FUNC "ThreadManForUser", 0x71BC9871, sceKernelChangeThreadPriority
