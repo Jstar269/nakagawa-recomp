@@ -40,6 +40,7 @@
 #include "pgd_api.h"
 #include "evf.h"         /* pure sceKernelEventFlag pattern/mode semantics */
 #include "asset_index.h" /* dynamic extracted-data index (issue #223) */
+#include "archive_vfs.h" /* validated read-only XB provider (issue #298) */
 #include "sdkver.h"      /* retained compiled-SDK-version state (issue #71) */
 #include "vfs_path.h"    /* host-neutral VFS path join helper (issue #19) */
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
@@ -7339,6 +7340,9 @@ typedef struct {
     int64_t async_res;
     FILE *host;
     SrPgd *pgd;
+    SrArchiveVfs *archive_vfs;
+    size_t archive_mount;
+    size_t archive_entry;
 } Fd;
 static Fd s_fds[64];
 static int64_t s_closed_res[64];
@@ -7413,6 +7417,9 @@ static DirFd s_dirfds[32];
  */
 
 static SrAssetIndex s_data_index;
+static SrArchiveVfs s_archive_vfs;
+static char *s_data_root_utf8;
+static int s_data_archive_mode;
 static atomic_int s_data_state;
 
 /* Extracted-data route states. The historical numeric values 0-3 are part of
@@ -7457,7 +7464,7 @@ typedef struct {
 
 static int data_walk_push(DataWalkDir **stack, size_t *count, size_t *capacity,
                           wchar_t *host, char *rel) {
-    if (!stack || !count || !capacity || !host || !rel || *count == SIZE_MAX) return 0;
+    if (!stack || !count || !capacity || !host || *count == SIZE_MAX) return 0;
     if (*count == *capacity) {
         size_t next = *capacity ? *capacity : 16u;
         while (next <= *count) {
@@ -7628,6 +7635,163 @@ static int data_walk(const wchar_t *root, const char *relprefix,
     return ok;
 }
 
+typedef struct {
+    char *path;
+    int variant;
+} ArchiveCandidate;
+
+static int archive_candidate_cmp(const void *left, const void *right) {
+    const ArchiveCandidate *a = (const ArchiveCandidate *)left;
+    const ArchiveCandidate *b = (const ArchiveCandidate *)right;
+    return strcmp(a->path, b->path);
+}
+
+static int archive_candidate_push(ArchiveCandidate **items, size_t *count,
+                                  size_t *capacity, char *path, int variant) {
+    if (!items || !count || !capacity || !path) return 0;
+    if (*count == SIZE_MAX) return 0;
+    if (*count == *capacity) {
+        size_t next = *capacity ? *capacity : 8u;
+        while (next <= *count) {
+            if (next > SIZE_MAX / 2u) return 0;
+            next *= 2u;
+        }
+        if (next > SIZE_MAX / sizeof(**items)) return 0;
+        ArchiveCandidate *grown = (ArchiveCandidate *)realloc(
+            *items, next * sizeof(**items));
+        if (!grown) return 0;
+        *items = grown;
+        *capacity = next;
+    }
+    (*items)[*count].path = path;
+    (*items)[*count].variant = variant;
+    (*count)++;
+    return 1;
+}
+
+static void archive_candidates_destroy(ArchiveCandidate *items, size_t count) {
+    if (!items) return;
+    for (size_t i = 0; i < count; i++) free(items[i].path);
+    free(items);
+}
+
+static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
+                                 size_t *archive_count_out) {
+    if (!root || !vfs || !archive_count_out) return -1;
+    *archive_count_out = 0;
+    DataWalkDir *stack = NULL;
+    size_t stack_count = 0, stack_capacity = 0;
+    size_t root_len = wcslen(root);
+    if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return -1;
+    wchar_t *initial = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial));
+    if (!initial) return -1;
+    memcpy(initial, root, (root_len + 1u) * sizeof(*initial));
+    if (!data_walk_push(&stack, &stack_count, &stack_capacity, initial, NULL)) {
+        free(initial);
+        return -1;
+    }
+
+    ArchiveCandidate *candidates = NULL;
+    size_t candidate_count = 0, candidate_capacity = 0;
+    int ok = 1;
+    int found = 0;
+    while (ok && stack_count != 0u) {
+        DataWalkDir current = stack[--stack_count];
+#ifdef SR_HLE_THREAD_SELFTEST
+        if (s_data_test_pace_ms > 0) Sleep((DWORD)s_data_test_pace_ms);
+        s_data_test_walk_calls++;
+#endif
+        wchar_t *pattern = NULL;
+        if (!sr_wide_join_alloc(current.host, L"*", &pattern)) {
+            ok = 0;
+            free(current.host);
+            continue;
+        }
+        WIN32_FIND_DATAW fd;
+        HANDLE handle = FindFirstFileW(pattern, &fd);
+        DWORD first_error = handle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+        free(pattern);
+        if (handle == INVALID_HANDLE_VALUE) {
+            if (first_error == ERROR_FILE_NOT_FOUND || first_error == ERROR_PATH_NOT_FOUND) {
+                free(current.host);
+                break;
+            }
+            ok = 0;
+            free(current.host);
+            break;
+        }
+        for (;;) {
+            if (!(fd.cFileName[0] == L'.' &&
+                  (fd.cFileName[1] == L'\0' ||
+                   (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0')))) {
+                wchar_t *child = NULL;
+                if (!sr_wide_join_alloc(current.host, fd.cFileName, &child)) {
+                    ok = 0;
+                } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                        ok = 0;
+                    } else if (!data_walk_push(&stack, &stack_count, &stack_capacity,
+                                               child, NULL)) {
+                        ok = 0;
+                    } else {
+                        child = NULL;
+                    }
+                } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    ok = 0;
+                } else {
+                    char *path = NULL;
+                    if (!sr_wide_to_utf8_alloc(child, &path)) {
+                        ok = 0;
+                    } else {
+                        int variant = -1;
+                        if (sr_archive_variant_from_name(path, &variant)) {
+                            if (!archive_candidate_push(&candidates, &candidate_count,
+                                                        &candidate_capacity, path, variant)) {
+                                ok = 0;
+                            } else {
+                                path = NULL;
+                                found = 1;
+                            }
+                        }
+                        free(path);
+                    }
+                }
+                free(child);
+            }
+            if (!ok) break;
+            if (!FindNextFileW(handle, &fd)) {
+                DWORD error = GetLastError();
+                if (error != ERROR_NO_MORE_FILES) ok = 0;
+                break;
+            }
+        }
+        FindClose(handle);
+        free(current.host);
+    }
+    while (stack_count != 0u) {
+        DataWalkDir pending = stack[--stack_count];
+        free(pending.host);
+    }
+    free(stack);
+    if (ok && found && candidate_count != 0u) {
+        qsort(candidates, candidate_count, sizeof(*candidates), archive_candidate_cmp);
+        for (size_t i = 0; i < candidate_count; i++) {
+            NkResult result = sr_archive_vfs_mount_file(
+                vfs, candidates[i].path, false, candidates[i].variant, NULL);
+            if (result != NK_OK) {
+                fprintf(stderr, "host_data: archive mount failed for %s (%d); refusing archive route\n",
+                        candidates[i].path, (int)result);
+                ok = 0;
+                break;
+            }
+        }
+    }
+    archive_candidates_destroy(candidates, candidate_count);
+    if (!ok) return -1;
+    *archive_count_out = candidate_count;
+    return candidate_count != 0u;
+}
+
 static int data_root_validate(const wchar_t *root, int configured) {
     if (!root) return 0;
     DWORD attributes = GetFileAttributesW(root);
@@ -7680,6 +7844,20 @@ static int data_validate_index(const SrAssetIndex *index, size_t primary_count) 
             fprintf(stderr, "host_data: indexed file metadata exceeds guest size limit (entry=%zu)\n", i);
             return 0;
         }
+    }
+    return 1;
+}
+
+static int data_validate_archive_index(size_t primary_count) {
+    if (primary_count == 0u) {
+        fprintf(stderr, "host_data: archive index is empty; refusing archive route\n");
+        return 0;
+    }
+    uint32_t expected = sr_title_config_expected_data_file_count();
+    if (expected != 0u && primary_count != (size_t)expected) {
+        fprintf(stderr, "host_data: expected %u archive members but indexed %zu; refusing index\n",
+                (unsigned)expected, primary_count);
+        return 0;
     }
     return 1;
 }
@@ -7739,6 +7917,135 @@ static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *in
     return ok;
 }
 
+static char *data_loose_path_alloc(const char *key) {
+    if (!s_data_root_utf8 || !key) return NULL;
+    if (!key[0]) return sr_asset_index_strdup(s_data_root_utf8);
+    size_t root_len = strlen(s_data_root_utf8);
+    size_t key_len = strlen(key);
+    if (root_len > SIZE_MAX - key_len - 2u) return NULL;
+    size_t capacity = root_len + key_len + 2u;
+    char *path = (char *)malloc(capacity);
+    if (!path) return NULL;
+    if (sr_vfs_host_dir_path(s_data_root_utf8, key, path, capacity, '\\') <= 0) {
+        free(path);
+        return NULL;
+    }
+    return path;
+}
+
+static int data_loose_file_open(const char *key, FILE **file_out,
+                                uint32_t *size_out) {
+    if (file_out) *file_out = NULL;
+    if (size_out) *size_out = 0;
+    if (!s_data_root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(key);
+    if (!path) return -1;
+    wchar_t *wide = NULL;
+    if (!sr_wide_path_alloc(path, &wide)) {
+        free(path);
+        return -1;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA attributes;
+    if (!GetFileAttributesExW(wide, GetFileExInfoStandard, &attributes)) {
+        free(wide);
+        free(path);
+        return 0;
+    }
+    if ((attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        free(wide);
+        free(path);
+        return -1;
+    }
+    FILE *file = sr_fopen_utf8(path, L"rb");
+    free(wide);
+    free(path);
+    if (!file) return -1;
+    uint32_t size = 0;
+    if (!sr_stream_size_u32(file, &size)) {
+        fclose(file);
+        return -1;
+    }
+    if (file_out) *file_out = file;
+    else fclose(file);
+    if (size_out) *size_out = size;
+    return 1;
+}
+
+static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
+    if (found_out) *found_out = 0;
+    if (!s_data_root_utf8 || !list) return -1;
+    char *path = data_loose_path_alloc(key ? key : "");
+    if (!path) return -1;
+    wchar_t *wide = NULL;
+    wchar_t *pattern = NULL;
+    if (!sr_wide_path_alloc(path, &wide) || !sr_wide_join_alloc(wide, L"*", &pattern)) {
+        free(wide);
+        free(pattern);
+        free(path);
+        return -1;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA attributes;
+    if (!GetFileAttributesExW(wide, GetFileExInfoStandard, &attributes)) {
+        free(pattern);
+        free(wide);
+        free(path);
+        return 0;
+    }
+    if (!(attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        free(pattern);
+        free(wide);
+        free(path);
+        return -1;
+    }
+    if (found_out) *found_out = 1;
+    WIN32_FIND_DATAW child;
+    HANDLE handle = FindFirstFileW(pattern, &child);
+    free(pattern);
+    free(wide);
+    free(path);
+    if (handle == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND ? 0 : -1;
+    }
+    int result = 0;
+    for (;;) {
+        if (!(child.cFileName[0] == L'.' &&
+              (child.cFileName[1] == L'\0' ||
+               (child.cFileName[1] == L'.' && child.cFileName[2] == L'\0')))) {
+            char *name = NULL;
+            if (!sr_wide_to_utf8_alloc(child.cFileName, &name)) {
+                result = -1;
+            } else {
+                int variant = -1;
+                if (!sr_archive_variant_from_name(name, &variant)) {
+                    if (child.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                        result = -1;
+                    } else {
+                        int is_dir = (child.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                        uint64_t size = is_dir ? 0u : (((uint64_t)child.nFileSizeHigh << 32) |
+                                                         child.nFileSizeLow);
+                        if (!is_dir && size > UINT32_MAX) {
+                            list->skipped++;
+                        } else if (!sr_vfs_dirlist_merge(list, name, is_dir, size)) {
+                            result = -1;
+                        }
+                    }
+                }
+                free(name);
+            }
+        }
+        if (result != 0) break;
+        if (!FindNextFileW(handle, &child)) {
+            if (GetLastError() != ERROR_NO_MORE_FILES) result = -1;
+            break;
+        }
+    }
+    FindClose(handle);
+    return result;
+}
+
 /* Build the extracted-data index ONCE, before guest execution starts.
  *
  * Applicability predicate: the route applies iff an operator explicitly
@@ -7778,6 +8085,11 @@ int sr_host_data_prepare(void) {
     }
     SrAssetIndex temporary;
     sr_asset_index_init(&temporary);
+    sr_archive_vfs_destroy(&s_archive_vfs);
+    sr_archive_vfs_init(&s_archive_vfs);
+    free(s_data_root_utf8);
+    s_data_root_utf8 = NULL;
+    s_data_archive_mode = 0;
     const char *root_label = configured_present ? "<configured SR_DATAROOT>" :
         "<executable>/../../place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted";
     fprintf(stderr, "host_data: scanning %s ...\n", root_label);
@@ -7796,27 +8108,52 @@ int sr_host_data_prepare(void) {
     free(configured_root);
     if (root_ok && !data_root_validate(root_wide, configured_present)) root_ok = 0;
     size_t primary_count = 0;
-    int walk_ok = root_ok && data_walk(root_wide, "", NULL, &temporary);
-    if (walk_ok) {
-        /* Take the configured root's own census BEFORE the route addition, so the
-         * title's declared expected_data_file_count keeps describing exactly the
-         * tree it was written for (see data_validate_index). */
-        primary_count = temporary.count;
-        walk_ok = data_loose_content_walk(root_wide, &temporary);
+    size_t archive_count = 0;
+    int archive_mode = 0;
+    if (root_ok) {
+        archive_mode = archive_data_discover(root_wide, &s_archive_vfs, &archive_count);
+        if (archive_mode < 0) root_ok = 0;
     }
-    if (!walk_ok ||
-        !sr_asset_index_finalize(&temporary) ||
-        !data_validate_index(&temporary, primary_count)) {
+    int walk_ok = root_ok;
+    if (walk_ok && archive_mode > 0) {
+        s_data_archive_mode = 1;
+        if (!sr_wide_to_utf8_alloc(root_wide, &s_data_root_utf8)) walk_ok = 0;
+        primary_count = sr_archive_vfs_entry_count(&s_archive_vfs);
+        if (!data_validate_archive_index(primary_count)) walk_ok = 0;
+    } else if (walk_ok) {
+        sr_archive_vfs_destroy(&s_archive_vfs);
+        sr_archive_vfs_init(&s_archive_vfs);
+        walk_ok = data_walk(root_wide, "", NULL, &temporary);
+        if (walk_ok) {
+            primary_count = temporary.count;
+            walk_ok = data_loose_content_walk(root_wide, &temporary);
+        }
+        if (walk_ok && !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+        if (walk_ok && !data_validate_index(&temporary, primary_count)) walk_ok = 0;
+    }
+    if (!walk_ok) {
         fprintf(stderr, "host_data: index initialization failed; refusing partial index\n");
         free(root_wide);
         sr_asset_index_destroy(&temporary);
+        sr_archive_vfs_destroy(&s_archive_vfs);
+        free(s_data_root_utf8);
+        s_data_root_utf8 = NULL;
+        s_data_archive_mode = 0;
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
     }
     free(root_wide);
+    if (archive_mode > 0) {
+        sr_asset_index_destroy(&temporary);
+        atomic_store_explicit(&s_data_state, SR_DATA_STATE_READY, memory_order_release);
+        fprintf(stderr, "host_data: mounted %zu archives with %zu members under %s\n",
+                archive_count, primary_count, root_label);
+        return SR_DATA_STATE_READY;
+    }
     if (!sr_asset_index_publish(&s_data_index, &temporary)) {
         fprintf(stderr, "host_data: failed to publish finalized index\n");
         sr_asset_index_destroy(&temporary);
+        sr_archive_vfs_destroy(&s_archive_vfs);
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
     }
@@ -7834,8 +8171,10 @@ int sr_host_data_prepare(void) {
  * driver's BOOT_EVENT index_prepare_end record so a boot log states how much
  * was prepared without exposing internal structures. */
 size_t sr_host_data_entry_count(void) {
-    return atomic_load_explicit(&s_data_state, memory_order_acquire) == SR_DATA_STATE_READY
-        ? s_data_index.count : 0u;
+    if (atomic_load_explicit(&s_data_state, memory_order_acquire) != SR_DATA_STATE_READY)
+        return 0u;
+    return s_data_archive_mode ? sr_archive_vfs_entry_count(&s_archive_vfs)
+                               : s_data_index.count;
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -7848,7 +8187,10 @@ unsigned long sr_hle_test_data_builds_after_guest(void) { return s_data_test_bui
 int sr_hle_test_data_state(void) {
     return atomic_load_explicit(&s_data_state, memory_order_acquire);
 }
-size_t sr_hle_test_data_entry_count(void) { return s_data_index.count; }
+size_t sr_hle_test_data_entry_count(void) {
+    return s_data_archive_mode ? sr_archive_vfs_entry_count(&s_archive_vfs)
+                               : s_data_index.count;
+}
 
 /* Test-build-only: does any published entry's key begin with `key_prefix`?  Lets a
  * test prove that a route addition did NOT re-index a root it was told to skip
@@ -7868,6 +8210,11 @@ int sr_hle_test_data_key_seen(const char *key_prefix) {
 void sr_hle_test_data_reset(int pace_ms) {
     sr_asset_index_destroy(&s_data_index);
     sr_asset_index_init(&s_data_index);
+    sr_archive_vfs_destroy(&s_archive_vfs);
+    sr_archive_vfs_init(&s_archive_vfs);
+    free(s_data_root_utf8);
+    s_data_root_utf8 = NULL;
+    s_data_archive_mode = 0;
     atomic_store_explicit(&s_data_state, SR_DATA_STATE_UNINITIALIZED, memory_order_release);
     s_data_test_walk_calls = 0;
     s_data_test_build_attempts = 0;
@@ -7958,6 +8305,7 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
         }
         return NULL;
     }
+    if (s_data_archive_mode) return NULL;
     int wanted_variant = -2;
     char *key = data_normalize_guest_key(guest_path, &wanted_variant);
     if (!key) return NULL;
@@ -7977,6 +8325,13 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
     }
     free(key);
     return chosen;
+}
+
+static int data_archive_guest_path_allowed(const char *guest_path) {
+    if (!guest_path || !guest_path[0]) return 0;
+    if (!strchr(guest_path, ':')) return 1;
+    return _strnicmp(guest_path, "disc0:", 6) == 0 ||
+           _strnicmp(guest_path, "umd:", 4) == 0;
 }
 
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
@@ -8048,6 +8403,43 @@ static uint32_t h_IoOpen(CpuState *s) {
             fp = ms0_fopen_utf8(hp, mode);
         free(hp);
         if (!fp) {
+            if (!writing && !creating && s_data_archive_mode &&
+                data_archive_guest_path_allowed(path)) {
+                int wanted_variant = -2;
+                char *key = data_normalize_guest_key(path, &wanted_variant);
+                if (key) {
+                    FILE *loose = NULL;
+                    uint32_t loose_size = 0;
+                    int loose_result = data_loose_file_open(key, &loose, &loose_size);
+                    if (loose_result < 0) {
+                        fprintf(stderr, "host_data: loose override is unsafe for %s\n", path);
+                        free(key);
+                        return 0x80010005;
+                    }
+                    if (loose_result > 0 && loose) {
+                        s_fds[slot].used = 1; s_fds[slot].host = loose; s_fds[slot].lba = 0;
+                        s_fds[slot].size = loose_size; s_fds[slot].off = 0;
+                        if (getenv("SR_IOLOG")) fprintf(stderr, "Open(%s) -> loose archive override size=%u\n",
+                                                        path, (unsigned)loose_size);
+                        free(key);
+                        return (uint32_t)slot;
+                    }
+                    SrArchiveFile archive_file;
+                    if (sr_archive_vfs_lookup(&s_archive_vfs, key, wanted_variant,
+                                              &archive_file)) {
+                        s_fds[slot].used = 1; s_fds[slot].host = NULL; s_fds[slot].lba = 0;
+                        s_fds[slot].size = (uint32_t)archive_file.size; s_fds[slot].off = 0;
+                        s_fds[slot].archive_vfs = &s_archive_vfs;
+                        s_fds[slot].archive_mount = archive_file.mount_index;
+                        s_fds[slot].archive_entry = archive_file.entry_index;
+                        if (getenv("SR_IOLOG")) fprintf(stderr, "Open(%s) -> XB member size=%u\n",
+                                                        path, (unsigned)archive_file.size);
+                        free(key);
+                        return (uint32_t)slot;
+                    }
+                    free(key);
+                }
+            }
             /* Try the extracted-XB data-root cache (game asks for "data/menu/text/<X>.to"
              * but those files only exist on the ISO inside XB archives; dev workflow
              * extracts them under SR_DATAROOT/<sub>/<arc>.xb.d/<relpath>). */
@@ -8134,6 +8526,32 @@ static uint32_t h_IoRead(CpuState *s) {
         return 0x80010009; /* baseline behavior preserved for standard streams */
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
+    if (f->archive_vfs) {
+        if (dst && !sr_guest_span_writable(dst, count)) return 0x80010016u;
+        if (f->off >= f->size || count == 0u) return 0u;
+        if (count > f->size - f->off) count = f->size - f->off;
+        uint8_t tmp[4096];
+        uint32_t done = 0;
+        SrArchiveFile archive_file = {
+            f->archive_mount, f->archive_entry, f->size, -1
+        };
+        while (done < count) {
+            uint32_t amount = count - done;
+            if (amount > sizeof(tmp)) amount = (uint32_t)sizeof(tmp);
+            size_t got = 0;
+            NkResult result = sr_archive_vfs_read(
+                f->archive_vfs, &archive_file, f->off + done, tmp, amount, &got);
+            if (result != NK_OK || got == 0u || got > amount) {
+                fprintf(stderr, "host_data: XB member read failed for fd=%u (%d)\n",
+                        fd, (int)result);
+                return 0x80010005u;
+            }
+            for (uint32_t i = 0; i < got; i++) MEM_W8(dst + done + i, tmp[i]);
+            done += (uint32_t)got;
+        }
+        f->off += done;
+        return done;
+    }
     if (f->pgd) {
         /* Decrypt-on-read: f->off/f->size are the logical (decrypted) view; the
          * ciphertext is read from f->host at physical block offsets by pgd.c. */
@@ -8322,6 +8740,28 @@ static uint32_t h_IoIoctl(CpuState *s) {
         uint32_t count = MEM_R32(in);
         if (!out || count > outlen) return 0x80010016;
         if (f->off + count > f->size) count = f->size - f->off;
+        if (f->archive_vfs) {
+            if (!out || !sr_guest_span_writable(out, count)) return 0x80010016u;
+            uint8_t archive_tmp[4096];
+            uint32_t archive_done = 0;
+            SrArchiveFile archive_file = {
+                f->archive_mount, f->archive_entry, f->size, -1
+            };
+            while (archive_done < count) {
+                uint32_t amount = count - archive_done;
+                if (amount > sizeof(archive_tmp)) amount = (uint32_t)sizeof(archive_tmp);
+                size_t got = 0;
+                NkResult result = sr_archive_vfs_read(
+                    f->archive_vfs, &archive_file, f->off + archive_done,
+                    archive_tmp, amount, &got);
+                if (result != NK_OK || got == 0u || got > amount) return 0x80010005u;
+                for (uint32_t i = 0; i < got; i++)
+                    MEM_W8(out + archive_done + i, archive_tmp[i]);
+                archive_done += (uint32_t)got;
+            }
+            f->off += archive_done;
+            return archive_done;
+        }
         uint8_t tmp[4096];
         uint32_t done = 0;
         if (f->host) fseek(f->host, (long)f->off, SEEK_SET);
@@ -8641,14 +9081,30 @@ static uint32_t h_IoDopen(CpuState *s) {
             int wanted_variant = -2;
             char *norm_key = data_normalize_guest_key(path, &wanted_variant);
             if (norm_key) {
-                if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
-                    SR_DATA_STATE_READY) {
+                if (s_data_archive_mode && data_archive_guest_path_allowed(path)) {
+                    int loose_found = 0;
+                    if (data_loose_merge_dir(norm_key, &d->list, &loose_found) != 0) {
+                        free(norm_key);
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010005u;
+                    }
+                    if (loose_found) d->list.exists = 1;
+                    if (sr_archive_vfs_list_dir(&s_archive_vfs, norm_key,
+                                                wanted_variant, &d->list) < 0) {
+                        free(norm_key);
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010008u;
+                    }
+                } else if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
+                           SR_DATA_STATE_READY) {
                     if (sr_asset_index_list_dir(&s_data_index, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
                         sr_vfs_dirlist_destroy(&d->list);
                         free(d->path); memset(d, 0, sizeof(*d));
-                        return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+                        return 0x80010008u;
                     }
                 }
                 free(norm_key);
@@ -9100,6 +9556,16 @@ int sr_hle_test_fd_kind(uint32_t fd) {
     return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) ? (int)s_fds[fd].kind : -1;
 }
 #endif
+static int data_stat_write(uint32_t st, uint64_t size) {
+    if (!st || size > UINT32_MAX) return 0;
+    for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
+    MEM_W32(st + 0, 0x2000u | 0x0124u);
+    MEM_W32(st + 4, 0x0004u | 0x0001u);
+    MEM_W32(st + 8, (uint32_t)size);
+    MEM_W32(st + 0x40, 0);
+    return 1;
+}
+
 static uint32_t h_IoGetstat(CpuState *s) {
     /* a0=path, a1=SceIoStat*. SceIoStat layout: mode(+0), attr(+4), size(+8,64-bit),
      * ctime(+0x10), atime(+0x20), mtime(+0x30), st_private[6](+0x40). For UMD files PPSSPP
@@ -9140,6 +9606,31 @@ static uint32_t h_IoGetstat(CpuState *s) {
                 free(wh);
             }
             free(hp);
+        }
+        if (s_data_archive_mode && data_archive_guest_path_allowed(path)) {
+            int wanted_variant = -2;
+            char *key = data_normalize_guest_key(path, &wanted_variant);
+            if (key) {
+                FILE *loose = NULL;
+                uint32_t loose_size = 0;
+                int loose_result = data_loose_file_open(key, &loose, &loose_size);
+                if (loose_result < 0) {
+                    free(key);
+                    return 0x80010005u;
+                }
+                if (loose_result > 0) {
+                    if (loose) fclose(loose);
+                    free(key);
+                    return data_stat_write(st, loose_size) ? 0u : 0x80010005u;
+                }
+                SrArchiveFile archive_file;
+                if (sr_archive_vfs_lookup(&s_archive_vfs, key, wanted_variant,
+                                          &archive_file)) {
+                    free(key);
+                    return data_stat_write(st, archive_file.size) ? 0u : 0x80010005u;
+                }
+                free(key);
+            }
         }
         /* Not on the ISO -- try the extracted-XB data-root (graphical/text data the game
          * expects to read from paths like "data/menu/text/<X>.to", which are packed inside

@@ -6,6 +6,7 @@
 #endif
 
 #include "nk_xb.h"
+#include "archive_vfs.h"
 #include "nk_iso.h"
 #include "nk_platform.h"
 #include "setup_staging.h"
@@ -17,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
@@ -922,6 +924,119 @@ static void test_iso_to_native_staging_pipeline(void) {
     printf("[XB_TEST] ISO EBOOT + xbdata native staging pipeline PASSED\n");
 }
 
+static int archive_list_has(const SrVfsDirList *list, const char *name) {
+    for (size_t i = 0; i < list->count; i++) {
+        if (strcmp(list->entries[i].name, name) == 0) return 1;
+    }
+    return 0;
+}
+
+static void test_archive_vfs_provider(void) {
+    static const uint8_t raw_data[] = "raw archive bytes";
+    static const uint8_t lzs_data[] = "lzs archive bytes";
+    static const uint8_t huf_data[] = "huffman archive bytes";
+    const FixtureEntry entries[] = {
+        { "data/menu/raw.bin", raw_data, sizeof(raw_data) - 1u, NK_XB_COMPRESSION_NONE },
+        { "data/menu/lzs.bin", lzs_data, sizeof(lzs_data) - 1u, NK_XB_COMPRESSION_LZS },
+        { "data/menu/nested/huffman.bin", huf_data, sizeof(huf_data) - 1u, NK_XB_COMPRESSION_HUFFMAN }
+    };
+    ByteBuffer bytes = make_archive(entries, 3, false);
+    SrArchiveVfs vfs;
+    sr_archive_vfs_init(&vfs);
+    assert(sr_archive_vfs_configure(&vfs, 32u, 1u));
+    assert(sr_archive_vfs_mount_memory(&vfs, bytes.data, bytes.size, "fixture.xb", false,
+                                       -1, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_count(&vfs) == 1u);
+    assert(sr_archive_vfs_entry_count(&vfs) == 3u);
+    SrArchiveFile file;
+    assert(sr_archive_vfs_lookup(&vfs, "data/menu/raw.bin", -2, &file));
+    uint8_t output[64];
+    size_t output_size = 0;
+    assert(sr_archive_vfs_read(&vfs, &file, 4u, output, 7u, &output_size) == NK_OK);
+    assert(output_size == 7u);
+    assert(memcmp(output, raw_data + 4u, 7u) == 0);
+    assert(sr_archive_vfs_read(&vfs, &file, sizeof(raw_data) - 2u, output, 20u,
+                               &output_size) == NK_OK);
+    assert(output_size == 1u && output[0] == raw_data[sizeof(raw_data) - 2u]);
+    assert(sr_archive_vfs_lookup(&vfs, "data/menu/lzs.bin", -2, &file));
+    assert(sr_archive_vfs_read(&vfs, &file, 0u, output, sizeof(output), &output_size) == NK_OK);
+    assert(output_size == sizeof(lzs_data) - 1u);
+    assert(memcmp(output, lzs_data, output_size) == 0);
+    assert(sr_archive_vfs_lookup(&vfs, "data/menu/nested/huffman.bin", -2, &file));
+    assert(sr_archive_vfs_read(&vfs, &file, 0u, output, sizeof(output), &output_size) == NK_OK);
+    assert(output_size == sizeof(huf_data) - 1u);
+    assert(memcmp(output, huf_data, output_size) == 0);
+    assert(sr_archive_vfs_cache_bytes(&vfs) <= 32u);
+    assert(sr_archive_vfs_cache_entry_count(&vfs) <= 1u);
+
+    SrVfsDirList list;
+    sr_vfs_dirlist_init(&list);
+    assert(sr_archive_vfs_list_dir(&vfs, "data/menu", -2, &list) == 1);
+    assert(list.exists && list.count == 3u);
+    assert(archive_list_has(&list, "raw.bin"));
+    assert(archive_list_has(&list, "lzs.bin"));
+    assert(archive_list_has(&list, "nested"));
+    sr_vfs_dirlist_destroy(&list);
+
+    int variant = 0;
+    assert(sr_archive_variant_from_name("fixture.xb", &variant) && variant == -1);
+    assert(sr_archive_variant_from_name("fixture.xb0", &variant) && variant == 0);
+    assert(sr_archive_variant_from_name("fixture.xb12", &variant) && variant == 12);
+    assert(!sr_archive_variant_from_name("fixture.xb2147483648", &variant));
+    assert(!sr_archive_variant_from_name("fixture.xb.d", &variant));
+
+    SrVfsDirList missing_variant;
+    sr_vfs_dirlist_init(&missing_variant);
+    assert(sr_archive_vfs_list_dir(&vfs, "data/menu", 1, &missing_variant) == 1);
+    assert(missing_variant.exists && missing_variant.count == 0u);
+    sr_vfs_dirlist_destroy(&missing_variant);
+
+    SrArchiveVfs malformed;
+    sr_archive_vfs_init(&malformed);
+    const uint8_t truncated[] = { 0x78, 0x65, 0x00, 0x01, 0x01, 0x00, 0x00 };
+    assert(sr_archive_vfs_mount_memory(&malformed, truncated, sizeof(truncated),
+                                       "truncated.xb", false, -1, NULL) != NK_OK);
+    assert(sr_archive_vfs_entry_count(&malformed) == 0u);
+    sr_archive_vfs_destroy(&malformed);
+    sr_archive_vfs_destroy(&vfs);
+    free(bytes.data);
+    printf("[ARCHIVE_VFS] read equivalence, partial seek, listing, cache, and rejection PASSED\n");
+}
+
+static void test_archive_vfs_many_members(void) {
+    const size_t member_count = 2048u;
+    FixtureEntry *entries = (FixtureEntry *)calloc(member_count, sizeof(*entries));
+    uint8_t *payload = (uint8_t *)malloc(member_count);
+    char (*paths)[32] = (char (*)[32])calloc(member_count, sizeof(*paths));
+    assert(entries != NULL && payload != NULL && paths != NULL);
+    for (size_t i = 0; i < member_count; i++) {
+        snprintf(paths[i], sizeof(paths[i]), "data/gen/file%04zu.bin", i);
+        payload[i] = (uint8_t)(i & 0xffu);
+        entries[i].path = paths[i];
+        entries[i].data = payload + i;
+        entries[i].size = 1u;
+        entries[i].compression = NK_XB_COMPRESSION_NONE;
+    }
+    ByteBuffer bytes = make_archive(entries, member_count, false);
+    SrArchiveVfs vfs;
+    sr_archive_vfs_init(&vfs);
+    clock_t started = clock();
+    assert(sr_archive_vfs_mount_memory(&vfs, bytes.data, bytes.size, "many.xb", false,
+                                       -1, NULL) == NK_OK);
+    clock_t finished = clock();
+    assert(sr_archive_vfs_entry_count(&vfs) == member_count);
+    SrArchiveFile file;
+    assert(sr_archive_vfs_lookup(&vfs, paths[member_count - 1u], -2, &file));
+    assert(file.size == 1u);
+    printf("[ARCHIVE_VFS] indexed %zu synthetic members in %.3f CPU seconds\n",
+           member_count, (double)(finished - started) / CLOCKS_PER_SEC);
+    sr_archive_vfs_destroy(&vfs);
+    free(bytes.data);
+    free(paths);
+    free(payload);
+    free(entries);
+}
+
 int main(void) {
     printf("[XB_TEST] Starting native clean-room XB parser tests...\n");
     test_roundtrip_all_compression_modes();
@@ -936,6 +1051,8 @@ int main(void) {
     test_compressed_header_expansion_limit();
     test_duplicate_canonical_path();
     test_deterministic_mutation_fuzz();
+    test_archive_vfs_provider();
+    test_archive_vfs_many_members();
     test_staging_cleanup_boundary();
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();
