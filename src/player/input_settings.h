@@ -50,6 +50,54 @@ typedef struct {
 } InputBindingConflict;
 
 /**
+ * Stages for guided analog calibration (#357).
+ */
+typedef enum {
+    CALIBRATION_STAGE_INACTIVE = 0,
+    CALIBRATION_STAGE_REST,      /* "Leave everything at rest" (sample resting values ~1 s) */
+    CALIBRATION_STAGE_EXTREMES,  /* "Press each trigger fully / move stick in circles" (sample extremes) */
+    CALIBRATION_STAGE_RESULT     /* Show result, let user accept or cancel */
+} GuidedCalibrationStage;
+
+/**
+ * Guided calibration session state (#357).
+ */
+typedef struct {
+    GuidedCalibrationStage stage;
+    int elapsed_ms;
+    int duration_ms; /* duration for rest sampling, default 1000 ms */
+
+    /* Sampled resting values */
+    int16_t sampled_rest_x;
+    int16_t sampled_rest_y;
+    int16_t sampled_rest_lt;
+    int16_t sampled_rest_rt;
+    int sample_count;
+    int32_t rest_x_acc;
+    int32_t rest_y_acc;
+    int32_t rest_lt_acc;
+    int32_t rest_rt_acc;
+
+    /* Sampled extreme values */
+    int16_t sampled_min_x;
+    int16_t sampled_max_x;
+    int16_t sampled_min_y;
+    int16_t sampled_max_y;
+    int16_t sampled_max_lt;
+    int16_t sampled_max_rt;
+
+    /* Computed candidate calibration ready to accept */
+    int16_t result_rest_x;
+    int16_t result_min_x;
+    int16_t result_max_x;
+    int16_t result_rest_y;
+    int16_t result_min_y;
+    int16_t result_max_y;
+    int16_t result_trigger_rest;
+    int16_t result_trigger_extreme;
+} GuidedCalibrationState;
+
+/**
  * In-memory controller settings editing state (SDL-free, unit-testable).
  */
 typedef struct {
@@ -70,6 +118,9 @@ typedef struct {
     int capture_control; /* InputControlIndex (0..13) */
     int capture_elapsed_ms;
     int capture_timeout_ms;
+
+    /* Guided calibration state (#357) */
+    GuidedCalibrationState calib;
 } InputSettingsState;
 
 /**
@@ -207,6 +258,44 @@ bool input_settings_set_trigger_threshold(InputSettingsState *state, int32_t val
  * @brief Toggle axis inversion for NK_PSP_AXIS_ANALOG_X or NK_PSP_AXIS_ANALOG_Y.
  */
 bool input_settings_toggle_axis_inversion(InputSettingsState *state, int axis_idx);
+
+/**
+ * @brief Start guided calibration workflow for analog stick and triggers (#357).
+ */
+bool input_settings_start_calibration(InputSettingsState *state);
+
+/**
+ * @brief Cancel active guided calibration without modifying profile.
+ */
+void input_settings_cancel_calibration(InputSettingsState *state);
+
+/**
+ * @brief Check if guided calibration is currently active.
+ */
+bool input_settings_is_calibrating(const InputSettingsState *state);
+
+/**
+ * @brief Get current stage of guided calibration.
+ */
+GuidedCalibrationStage input_settings_get_calibration_stage(const InputSettingsState *state);
+
+/**
+ * @brief Advance calibration timer and sample live host axes.
+ * @param delta_ms Elapsed time in milliseconds.
+ * @param host_axes Array of current host axis values.
+ * @return true if still calibrating, false if inactive.
+ */
+bool input_settings_update_calibration(InputSettingsState *state, int delta_ms, const int16_t host_axes[NK_HOST_AXIS_COUNT]);
+
+/**
+ * @brief Finish extremes sampling stage and transition to result review stage.
+ */
+bool input_settings_finish_calibration_extremes(InputSettingsState *state);
+
+/**
+ * @brief Accept calibration results and apply them to the profile.
+ */
+bool input_settings_accept_calibration(InputSettingsState *state);
 
 #ifdef __cplusplus
 }

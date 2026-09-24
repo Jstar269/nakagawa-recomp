@@ -130,9 +130,13 @@ class NativeHostBackendTests(unittest.TestCase):
         cls._objects["src/player/iso_reader.c"] = _compile_object(
             cls, "src/player/iso_reader.c", "iso_reader.o", ("-Isrc/player",)
         )
+        cls._objects["src/player/package_builder.c"] = _compile_object(
+            cls, "src/player/package_builder.c", "package_builder.o", ("-Isrc/player",)
+        )
         harnesses = {
             "tests/native/test_launch_resolution.c": (),
             "tests/native/test_player_state.c": ("-Isrc/player",),
+            "tests/native/test_package_builder.c": ("-Isrc/player",),
         }
         if not _WINDOWS:
             harnesses["tests/native/test_posix_process.c"] = ()
@@ -163,9 +167,18 @@ class NativeHostBackendTests(unittest.TestCase):
                 "src/player/player_state.c",
                 "src/player/input_settings.c",
                 "src/player/iso_reader.c",
+                "src/player/package_builder.c",
             ),
         )
         self.assertIn("ALL PLAYER STATE TESTS PASSED", stdout)
+
+    def test_package_builder(self) -> None:
+        """Package builder progress line parser and state machine."""
+        stdout = _build_and_run(
+            self, "tests/native/test_package_builder.c", "test_package_builder",
+            extra_sources=("src/player/package_builder.c",),
+        )
+        self.assertIn("ALL PACKAGE BUILDER TESTS PASSED", stdout)
 
     @unittest.skipIf(_WINDOWS, "the POSIX process backend is not built on Windows")
     def test_posix_process_backend(self) -> None:

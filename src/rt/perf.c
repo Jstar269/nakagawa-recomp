@@ -35,6 +35,10 @@ typedef struct SrPerfState {
 } SrPerfState;
 
 static SrPerfState s_perf;
+static int s_perf_stderr_enabled = 0;
+static double s_hud_fps = 0.0;
+static double s_hud_frame_ms = 0.0;
+static double s_hud_vblank_hz = 0.0;
 
 static int env_on(const char *name) {
     const char *value = getenv(name);
@@ -63,6 +67,11 @@ static void report_if_due(uint64_t now) {
     double vblank_hz = seconds > 0.0 ? (double)s_perf.vblanks / seconds : 0.0;
     double frame_ms = s_perf.presents ? ms(wall_ns) / (double)s_perf.presents : 0.0;
 
+    s_hud_fps = fps;
+    s_hud_frame_ms = frame_ms;
+    s_hud_vblank_hz = vblank_hz;
+
+    if (s_perf_stderr_enabled) {
     fprintf(stderr,
             "PERF vblank_total=%llu wall_ms=%.3f fps=%.3f frame_ms=%.3f vblank_hz=%.3f "
             "cpu_ms=%.3f ge_wait_ms=%.3f present_ms=%.3f idle_ms=%.3f "
@@ -152,6 +161,7 @@ static void report_if_due(uint64_t now) {
         fflush(s_perf.csv);
     }
     fflush(stderr);
+    }
 
     int guest_active = s_perf.guest_active;
     FILE *csv = s_perf.csv;
@@ -167,7 +177,8 @@ static void report_if_due(uint64_t now) {
 
 void sr_perf_init(void) {
     memset(&s_perf, 0, sizeof(s_perf));
-    s_perf.enabled = env_on("SR_PERF");
+    s_perf_stderr_enabled = env_on("SR_PERF");
+    s_perf.enabled = s_perf_stderr_enabled || env_on("SR_HUD");
     if (!s_perf.enabled) return;
     s_perf.interval_start_ns = SDL_GetTicksNS();
     const char *path = getenv("SR_PERF_CSV");
@@ -261,3 +272,34 @@ void sr_perf_present_done(uint64_t started_ns, int result) {
 }
 
 void sr_perf_present_skip(void) { if (s_perf.enabled) s_perf.present_skips++; }
+
+void sr_perf_enable_counters(void) {
+    s_perf.enabled = 1;
+    if (s_perf.interval_start_ns == 0) {
+        s_perf.interval_start_ns = SDL_GetTicksNS();
+    }
+}
+
+void sr_perf_get_hud_metrics(double *out_fps, double *out_frame_ms, double *out_vblank_hz) {
+    if (s_hud_fps > 0.0) {
+        if (out_fps) *out_fps = s_hud_fps;
+        if (out_frame_ms) *out_frame_ms = s_hud_frame_ms;
+        if (out_vblank_hz) *out_vblank_hz = s_hud_vblank_hz;
+    } else {
+        uint64_t now = SDL_GetTicksNS();
+        uint64_t elapsed_ns = (now > s_perf.interval_start_ns) ? (now - s_perf.interval_start_ns) : 0;
+        double sec = (double)elapsed_ns / 1000000000.0;
+        if (sec > 0.1) {
+            double fps = (double)s_perf.presents / sec;
+            double vbl = (double)s_perf.vblanks / sec;
+            double fms = s_perf.presents ? (ms(elapsed_ns) / (double)s_perf.presents) : 0.0;
+            if (out_fps) *out_fps = fps;
+            if (out_frame_ms) *out_frame_ms = fms;
+            if (out_vblank_hz) *out_vblank_hz = vbl;
+        } else {
+            if (out_fps) *out_fps = 0.0;
+            if (out_frame_ms) *out_frame_ms = 0.0;
+            if (out_vblank_hz) *out_vblank_hz = 0.0;
+        }
+    }
+}
