@@ -450,7 +450,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fe6dd76c1f917532273e0c465bdf9a160632b546b5d390802257482c791ed627"
+      "sha256": "ea9d6d6c74ced973989c93f09a082836b827d23bb7348b5e5b70468687f079f7"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -771,7 +771,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2352896300b89ae585d12a6f173d10b380dbd21bab369c0cf0a653d76a166117"
+      "sha256": "341ac2b9a69697e421b2313556a28116532822cac5dc3f6d25de0546bb12fa8e"
     },
     {
       "path": "docs/AI_USAGE.md",
@@ -7340,7 +7340,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "edb4baef9bdb550fe082e3ef8ac54c34829598eca57d7103dd4b8baca344b9e7"
+      "sha256": "80329b341b0f57024da179a8ea2721550e9d2eb191b11bd78ada83ecfa5a0ffd"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -7809,6 +7809,18 @@
         "upstream_attribution": null
       },
       "sha256": "9f06bbfdb8ec6909f7be39edc1fbaa4fbb28ff1c3cf150e5979569be7e11f33c"
+    },
+    {
+      "path": "tools/package_notices.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "package-notices-421",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "859626796f36a755f5ecce6acbdd9fc2f2263e43383061281e954f19a6388e6e"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -9212,6 +9224,18 @@
       "sha256": "24fce0a4f7483b77b34b5c8ef77ab9ddd6a52a7cb2678fe67fd61216e676ee42"
     },
     {
+      "path": "tools/test_package_notices.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "package-notices-tests-421",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "79f79710bfba44594785641e39a84e7a03b57a94f721a98a3790874b7e1e98e7"
+    },
+    {
       "path": "tools/test_padscript_from_log.py",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -9563,7 +9587,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "490326545b9ce8ebd7b03a03b913dbca50f7b8de691ec5d9ea66812b39c13e99"
+      "sha256": "51b9f4e0930ce1ed43e00bf6d17e2b7c2f89eb299e1f53998bd7c457ca7468e8"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9950,7 +9974,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f311ba8e654e53d2e5d6a5990ca12fa9d54e573e3b99d446155747ab22905133"
+      "sha256": "5c5e4f43650ab4946f9495b528d9dee4389c396ce3cc9416a0f3378a09716f87"
     },
     {
       "path": "tools/title_manager_plan.ps1",
