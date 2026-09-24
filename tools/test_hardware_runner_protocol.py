@@ -31,8 +31,25 @@ Fail-closed invariants under test, in one sentence each:
 from __future__ import annotations
 
 import hashlib
+from io import StringIO
+from pathlib import Path
+import subprocess
 import struct
+import sys
+import tempfile
 import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from psp_oracle.run_psplink import (
+    CampaignCase,
+    PsplinkCampaignRunner,
+    _parse_usbipd_psplink_devices,
+    _verify_psplink_shell,
+    PsplinkProcessTransport,
+    _run_command,
+)
 
 MAGIC = b"NR"
 VERSION = 2
@@ -102,6 +119,141 @@ def _sha(data: bytes) -> str:
 RUNNER_SHA = _sha(b"resident-oracle-runner v1 synthetic")
 SOURCE_COMMIT = "c75c303a1e6885eb6f8bb6875afde527d72ab688"
 EPOCH = "epoch-0001"
+
+
+class SimulatedPsplinkTransport:
+    """Command-level fake for the real PSPSH adapter; never touches hardware."""
+
+    def __init__(
+        self,
+        *,
+        timeout_cases: set[str] | None = None,
+        fail_modstun: bool = False,
+        fail_post_case_ver_once: bool = False,
+        fail_first_ver_once: bool = False,
+        fail_all_ver: bool = False,
+        unknown_command_ver_once: bool = False,
+        reset_timeout: bool = False,
+        reset_returncode: int = 0,
+    ):
+        self.timeout_cases = timeout_cases or set()
+        self.fail_modstun = fail_modstun
+        self.fail_post_case_ver_once = fail_post_case_ver_once
+        self.fail_first_ver_once = fail_first_ver_once
+        self.fail_all_ver = fail_all_ver
+        self.unknown_command_ver_once = unknown_command_ver_once
+        self.first_ver_failed = False
+        self.reset_timeout = reset_timeout
+        self.reset_returncode = reset_returncode
+        self.post_case_ver_failed = False
+        self.case_started = False
+        self.started = False
+        self.stopped = False
+        self.restarts = 0
+        self.commands: list[tuple[str, float]] = []
+        self.host0_root: Path | None = None
+        self.current_case = ""
+        self.waiting_for_device = False
+        self.transport_recoveries = 0
+        self.unknown_command_events = 0
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def restart(self) -> None:
+        self.restarts += 1
+        self.started = True
+
+    def take_waiting_for_device(self) -> bool:
+        waiting, self.waiting_for_device = self.waiting_for_device, False
+        return waiting
+
+    def take_unknown_command_events(self) -> int:
+        events, self.unknown_command_events = self.unknown_command_events, 0
+        return events
+
+    def recover_psplink_transport(
+        self,
+        timeout: float,
+        *,
+        shell_verification_timeout: float = 45.0,
+        record_event=None,
+    ):
+        self.transport_recoveries += 1
+        if self.reset_timeout:
+            return False, "simulated re-attach failure", None
+        verified, result, _attempts, detail = _verify_psplink_shell(
+            self.run,
+            shell_verification_timeout,
+            take_unknown_command_events=self.take_unknown_command_events,
+            record_event=record_event,
+        )
+        return verified, f"simulated PSPLink re-attach: {detail}", result
+
+    def run(self, command: str, timeout: float):
+        self.commands.append((command, timeout))
+        if command == "ver" and self.case_started and self.fail_post_case_ver_once and not self.post_case_ver_failed:
+            self.post_case_ver_failed = True
+            return None, "", "", "TIMEOUT"
+        if command == "ver":
+            if self.fail_all_ver:
+                return None, "", "", "TIMEOUT"
+            if self.fail_first_ver_once and not self.first_ver_failed:
+                self.first_ver_failed = True
+                return None, "", "", "TIMEOUT"
+            if self.unknown_command_ver_once:
+                self.unknown_command_ver_once = False
+                self.unknown_command_events += 1
+                return 0, "Error, unknown command 00000000\n", "", "PROCESS_EXITED"
+            return 0, "PSPLink v3.2.1\n", "", "PROCESS_EXITED"
+        if command == "usbstat":
+            return 0, "USB Connection: established\n", "", "PROCESS_EXITED"
+        if command == "pwd":
+            return 0, "host0:/\n", "", "PROCESS_EXITED"
+        if command == "pspver":
+            return 0, "Version: 6.6.1 (0x06060110)\n", "", "PROCESS_EXITED"
+        if command.startswith("ldstart host0:/"):
+            case_id = Path(command).name.removesuffix(".prx")
+            self.current_case = case_id
+            self.case_started = True
+            if case_id in self.timeout_cases:
+                return None, "Load/Start UID: 0x04280001\nNAKAGAWA_PSP_TEST partial", "", "TIMEOUT"
+            if case_id == "transport-write" and self.host0_root is not None:
+                pattern = bytes(
+                    (0x5A ^ (index * 0x25 + (index >> 3))) & 0xFF
+                    for index in range(64)
+                )
+                (self.host0_root / "nakagawa_transport_write.bin").write_bytes(pattern)
+            if case_id == "transport-write":
+                result_record = (
+                    "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-TRANSPORT-001 "
+                    "case_id=host0-write-readback status=PASS result=0x0\n"
+                )
+            else:
+                result_record = (
+                    "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=" + case_id
+                    + " status=PASS result=0x1\n"
+                )
+            return 0, (
+                "Load/Start host0:/" + case_id + ".prx UID: 0x04280001\n"
+                "NAKAGAWA_PSP_META schema=1 source=psp model=fixture firmware=test "
+                "binary_sha256=" + "0" * 64 + " source_commit=" + SOURCE_COMMIT + "\n"
+                + result_record
+            ), "", "PROCESS_EXITED"
+        if command == "modstun 0x04280001":
+            if self.fail_modstun and self.current_case != "transport-write":
+                return 1, "Module Stop/Unload failed\n", "", "PROCESS_EXITED"
+            return 0, "Module Stop/Unload 0x00000000/0x04280001 Status 0xDEADBEEF\n", "", "PROCESS_EXITED"
+        if command == "modinfo 0x04280001":
+            return 1, "ERROR: Unknown module 0x04280001\n", "", "PROCESS_EXITED"
+        if command == "reset" and self.reset_timeout:
+            return None, "", "", "TIMEOUT"
+        if command == "reset":
+            return self.reset_returncode, "Reset\n", "", "PROCESS_EXITED"
+        raise AssertionError(f"unexpected PSPLINK command: {command}")
 
 
 class RunnerModel:
@@ -505,6 +657,553 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertIn(orch.terminal_reason,
                       ("PHYSICAL_INTERVENTION_REQUIRED", "RECOVERED_WITH_L1"))
         self.assertNotEqual(orch.state, "VERIFY_RESULT")
+
+    def test_17_real_adapter_runs_multiple_cases_unloads_and_binds_console_metadata(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-sim-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "probe_a", "probe_b"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(case_id.encode())
+                cases.append(CampaignCase(case_id, binary, 1.25))
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            runner = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            )
+            report = runner.run(cases)
+
+        self.assertTrue(transport.started)
+        self.assertTrue(transport.stopped)
+        self.assertIsNone(report["terminal_reason"])
+        self.assertEqual(
+            [item["CASE_ID"] for item in report["envelopes"]],
+            ["transport-write", "probe_a", "probe_b"],
+        )
+        for envelope in report["envelopes"]:
+            self.assertEqual(envelope["CONSOLE_MODEL"], "PSP-3000-04g")
+            self.assertEqual(envelope["FW"], "6.6.1")
+            self.assertEqual(envelope["SOFTWARE_MODEL_RAW_VALUE"], "3")
+            self.assertTrue(envelope["ACCEPTANCE_ELIGIBLE"])
+            self.assertNotIn("SERIAL", " ".join(envelope).upper())
+        commands = [command for command, _timeout in transport.commands]
+        self.assertEqual(commands.count("modstun 0x04280001"), 3)
+        self.assertEqual(commands.count("modinfo 0x04280001"), 3)
+        self.assertEqual(
+            [timeout for command, timeout in transport.commands if command.startswith("ldstart")],
+            [1.25, 1.25, 1.25],
+        )
+
+    def test_18_real_adapter_bounds_timeouts_and_keeps_partial_output_nonsemantic(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-timeout-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "timeout", "good"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(case_id.encode())
+                cases.append(CampaignCase(case_id, binary, 0.75))
+            transport = SimulatedPsplinkTransport(timeout_cases={"timeout"})
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases)
+
+        _transport, timed_out, succeeded = report["envelopes"]
+        self.assertEqual(timed_out["PROCESS_STATUS"], "TIMEOUT")
+        self.assertFalse(timed_out["ACCEPTANCE_ELIGIBLE"])
+        self.assertEqual(timed_out["RAW_RESULT"], "")
+        self.assertTrue(succeeded["ACCEPTANCE_ELIGIBLE"])
+
+    def test_19_real_adapter_attempts_l0_l1_l2_then_stops_at_physical_intervention(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-escalation-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            transport_write = scratch / "transport-write.prx"
+            transport_write.write_bytes(b"synthetic transport PRX")
+            binary = scratch / "probe.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(
+                fail_modstun=True,
+                fail_post_case_ver_once=True,
+                reset_timeout=True,
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([
+                CampaignCase("transport-write", transport_write, 0.5),
+                CampaignCase("probe", binary, 0.5),
+            ])
+
+        self.assertEqual(transport.restarts, 1)
+        self.assertEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+        self.assertIn("L0:", " ".join(report["recovery_events"]))
+        self.assertIn("L1:", " ".join(report["recovery_events"]))
+        self.assertIn("L2:", " ".join(report["recovery_events"]))
+        self.assertIn("L4:", " ".join(report["recovery_events"]))
+        self.assertIn("reset", [command for command, _ in transport.commands])
+
+    def test_20_process_transport_uses_argv_templates_timeout_and_owned_server_lifecycle(self):
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = StringIO("")
+                self.terminated = False
+                self.killed = False
+
+            def poll(self):
+                return 0 if self.terminated or self.killed else None
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout):
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-process-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            created = []
+            popen_calls = []
+            command_calls = []
+
+            def popen_factory(command, **kwargs):
+                popen_calls.append((command, kwargs))
+                process = FakeProcess()
+                created.append(process)
+                return process
+
+            def command_runner(command, timeout):
+                command_calls.append((command, timeout))
+                return 0, "ok", "", "PROCESS_EXITED"
+
+            adapter = PsplinkProcessTransport(
+                pspsh_argv=["fake-pspsh", "-e", "{remote_command}"],
+                usbhostfs_argv=["fake-usbhostfs", "{host0_root}", "{host0_root_wsl}"],
+                host0_root=scratch,
+                command_runner=command_runner,
+                popen_factory=popen_factory,
+            )
+            adapter.start()
+            adapter.run("ldstart host0:/probe.prx", 0.5)
+            adapter.restart()
+            adapter.stop()
+
+        self.assertEqual(command_calls, [(["fake-pspsh", "-e", "ldstart host0:/probe.prx"], 0.5)])
+        self.assertEqual(len(popen_calls), 2)
+        self.assertEqual(popen_calls[0][0][0:2], ["fake-usbhostfs", str(scratch.resolve())])
+        self.assertTrue(popen_calls[0][0][2].startswith("/"))
+        self.assertEqual(popen_calls[0][1]["stdin"], subprocess.DEVNULL)
+        self.assertEqual(popen_calls[0][1]["stdout"], subprocess.PIPE)
+        self.assertEqual(popen_calls[0][1]["stderr"], subprocess.STDOUT)
+        self.assertTrue(created[0].terminated)
+        self.assertTrue(created[1].terminated)
+
+    def test_21_nonfinite_timeout_is_rejected_before_transport_starts(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-unbounded-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, float("inf"))])
+
+        self.assertEqual(report["terminal_reason"], "INVALID_CASE_TIMEOUT")
+        self.assertFalse(transport.started)
+
+    def test_22_timeout_partial_bytes_are_decoded_as_nonsemantic_text(self):
+        timeout = subprocess.TimeoutExpired(
+            ["fake-pspsh"], 0.5, output=b"partial\xff", stderr=b"truncated"
+        )
+        with patch("psp_oracle.run_psplink.subprocess.run", side_effect=timeout):
+            result = _run_command(["fake-pspsh"], 0.5)
+
+        self.assertEqual(result, (None, "partial\ufffd", "truncated", "TIMEOUT"))
+
+    def test_23_firmware_mismatch_stops_without_physical_intervention_claim(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-identity-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+                expected_firmware="6.6.0",
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        self.assertEqual(report["terminal_reason"], "IDENTITY_MISMATCH")
+        self.assertNotEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+        self.assertFalse(any(command == "reset" for command, _timeout in transport.commands))
+
+    def test_24_qualified_cleanup_failure_uses_l1_before_l2_reset(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-ladder-order-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "probe"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 0.5))
+            transport = SimulatedPsplinkTransport(fail_modstun=True, reset_timeout=True)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases)
+
+        events = report["recovery_events"]
+        self.assertEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+        self.assertLess(next(i for i, event in enumerate(events) if event.startswith("L1:")),
+                        next(i for i, event in enumerate(events) if event.startswith("L2:")))
+        self.assertEqual(transport.restarts, 1)
+
+    def test_25_waiting_for_device_runs_one_transport_reattach_and_returns_verified_ver(self):
+        transport = SimulatedPsplinkTransport()
+        runner = PsplinkCampaignRunner(
+            transport,
+            console_model="PSP-3000-04g",
+            source_commit=SOURCE_COMMIT,
+        )
+        transport.waiting_for_device = True
+
+        result = runner._request("ver")
+
+        self.assertEqual(result, (0, "PSPLink v3.2.1\n", "", "PROCESS_EXITED"))
+        self.assertEqual(transport.transport_recoveries, 1)
+        self.assertIn("USBHostFS reported `waiting for device`", " ".join(runner.recovery_events))
+
+    def test_shell_qualification_retries_one_lost_ver_and_campaign_passes(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-ver-retry-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(fail_first_ver_once=True)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        ver_events = [
+            event for event in report["recovery_events"]
+            if event.startswith("shell verification attempt ")
+        ]
+        self.assertIsNone(report["terminal_reason"])
+        self.assertEqual(len(ver_events), 2)
+        self.assertIn("reply timed out or was lost", ver_events[0])
+        self.assertIn("PASS", ver_events[1])
+        self.assertTrue(report["envelopes"][0]["ACCEPTANCE_ELIGIBLE"])
+
+    def test_shell_qualification_exhaustion_requires_physical_intervention(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-ver-exhausted-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(fail_all_ver=True)
+            transport.host0_root = scratch
+            runner = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                shell_verification_timeout=1.0,
+            )
+            report = runner.run([CampaignCase("transport-write", binary, 1.0)])
+
+        attempts = [
+            event for event in report["recovery_events"]
+            if event.startswith("shell verification attempt ")
+        ]
+        self.assertEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+        self.assertEqual(len(attempts), 3)
+        self.assertIn("usbipd list", report["recovery_events"][-1])
+        self.assertIn("pspsh -e ver", report["recovery_events"][-1])
+        self.assertEqual(report["envelopes"], [])
+
+    def test_campaign_unknown_model_is_captured_but_not_acceptance_eligible(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-unknown-model-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="unknown",
+                source_commit=SOURCE_COMMIT,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        envelope = report["envelopes"][0]
+        self.assertIn("status=PASS", envelope["RAW_RESULT"])
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertTrue(any("model is the fixture placeholder 'unknown'" in blocker
+                            for blocker in envelope["ACCEPTANCE_BLOCKERS"]))
+
+    def test_shell_verification_respects_total_deadline_and_per_attempt_cap(self):
+        now = [0.0]
+        timeouts = []
+        events = []
+
+        def run(command, timeout):
+            self.assertEqual(command, "ver")
+            timeouts.append(timeout)
+            now[0] += timeout
+            return None, "", "", "TIMEOUT"
+
+        verified, result, attempts, detail = _verify_psplink_shell(
+            run,
+            20.0,
+            record_event=events.append,
+            clock=lambda: now[0],
+        )
+
+        self.assertFalse(verified)
+        self.assertEqual(result[3], "TIMEOUT")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(timeouts, [15.0, 5.0])
+        self.assertLessEqual(sum(timeouts), 20.0)
+        self.assertEqual(len(events), 2)
+        self.assertIn("exhausted 2 of 3", detail)
+
+    def test_shell_verification_retries_unknown_command_transport_output(self):
+        transport = SimulatedPsplinkTransport(unknown_command_ver_once=True)
+        events = []
+
+        verified, result, attempts, _detail = _verify_psplink_shell(
+            transport.run,
+            45.0,
+            take_unknown_command_events=transport.take_unknown_command_events,
+            record_event=events.append,
+        )
+
+        self.assertTrue(verified)
+        self.assertEqual(attempts, 2)
+        self.assertIn("Error, unknown command", events[0])
+        self.assertIn("PSPLink", result[1])
+
+    def test_reset_nonzero_exit_recovers_only_after_transport_and_shell_qualification(self):
+        transport = SimulatedPsplinkTransport(reset_returncode=1)
+        runner = PsplinkCampaignRunner(
+            transport,
+            console_model="PSP-3000-04g",
+            source_commit=SOURCE_COMMIT,
+        )
+
+        self.assertTrue(runner._reset_once("simulated reset"))
+
+        self.assertIsNone(runner.terminal_reason)
+        self.assertIn("reset process exited 1", " ".join(runner.recovery_events))
+        self.assertEqual(transport.transport_recoveries, 1)
+
+    def test_waiting_for_device_discards_an_inflight_probe_result(self):
+        transport = SimulatedPsplinkTransport()
+        runner = PsplinkCampaignRunner(
+            transport,
+            console_model="PSP-3000-04g",
+            source_commit=SOURCE_COMMIT,
+        )
+        transport.waiting_for_device = True
+
+        result = runner._request("ldstart host0:/probe.prx")
+
+        self.assertEqual(result[3], "TRANSPORT_RECOVERED")
+        self.assertEqual(runner.terminal_reason, "TRANSPORT_RESULT_DISCARDED")
+        self.assertEqual(transport.transport_recoveries, 1)
+
+    def test_26_usbipd_parser_uses_dynamic_psplink_busid_and_ignores_other_devices(self):
+        output = (
+            "Connected:\n"
+            "BUSID  VID:PID    DEVICE                         STATE\n"
+            "1-3    1234:5678  Unrelated adapter              Shared\n"
+            "9-7.2  054c:01c9  PSP Type B                    Shared\n"
+        )
+
+        self.assertEqual(_parse_usbipd_psplink_devices(output), [("9-7.2", "Shared")])
+
+    def test_27_shared_psplink_device_is_attached_and_verified(self):
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = StringIO("Waiting for device...\n")
+                self.terminated = False
+
+            def poll(self):
+                return 0 if self.terminated else None
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout):
+                return 0
+
+            def kill(self):
+                self.terminated = True
+
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="usbipd-reattach-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            process = FakeProcess()
+            calls = []
+            shell_events = []
+            ver_attempts = 0
+            adapter = None
+
+            def command_runner(command, timeout):
+                calls.append(command)
+                if command == ["usbipd", "list"]:
+                    return (
+                        0,
+                        "Connected:\nBUSID VID:PID DEVICE STATE\n"
+                        "9-7.2 054c:01c9 PSP Type B Shared\n",
+                        "",
+                        "PROCESS_EXITED",
+                    )
+                if command == ["usbipd", "attach", "--wsl", "--busid", "9-7.2"]:
+                    adapter._observe_server_output("Connected to device")
+                    return 0, "attached", "", "PROCESS_EXITED"
+                if command == ["fake-pspsh", "-e", "ver"]:
+                    nonlocal ver_attempts
+                    ver_attempts += 1
+                    if ver_attempts == 1:
+                        adapter._observe_server_output("Error, unknown command 00000000")
+                        return None, "", "", "TIMEOUT"
+                    return 0, "PSPLink v3.2.1\n", "", "PROCESS_EXITED"
+                raise AssertionError(f"unexpected command: {command}")
+
+            adapter = PsplinkProcessTransport(
+                pspsh_argv=["fake-pspsh", "-e", "{remote_command}"],
+                usbhostfs_argv=["fake-usbhostfs", "{host0_root}"],
+                host0_root=scratch,
+                command_runner=command_runner,
+                popen_factory=lambda _command, **_kwargs: process,
+            )
+            adapter.start()
+            self.assertTrue(adapter._waiting_for_device.wait(0.5))
+
+            recovered, detail, verification = adapter.recover_psplink_transport(
+                0.5,
+                shell_verification_timeout=1.0,
+                record_event=shell_events.append,
+            )
+            adapter.stop()
+
+        self.assertTrue(recovered)
+        self.assertIn("9-7.2", detail)
+        self.assertEqual(verification, (0, "PSPLink v3.2.1\n", "", "PROCESS_EXITED"))
+        self.assertEqual(ver_attempts, 2)
+        self.assertIn("Error, unknown command", shell_events[0])
+        self.assertIn("PASS", shell_events[1])
+        self.assertEqual(calls, [
+            ["usbipd", "list"],
+            ["usbipd", "attach", "--wsl", "--busid", "9-7.2"],
+            ["fake-pspsh", "-e", "ver"],
+            ["fake-pspsh", "-e", "ver"],
+        ])
+
+    def test_28_transport_reattach_failure_stops_after_one_attach_attempt(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="usbipd-reattach-fail-", dir=fixture_dir) as scratch_name:
+            calls = []
+
+            def command_runner(command, timeout):
+                calls.append(command)
+                if command == ["usbipd", "list"]:
+                    return 0, "2-4 054c:01c9 PSP Type B Shared\n", "", "PROCESS_EXITED"
+                return 1, "attach failed", "", "PROCESS_EXITED"
+
+            adapter = PsplinkProcessTransport(
+                pspsh_argv=["fake-pspsh"],
+                usbhostfs_argv=["fake-usbhostfs"],
+                host0_root=Path(scratch_name),
+                command_runner=command_runner,
+            )
+            recovered, detail, verification = adapter.recover_psplink_transport(0.1)
+
+        self.assertFalse(recovered)
+        self.assertIn("usbipd attach failed", detail)
+        self.assertIn("usbipd attach --wsl --busid 2-4", detail)
+        self.assertIsNone(verification)
+        self.assertEqual(calls, [
+            ["usbipd", "list"],
+            ["usbipd", "attach", "--wsl", "--busid", "2-4"],
+        ])
+        self.assertFalse(any("bind" in " ".join(command) for command in calls))
+
+    def test_29_absent_psplink_device_reports_manual_recovery_without_attach(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="usbipd-absent-", dir=fixture_dir) as scratch_name:
+            calls = []
+
+            def command_runner(command, timeout):
+                calls.append(command)
+                return 0, "1-1 1234:5678 Other USB device Shared\n", "", "PROCESS_EXITED"
+
+            adapter = PsplinkProcessTransport(
+                pspsh_argv=["fake-pspsh"],
+                usbhostfs_argv=["fake-usbhostfs"],
+                host0_root=Path(scratch_name),
+                command_runner=command_runner,
+            )
+            recovered, detail, verification = adapter.recover_psplink_transport(0.1)
+
+        self.assertFalse(recovered)
+        self.assertIn("054c:01c9 is absent from usbipd list", detail)
+        self.assertIn("usbipd list", detail)
+        self.assertIsNone(verification)
+        self.assertEqual(calls, [["usbipd", "list"]])
+
+    def test_30_unbound_psplink_device_reports_manual_bind_without_running_it(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="usbipd-unbound-", dir=fixture_dir) as scratch_name:
+            calls = []
+
+            def command_runner(command, timeout):
+                calls.append(command)
+                return 0, "4-2 054c:01c9 PSP Type B Not shared\n", "", "PROCESS_EXITED"
+
+            adapter = PsplinkProcessTransport(
+                pspsh_argv=["fake-pspsh"],
+                usbhostfs_argv=["fake-usbhostfs"],
+                host0_root=Path(scratch_name),
+                command_runner=command_runner,
+            )
+            recovered, detail, verification = adapter.recover_psplink_transport(0.1)
+
+        self.assertFalse(recovered)
+        self.assertIn("not bound", detail)
+        self.assertIn("usbipd bind --busid 4-2", detail)
+        self.assertIn("usbipd attach --wsl --busid 4-2", detail)
+        self.assertIsNone(verification)
+        self.assertEqual(calls, [["usbipd", "list"]])
 
 
 if __name__ == "__main__":
