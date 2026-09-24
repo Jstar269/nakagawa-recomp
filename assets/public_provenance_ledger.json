@@ -1329,7 +1329,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8b5f17774bcb3056e7434c27cb14dcae29571641d1fce58fd25ed332490089b7"
+      "sha256": "1b0baea88bdc772d1661b6806de4d82534557687d6917d5d20b58d89ad27c894"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -9113,7 +9113,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "171a9ff91e51ba25ad866f1d9b787d8896e2ad33cae88281ecefecd3123d93a2"
+      "sha256": "01ad95c392cf4f1697f73e6eb7bb3a9044c1395bf28755a911ac66bb4a84dc7f"
     },
     {
       "path": "tools/test_psp_parsers.py",
