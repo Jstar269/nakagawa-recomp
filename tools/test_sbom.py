@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 from pathlib import Path
 import re
@@ -11,6 +13,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import generate_sbom
+import nk_doctor_checks
+import record_toolchain
 import verify_sbom
 
 
@@ -326,6 +330,204 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             any("verified Python artifact hash metadata mismatch" in error for error in errors),
             str(errors),
         )
+
+
+class TestToolchainPolicyVerification(unittest.TestCase):
+    MANIFEST_PATH = generate_sbom.ROOT / "assets" / "release_manifest.json"
+
+    def _manifest_with_policy(self, policy: object) -> Path:
+        data = json.loads(self.MANIFEST_PATH.read_text(encoding="utf-8"))
+        if policy is None:
+            data.pop("toolchain_policy", None)
+        else:
+            data["toolchain_policy"] = policy
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump(data, tmp)
+            return Path(tmp.name)
+
+    def test_bogus_declared_component_fails(self):
+        # 1. Unknown component fails
+        bad_unknown = {
+            "compiler": ">=4.9.0 (rolling-msys2)",
+            "make": ">=3.81 (rolling-msys2)",
+            "python": ">=3.14,<3.15",
+            "sdl3": ">=3.0.0 (rolling-msys2)",
+            "vulkan_sdk": ">=1.1.0",
+            "clang": ">=15.0.0",
+        }
+        path = self._manifest_with_policy(bad_unknown)
+        try:
+            errors = verify_sbom.verify_release_locks(path)
+            self.assertTrue(any("unknown component in toolchain_policy: clang" in e for e in errors), str(errors))
+        finally:
+            path.unlink(missing_ok=True)
+
+        # 2. Missing required component fails
+        bad_missing = {
+            "make": ">=3.81 (rolling-msys2)",
+            "python": ">=3.14,<3.15",
+            "sdl3": ">=3.0.0 (rolling-msys2)",
+            "vulkan_sdk": ">=1.1.0",
+        }
+        path = self._manifest_with_policy(bad_missing)
+        try:
+            errors = verify_sbom.verify_release_locks(path)
+            self.assertTrue(any("missing required component in toolchain_policy: compiler" in e for e in errors), str(errors))
+        finally:
+            path.unlink(missing_ok=True)
+
+        # 3. Invalid range syntax fails
+        bad_syntax = {
+            "compiler": "invalid-syntax",
+            "make": ">=3.81 (rolling-msys2)",
+            "python": ">=3.14,<3.15",
+            "sdl3": ">=3.0.0 (rolling-msys2)",
+            "vulkan_sdk": ">=1.1.0",
+        }
+        path = self._manifest_with_policy(bad_syntax)
+        try:
+            errors = verify_sbom.verify_release_locks(path)
+            self.assertTrue(any("invalid range syntax" in e for e in errors), str(errors))
+        finally:
+            path.unlink(missing_ok=True)
+
+        # 4. Missing toolchain_policy object fails
+        path = self._manifest_with_policy(None)
+        try:
+            errors = verify_sbom.verify_release_locks(path)
+            self.assertTrue(any("missing toolchain_policy object" in e for e in errors), str(errors))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_observed_version_outside_policy_fails_mutations(self):
+        valid_observed = {
+            "compiler": "16.1.0",
+            "make": "4.4.1",
+            "python": "3.14.7",
+            "sdl3": "3.4.12",
+            "vulkan_sdk": "1.4.357.0",
+        }
+
+        # Mutation 1: Compiler outside policy (< 13.0.0)
+        mutated_compiler = dict(valid_observed, compiler="4.8.5")
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_compiler)
+        self.assertTrue(
+            any("observed toolchain component 'compiler' version '4.8.5' does not satisfy policy" in e for e in errors),
+            str(errors),
+        )
+
+        # Mutation 2: SDL3 outside policy (< 3.0.0)
+        mutated_sdl = dict(valid_observed, sdl3="2.28.5")
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_sdl)
+        self.assertTrue(
+            any("observed toolchain component 'sdl3' version '2.28.5' does not satisfy policy" in e for e in errors),
+            str(errors),
+        )
+
+        # Mutation 3: Vulkan SDK outside policy (< 1.3.0)
+        mutated_vk = dict(valid_observed, vulkan_sdk="1.0.65.0")
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_vk)
+        self.assertTrue(
+            any("observed toolchain component 'vulkan_sdk' version '1.0.65.0' does not satisfy policy" in e for e in errors),
+            str(errors),
+        )
+
+        # Mutation 4: Python outside policy (< 3.14 or >= 3.15)
+        mutated_py_old = dict(valid_observed, python="3.13.9")
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_py_old)
+        self.assertTrue(
+            any("observed toolchain component 'python' version '3.13.9' does not satisfy policy" in e for e in errors),
+            str(errors),
+        )
+
+        mutated_py_new = dict(valid_observed, python="3.15.0")
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_py_new)
+        self.assertTrue(
+            any("observed toolchain component 'python' version '3.15.0' does not satisfy policy" in e for e in errors),
+            str(errors),
+        )
+
+    def test_in_policy_observation_passes(self):
+        valid_observed = {
+            "compiler": "16.1.0",
+            "make": "4.4.1",
+            "python": "3.14.7",
+            "sdl3": "3.4.12",
+            "vulkan_sdk": "1.4.357.0",
+        }
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=valid_observed)
+        self.assertEqual(errors, [])
+
+        # Also passes when supplied as structured objects with 'version' key
+        structured_observed = {
+            k: {"version": v, "path": f"/mock/path/{k}"}
+            for k, v in valid_observed.items()
+        }
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=structured_observed)
+        self.assertEqual(errors, [])
+
+    def test_observed_toolchain_missing_component_fails(self):
+        incomplete = {
+            "make": "4.4.1",
+            "python": "3.14.7",
+            "sdl3": "3.4.12",
+            "vulkan_sdk": "1.4.357.0",
+        }
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=incomplete)
+        self.assertTrue(
+            any("observed toolchain missing required component: compiler" in e for e in errors),
+            str(errors),
+        )
+
+    def test_success_message_makes_no_reproducibility_claim(self):
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        with redirect_stdout(out_buf), redirect_stderr(err_buf):
+            code = verify_sbom.main(["--manifest", str(self.MANIFEST_PATH)])
+        self.assertEqual(code, 0)
+        output = out_buf.getvalue()
+        self.assertIn("SBOM Verification: OK (Release dependency lockfiles, artifact hashes, toolchain policy verified)", output)
+        self.assertNotIn("reproducible", output.lower())
+        self.assertNotIn("all release dependency locks", output.lower())
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump({
+                "compiler": "16.1.0",
+                "make": "4.4.1",
+                "python": "3.14.7",
+                "sdl3": "3.4.12",
+                "vulkan_sdk": "1.4.357.0",
+            }, tmp)
+            obs_path = Path(tmp.name)
+        try:
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                code = verify_sbom.main(["--manifest", str(self.MANIFEST_PATH), "--observed-toolchain", str(obs_path)])
+            self.assertEqual(code, 0)
+            output = out_buf.getvalue()
+            self.assertIn(
+                "SBOM Verification: OK (Release dependency lockfiles, artifact hashes, toolchain policy, observed toolchain verified)",
+                output,
+            )
+            self.assertNotIn("reproducible", output.lower())
+        finally:
+            obs_path.unlink(missing_ok=True)
+
+    def test_live_toolchain_recorder_and_verification(self):
+        # Inspects the real build environment; hosts without the native toolchain (for example
+        # the Linux Python-only CI shards, which have no SDL3) skip rather than fail.
+        try:
+            recorded = record_toolchain.record_observed_toolchain()
+        except (nk_doctor_checks.Sdl3ProviderError, FileNotFoundError, OSError) as exc:
+            self.skipTest(f"native toolchain not available on this host: {exc}")
+        expected = {"compiler", "make", "python", "sdl3", "vulkan_sdk"}
+        self.assertEqual(set(recorded.keys()), expected)
+        for comp in expected:
+            self.assertIn("version", recorded[comp])
+            self.assertTrue(recorded[comp]["version"])
+        errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=recorded)
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":
