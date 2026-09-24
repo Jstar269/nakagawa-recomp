@@ -302,7 +302,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c9ff0ecbf652dcd7a3df0c49058b624b8c4aa0e28c2e8d5fa909b50c978ae2de"
+      "sha256": "e456fd1723965431c4aa5cfe7bf6a3fa8da9bf701505b5efce50724e8a4a4d8c"
     },
     {
       "path": "REVIEW.md",
@@ -1062,7 +1062,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "13425cba6d0bdf999d53410aa8ed82edfa0a1b1e2895366afecd45ab569a9b27"
+      "sha256": "116cc6591523977f29212882220750742e3050c51fad8ed4992efd5f24ad68a2"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -8780,7 +8780,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eb8b0439b64cfce9ca8536638d064418ea68f315592c9663919932322db0f605"
+      "sha256": "1e64f47a5bfcd86a674b31d7863fcb86082cf3c3585325d957e2065f5103b015"
     },
     {
       "path": "tools/test_fp_scalar_mutations.py",
