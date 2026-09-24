@@ -33,7 +33,9 @@ import nk_cli  # noqa: E402
 import prxload  # noqa: E402
 import title_codegen_plan  # noqa: E402
 from test_iso_parity import (  # noqa: E402
+    build_plain_mips_elf,
     build_psp_container,
+    create_test_iso_with_modules,
     create_test_iso_with_executables,
 )
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
@@ -816,6 +818,106 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertTrue(all(stage["status"] == "PASS" for stage in report["stages"].values()))
         self.assertGreater(report["counts"]["functions"], 0)
         self.assertGreater(report["counts"]["instructions"], 0)
+        nk_cli.validate_bringup_report(report)
+
+    def _run_module_fixture(self, iso_path: Path, work_root: Path):
+        work_dir = work_root / "work"
+        report_path = work_root / "bringup.json"
+        args = argparse.Namespace(
+            iso=str(iso_path),
+            work_dir=str(work_dir),
+            report=str(report_path),
+            launch_timeout=1,
+        )
+
+        class FakeProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", None
+
+        def fake_package_build(build_args, stage_observer=None):
+            stage_observer("compile", "PASS", 1)
+            package_dir = build_args.user_data_root / "packages" / "ULUS99998"
+            package_dir.mkdir(parents=True, exist_ok=True)
+            (package_dir / "runtime.exe").write_bytes(b"synthetic runtime")
+            (package_dir / "package.json").write_text(
+                json.dumps({"executable": {"path": "runtime.exe"}}),
+                encoding="utf-8",
+            )
+            stage_observer("build_package", "PASS", 1)
+            return 0
+
+        completed = subprocess.CompletedProcess(["synthetic-codegen"], 0, "", "")
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                nk_cli.subprocess, "run", return_value=completed
+            ))
+            stack.enter_context(mock.patch.object(
+                nk_cli.subprocess, "Popen", return_value=FakeProcess()
+            ))
+            stack.enter_context(mock.patch.object(
+                nk_cli, "cmd_build_package", side_effect=fake_package_build
+            ))
+            with mock.patch("builtins.print"):
+                return nk_cli.cmd_bringup(args), json.loads(
+                    report_path.read_text(encoding="utf-8")
+                )
+
+    def test_multi_module_iso_stops_at_named_load_binding_boundary(self):
+        work_root = self.root / "multi-module-case"
+        work_root.mkdir(parents=True)
+        module_bytes = build_plain_mips_elf(e_type=0xFFA0)
+        iso_path = work_root / "multi-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_plain_mips_elf(e_type=2),
+            sysdir_modules={"alpha.prx": module_bytes},
+            usrdir_modules={"beta.elf": module_bytes},
+            disc_id="ULUS99998",
+            title="Synthetic Multi Module",
+        )
+        status, report = self._run_module_fixture(iso_path, work_root)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "prepare_import")
+        self.assertEqual(report["failure_class"], "GUEST_MODULE_LOAD_BINDING_REQUIRED")
+        self.assertEqual(report["issue_numbers"], [285, 308])
+        self.assertEqual(report["counts"]["modules"], 2)
+        self.assertEqual(report["counts"]["encrypted_modules"], 0)
+        serialized = json.dumps(report)
+        self.assertNotIn("alpha.prx", serialized)
+        self.assertNotIn("beta.elf", serialized)
+        profile_dir = (
+            work_root / "work" / "user-data" / "experimental" / "ULUS99998"
+        )
+        module_dirs = list(profile_dir.glob("module-stage-*"))
+        self.assertEqual(len(module_dirs), 1)
+        self.assertEqual(
+            sorted(path.name for path in module_dirs[0].iterdir()),
+            ["alpha.prx", "beta.elf"],
+        )
+        nk_cli.validate_bringup_report(report)
+
+    def test_encrypted_iso_module_is_counted_at_crypto_boundary(self):
+        work_root = self.root / "encrypted-module-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "encrypted-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_plain_mips_elf(e_type=2),
+            sysdir_modules={"encrypted.prx": build_psp_container()},
+            usrdir_modules={"plain.prx": build_plain_mips_elf(e_type=0xFFA0)},
+            disc_id="ULUS99998",
+            title="Synthetic Encrypted Module",
+        )
+        status, report = self._run_module_fixture(iso_path, work_root)
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "prepare_import")
+        self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
+        self.assertEqual(report["issue_numbers"], [285, 295, 308])
+        self.assertEqual(report["counts"]["modules"], 2)
+        self.assertEqual(report["counts"]["encrypted_modules"], 1)
         nk_cli.validate_bringup_report(report)
 
     def test_each_stage_failure_is_named_in_the_report(self):

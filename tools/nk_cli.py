@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -30,9 +31,12 @@ from nk_core import (
 from nk_core.iso_inspect import (
     MAX_EXECUTABLE_BYTES,
     IsoInspectionError,
+    IsoDirectoryEntry,
+    _elf32_mips_usable,
     _lookup_iso_file,
     _read_iso_extent,
     inspect_compatibility_preflight,
+    list_iso_directory,
     write_experimental_profile,
 )
 import title_manifest
@@ -40,6 +44,9 @@ import title_manifest
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_CACHE_MARKER = ".nk-aot-package-cache-v1"
+MAX_GUEST_MODULES = 32
+MAX_GUEST_MODULE_BYTES = 256 * 1024 * 1024
+MAX_GUEST_MODULE_SET_BYTES = 512 * 1024 * 1024
 
 
 class PackageBuildError(ValueError):
@@ -122,6 +129,122 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
         raise PackageBuildError(f"Selected executable is not a plaintext ELF; decryption support is in the works (#295): {exc}") from exc
     except OSError as exc:
         raise PackageBuildError(f"Could not extract the selected executable to the private cache: {exc}") from exc
+
+
+def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
+    """Find bounded ELF/PRX candidates in the title's own SYSDIR and USRDIR."""
+    file_size = iso_path.stat().st_size
+    candidates: list[dict] = []
+    selected_name = Path(selected).name.casefold()
+    module_directories = (
+        ("PSP_GAME", "SYSDIR"),
+        ("PSP_GAME", "SYSDIR", "PRX"),
+        ("PSP_GAME", "USRDIR"),
+        ("PSP_GAME", "USRDIR", "PRX"),
+    )
+    for directory in module_directories:
+        entries = list_iso_directory(iso_path, directory) or []
+        for entry in entries:
+            if entry.is_directory or Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
+                continue
+            if entry.name.casefold() in {selected_name, "boot.bin"}:
+                continue
+            if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
+                    entry.name.endswith(".") or \
+                    entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+                kind = "unsupported"
+            elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
+                kind = "unsupported"
+            else:
+                header_size = min(entry.size, 0x64)
+                with iso_path.open("rb") as stream:
+                    header = _read_iso_extent(
+                        stream, file_size, entry.lba, entry.size, 0, header_size
+                    )
+                    if header.startswith(b"\x7fELF"):
+                        kind = (
+                            "plain-elf"
+                            if _elf32_mips_usable(
+                                stream, file_size, entry.lba, entry.size
+                            ) else "unsupported"
+                        )
+                    elif header.startswith(b"~SCE"):
+                        kind = "encrypted-prx"
+                    elif header.startswith(b"~PSP"):
+                        kind = "encrypted-prx" if _encrypted_prx_header_supported(
+                            header
+                        ) else "unsupported"
+                    else:
+                        kind = "unsupported"
+            candidates.append({
+                "name": entry.name,
+                "directory": directory,
+                "entry": entry,
+                "kind": kind,
+            })
+            if len(candidates) > MAX_GUEST_MODULES:
+                raise PackageBuildError("The ISO contains more than 32 guest-module candidates (#296).")
+
+    names: set[str] = set()
+    for candidate in candidates:
+        folded = candidate["name"].casefold()
+        if folded in names:
+            raise PackageBuildError("Guest-module filenames collide across ISO directories (#308).")
+        names.add(folded)
+    staged_size = sum(
+        candidate["entry"].size for candidate in candidates
+        if candidate["kind"] == "plain-elf"
+    )
+    if staged_size > MAX_GUEST_MODULE_SET_BYTES:
+        raise PackageBuildError("Guest-module inputs exceed the supported aggregate size (#296).")
+    return candidates
+
+
+def _encrypted_prx_header_supported(header: bytes) -> bool:
+    if len(header) < 0x64 or not 1 <= header[0x27] <= 4:
+        return False
+    sizes = struct.unpack_from("<4I", header, 0x54)[: header[0x27]]
+    return all(0 < value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
+        sum(sizes) <= MAX_EXECUTABLE_BYTES
+
+
+def _stage_iso_modules(
+    iso_path: Path, user_root: Path, disc_id: str, candidates: list[dict]
+) -> Path:
+    profile_dir = _require_child(
+        user_root, user_root / "experimental" / disc_id, "Experimental profile directory"
+    )
+    profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    module_dir = Path(tempfile.mkdtemp(prefix="module-stage-", dir=profile_dir))
+    file_size = iso_path.stat().st_size
+    with iso_path.open("rb") as source:
+        for candidate in candidates:
+            if candidate["kind"] != "plain-elf":
+                continue
+            entry: IsoDirectoryEntry = candidate["entry"]
+            destination = _require_child(
+                user_root, module_dir / candidate["name"], "Guest module output"
+            )
+            temporary = destination.with_name(destination.name + ".tmp")
+            try:
+                with temporary.open("wb") as output:
+                    offset = 0
+                    while offset < entry.size:
+                        count = min(64 * 1024, entry.size - offset)
+                        block = _read_iso_extent(
+                            source, file_size, entry.lba, entry.size, offset, count
+                        )
+                        output.write(block)
+                        offset += count
+                    output.flush()
+                    os.fsync(output.fileno())
+                if os.name != "nt":
+                    temporary.chmod(0o600)
+                os.replace(temporary, destination)
+            except (OSError, IsoInspectionError):
+                temporary.unlink(missing_ok=True)
+                raise
+    return module_dir
 
 
 def _find_public_manifest(title_id: str) -> tuple[Path, dict]:
@@ -211,7 +334,21 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             _write_private_file(destination, source_path.read_bytes())
             continue
         extracted = False
-        for member in (("PSP_GAME", "SYSDIR", name), ("PSP_GAME", "SYSDIR", "PRX", name)):
+        members = []
+        guest_path = module.get("guest_path")
+        if isinstance(guest_path, str) and ":" in guest_path:
+            device, relative = guest_path.split(":", 1)
+            guest_components = tuple(component for component in relative.split("/") if component)
+            if device.casefold() in {"disc0", "umd0"} and \
+                    guest_components[:1] and guest_components[0].casefold() == "psp_game":
+                members.append(guest_components)
+        members.extend((
+            ("PSP_GAME", "SYSDIR", name),
+            ("PSP_GAME", "SYSDIR", "PRX", name),
+            ("PSP_GAME", "USRDIR", name),
+            ("PSP_GAME", "USRDIR", "PRX", name),
+        ))
+        for member in dict.fromkeys(members):
             try:
                 file_size = iso_path.stat().st_size
                 with iso_path.open("rb") as stream:
@@ -731,6 +868,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         return 1
 
     started = time.perf_counter()
+    module_dir: Path | None = None
     try:
         metadata = inspect_iso(iso_path)
         preflight = inspect_compatibility_preflight(
@@ -784,6 +922,69 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         selected_elf = work_dir / "selected.elf"
         _extract_iso_executable(iso_path, str(selected).upper(), selected_elf)
+        if is_experimental:
+            try:
+                module_candidates = _discover_iso_module_candidates(
+                    iso_path, str(selected).upper()
+                )
+            except (OSError, IsoInspectionError, PackageBuildError):
+                _fail_bringup(
+                    report, "prepare_import", "GUEST_MODULE_DISCOVERY_FAILED",
+                    [296], int((time.perf_counter() - started) * 1000),
+                )
+                _write_bringup_report(report, report_path)
+                print(_bringup_human_summary(report))
+                return 1
+            report["counts"]["modules"] = len(module_candidates)
+            report["counts"]["encrypted_modules"] = sum(
+                candidate["kind"] == "encrypted-prx" for candidate in module_candidates
+            )
+            _update_issues(report, [285, 308])
+            if report["counts"]["encrypted_modules"]:
+                _fail_bringup(
+                    report, "prepare_import", "GUEST_MODULE_DECRYPTION_REQUIRED",
+                    [295], int((time.perf_counter() - started) * 1000),
+                )
+                _write_bringup_report(report, report_path)
+                print(_bringup_human_summary(report))
+                return 1
+            if any(candidate["kind"] == "unsupported" for candidate in module_candidates):
+                _fail_bringup(
+                    report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
+                    [295, 308], int((time.perf_counter() - started) * 1000),
+                )
+                _write_bringup_report(report, report_path)
+                print(_bringup_human_summary(report))
+                return 1
+            if module_candidates:
+                plain_modules = [
+                    candidate for candidate in module_candidates
+                    if candidate["kind"] == "plain-elf"
+                ]
+                try:
+                    _stage_iso_modules(iso_path, user_root, metadata.disc_id, plain_modules)
+                except (OSError, IsoInspectionError, PackageBuildError):
+                    _fail_bringup(
+                        report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
+                        [296], int((time.perf_counter() - started) * 1000),
+                    )
+                    _write_bringup_report(report, report_path)
+                    print(_bringup_human_summary(report))
+                    return 1
+                _fail_bringup(
+                    report, "prepare_import", "GUEST_MODULE_LOAD_BINDING_REQUIRED",
+                    [308], int((time.perf_counter() - started) * 1000),
+                )
+                _write_bringup_report(report, report_path)
+                print(_bringup_human_summary(report))
+                return 1
+        else:
+            report["counts"]["modules"] = len(manifest.get("modules", []))
+            report["counts"]["encrypted_modules"] = 0
+            module_dir = _copy_optional_modules(
+                iso_path, manifest,
+                user_root / "cache" / "bringup" / metadata.disc_id.upper(), None,
+            )
     except Exception as exc:
         failure = "EXPERIMENTAL_IMPORT_FAILED"
         issues = [308]
@@ -798,7 +999,6 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         print(_bringup_human_summary(report))
         return 1
     _set_bringup_stage(report, "prepare_import", "PASS", int((time.perf_counter() - started) * 1000))
-    report["counts"]["modules"] = len(manifest.get("modules", []))
     if not metadata.matched_profile:
         _update_issues(report, [285, 308])
 
@@ -808,7 +1008,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             sources, analysis_summary, unsupported_imports, _diagnostics = \
                 title_codegen_plan._make_input_images(
-                    manifest, selected_elf, None, None, set()
+                    manifest, selected_elf, module_dir, None, set()
                 )
         report["counts"]["functions"] = int(analysis_summary["analyzed_functions"])
         report["counts"]["instructions"] = _count_instructions(sources)
@@ -835,6 +1035,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             game_elf=selected_elf,
             build_dir=codegen_dir,
             codegen_profile=manifest.get("codegen_profile"),
+            module_dir=module_dir,
             python_command=sys.executable,
         )
         env = _runtime_build_environment()
@@ -871,7 +1072,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
         disc_id=metadata.disc_id,
         user_data_root=user_root,
-        module_dir=None,
+        module_dir=module_dir,
         psp_header=None,
     )
     stdout_capture = io.StringIO()

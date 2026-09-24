@@ -188,6 +188,63 @@ def create_test_iso_with_executables(
     path.write_bytes(data)
 
 
+def create_test_iso_with_modules(
+    path: Path,
+    eboot: bytes,
+    *,
+    sysdir_modules: dict[str, bytes],
+    usrdir_modules: dict[str, bytes],
+    disc_id: str = "TEST00001",
+    title: str = "Test Game",
+) -> None:
+    """Build a source-owned ISO with module candidates in both PSP game dirs."""
+    create_test_iso(path, disc_id=disc_id, title=title)
+    sector_size = 2048
+    data = bytearray(path.read_bytes())
+    root_lba, game_lba, sysdir_lba, usrdir_lba = 33, 34, 35, 36
+    game_entries = (
+        _dir_record(bytes([0]), game_lba, sector_size, True)
+        + _dir_record(bytes([1]), root_lba, sector_size, True)
+        + _dir_record(b"PARAM.SFO;1", 32, len(build_param_sfo(disc_id, title)), False)
+        + _dir_record(b"SYSDIR", sysdir_lba, sector_size, True)
+        + _dir_record(b"USRDIR", usrdir_lba, sector_size, True)
+    )
+    sysdir_entries = (
+        _dir_record(bytes([0]), sysdir_lba, sector_size, True)
+        + _dir_record(bytes([1]), game_lba, sector_size, True)
+    )
+    usrdir_entries = (
+        _dir_record(bytes([0]), usrdir_lba, sector_size, True)
+        + _dir_record(bytes([1]), game_lba, sector_size, True)
+    )
+    next_lba = 37
+    file_records = []
+    files = [
+        {"entries": sysdir_entries, "members": sysdir_modules},
+        {"entries": usrdir_entries, "members": usrdir_modules},
+    ]
+    for item in files:
+        directory_entries = item["entries"]
+        members = item["members"]
+        for name, contents in sorted(members.items()):
+            encoded_name = name.encode("ascii") + b";1"
+            directory_entries += _dir_record(encoded_name, next_lba, len(contents), False)
+            file_records.append((next_lba, contents))
+            next_lba += max(1, (len(contents) + sector_size - 1) // sector_size)
+        item["entries"] = directory_entries
+    sysdir_entries, usrdir_entries = files[0]["entries"], files[1]["entries"]
+    sysdir_entries += _dir_record(b"EBOOT.BIN;1", next_lba, len(eboot), False)
+    file_records.append((next_lba, eboot))
+    for entries, lba in ((game_entries, game_lba), (sysdir_entries, sysdir_lba),
+                         (usrdir_entries, usrdir_lba)):
+        start = lba * sector_size
+        data[start : start + len(entries)] = entries
+    for lba, contents in file_records:
+        start = lba * sector_size
+        data[start : start + len(contents)] = contents
+    path.write_bytes(data)
+
+
 def build_plain_mips_elf(e_type: int = 2) -> bytes:
     elf = bytearray(88)
     elf[:7] = b"\x7fELF\x01\x01\x01"

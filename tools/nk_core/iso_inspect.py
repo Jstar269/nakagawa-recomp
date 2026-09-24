@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import struct
 from typing import Dict, Optional
@@ -22,6 +23,7 @@ PVD_SECTOR = 16
 ISO_MAGIC = b"\x01CD001\x01"
 SFO_MAGIC = b"\x00PSF\x01\x01\x00\x00"
 MAX_DIRECTORY_BYTES = 512 * 1024
+MAX_DIRECTORY_ENTRIES = 4096
 MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
@@ -33,6 +35,17 @@ SFO_FMT_UINT32 = 0x0404
 
 class IsoInspectionError(ValueError):
     """Raised when an ISO image is unreadable or malformed."""
+
+
+@dataclass(frozen=True)
+class IsoDirectoryEntry:
+    """One bounded ISO9660 directory entry with its validated extent."""
+
+    name: str
+    lba: int
+    size: int
+    is_directory: bool
+    multi_extent: bool
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
@@ -381,6 +394,97 @@ def _read_iso_extent(
     if len(data) != count:
         raise IsoInspectionError("ISO file span is truncated")
     return data
+
+
+def _read_iso_directory_entries(
+    stream, file_size: int, lba: int, size: int
+) -> list[IsoDirectoryEntry]:
+    if size <= 0 or size > MAX_DIRECTORY_BYTES:
+        raise IsoInspectionError("ISO directory is empty or exceeds its supported bound")
+    directory = _read_iso_extent(stream, file_size, lba, size, 0, size)
+    entries: list[IsoDirectoryEntry] = []
+    offset = 0
+    while offset < len(directory):
+        record_size = directory[offset]
+        if record_size == 0:
+            offset = ((offset // SECTOR_SIZE) + 1) * SECTOR_SIZE
+            continue
+        if record_size < 34 or record_size > len(directory) - offset or \
+                (offset % SECTOR_SIZE) + record_size > SECTOR_SIZE:
+            raise IsoInspectionError("malformed ISO directory record bounds")
+        record = directory[offset : offset + record_size]
+        name_size = record[32]
+        if name_size == 0 or 33 + name_size > record_size:
+            raise IsoInspectionError("malformed ISO directory identifier")
+        raw_name = record[33 : 33 + name_size]
+        offset += record_size
+        if raw_name in (b"\0", b"\1"):
+            continue
+        try:
+            name = raw_name.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise IsoInspectionError("ISO directory identifier is not ASCII") from exc
+        # ISO9660 file versions are metadata, not part of the guest filename.
+        name = name.split(";", 1)[0]
+        if not name or name in {".", ".."}:
+            raise IsoInspectionError("ISO directory contains an invalid filename")
+        entry_lba, entry_size, is_directory = _extent_from_record(record, file_size)
+        entries.append(IsoDirectoryEntry(
+            name=name,
+            lba=entry_lba,
+            size=entry_size,
+            is_directory=is_directory,
+            multi_extent=bool(record[25] & 0x80),
+        ))
+        if len(entries) > MAX_DIRECTORY_ENTRIES:
+            raise IsoInspectionError("ISO directory exceeds the supported entry count")
+    return entries
+
+
+def list_iso_directory(
+    iso_path: Path | str, path: tuple[str, ...]
+) -> list[IsoDirectoryEntry] | None:
+    """List one fixed ISO directory after validating every record and extent.
+
+    ``None`` means the requested directory is absent or is not a directory. Caller
+    supplied components are single names; traversal syntax and nested separators
+    are refused.
+    """
+    if len(path) > 8 or any(
+        not isinstance(component, str)
+        or not component
+        or component in {".", ".."}
+        or "/" in component
+        or "\\" in component
+        for component in path
+    ):
+        raise IsoInspectionError("ISO directory path is invalid")
+    image = Path(iso_path)
+    try:
+        file_size = image.stat().st_size
+        with image.open("rb") as stream:
+            stream.seek(PVD_SECTOR * SECTOR_SIZE)
+            pvd = stream.read(SECTOR_SIZE)
+            if len(pvd) != SECTOR_SIZE or pvd[:7] != ISO_MAGIC:
+                raise IsoInspectionError("missing primary volume descriptor")
+            lba, size, is_directory = _extent_from_record(pvd[156:190], file_size)
+            if not is_directory or size == 0 or size > MAX_DIRECTORY_BYTES:
+                raise IsoInspectionError("root directory is not a bounded directory extent")
+            for component in path:
+                entries = _read_iso_directory_entries(stream, file_size, lba, size)
+                found = next(
+                    (entry for entry in entries
+                     if entry.name.casefold() == component.casefold()),
+                    None,
+                )
+                if found is None or not found.is_directory:
+                    return None
+                lba, size = found.lba, found.size
+            if not is_directory and not path:
+                return None
+            return _read_iso_directory_entries(stream, file_size, lba, size)
+    except OSError as exc:
+        raise IsoInspectionError("ISO directory could not be read") from exc
 
 
 def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int, int] | None:
