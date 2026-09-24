@@ -39,7 +39,7 @@
     "classification": "dedicated",
     "handler": "h_MpegAvcCopyYCbCr",
     "name": "sceMpegAvcCopyYCbCr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x05db22ce": {
     "classification": "dedicated",
@@ -308,7 +308,7 @@
     "classification": "dedicated",
     "handler": "h_MpegAvcQueryYCbCrSize",
     "name": "sceMpegAvcQueryYCbCrSize",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x21ff80e4": {
     "classification": "dedicated",
@@ -490,7 +490,7 @@
     "classification": "dedicated",
     "handler": "h_MpegAvcCsc",
     "name": "sceMpegAvcCsc",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3251ea56": {
     "classification": "dedicated",
@@ -1007,7 +1007,7 @@
     "classification": "dedicated",
     "handler": "h_MpegAvcInitYCbCr",
     "name": "sceMpegAvcInitYCbCr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x67af3428": {
     "classification": "dedicated",
@@ -1371,10 +1371,10 @@
     "status": "unreviewed"
   },
   "0x8c1e027d": {
-    "classification": "dedicated",
+    "classification": "controlled_unsupported",
     "handler": "h_MpegGetPcmAu",
     "name": "sceMpegGetPcmAu",
-    "status": "unreviewed"
+    "status": "controlled_unsupported"
   },
   "0x8ef08fce": {
     "classification": "dedicated",
@@ -1531,7 +1531,7 @@
     "classification": "dedicated",
     "handler": "h_MpegChangeGetAuMode",
     "name": "sceMpegChangeGetAuMode",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x9ec3676a": {
     "classification": "dedicated",
@@ -1855,7 +1855,7 @@
     "classification": "dedicated",
     "handler": "h_MpegQueryPcmEsSize",
     "name": "sceMpegQueryPcmEsSize",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xc07bb470": {
     "classification": "dedicated",
@@ -2289,13 +2289,13 @@
     "classification": "dedicated",
     "handler": "h_MpegAvcDecodeYCbCr",
     "name": "sceMpegAvcDecodeYCbCr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xf2930c9c": {
     "classification": "dedicated",
     "handler": "h_MpegAvcDecodeStopYCbCr",
     "name": "sceMpegAvcDecodeStopYCbCr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xf3f76017": {
     "classification": "dedicated",

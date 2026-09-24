@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1d3b3f07f227b7ecbd9b6476886fe3034595824bcb2807f5cf2500bc5b298e89"
+      "sha256": "bb8a041d4e71b9909053fc1e2b7d1565ab523e7f7ae4f39212ac52def20ed17e"
     },
     {
       "path": "NOTICE.md",
@@ -6000,7 +6000,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "e5a1e28617f57d4dcb765551accefee4a4b92da73e6e38414865c0a18fb477a7"
+      "sha256": "9c9e81a5f3441c7999cf1902b5f4a4fd2e05ad8d14aeaa3859a39e710e4d81b0"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -6171,7 +6171,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae7fa364512d5b1e625b670df4e22821cd82128d8b63fb0e268a22285f90137b"
+      "sha256": "47825c763fb5e929254e777237b23c4d913251cefbeac953ff052abd262399bc"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -7244,7 +7244,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c77cf8ce1274a4db759b566e86acfda2b283c07129742c769d2a9933c6f6e787"
+      "sha256": "746238f35410e8731b4127f264d15028c26f1a14a347820e31b8d33f1203c6d7"
     },
     {
       "path": "tools/host_stubs.py",
@@ -7289,7 +7289,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ceca617048a4442f78581e3253e9118780d0d7243c39a2a0c72718cc6a314e4b"
+      "sha256": "68ffe085a08988481cd0944a46f41d0a81a7645b6df1ff87ba164fab4ae05d65"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8879,7 +8879,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "94ed889029a277af03b3ec69957a52780e0150cd965c2e99d9f681940b9c11b0"
+      "sha256": "72f03d64d7a57e42ba993d2bb0c767a9770b498e59d3fdf9a95f13e333d02045"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
@@ -9869,20 +9869,15 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
-    "candidate_tree": "13bae970e95f86a8d6c0e871d495c4ca274bf90e",
+    "trusted_tree": "3eb59d060e0e59b43426e40a0181ad2f71574174",
+    "candidate_tree": "5352da5375154cf457f18632611283080bb1415b",
     "refreshed_paths": [
-      "fixtures/psp_oracle/Makefile",
-      "fixtures/psp_oracle/mutex_imports.S",
-      "fixtures/psp_oracle/threadman_user_imports.S",
-      "interface/src/lib/recompiler/watchpoint-file.d.mts",
-      "interface/src/lib/recompiler/watchpoint-file.mjs",
-      "interface/src/lib/recompiler/watchpoint-file.test.mjs",
-      "interface/src/lib/recompiler/watchpoint-route.test.ts",
-      "interface/src/lib/recompiler/watchpoint-store.test.ts",
-      "src/rt/watchpoints_file.c",
-      "src/rt/watchpoints_file.h",
-      "src/rt/watchpoints_file_selftest.c"
+      "Makefile",
+      "src/rt/mpeg.c",
+      "src/rt/psmf_media_selftest.c",
+      "tools/hle_registry_meta.py",
+      "tools/import_audit_baseline.json",
+      "tools/test_mpeg_h264_bounds.py"
     ]
   }
 }

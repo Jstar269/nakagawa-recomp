@@ -30,6 +30,7 @@
 
 #include "psmf_producer.h"
 #include "sr_h264.h"
+#include "mpeg.c"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,34 @@ static int checks, failures;
 /* sr_h264_frame() writes into guest memory through SR_HOST(), so the selftest owns a flat
  * arena and a no-op VRAM-dirty sink, exactly as the runtime stubs them. */
 uint8_t *g_mem = NULL;
+CpuState *s_cpu;
+int g_sr_heap_watch;
+int g_sr_metadata_watch;
+int g_hle_depth;
+int g_sr_last_writer_enabled;
+uint32_t g_sr_store_context_pc;
+unsigned g_sr_store_context_limit;
+unsigned g_sr_store_context_count;
+int g_sr_store_context_mem_gpr;
+uint32_t g_sr_store_context_mem_offset;
+unsigned g_sr_store_context_mem_words;
+uint32_t g_sr_mem_watch_context_pc;
+unsigned g_sr_mem_watch_context_limit;
+unsigned g_sr_mem_watch_context_count;
+int g_sr_mem_watch_context_fpr;
+uint32_t g_sr_mem_watch_context_fpr_value;
+SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
+int g_sr_mem_watch_count;
+atomic_int_least32_t sr_timeslice;
+void sr_oor(uint32_t addr, uint32_t value, int store) { (void)addr; (void)value; (void)store; }
+uint32_t sr_get_ge_status(void) { return 0; }
+void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc) { (void)addr; (void)width; (void)value; (void)pc; }
+void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc) { (void)addr; (void)width; (void)value; (void)pc; }
+uint32_t sched_current_uid(void) { return 0; }
+int sr_nested_frame_acquire(uint32_t owner, uint32_t *sp, int *handle) { (void)owner; (void)sp; (void)handle; return 0; }
+int sr_nested_frame_release(int handle) { (void)handle; return 0; }
+void dispatch(CpuState *s, uint32_t target) { (void)s; (void)target; }
+RecompFn sr_lookup(uint32_t addr) { (void)addr; return NULL; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) { (void)addr; (void)bytes; }
 
 #define ARENA_BYTES (8u * 1024u * 1024u)
@@ -994,6 +1023,95 @@ static void test_multistream_selection(void) {
     free(bytes);
 }
 
+static void test_mpeg_ycbcr_guest_contract(void) {
+    enum {
+        TD_MPEG_DESC = 0x08100000u,
+        TD_MPEG_DATA = 0x08110000u,
+        TD_MPEG_SIZE = 0x08120000u,
+        TD_MPEG_YCBCR = 0x08130000u,
+        TD_MPEG_RANGE = 0x08140000u,
+        TD_MPEG_DEST = 0x08150000u,
+        TD_MPEG_PTR = 0x08160000u,
+        TD_MPEG_INIT = 0x08170000u,
+        TD_MPEG_AU = 0x08180000u,
+    };
+    MEM_W32(TD_MPEG_DESC, 0u);
+    CHECK(mpeg_create(TD_MPEG_DESC, TD_MPEG_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "MPEG YCbCr fixture creates a context");
+    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_SIZE) == 0,
+          "MPEG YCbCr fixture queries guest geometry");
+    CHECK(MEM_R32(TD_MPEG_SIZE) == 3200u, "MPEG YCbCr fixture uses the checked planar size");
+    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 17u, 32u, TD_MPEG_SIZE) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG YCbCr query rejects unsupported geometry");
+    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_SIZE + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG YCbCr query rejects an unaligned result pointer");
+    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR) == 0,
+          "MPEG YCbCr fixture initializes guest storage");
+    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG YCbCr init rejects an unaligned allocation");
+    YcbcrBuf *state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
+    CHECK(state != NULL && state->rgba != NULL, "MPEG YCbCr fixture retains host state");
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(TD_MPEG_PTR, TD_MPEG_YCBCR);
+    MEM_W32(TD_MPEG_RANGE, 0u);
+    MEM_W32(TD_MPEG_RANGE + 4u, 0u);
+    MEM_W32(TD_MPEG_RANGE + 8u, 64u);
+    MEM_W32(TD_MPEG_RANGE + 12u, 32u);
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, 0u, 64u, TD_MPEG_DEST) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG CSC rejects an invalid range pointer");
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) == 0,
+          "MPEG YCbCr fixture converts an untouched allocation");
+    CHECK(MEM_R8(TD_MPEG_DEST) == 0x40u, "MPEG CSC writes the host picture deterministically");
+    CHECK(mpeg_avc_copy_ycbcr(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_YCBCR + 0x10000u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG Copy rejects an uninitialized source");
+    CHECK(mpeg_avc_decode_ycbcr(TD_MPEG_DESC, TD_MPEG_AU, TD_MPEG_PTR, TD_MPEG_INIT) ==
+              SCE_MPEG_ERROR_NO_DATA && MEM_R32(TD_MPEG_INIT) == 0u,
+          "MPEG Decode reports no picture without a decoder");
+    state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
+    if (state) state->valid = 1;
+    MEM_W32(TD_MPEG_RANGE + 8u, 80u);
+    MEM_W32(TD_MPEG_RANGE + 12u, 40u);
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) == 0,
+          "MPEG CSC clips a partial source range");
+    CHECK(mpeg_avc_decode_stop_ycbcr(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_INIT) == 0 &&
+              MEM_R32(TD_MPEG_INIT) == 0u,
+          "MPEG Stop clears the tracked picture state");
+    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR) == 0,
+          "MPEG YCbCr reinitialization resets the allocation");
+    state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(TD_MPEG_RANGE + 8u, 64u);
+    MEM_W32(TD_MPEG_RANGE + 12u, 32u);
+    MEM_W8(TD_MPEG_YCBCR, 0xa5u);
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "guest mutation cannot reuse hidden RGBA state");
+    CHECK(mpeg_query_pcm_es_size(TD_MPEG_DESC, TD_MPEG_SIZE + 0x20u, TD_MPEG_SIZE + 0x24u) == 0 &&
+              MEM_R32(TD_MPEG_SIZE + 0x20u) == 320u && MEM_R32(TD_MPEG_SIZE + 0x24u) == 320u,
+          "MPEG PCM size query returns the documented fixed sizes");
+    uint32_t pcm_sid = mpeg_regist_stream(TD_MPEG_DESC, MPEG_PCM_STREAM, 0u);
+    CHECK(pcm_sid != 0u &&
+              mpeg_get_pcm_au(TD_MPEG_DESC, pcm_sid, TD_MPEG_SIZE + 0x28u, TD_MPEG_SIZE + 0x40u) ==
+                  SCE_MPEG_ERROR_NO_DATA,
+          "MPEG PCM AU remains an explicit no-data refusal");
+    CHECK(mpeg_change_get_au_mode(TD_MPEG_DESC, pcm_sid, MPEG_AU_MODE_SKIP) != 0u,
+          "MPEG AU skip mode fails closed without a queue contract");
+    mpeg_finish();
+    CHECK(ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR) == NULL,
+          "MPEG teardown frees guest YCbCr state");
+}
+
 int main(void) {
     static uint8_t arena[ARENA_BYTES];
     g_mem = arena;
@@ -1007,6 +1125,7 @@ int main(void) {
     test_instance_isolation();
     test_destination_refusal();
     test_legacy_feed_take_path();
+    test_mpeg_ycbcr_guest_contract();
 
     if (failures) {
         fprintf(stderr, "psmf_media_selftest: %d checks, %d FAILURES\n", checks, failures);

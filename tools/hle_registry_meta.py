@@ -82,6 +82,33 @@ HANDLER_STATUS = {
     # tier has been measured for either getter.
     "h_PsmfGetVideo": "partial",
     "h_PsmfGetAudio": "partial",
+    # MPEG #302: the YCbCr size formula, pointer preflight, and guest geometry are
+    # source-tested; firmware mode coverage and the hardware-oracle contract remain open.
+    "h_MpegAvcQueryYCbCrSize": "partial",
+    # MPEG #302: Init accepts only the documented 4:2:0 allocation shape and makes guest
+    # bytes deterministic; the firmware-owned header and cache contract are not measured.
+    "h_MpegAvcInitYCbCr": "partial",
+    # MPEG #302: Decode produces only a backend-delivered picture and reports delayed/no-data
+    # states; the hardware EOS and cache-coherency observations are still required.
+    "h_MpegAvcDecodeYCbCr": "partial",
+    # MPEG #302: Stop clears tracked state, but the firmware buffered-picture status is
+    # explicitly unmeasured rather than reported as a guessed frame count.
+    "h_MpegAvcDecodeStopYCbCr": "partial",
+    # MPEG #302: Copy handles matching initialized allocations and rejects overlap; the
+    # firmware layout and overlap result still need a physical PSP oracle.
+    "h_MpegAvcCopyYCbCr": "partial",
+    # MPEG #302: CSC preflights dynamic source/range/stride geometry and pixel formats;
+    # clipping, range conversion, and destination coherency remain hardware-oracle work.
+    "h_MpegAvcCsc": "partial",
+    # MPEG #302: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream
+    # is exposed by this runtime.
+    "h_MpegQueryPcmEsSize": "partial",
+    # MPEG #302: PCM access-unit production is deliberately refused with NO_DATA; no PCM
+    # decoder or hardware-oracle queue contract is available.
+    "h_MpegGetPcmAu": "controlled_unsupported",
+    # MPEG #302: decode mode is validated and retained; skip mode fails closed because its
+    # queue/timestamp effect is not measured.
+    "h_MpegChangeGetAuMode": "partial",
     # SAS waveform/ATRAC3 entry points whose source codecs are not implemented
     # by this runtime. They validate the core/voice identity and return the
     # documented invalid-state error instead of fabricating success.
