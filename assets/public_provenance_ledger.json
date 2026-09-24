@@ -96,6 +96,15 @@
       "sha256": "14ab9739735950edba5f463d7295bb469ffce4de9c00e01d9e1619c48a28c3ee"
     },
     {
+      "path": ".github/ISSUE_TEMPLATE/smoke_test_report.yml",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "22734fd44ad1f2e18ae93287d5763c17cd5d9c2bf359d57ab4990467f03f51b4"
+    },
+    {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -302,7 +311,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "af19e3f9ba5882e771ca42d3741dd8bf77d3bd69ec05bbccbc643dbd02417072"
+      "sha256": "1d041bee197df8631f42386bfd2e0e66ca82592fed83cd6c4312c7a28ce94698"
     },
     {
       "path": "REVIEW.md",
@@ -454,7 +463,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a4c8e985d6ff70d93ce36650c57fd1bbf922c67cd62d2963a23adf7c202f3229"
+      "sha256": "e13e0103aafffc5949051998cff7ec3ec89a80d507e0e1d9da70a86b63558f3e"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -808,6 +817,15 @@
       "sha256": "07c84c7491c03bb2325278e2c2cd95c57c0d068e57f9a5f4461ef5efe6f8a0a7"
     },
     {
+      "path": "docs/COMPATIBILITY.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "997af06eaef1f3aaacb30adaa6ff88d7dea458934ce23f4e5b7aa4c34631f3be"
+    },
+    {
       "path": "docs/DCO_POLICY.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1066,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "434eb9b3460adf80dc8e7d865948aec54347fb67d3bfabc4ab7ef6ee559562ee"
+      "sha256": "016ac804a8bceb14135ccae8c0d87ab272d6e24defccb230946a0cd9afd319b9"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1085,6 +1103,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "3746c187a2a2d858e5a6ac778f9778c66b8a1c1451ee47ded78479bac3969a3e"
+    },
+    {
+      "path": "docs/SMOKE_TEST.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "2c1bfd81f358f170dac09a7e2e19f271115594ca073b8d68a8789e2de36eaab2"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
