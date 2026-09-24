@@ -302,7 +302,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e456fd1723965431c4aa5cfe7bf6a3fa8da9bf701505b5efce50724e8a4a4d8c"
+      "sha256": "af19e3f9ba5882e771ca42d3741dd8bf77d3bd69ec05bbccbc643dbd02417072"
     },
     {
       "path": "REVIEW.md",
@@ -454,7 +454,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0fe517024e9e7466ad22f85f5fb9774214891aeb76373250d660e2c3b417a3c9"
+      "sha256": "a4c8e985d6ff70d93ce36650c57fd1bbf922c67cd62d2963a23adf7c202f3229"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -1066,7 +1066,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96872666c0db350471ef5bf1f5f93f810a76d46ff2b98e1a9c6bb93580fc6cae"
+      "sha256": "434eb9b3460adf80dc8e7d865948aec54347fb67d3bfabc4ab7ef6ee559562ee"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1084,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a37747a734e01b015cf13b9574ca8aec8cd24c4b80f50f7f5634e14e8ba4535c"
+      "sha256": "3746c187a2a2d858e5a6ac778f9778c66b8a1c1451ee47ded78479bac3969a3e"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1157,6 +1157,24 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "e99de23bfef60324cd27ec7d116c79fb9d33d9e45c7dbbc9f05a0176a8aeb8ad"
+    },
+    {
+      "path": "docs/YOUR_OWN_GAMES.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "2de43ceb4ababa3c07b75d76f861345838c813ec2b3120367036f2dcf2e0144e"
+    },
+    {
+      "path": "docs/cleanroom/PGF_SPEC.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "b57ac3defc8c0e7d95dc1462671b03a5efc493aa10fe32aa1116c49b903ddcb4"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
