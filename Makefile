@@ -136,7 +136,7 @@ GLSLC ?= glslc
 # start rather than one per variable. Info-only goals skip discovery entirely.
 SDL3_DIR ?=
 SDL3_MAKE_FRAGMENT := build/.sdl3-discovery.mk
-ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
+ifeq ($(strip $(filter clean distclean clean-preview,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 _SDL3_DISCOVERY := $(shell $(PYTHON) -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
 ifneq ($(strip $(_SDL3_DISCOVERY)),)
 $(error SDL3 discovery failed: $(_SDL3_DISCOVERY))
@@ -428,9 +428,12 @@ ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
 # Ensure the build directory and nested object directories exist up front so no
 # per-recipe mkdir is needed.
 # Use Python for fully portable directory creation across Windows cmd.exe, MSYS2,
-# PowerShell, and POSIX environments.
+# PowerShell, and POSIX environments. A clean preview must not create the state
+# it is about to plan over, so it skips this parse-time mkdir entirely.
+ifeq ($(strip $(filter clean-preview,$(MAKECMDGOALS))),)
 ifndef NK_INFO_ONLY
 _MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
+endif
 endif
 
 ifeq ($(OS),Windows_NT)
@@ -604,6 +607,7 @@ PUBLIC_TARGETS := \
 	tidy \
 	distclean \
 	clean-all \
+	clean-preview \
 	verify \
 	selftest \
 	strbuf-selftest \
@@ -700,6 +704,7 @@ HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifa
 HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
 HELP_DESCRIPTION_distclean := remove intermediates and ephemeral build logs
 HELP_DESCRIPTION_clean-all := remove all build and fixture outputs
+HELP_DESCRIPTION_clean-preview := preview allowlisted workspace clean (CONFIRM=1 to apply)
 HELP_DESCRIPTION_verify := compare generated output against external oracle data
 HELP_DESCRIPTION_selftest := run the runtime selftest
 HELP_DESCRIPTION_strbuf-selftest := run the checked-formatting selftest
@@ -1323,8 +1328,10 @@ cosim-selftest-clean:
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent
 # before target freshness is evaluated (avoiding timestamp-resolution races).
+ifeq ($(strip $(filter clean-preview,$(MAKECMDGOALS))),)
 ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 -include $(CODEGEN_PROFILE_STAMP) $(RUNTIME_PROFILE_STAMP) $(RECOMP_PROFILE_STAMP) $(TITLE_CONFIG_STAMP)
+endif
 endif
 -include $(DEP_FILES)
 
@@ -1356,6 +1363,12 @@ distclean:
 clean-all: clean clean-fixtures
 	$(PYTHON) -c "import shutil, sys; from pathlib import Path; b = Path('build'); [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in b.iterdir()] if b.exists() else None"
 	$(PYTHON) -c "from pathlib import Path; [Path(p).unlink(missing_ok=True) for p in ('logs/build_out_recomp.log', 'logs/build_err_recomp.log', 'logs/recomp_err.log', 'logs/obj_err.log', 'link_err.log', 'logs/stdout_run.log', 'logs/stderr_run.log')]"
+
+# Preview-first workspace clean (issue #368): plans allowlisted output roots and
+# prints the exact file set. Deletion requires CONFIRM=1 (which passes --yes);
+# OLDER_THAN=<days> bounds the plan by file age. Existing clean targets are untouched.
+clean-preview:
+	$(PYTHON) tools/nk_clean.py $(if $(filter 1,$(CONFIRM)),--yes,) $(if $(strip $(OLDER_THAN)),--older-than $(OLDER_THAN),)
 
 # sched-selftest — white-box scheduler/lifecycle unit tests (src/rt/sched_selftest.c).
 # No game inputs needed; #includes sched.c for direct access to pick_next()/TCB state and

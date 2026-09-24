@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from nk_core.iso_inspect import (
     inspect_compatibility_preflight,
     inspect_iso,
+    plan_provisional_module_bindings,
     write_experimental_profile,
 )
 import nk_cli
@@ -190,13 +191,77 @@ def create_test_iso_with_executables(
     path.write_bytes(data)
 
 
-def build_plain_mips_elf(e_type: int = 2) -> bytes:
+def create_test_iso_with_modules(
+    path: Path,
+    eboot: bytes,
+    *,
+    sysdir_modules: dict[str, bytes],
+    usrdir_modules: dict[str, bytes],
+    old_eboot: bytes | None = None,
+    disc_id: str = "TEST00001",
+    title: str = "Test Game",
+) -> None:
+    """Build a source-owned ISO with module candidates in both PSP game dirs."""
+    create_test_iso(path, disc_id=disc_id, title=title)
+    sector_size = 2048
+    data = bytearray(path.read_bytes())
+    root_lba, game_lba, sysdir_lba, usrdir_lba = 33, 34, 35, 36
+    game_entries = (
+        _dir_record(bytes([0]), game_lba, sector_size, True)
+        + _dir_record(bytes([1]), root_lba, sector_size, True)
+        + _dir_record(b"PARAM.SFO;1", 32, len(build_param_sfo(disc_id, title)), False)
+        + _dir_record(b"SYSDIR", sysdir_lba, sector_size, True)
+        + _dir_record(b"USRDIR", usrdir_lba, sector_size, True)
+    )
+    sysdir_entries = (
+        _dir_record(bytes([0]), sysdir_lba, sector_size, True)
+        + _dir_record(bytes([1]), game_lba, sector_size, True)
+    )
+    usrdir_entries = (
+        _dir_record(bytes([0]), usrdir_lba, sector_size, True)
+        + _dir_record(bytes([1]), game_lba, sector_size, True)
+    )
+    next_lba = 37
+    file_records = []
+    files = [
+        {"entries": sysdir_entries, "members": sysdir_modules},
+        {"entries": usrdir_entries, "members": usrdir_modules},
+    ]
+    for item in files:
+        directory_entries = item["entries"]
+        members = item["members"]
+        for name, contents in sorted(members.items()):
+            encoded_name = name.encode("ascii") + b";1"
+            directory_entries += _dir_record(encoded_name, next_lba, len(contents), False)
+            file_records.append((next_lba, contents))
+            next_lba += max(1, (len(contents) + sector_size - 1) // sector_size)
+        item["entries"] = directory_entries
+    sysdir_entries, usrdir_entries = files[0]["entries"], files[1]["entries"]
+    sysdir_entries += _dir_record(b"EBOOT.BIN;1", next_lba, len(eboot), False)
+    file_records.append((next_lba, eboot))
+    next_lba += max(1, (len(eboot) + sector_size - 1) // sector_size)
+    if old_eboot is not None:
+        sysdir_entries += _dir_record(b"EBOOT.OLD;1", next_lba, len(old_eboot), False)
+        file_records.append((next_lba, old_eboot))
+    for entries, lba in ((game_entries, game_lba), (sysdir_entries, sysdir_lba),
+                         (usrdir_entries, usrdir_lba)):
+        start = lba * sector_size
+        data[start : start + len(entries)] = entries
+    for lba, contents in file_records:
+        start = lba * sector_size
+        data[start : start + len(contents)] = contents
+    path.write_bytes(data)
+
+
+def build_plain_mips_elf(
+    e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4
+) -> bytes:
     elf = bytearray(88)
     elf[:7] = b"\x7fELF\x01\x01\x01"
     struct.pack_into("<HHI", elf, 16, e_type, 8, 1)
-    struct.pack_into("<III", elf, 24, 0x08800000, 52, 0)
+    struct.pack_into("<III", elf, 24, vaddr, 52, 0)
     struct.pack_into("<HHHHH", elf, 40, 52, 32, 1, 0, 0)
-    struct.pack_into("<8I", elf, 52, 1, 84, 0x08800000, 0x08800000, 4, 4, 5, 4)
+    struct.pack_into("<8I", elf, 52, 1, 84, vaddr, vaddr, 4, memsz, 5, 4)
     elf[84:88] = b"\x34\x12\x00\x00"
     return bytes(elf)
 
@@ -961,7 +1026,8 @@ int main(int argc, char **argv) {{
         self.assertEqual(manifest["disc"]["id"], "ULUS99998")
         self.assertEqual(manifest["display_name"], "Experimental Fixture")
         self.assertEqual(manifest["executable"]["base"], 0)
-        self.assertEqual(manifest["executable"]["entry"], 0)
+        self.assertEqual(manifest["executable"]["entry"], 0x08800000)
+        self.assertEqual(manifest["codegen_profile"], "none")
         self.assertEqual(manifest["modules"], [])
         self.assertEqual(identity["selected_executable"], "PSP_GAME/SYSDIR/EBOOT.BIN")
         self.assertEqual(identity["executable_sha256"], expected_hash)
@@ -983,6 +1049,72 @@ int main(int argc, char **argv) {{
         self.assertEqual(native_manifest["id"], "experimental-ulus99998")
         self.assertEqual(native_profile["input_identity"]["executable_sha256"], expected_hash)
         self.assertEqual(native_profile["input_identity"]["elf_sha256"], expected_hash)
+
+    def test_experimental_import_uses_documented_load_binding_for_relocatable_elf(self) -> None:
+        """Relocatable main modules use the documented generic PSP load base."""
+        from title_manifest import validate_manifest
+
+        for e_type in (3, 0xFFA0):
+            with self.subTest(e_type=e_type):
+                iso_file = self.temp_dir / f"relocatable_{e_type:04x}.iso"
+                create_test_iso_with_executables(
+                    iso_file, build_plain_mips_elf(e_type=e_type),
+                    disc_id="ULUS99997", title="Synthetic Relocatable Fixture",
+                )
+                user_root = self.temp_dir / f"relocatable-user-data-{e_type:04x}"
+                metadata = inspect_iso(iso_file)
+                profile_path = write_experimental_profile(
+                    iso_file, user_root, metadata=metadata
+                )
+                profile = json.loads(profile_path.read_text(encoding="utf-8"))
+                executable = validate_manifest(profile["manifest"])["executable"]
+                self.assertEqual(executable["base"], 0x08804000)
+                self.assertEqual(executable["load_address"], 0x08804000)
+                self.assertEqual(
+                    executable["load_address_evidence"], "documented-psp-default"
+                )
+                self.assertTrue(profile_path.is_relative_to(user_root))
+
+    def test_provisional_guest_module_placement_is_deterministic_and_disjoint(self) -> None:
+        main_elf = self.temp_dir / "placement-main.elf"
+        alpha = self.temp_dir / "alpha.prx"
+        beta = self.temp_dir / "beta.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, memsz=0x40000))
+        alpha.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x21001))
+        beta.write_bytes(build_plain_mips_elf(e_type=3, vaddr=0, memsz=0x17001))
+        inputs = [
+            ("beta.prx", beta, "disc0:/PSP_GAME/USRDIR/beta.prx"),
+            ("alpha.prx", alpha, "disc0:/PSP_GAME/SYSDIR/alpha.prx"),
+        ]
+
+        first = plan_provisional_module_bindings(main_elf, inputs)
+        second = plan_provisional_module_bindings(main_elf, list(reversed(inputs)))
+        self.assertEqual(first, second)
+        self.assertEqual([module["name"] for module in first], ["alpha.prx", "beta.prx"])
+        self.assertTrue(all(module["load_address_evidence"] == "provisional" for module in first))
+        self.assertTrue(all(module["role"] == "guest-prx" and module["required"] for module in first))
+        spans = {"alpha.prx": 0x21001, "beta.prx": 0x17001}
+        ranges = sorted(
+            (module["load_address"], module["load_address"] + spans[module["name"]])
+            for module in first
+        )
+        self.assertGreaterEqual(ranges[0][0], 0x08800000 + 0x40000 + 0x00100000)
+        self.assertLessEqual(ranges[-1][1], 0x09EF0000)
+        self.assertLess(ranges[0][1], ranges[1][0])
+
+    def test_provisional_guest_module_placement_fails_when_no_safe_span_remains(self) -> None:
+        main_elf = self.temp_dir / "placement-full-main.elf"
+        huge_a = self.temp_dir / "huge-a.prx"
+        huge_b = self.temp_dir / "huge-b.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        huge_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
+        huge_b.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
+        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve"):
+            plan_provisional_module_bindings(
+                main_elf,
+                [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
+                 ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
+            )
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""

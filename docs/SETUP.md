@@ -247,6 +247,70 @@ When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight c
 
 On Windows, the default per-user data directory is `%LOCALAPPDATA%\Nakagawa\data` (resolving to `<user data>/titles/<DISC_ID>/decrypted/`). When a valid plain MIPS ELF32 `EBOOT.elf` is placed in this folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). The project ships no decryption tools or keys ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) in the works).
 
+### System fonts
+
+Authentic in-game typography requires PSP system fonts in Sony's PlayStation Glyph Format (`.pgf`), dumped from the user's own physical PSP console firmware (`flash0:/font/`). Proprietary firmware fonts cannot legally be bundled or distributed by the project.
+
+> [!NOTE]
+> Do not confuse system fonts with `libfont.prx`. `libfont.prx` (located under `place_game_here/EXTRACTED/decrypted/libfont.prx` or `<user data>/titles/<DISC_ID>/decrypted/libfont.prx`) is a game-supplied guest middleware PRX executable module implementing the `sceFont` API; it does not contain the actual font glyph outlines. Typography requires the separate `.pgf` font files.
+
+#### What the user supplies
+
+From your own lawfully owned PSP console or firmware dump, supply genuine PGF font files:
+
+- `jpn0.pgf`: Japanese and baseline font required by the runtime font manager.
+- Optional Latin and regional fonts: `kr0.pgf` and `ltn0.pgf` through `ltn15.pgf`.
+
+Fonts must come only from your own device; the project provides no download links or third-party repositories.
+
+#### Importing fonts
+
+Import dumped firmware fonts using `tools/nk_cli.py`:
+
+```powershell
+python tools/nk_cli.py fonts import <folder>
+```
+
+The `<folder>` argument can point directly to the directory containing your `.pgf` files, or to a dump directory containing `font/`, `FONT/`, `flash0/font/`, or `flash0/FONT/` subdirectories.
+
+Available options:
+
+- `--user-data-root <path>`: Override the target per-user data directory (default: `%LOCALAPPDATA%\Nakagawa\data` on Windows, `~/Library/Application Support/NakagawaRecomp/data` on macOS, `$XDG_DATA_HOME/nakagawa-recomp` or `~/.local/share/nakagawa-recomp` on Linux).
+- `--json`: Emit a machine-readable JSON report of the imported files, sizes, and SHA-256 digests.
+
+The import command scans the source directory, performs structural validation on every PGF candidate (verifying header size, little-endian offsets, the `PGF0` magic signature at `header_offset + 4`, non-negative revision and version fields, and `first_glyph <= last_glyph` index order), and stages validated fonts into the versioned cache directory:
+
+```text
+<user data>/fonts/v1/
+├── manifest.json
+├── jpn0.pgf
+└── ltn0.pgf
+```
+
+Along with the `.pgf` files, the command writes a validated `manifest.json` recording `schema_version: 1`, an ISO 8601 UTC `import_time`, and each file's size and SHA-256 hash. Re-import is idempotent. If any font file in the source folder fails validation, the import fails closed immediately, leaving the previous cache intact.
+
+#### Verification and player status
+
+To verify that system fonts are correctly installed:
+
+1. **CLI verification:** Run `python tools/nk_cli.py inspect <iso>` (or add `--root <user_data>`). Under the compatibility preflight checklist, verify the `SYSTEM_FONTS` check:
+
+   ```text
+   OK: User-supplied PSP system font jpn0.pgf is available.
+   ```
+
+2. **Player preflight checklist:** In `build/nakagawa_player.exe`, select your game card. The preflight checklist reports:
+   - `OK` with `"User-supplied PSP system font jpn0.pgf is available."` when the cache is valid and contains `jpn0.pgf`.
+   - `MISSING` with `"PSP font jpn0.pgf missing; run fonts import <folder> (#300)."` when no font cache or fallback font is detected.
+   - `INVALID` with a specific diagnostic (e.g. `"PSP font cache manifest is unreadable or malformed..."` or checksum mismatch) when the cache or any declared font file is corrupted.
+3. **Player setup wizard:** During first-time launch setup, the **System & Open-Source Typography** step displays typography settings, noting that open-source defaults (SIL Open Font License) are used for desktop UI while optional user-owned PSP fonts (`jpn0.pgf`) are loaded from the font cache for in-game rendering.
+
+#### In the works
+
+- **#300 (Automated in-player font provisioning):** Providing a direct in-app font import wizard in the player so command-line execution is not required.
+- **#313 (Clean-room open-font to PGF converter):** Designing and implementing an independent, deterministic converter from permissively licensed open fonts (SIL OFL) to PSP PGF format, providing an authentic-proportioned public font route that eliminates the proprietary firmware dependency for public builds.
+- **#299 (Guest libfont module startup):** Executing genuine guest `libfont.prx` startup routines rather than relying on host flag injection.
+
 ## 3. Build
 
 From the repository root:
@@ -448,6 +512,7 @@ feature must report that honestly rather than creating a placeholder artifact; s
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where capability-excluded backends are stubbed, the runtime compiles with `PUBLIC_SAFE=1`. In this mode, UMD/ISO lookups return `-1` and retail disc routes fail closed.
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated.
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
+- **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts import <folder>` pointing to your dumped PSP firmware fonts. Verify that `<user data>/fonts/v1/manifest.json` and `jpn0.pgf` exist. See [System fonts](#system-fonts).
 - **Clean build omits chunks:** use the unchanged two-process `all` target; do not rewrite it as `all: pipeline compile`.
 - **Watchdog fires:** `SR_WATCHDOG_EXIT` counts vblanks since the last newly
   presented frame, not seconds or frame count. The no-frame watchdog is a

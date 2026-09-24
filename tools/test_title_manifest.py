@@ -49,6 +49,18 @@ class TitleManifestTests(unittest.TestCase):
                 "verification_profile",
             },
         )
+        executable_schema = schema["$defs"]["executable"]
+        self.assertEqual(
+            executable_schema["dependentRequired"],
+            {
+                "load_address": ["load_address_evidence"],
+                "load_address_evidence": ["load_address"],
+            },
+        )
+        self.assertIn(
+            "documented-psp-default",
+            executable_schema["properties"]["load_address_evidence"]["enum"],
+        )
         self.assertEqual(len(schema["allOf"]), 2)
         self.assertEqual(
             schema["$defs"]["profileZero"]["properties"]["source_program"]["properties"]["entry_symbol"]["pattern"],
@@ -167,6 +179,28 @@ class TitleManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "integer"):
             title_manifest.validate_manifest(value)
 
+    def test_executable_load_address_requires_matching_base_and_evidence(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["executable"].update({
+            "base": 0x08804000,
+            "load_address": 0x08804000,
+            "load_address_evidence": "documented-psp-default",
+        })
+        normalized = title_manifest.validate_manifest(value)
+        self.assertEqual(normalized["executable"]["load_address"], 0x08804000)
+        self.assertEqual(
+            normalized["executable"]["load_address_evidence"], "documented-psp-default"
+        )
+
+        value["executable"]["base"] = 0
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "must match load_address"):
+            title_manifest.validate_manifest(value)
+
+        value["executable"]["base"] = 0x08804000
+        del value["executable"]["load_address_evidence"]
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "load_address_evidence"):
+            title_manifest.validate_manifest(value)
+
     def test_extra_spans_are_sorted_and_must_not_overlap(self) -> None:
         value = copy.deepcopy(self.fixture)
         value["executable"]["extra_executable_spans"] = [
@@ -230,6 +264,55 @@ class TitleManifestTests(unittest.TestCase):
             with self.subTest(path=bad_path):
                 value = copy.deepcopy(self.fixture)
                 value["filesystem"]["data_root"] = bad_path
+                with self.assertRaises(title_manifest.TitleManifestError):
+                    title_manifest.validate_manifest(value)
+
+    def test_declared_executable_input_uses_the_make_safe_rule(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["filesystem"]["executable"] = "place_game_here/EBOOT.elf"
+        result = title_manifest.validate_manifest(value)
+        self.assertEqual(result["filesystem"]["executable"], "place_game_here/EBOOT.elf")
+        for bad_path in ("place game/EBOOT.elf", "../EBOOT.elf", "EBOOT[1].elf"):
+            with self.subTest(path=bad_path):
+                value = copy.deepcopy(self.fixture)
+                value["filesystem"]["executable"] = bad_path
+                with self.assertRaises(title_manifest.TitleManifestError):
+                    title_manifest.validate_manifest(value)
+
+    def test_disc_image_accepts_ordinary_dump_file_names(self) -> None:
+        # The disc image reaches only the runtime (PSP_ISO), never Make.
+        for good_path in (
+            "hst.iso",
+            "place_game_here/ISO/Synthetic Title - Edition™ [ABCD12345].iso",
+            "discs/a b (1).iso",
+        ):
+            with self.subTest(path=good_path):
+                value = copy.deepcopy(self.fixture)
+                value["filesystem"]["disc_image"] = good_path
+                result = title_manifest.validate_manifest(value)
+                self.assertEqual(result["filesystem"]["disc_image"], good_path)
+
+    def test_disc_image_rejects_unsafe_paths(self) -> None:
+        bad_paths = [
+            "../disc.iso",
+            "/absolute/disc.iso",
+            "drive" + ":" + "disc.iso",
+            "folder\\disc.iso",
+            "folder//disc.iso",
+            "folder/./disc.iso",
+            " leading.iso",
+            "trailing.iso ",
+            "trailing-dot.",
+            "bad<name>.iso",
+            "bad|name.iso",
+            "control\x01.iso",
+            "CON.iso",
+            "CON .iso",
+        ]
+        for bad_path in bad_paths:
+            with self.subTest(path=bad_path):
+                value = copy.deepcopy(self.fixture)
+                value["filesystem"]["disc_image"] = bad_path
                 with self.assertRaises(title_manifest.TitleManifestError):
                     title_manifest.validate_manifest(value)
 

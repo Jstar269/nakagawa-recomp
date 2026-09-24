@@ -126,6 +126,17 @@ not edit HST Makefile constants to configure a new title. Each module needs:
 - Path to the decrypted PRX
 - Load address (base + offset for that module)
 
+For an uncatalogued ISO, `nk_cli.py bringup` can assign provisional addresses
+to discovered plain, base-zero ET_DYN/ET_SCE_PRX modules. It sorts filenames
+case-insensitively, starts at the next 64 KiB boundary after the main image's
+highest PT_LOAD end plus a 1 MiB reserve (or `0x08800000`, whichever is later),
+and keeps every module below `0x09ef0000`. This leaves the runtime's dedicated
+VBLANK stack and nested-call frame regions clear. These are project placement
+bindings, not measured firmware addresses; manifests retain
+`load_address_evidence: provisional`. The HLE loader honors each declared
+address exactly and fails closed on an occupied range instead of relocating
+the module. A layout or collision remains in the works (#308).
+
 ## Step 5: Build
 
 ```bash

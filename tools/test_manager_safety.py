@@ -214,7 +214,16 @@ class ManagerSafetyContractTests(unittest.TestCase):
         self.assertIn('Missing required private build inputs', self.manager)
         self.assertIn('executable ELF (', self.manager)
         self.assertIn('no disc image found (declare filesystem.disc_image', self.manager)
+        self.assertIn('declare filesystem.psp_header', self.manager)
+        self.assertIn('declare filesystem.module_dir', self.manager)
         self.assertIn('Extracted asset tree was not found', self.manager)
+
+    def test_manager_reads_the_declared_executable_input(self) -> None:
+        # The executable location is a filesystem declaration like the other private
+        # inputs; `executable.path` is not a manifest field and must not be consulted.
+        self.assertIn("@{ Key = 'executable'; Var = 'TitleExecutable' }", self.manager)
+        self.assertIn('$candidates += $script:TitleExecutable', self.manager)
+        self.assertNotIn('$manifestJson.executable.path', self.manager)
         self.assertIn('=== NAKAGAWA RECOMP RUNTIME LAUNCH ===', self.manager)
 
     def test_runtime_exports_the_selected_manifest_data_root(self) -> None:

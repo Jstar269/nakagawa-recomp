@@ -132,18 +132,22 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
                     idx=i,
                 )
             )
-        shstr = shdrs[shstrndx]
-        if shstr["typ"] == 8:
-            raise ValueError(f"{path}: section-string table cannot be SHT_NOBITS")
-        checked_span(total, shstr["off"], shstr["size"], "section-string table")
-        shstr_end = shstr["off"] + shstr["size"]
-        for section in shdrs:
-            name_off = section["name"]
-            if name_off >= shstr["size"]:
-                raise ValueError(f"{path}: section name offset is out of range")
-            name_start = shstr["off"] + name_off
-            if data.find(b"\0", name_start, shstr_end) < 0:
-                raise ValueError(f"{path}: unterminated section name")
+        if shstrndx == 0:
+            if any(section["name"] != 0 for section in shdrs):
+                raise ValueError(f"{path}: unnamed section table has nonzero name offsets")
+        else:
+            shstr = shdrs[shstrndx]
+            if shstr["typ"] == 8:
+                raise ValueError(f"{path}: section-string table cannot be SHT_NOBITS")
+            checked_span(total, shstr["off"], shstr["size"], "section-string table")
+            shstr_end = shstr["off"] + shstr["size"]
+            for section in shdrs:
+                name_off = section["name"]
+                if name_off >= shstr["size"]:
+                    raise ValueError(f"{path}: section name offset is out of range")
+                name_start = shstr["off"] + name_off
+                if data.find(b"\0", name_start, shstr_end) < 0:
+                    raise ValueError(f"{path}: unterminated section name")
 
     return dict(
         e_type=e_type,

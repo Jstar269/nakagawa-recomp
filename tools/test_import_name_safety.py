@@ -194,6 +194,32 @@ class TestImportNameSafety(unittest.TestCase):
         parsed = imports_tool.parse_imports(FakeElf(b"sceDisplay"))
         self.assertEqual(parsed[FakeElf.FIRST_SYM], ("sceDisplay", 0x12345678))
 
+    def test_psp_import_table_is_reconstructed_when_section_names_are_missing(self):
+        base = 0x08804000
+        image, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        image = bytearray(image)
+        struct.pack_into("<H", image, 16, 2)
+        struct.pack_into("<I", image, 24, base)
+        phoff = struct.unpack_from("<I", image, 28)[0]
+        struct.pack_into("<II", image, phoff + 8, base, base)
+        struct.pack_into("<I", image, phoff + 28, 0x100)
+        struct.pack_into("<H", image, 50, 0)  # valid section table without a name table
+        shoff = struct.unpack_from("<I", image, 32)[0]
+        shentsize, shnum = struct.unpack_from("<HH", image, 46)
+        for index in range(shnum):
+            struct.pack_into("<I", image, shoff + index * shentsize, 0)
+        module_info = 0x100 + 0x40
+        module_name = b"Synthetic"
+        image[module_info + 4:module_info + 4 + len(module_name)] = module_name
+        struct.pack_into("<I", image, module_info + 32, 4)  # nonzero GP metadata
+
+        elf = imports_tool.Elf(bytes(image))
+        parsed = imports_tool.parse_imports(elf)
+
+        self.assertIsNotNone(elf.sec(".text"))
+        self.assertIsNotNone(elf.sec(".rodata.sceModuleInfo"))
+        self.assertEqual(list(parsed.values()), [("sceSynthetic", 0x12345678)])
+
     def test_comment_and_control_bytes_are_percent_encoded(self):
         hostile = b'evil*/\n"\\\xff'
         parsed = imports_tool.parse_imports(FakeElf(hostile))

@@ -2452,8 +2452,11 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
         fprintf(stderr, "PRX image: %s: unexpected span [0x%08x,0x%08x) for base 0x%08x\n",
                 host_path, img.start, img.end, base);
     } else if (sr_alloc_block_at(base, size, name) == 0xFFFFFFFFu) {
-        fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not free in the user partition; "
-                        "image not loaded\n", host_path, base, base + size);
+        fprintf(stderr,
+                "GUEST_MODULE_LOAD_ADDRESS_COLLISION: %s: declared range "
+                "[0x%08x,0x%08x) is not free in the user partition; "
+                "refusing to relocate (#308)\n",
+                host_path, base, base + size);
     } else if (!sr_guest_span_writable(base, size)) {
         fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not writable guest memory\n",
                 host_path, base, base + size);
@@ -2472,26 +2475,42 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
 /* Load one manifest-declared guest module's image and register its exports at its
  * manifest base (the same base the recompiler used, from the title manifest's modules[]
  * list). */
-static unsigned populate_guest_module(const char *file, uint32_t base) {
+static int populate_guest_module(const char *file, uint32_t base, int required) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
     char image_path[1024];
     int written = snprintf(image_path, sizeof(image_path), "%s/%s", guest_module_root(), file);
-    if (written > 0 && (size_t)written < sizeof(image_path)) load_prx_image(image_path, base, file);
-    unsigned res = register_known_module(guest_module_root(), file, base);
+    if (written <= 0 || (size_t)written >= sizeof(image_path)) {
+        fprintf(stderr, "GUEST_MODULE_LOAD_FAILED: manifest module path exceeds the runtime limit\n");
+        return 0;
+    }
+    FILE *image = fopen(image_path, "rb");
+    if (!image) {
+        if (required) {
+            fprintf(stderr,
+                    "GUEST_MODULE_INPUT_MISSING: required module is absent from SR_MODULE_DIR; "
+                    "refusing load at its manifest address (#296)\n");
+            return 0;
+        }
+    } else {
+        fclose(image);
+        if (!load_prx_image(image_path, base, file)) return 0;
+    }
+    (void)register_known_module(guest_module_root(), file, base);
     if (!s_last_prx_entry) s_last_prx_entry = base;
-    return res;
+    return 1;
 }
 
 /* guest_path is the path the game passed to sceKernelLoadModule; only modules the title
  * manifest declares (by guest_path) are statically recompiled, so anything else is 0. */
-static unsigned populate_known_module(const char *guest_path) {
+static int populate_known_module(const char *guest_path) {
     const char *file = NULL;
     uint32_t base = 0;
+    int required = 0;
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
-    if (!sr_title_config_guest_module(guest_path, &file, &base)) return 0;
-    return populate_guest_module(file, base);
+    if (!sr_title_config_guest_module(guest_path, &file, &base, &required)) return 0;
+    return populate_guest_module(file, base, required) ? 1 : -1;
 }
 
 /* sceUtility */
@@ -7093,9 +7112,14 @@ static uint32_t h_LoadModule(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (populate_known_module(path) < 0) {
+        fprintf(stderr,
+                "sceKernelLoadModule(\"%s\") failed closed at its manifest address\n",
+                path);
+        return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
+    }
     uint32_t uid = sr_alloc_uid();
     fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
-    populate_known_module(path);
     /* The title checks this flag after the concrete libfont PRX load. Keep it
      * on the explicit PRX path instead of conflating libfont with AV module
      * id 0x302 (PSP_AV_MODULE_ATRAC3PLUS). Title-qualified: only when the
@@ -7147,7 +7171,11 @@ static uint32_t h_LoadModuleByID(CpuState *s) {
     for (unsigned i = 0; i < sr_title_config_guest_module_count(); i++) {
         const char *file = NULL;
         uint32_t base = 0;
-        if (sr_title_config_guest_module_at(i, &file, NULL, &base)) populate_guest_module(file, base);
+        int required = 0;
+        if (sr_title_config_guest_module_at(i, &file, NULL, &base, &required) &&
+            !populate_guest_module(file, base, required)) {
+            return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
+        }
     }
     return sr_alloc_uid();
 }
