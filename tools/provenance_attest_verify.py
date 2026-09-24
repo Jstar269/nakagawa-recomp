@@ -1578,7 +1578,6 @@ def verify_ephemeral(
     baseline_entries = controls.baseline_entries
     protected = controls.protected
     trusted_scope = controls.trusted_scope
-    generated_ledger = controls.generated_ledger
     generated_ledger_bytes = controls.generated_ledger_bytes
     generated_export = controls.generated_export
     generated_export_bytes = controls.generated_export_bytes
