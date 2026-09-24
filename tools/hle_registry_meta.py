@@ -54,19 +54,46 @@ HANDLER_STATUSES = {
     "unreviewed",
 }
 
-# handler name -> status. Every handler named here must exist in hle.c's
-# extracted registrations (tools/test_hle_manifest.py enforces it).
-HANDLER_STATUS = {
+# Curated metadata per reviewed handler. Every handler named here must exist in
+# hle.c's extracted registrations (tools/test_hle_manifest.py enforces it).
+#
+# Semantic status invariants enforced by tools/hle_manifest.py:
+#   - 'complete': MUST carry a non-empty 'evidence' list citing contract source
+#     (public ABI/doc, source-owned test name, hardware oracle id, or guest-module takeover).
+#     Any referenced source files must exist in the repository tree.
+#   - 'partial' and 'compatibility': MUST carry a non-empty 'limitation' string.
+#     Handlers without recorded limitations must cite a factual gap from code or
+#     be marked "limitation not yet reviewed (#341)".
+HANDLER_METADATA = {
     # This marker handler is intercepted by sr_syscall; each registration
     # carries its PSP-visible refusal code in sr_hle_register_unsupported.
-    "h_ControlledUnsupported": "controlled_unsupported",
+    "h_ControlledUnsupported": {
+        "status": "controlled_unsupported",
+        "description": "Intercepted by sr_syscall; carries refusal code in sr_hle_register_unsupported.",
+    },
     # Stores g_sdk_version for SDK-dependent paths; the retained-state
     # contract for the variants routed to it is implemented.
-    "h_SetCompiledSdkVersion": "complete",
+    "h_SetCompiledSdkVersion": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/sdkver_selftest.c",
+            "tools/test_sdkver_c.py",
+            "public ABI (PSPSDK sdkver.h: sceKernelSetCompiledSdkVersion)",
+        ],
+        "description": "Stores g_sdk_version for SDK-dependent paths; retained-state contract verified across all registered variants.",
+    },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
     # no parameters; the full observable contract is the float bits.
-    "h_DisplayGetFramePerSec": "complete",
+    "h_DisplayGetFramePerSec": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_display_frame_per_sec_float_return",
+            "tools/test_hle_manifest.py:FindingRuleTests.test_float_return_metadata_is_live_and_dedicated",
+            "hardware oracle / issue #80 display-clock measurement (59.9400599f in $f0)",
+        ],
+        "description": "Writes measured 60000/1001 float refresh rate (59.9400599f) into $f0 under unified display clock.",
+    },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
     # decoder actually produced: the video getter validates the caller's stride
@@ -80,6 +107,7 @@ HANDLER_STATUS = {
     # the target), the picture path needs a host backend to exist at all (the
     # null backend yields no pictures by design), and no hardware-comparison
     # tier has been measured for either getter.
+<<<<<<< HEAD
     "h_PsmfGetVideo": "partial",
     "h_PsmfGetAudio": "partial",
     # MPEG #302: the YCbCr size formula, pointer preflight, and guest geometry are
@@ -109,10 +137,23 @@ HANDLER_STATUS = {
     # MPEG #302: decode mode is validated and retained; skip mode fails closed because its
     # queue/timestamp effect is not measured.
     "h_MpegChangeGetAuMode": "partial",
+=======
+    "h_PsmfGetVideo": {
+        "status": "partial",
+        "limitation": "host HLE player; requires host codec backend; no hardware comparison tier measured (#341)",
+    },
+    "h_PsmfGetAudio": {
+        "status": "partial",
+        "limitation": "host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)",
+    },
+>>>>>>> 2a1eb6d2689575eb6771c78b76c621f60b8e35f9
     # SAS waveform/ATRAC3 entry points whose source codecs are not implemented
     # by this runtime. They validate the core/voice identity and return the
     # documented invalid-state error instead of fabricating success.
-    "h_SasUnsupportedVoice": "controlled_unsupported",
+    "h_SasUnsupportedVoice": {
+        "status": "controlled_unsupported",
+        "description": "SAS waveform/ATRAC3 voice entry points without implemented codecs; returns invalid state error 0x80420002.",
+    },
     # sceDmacMemcpy / sceDmacTryMemcpy. The measured contract is implemented and
     # regression-tested through production dispatch: the illegal-size and
     # illegal-address classes, whole-span validation with overflow-safe
@@ -121,15 +162,47 @@ HANDLER_STATUS = {
     # 0xC000 effective prefix ceiling. The handlers remain partial because
     # concurrent-DMA BUSY behavior and the precedence of validation for an
     # invalid truncated tail are not established by the available evidence.
-    "h_DmacMemcpy": "partial",
-    "h_DmacTryMemcpy": "partial",
+    "h_DmacMemcpy": {
+        "status": "partial",
+        "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
+    },
+    "h_DmacTryMemcpy": {
+        "status": "partial",
+        "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
+    },
     # This returns no error while the virtual ISO-backed UMD model reports its
     # always-ready PRESENT|READY|READABLE state. Other drive-error states remain
     # outside the modeled contract.
-    "h_UmdGetErrorStat": "compatibility",
+    "h_UmdGetErrorStat": {
+        "status": "compatibility",
+        "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#281, #341)",
+    },
     # Common Memory Stick devctls have explicit outputs; unsupported devices or
     # command pairs remain visible per pair and are summarized under issue #281.
-    "h_IoDevctl": "partial",
+    "h_IoDevctl": {
+        "status": "partial",
+        "limitation": "Memory Stick devctl callback events unmodeled and flat I/O root separate from savedata (#281, #334, #341)",
+    },
+}
+
+# handler name -> status mapping. Preserved for direct consumers and gate checks.
+HANDLER_STATUS = {
+    h: meta["status"] if isinstance(meta, dict) else meta
+    for h, meta in HANDLER_METADATA.items()
+}
+
+# handler name -> evidence list (for complete handlers)
+HANDLER_EVIDENCE = {
+    h: meta.get("evidence", [])
+    for h, meta in HANDLER_METADATA.items()
+    if isinstance(meta, dict) and "evidence" in meta
+}
+
+# handler name -> limitation string (for partial/compatibility handlers)
+HANDLER_LIMITATIONS = {
+    h: meta.get("limitation", "")
+    for h, meta in HANDLER_METADATA.items()
+    if isinstance(meta, dict) and "limitation" in meta
 }
 
 # Alias-consistency rules: every static registration whose *registered name*

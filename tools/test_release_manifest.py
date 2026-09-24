@@ -244,6 +244,20 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertIsNotNone(prov_p)
         self.assertTrue((ROOT / prov_p).is_file(), f"VFPU provenance_path {prov_p} must exist")
 
+    def test_toolchain_policy_declared_and_truthful_release_locks(self):
+        data = load_manifest()
+        self.assertNotIn("toolchain_locks", data, "stale toolchain_locks must be removed")
+        self.assertIn("toolchain_policy", data, "manifest must declare toolchain_policy")
+        policy = data["toolchain_policy"]
+        self.assertIsInstance(policy, dict)
+        expected = {"compiler", "make", "python", "sdl3", "vulkan_sdk"}
+        self.assertEqual(set(policy.keys()), expected)
+        locks = data.get("release_locks", {})
+        self.assertEqual(locks.get("status"), "DEPENDENCY_LOCKS_AND_TOOLCHAIN_POLICY_VERIFIED")
+        self.assertNotEqual(locks.get("status"), "REPRODUCIBLE_MANIFEST_VERIFIED")
+        self.assertIn("toolchain policy", locks.get("comment", "").lower())
+
+
 
 if __name__ == "__main__":
     unittest.main()

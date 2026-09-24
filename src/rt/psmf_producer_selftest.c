@@ -9,6 +9,7 @@
  * carries no PTS, frames straddling PES boundaries, and malformed input. */
 
 #include "psmf_producer.h"
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,8 +32,34 @@ static int mem_read(void *opaque, uint64_t off, void *dst, uint32_t cap, uint32_
     return SR_PSMF_SOURCE_DATA;
 }
 
+typedef struct {
+    MemSource inner;
+    uint32_t read_end;
+    int boundary_violation;
+} BoundedSource;
+
+static int bounded_mem_read(void *opaque, uint64_t off, void *dst,
+                            uint32_t cap, uint32_t *got) {
+    BoundedSource *source = (BoundedSource *)opaque;
+    if (!source || !got) return SR_PSMF_SOURCE_ERROR;
+    if (off > source->read_end || cap > source->read_end - (uint32_t)off) {
+        source->boundary_violation = 1;
+        *got = 0;
+        return SR_PSMF_SOURCE_ERROR;
+    }
+    return mem_read(&source->inner, off, dst, cap, got);
+}
+
 static void be32(uint8_t *p, uint32_t v) {
     p[0]=(uint8_t)(v>>24); p[1]=(uint8_t)(v>>16); p[2]=(uint8_t)(v>>8); p[3]=(uint8_t)v;
+}
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | p[3];
+}
+static void put16le(uint8_t *p, uint16_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
 }
 static void put_pts(uint8_t *p, int64_t v, uint8_t prefix) {
     uint64_t x = (uint64_t)v;
@@ -311,6 +338,83 @@ static uint8_t *fixture(uint32_t *size_out, int variant) {
     *size_out = b.at;
     CHECK(!b.overflow, "fixture stream fits its buffer");
     return b.d;
+}
+
+static void test_mpeg1_pack_does_not_read_past_stream(void) {
+    uint8_t bytes[2048u + 12u + 4u + 2u];
+    memset(bytes, 0, sizeof(bytes));
+    bytes[0] = 'P'; bytes[1] = 'S'; bytes[2] = 'M'; bytes[3] = 'F';
+    be32(bytes + 8, 2048u);
+    be32(bytes + 12, 12u);
+    static const uint8_t pack[12] = {
+        0, 0, 1, 0xBA, 0x21, 0, 4, 0, 4, 1, 0, 0
+    };
+    memcpy(bytes + 2048u, pack, sizeof(pack));
+    bytes[2060] = 0; bytes[2061] = 0; bytes[2062] = 1; bytes[2063] = 0xB9;
+    BoundedSource source;
+    source.inner.data = bytes;
+    source.inner.size = sizeof(bytes);
+    source.inner.max_chunk = 3;
+    source.inner.fail = 0;
+    source.read_end = 2048u + 12u;
+    source.boundary_violation = 0;
+    SrPsmfSource input = {bounded_mem_read, &source, sizeof(bytes)};
+    SrPsmfProducer *producer = sr_psmf_producer_open(&input, 0);
+    CHECK(producer != NULL, "MPEG-1 pack with bytes outside the stream opens");
+    if (producer) {
+        sr_psmf_producer_pump(producer, 2);
+        SrPsmfProducerStats st;
+        sr_psmf_producer_stats(producer, &st);
+        CHECK(st.eof && !st.failed && st.packs == 1,
+              "MPEG-1 pack consumes exactly the declared 12 bytes");
+        CHECK(!source.boundary_violation,
+              "pack parsing never reads beyond the declared PSMF stream");
+        sr_psmf_producer_close(producer);
+    }
+}
+
+static void test_reserved_pack_prefix_fails_closed(void) {
+    uint8_t bytes[2048u + 12u + 2u];
+    memset(bytes, 0, sizeof(bytes));
+    bytes[0] = 'P'; bytes[1] = 'S'; bytes[2] = 'M'; bytes[3] = 'F';
+    be32(bytes + 8, 2048u);
+    be32(bytes + 12, 12u);
+    static const uint8_t pack[12] = {
+        0, 0, 1, 0xBA, 0x00, 0, 4, 0, 4, 1, 0, 0
+    };
+    memcpy(bytes + 2048u, pack, sizeof(pack));
+    BoundedSource source;
+    source.inner.data = bytes;
+    source.inner.size = sizeof(bytes);
+    source.inner.max_chunk = 0;
+    source.inner.fail = 0;
+    source.read_end = 2048u + 12u;
+    source.boundary_violation = 0;
+    SrPsmfSource input = {bounded_mem_read, &source, sizeof(bytes)};
+    SrPsmfProducer *producer = sr_psmf_producer_open(&input, 0);
+    CHECK(producer != NULL, "reserved pack prefix reaches the packet parser");
+    if (producer) {
+        sr_psmf_producer_pump(producer, 1);
+        SrPsmfProducerStats st;
+        sr_psmf_producer_stats(producer, &st);
+        CHECK(st.failed && !st.eof && st.parser_failures == 1,
+              "reserved pack prefix fails closed");
+        CHECK(!source.boundary_violation,
+              "reserved pack prefix does not read beyond the declared stream");
+        sr_psmf_producer_close(producer);
+    }
+}
+
+static void test_presentation_base_bounds(void) {
+    uint32_t size = 0;
+    uint8_t *bytes = fixture(&size, 0);
+    MemSource mem = {bytes, size, 5, 0};
+    SrPsmfSource source = {mem_read, &mem, size};
+    SrPsmfProducer *producer = sr_psmf_producer_open(&source, INT64_MIN);
+    CHECK(producer == NULL,
+          "a presentation base that can overflow timestamp normalization is refused");
+    if (producer) sr_psmf_producer_close(producer);
+    free(bytes);
 }
 
 /* Drain one track, appending each access-unit size from *count onwards. */
@@ -1061,6 +1165,153 @@ static void run_corpus_case(const CorpusCase *c) {
     free(data);
 }
 
+static uint64_t psmf_fuzz_state = 0x319503A11F00D123ULL;
+
+static uint64_t psmf_fuzz_rand64(void) {
+    uint64_t z = (psmf_fuzz_state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+static void psmf_fuzz_mutate(uint8_t *data, size_t *size, size_t cap) {
+    static const size_t fields[] = {0, 4, 8, 12, 0x80, 0x81};
+    static const uint32_t values[] = {
+        0, 1, 2, 3, 4, 8, 12, 16, 119, 120, 128, 2047, 2048, 2049,
+        0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu
+    };
+    if (*size == 0) return;
+    unsigned operations = (unsigned)(psmf_fuzz_rand64() % 5u) + 1u;
+    for (unsigned op = 0; op < operations; op++) {
+        unsigned kind = (unsigned)(psmf_fuzz_rand64() % 7u);
+        if (kind == 0) {
+            size_t field = fields[psmf_fuzz_rand64() % (sizeof(fields) / sizeof(fields[0]))];
+            uint32_t value = values[psmf_fuzz_rand64() % (sizeof(values) / sizeof(values[0]))];
+            if (field == 0 && *size >= 4) {
+                data[0] = (uint8_t)value;
+                data[1] = 0x7E;
+                data[2] = 0x50;
+                data[3] = 0x53;
+            } else if (field == 4 && *size >= 4) {
+                be32(data + field, value);
+            } else if (field == 8 && *size >= 16) {
+                be32(data + field, value);
+            } else if (field == 12 && *size >= 16) {
+                be32(data + field, value);
+            } else if (field == 0x80 && *size >= 0x82u) {
+                uint16_t count = (uint16_t)value;
+                data[0x80] = (uint8_t)count;
+                data[0x81] = (uint8_t)(count >> 8);
+            } else if (field == 0x81 && *size >= 0x82u) {
+                data[0x81] = (uint8_t)value;
+            }
+        } else if (kind == 1 && *size >= 4u) {
+            for (size_t i = 2048u; i + 4u <= *size; i++) {
+                if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+                    data[i + 3] = (uint8_t)psmf_fuzz_rand64();
+                    break;
+                }
+            }
+            uint32_t index = (uint32_t)(psmf_fuzz_rand64() % *size);
+            data[index] ^= (uint8_t)(1u << (psmf_fuzz_rand64() % 8u));
+        } else if (kind == 2 && *size > 0u) {
+            size_t index = (size_t)(psmf_fuzz_rand64() % *size);
+            data[index] = (uint8_t)psmf_fuzz_rand64();
+        } else if (kind == 3 && *size + 4u <= cap) {
+            size_t count = (size_t)(psmf_fuzz_rand64() % 4u) + 1u;
+            size_t index = (size_t)(psmf_fuzz_rand64() % (*size + 1u));
+            memmove(data + index + count, data + index, *size - index);
+            for (size_t i = 0; i < count; i++)
+                data[index + i] = (uint8_t)psmf_fuzz_rand64();
+            *size += count;
+        } else if (kind == 4 && *size > 5u) {
+            if ((psmf_fuzz_rand64() & 3u) == 0) {
+                *size = (size_t)(psmf_fuzz_rand64() % *size);
+            } else {
+                size_t count = (size_t)(psmf_fuzz_rand64() % 4u) + 1u;
+                if (count >= *size) count = 1;
+                size_t index = (size_t)(psmf_fuzz_rand64() % (*size - count + 1u));
+                memmove(data + index, data + index + count, *size - index - count);
+                *size -= count;
+            }
+        } else if (kind == 5 && *size >= 6u) {
+            size_t index = (size_t)(psmf_fuzz_rand64() % (*size - 5u));
+            put16le(data + index, (uint16_t)psmf_fuzz_rand64());
+        } else if (*size > 0u) {
+            size_t run = (size_t)(psmf_fuzz_rand64() % 16u) + 1u;
+            size_t index = (size_t)(psmf_fuzz_rand64() % *size);
+            if (run > *size - index) run = *size - index;
+            memset(data + index, (psmf_fuzz_rand64() & 1u) ? 0u : 0xFFu, run);
+        }
+    }
+}
+
+static void psmf_drain(SrPsmfProducer *producer) {
+    SrPsmfAu au;
+    while (sr_psmf_producer_pop(producer, SR_PSMF_AU_VIDEO, &au))
+        sr_psmf_au_release(&au);
+    while (sr_psmf_producer_pop(producer, SR_PSMF_AU_AUDIO, &au))
+        sr_psmf_au_release(&au);
+}
+
+static void test_seeded_mutation(unsigned iterations) {
+    psmf_fuzz_state = 0x319503A11F00D123ULL;
+    uint32_t seed_size = 0;
+    uint8_t *seed = fixture(&seed_size, 0);
+    CHECK(seed != NULL, "mutation seed allocated");
+    if (!seed) return;
+    uint8_t *mutated = (uint8_t *)malloc((size_t)seed_size + 256u);
+    CHECK(mutated != NULL, "mutation buffer allocated");
+    if (!mutated) { free(seed); return; }
+    unsigned opened = 0;
+    unsigned completed = 0;
+    static const int64_t bases[] = {0, -(INT64_C(1) << 33), INT64_MIN};
+    for (unsigned i = 0; i < iterations; i++) {
+        memcpy(mutated, seed, seed_size);
+        size_t size = seed_size;
+        psmf_fuzz_mutate(mutated, &size, (size_t)seed_size + 256u);
+        uint32_t start = size >= 16u ? read_be32(mutated + 8) : 0u;
+        uint32_t stream_size = size >= 16u ? read_be32(mutated + 12) : 0u;
+        uint64_t end = (uint64_t)start + stream_size;
+        uint32_t read_end = start >= 2048u && stream_size != 0u && end <= size
+                          ? (uint32_t)end : (uint32_t)size;
+        BoundedSource source;
+        source.inner.data = mutated;
+        source.inner.size = (uint32_t)size;
+        source.inner.max_chunk = (unsigned)(psmf_fuzz_rand64() % 2049u);
+        source.inner.fail = 0;
+        source.read_end = read_end;
+        source.boundary_violation = 0;
+        SrPsmfSource input = {bounded_mem_read, &source, size};
+        int64_t base = bases[i % 3u];
+        SrPsmfProducer *producer = sr_psmf_producer_open(&input, base);
+        if (base == INT64_MIN) {
+            CHECK(producer == NULL, "mutation campaign refuses overflowing timestamp base");
+            if (producer) sr_psmf_producer_close(producer);
+            continue;
+        }
+        if (!producer) continue;
+        opened++;
+        for (unsigned step = 0; step < 128u && !sr_psmf_producer_eof(producer); step++) {
+            sr_psmf_producer_pump(producer, 4);
+            psmf_drain(producer);
+        }
+        SrPsmfProducerStats st;
+        sr_psmf_producer_stats(producer, &st);
+        CHECK(!source.boundary_violation,
+              "mutation campaign keeps every source read inside the declared stream");
+        CHECK(st.video_buffered <= SR_PSMF_MAX_AU_BYTES &&
+              st.audio_buffered <= SR_PSMF_MAX_AU_BYTES,
+              "mutation campaign preserves per-track allocation bounds");
+        if (st.eof && !st.failed) completed++;
+        sr_psmf_producer_close(producer);
+    }
+    free(mutated);
+    free(seed);
+    printf("PSMF seeded mutation: %u iterations, %u opened, %u completed, 0 crashes\n",
+           iterations, opened, completed);
+}
+
 static void test_conformance_corpus(void) {
     static const CorpusCase cases[] = {
         { .name = "pack stuffing length 0", .data = corpus_pack_zero, .size = sizeof(corpus_pack_zero),
@@ -1177,7 +1428,17 @@ static void test_conformance_corpus(void) {
         run_corpus_case(&cases[i]);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    unsigned fuzz_iterations = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--fuzz-iters") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            unsigned long value = strtoul(argv[++i], &end, 10);
+            if (end && *end == '\0' && value > 0 && value <= 100000ul) {
+                fuzz_iterations = (unsigned)value;
+            }
+        }
+    }
     test_access_unit_formation();
     test_backpressure_keeps_order();
     test_no_aud_scan_work_bound();
@@ -1188,7 +1449,11 @@ int main(void) {
     test_malformed();
     test_rejects_bad_containers();
     test_timestamp_flags();
+    test_mpeg1_pack_does_not_read_past_stream();
+    test_reserved_pack_prefix_fails_closed();
+    test_presentation_base_bounds();
     test_conformance_corpus();
+    if (fuzz_iterations) test_seeded_mutation(fuzz_iterations);
     printf("psmf_producer_selftest: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

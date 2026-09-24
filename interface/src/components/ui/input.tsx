@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 import * as React from "react"
 
 import { cn } from "@/lib/utils"

@@ -493,6 +493,34 @@ def validate_meta(regs: list[dict]) -> None:
         raise ManifestError(
             f"FLOAT_RETURN_HANDLERS names handlers hle.c no longer registers: {stale_float_handlers}"
         )
+    for handler, status in meta.HANDLER_STATUS.items():
+        if status == "complete":
+            evidence = meta.HANDLER_EVIDENCE.get(handler)
+            if not evidence or not isinstance(evidence, list):
+                raise ManifestError(
+                    f"handler {handler!r} is marked 'complete' but has no evidence metadata; "
+                    "a complete handler must cite at least one verifiable evidence entry "
+                    "(public ABI/doc, source-owned test name, hardware oracle id, or guest-module takeover)"
+                )
+            for ev in evidence:
+                if not isinstance(ev, str) or not ev.strip():
+                    raise ManifestError(f"handler {handler!r} has empty evidence entry")
+                candidate_path = ev.split(":")[0].strip()
+                if (
+                    candidate_path.startswith("src/")
+                    or candidate_path.startswith("tools/")
+                ) and not (ROOT / candidate_path).exists():
+                    raise ManifestError(
+                        f"handler {handler!r} cites non-existent evidence file {candidate_path!r}"
+                    )
+        elif status in ("partial", "compatibility"):
+            limitation = meta.HANDLER_LIMITATIONS.get(handler)
+            if not limitation or not isinstance(limitation, str) or not limitation.strip():
+                raise ManifestError(
+                    f"handler {handler!r} is marked {status!r} but has no named limitation; "
+                    "every partial and compatibility entry must carry a non-empty limitation "
+                    "(state a factual limitation from code or 'limitation not yet reviewed (#341)')"
+                )
 
 
 def compute_findings(regs: list[dict]) -> list[dict]:
@@ -852,8 +880,8 @@ def load_imports(path: Path | None) -> dict[int, str]:
 # registrations have no executable coverage, how large their module family is,
 # and which public tests already name them.
 
-#: `sceKernelFoo` / `__sceSasBar` -> the owning PSP module bucket.
-_MODULE_RE = re.compile(r"^(?:__)?(sce[A-Z][a-z0-9]*)")
+#: `sceKernelFoo` / `__sceSasBar` / `_sceKernelBaz` -> the owning PSP module bucket.
+_MODULE_RE = re.compile(r"^(?:_+)?(sce[A-Z][a-z0-9]*)")
 
 #: A NID or registered name mentioned by a public test.
 PUBLIC_TEST_GLOBS = ("tools/test_*.py", "src/rt/*_selftest.c")
@@ -1036,6 +1064,190 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
     }
 
 
+# ---------------------------------------------------------------------------
+# Semantic status census (#341)
+# ---------------------------------------------------------------------------
+# Deterministic census of every dedicated handler by semantic status
+# (complete / partial / compatibility / controlled_unsupported / unreviewed),
+# grouped by API family (library name). Generic success handlers (h_ok)
+# and refusal markers (h_ControlledUnsupported) are excluded.
+
+CENSUS_SCHEMA = 1
+CENSUS_STATUSES = (
+    "complete",
+    "partial",
+    "compatibility",
+    "controlled_unsupported",
+    "unreviewed",
+)
+
+
+def build_census(manifest: dict | None = None) -> dict:
+    """Generate a deterministic census of dedicated handlers grouped by API family.
+
+    Each dedicated handler is classified into one of the semantic statuses:
+    complete / partial / compatibility / controlled_unsupported / unreviewed.
+    Generic stubs (h_ok family, mechanical stubs) and generic refusal markers
+    (h_ControlledUnsupported) are excluded so the census reflects dedicated
+    handler maturity.
+    """
+    if manifest is None:
+        manifest = build_manifest()
+
+    regs = manifest["registrations"]
+    generic = set(meta.GENERIC_SUCCESS_HANDLERS) | {"h_ControlledUnsupported"}
+
+    by_handler: dict[str, list[dict]] = {}
+    for r in regs:
+        h = r["handler"]
+        if h in generic or r["classification"] == "fake_success":
+            continue
+        by_handler.setdefault(h, []).append(r)
+
+    handler_entries: list[dict] = []
+    for h, h_regs in sorted(by_handler.items()):
+        status = meta.HANDLER_STATUS.get(h, "unreviewed")
+        modules = [derive_module(r["name"]) for r in h_regs]
+        non_other = [m for m in modules if m != "other"]
+        family = non_other[0] if non_other else (modules[0] if modules else "other")
+
+        apis = sorted(
+            [{"nid": r["nid"], "name": r["name"]} for r in h_regs],
+            key=lambda a: (int(a["nid"], 16), a["name"]),
+        )
+        entry: dict = {
+            "handler": h,
+            "api_family": family,
+            "status": status,
+            "registrations": apis,
+        }
+        if status == "complete":
+            entry["evidence"] = meta.HANDLER_EVIDENCE.get(h, [])
+        elif status in ("partial", "compatibility"):
+            entry["limitation"] = meta.HANDLER_LIMITATIONS.get(h, "")
+        handler_entries.append(entry)
+
+    handler_entries.sort(key=lambda e: (e["api_family"], e["handler"]))
+
+    families: dict[str, dict] = {}
+    for entry in handler_entries:
+        fam = entry["api_family"]
+        if fam not in families:
+            families[fam] = {
+                "api_family": fam,
+                "summary": {s: 0 for s in CENSUS_STATUSES},
+                "total_handlers": 0,
+                "total_registrations": 0,
+                "handlers": [],
+            }
+        fam_dict = families[fam]
+        fam_dict["handlers"].append(entry)
+        fam_dict["total_handlers"] += 1
+        fam_dict["total_registrations"] += len(entry["registrations"])
+        fam_dict["summary"][entry["status"]] = fam_dict["summary"].get(entry["status"], 0) + 1
+
+    total_by_status = {s: 0 for s in CENSUS_STATUSES}
+    for e in handler_entries:
+        total_by_status[e["status"]] = total_by_status.get(e["status"], 0) + 1
+
+    total_registrations = sum(len(e["registrations"]) for e in handler_entries)
+
+    by_family_summary = {
+        fam: {
+            **data["summary"],
+            "total_handlers": data["total_handlers"],
+            "total_registrations": data["total_registrations"],
+        }
+        for fam, data in sorted(families.items())
+    }
+
+    return {
+        "schema": CENSUS_SCHEMA,
+        "source": manifest.get("source", "src/rt/hle.c"),
+        "summary": {
+            "total_dedicated_handlers": len(handler_entries),
+            "total_dedicated_registrations": total_registrations,
+            "by_status": total_by_status,
+            "by_family": by_family_summary,
+        },
+        "families": {fam: families[fam] for fam in sorted(families)},
+        "handlers": handler_entries,
+    }
+
+
+def render_census_markdown(census: dict) -> str:
+    """Render a GitHub-flavored Markdown summary table and review details."""
+    out = []
+    out.append("# HLE Semantic Status Census")
+    out.append("")
+    s = census["summary"]
+    out.append(
+        f"Dedicated handlers audited: **{s['total_dedicated_handlers']}** "
+        f"({s['total_dedicated_registrations']} registrations) across **{len(s['by_family'])}** API families."
+    )
+    out.append("")
+    out.append(
+        "| API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers |"
+    )
+    out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+
+    tot = s["by_status"]
+    for fam, stats in sorted(s["by_family"].items()):
+        out.append(
+            f"| `{fam}` | {stats['complete']} | {stats['partial']} | {stats['compatibility']} | "
+            f"{stats['controlled_unsupported']} | {stats['unreviewed']} | {stats['total_handlers']} |"
+        )
+    out.append(
+        f"| **Total** | **{tot['complete']}** | **{tot['partial']}** | **{tot['compatibility']}** | "
+        f"**{tot['controlled_unsupported']}** | **{tot['unreviewed']}** | **{s['total_dedicated_handlers']}** |"
+    )
+    out.append("")
+
+    handlers = census["handlers"]
+    complete_handlers = [h for h in handlers if h["status"] == "complete"]
+    partial_handlers = [h for h in handlers if h["status"] == "partial"]
+    compat_handlers = [h for h in handlers if h["status"] == "compatibility"]
+    controlled_handlers = [h for h in handlers if h["status"] == "controlled_unsupported"]
+
+    if complete_handlers:
+        out.append("## Complete Handlers (Evidence-Backed)")
+        out.append("")
+        for h in complete_handlers:
+            api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
+            out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
+            for ev in h.get("evidence", []):
+                out.append(f"  - Evidence: {ev}")
+        out.append("")
+
+    if partial_handlers:
+        out.append("## Partial Handlers (Named Limitations)")
+        out.append("")
+        for h in partial_handlers:
+            api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
+            out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
+            out.append(f"  - Limitation: {h.get('limitation', '')}")
+        out.append("")
+
+    if compat_handlers:
+        out.append("## Compatibility Handlers (Named Limitations)")
+        out.append("")
+        for h in compat_handlers:
+            api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
+            out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
+            out.append(f"  - Limitation: {h.get('limitation', '')}")
+        out.append("")
+
+    if controlled_handlers:
+        out.append("## Controlled Unsupported Dedicated Handlers")
+        out.append("")
+        for h in controlled_handlers:
+            api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
+            out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
+        out.append("")
+
+    return "\n".join(out)
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, default=ROOT / "build" / "hle_manifest.json")
@@ -1055,6 +1267,22 @@ def main(argv: list[str]) -> int:
         default=None,
         help="also emit the per-NID evidence chain (name -> NID -> registration -> "
              "production reachability -> exercise -> tier)",
+    )
+    ap.add_argument(
+        "--census",
+        nargs="?",
+        const=ROOT / "build" / "hle_census.json",
+        type=Path,
+        default=None,
+        help="emit the deterministic census of dedicated handlers by semantic status and API family",
+    )
+    ap.add_argument(
+        "--census-markdown",
+        nargs="?",
+        const=ROOT / "build" / "hle_census.md",
+        type=Path,
+        default=None,
+        help="emit the Markdown summary table of the HLE status census",
     )
     ap.add_argument(
         "--triage-top",
@@ -1082,6 +1310,20 @@ def main(argv: list[str]) -> int:
         dump_json(chain, args.evidence_chain)
         tiers = ", ".join(f"{k}={v}" for k, v in chain["summary"]["by_tier"].items())
         print(f"hle_manifest: evidence chain -> {args.evidence_chain} ({tiers})")
+    if args.census is not None or args.census_markdown is not None:
+        census = build_census(manifest)
+        if args.census is not None:
+            dump_json(census, args.census)
+            s = census["summary"]
+            print(
+                f"hle_manifest: census ({s['total_dedicated_handlers']} handlers across "
+                f"{len(s['by_family'])} families) -> {args.census}"
+            )
+        if args.census_markdown is not None:
+            md_text = render_census_markdown(census)
+            args.census_markdown.parent.mkdir(parents=True, exist_ok=True)
+            args.census_markdown.write_text(md_text, encoding="utf-8")
+            print(f"hle_manifest: census markdown -> {args.census_markdown}")
     if args.write_baseline is not None:
         dump_json(manifest_to_baseline(manifest), args.write_baseline)
         print(f"hle_manifest: baseline -> {args.write_baseline}")

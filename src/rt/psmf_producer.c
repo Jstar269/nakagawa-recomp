@@ -507,9 +507,15 @@ static int parse_one(SrPsmfProducer *p) {
     }
     if (sid == 0xBAu) {
         uint32_t total;
-        if (left < 12 || !read_exact(p, p->cursor + 4, h + 4, 10)) return -1;
-        /* MPEG-2 pack headers are 14 bytes plus pack_stuffing_length bytes. */
-        total = (h[4] & 0xc0u) == 0x40u ? 14u + (h[13] & 7u) : 12u;
+        if (left < 12 || !read_exact(p, p->cursor + 4, h + 4, 8)) return -1;
+        if ((h[4] & 0xc0u) == 0x40u) {
+            if (left < 14 || !read_exact(p, p->cursor + 12, h + 12, 2)) return -1;
+            total = 14u + (h[13] & 7u);
+        } else if ((h[4] & 0xF0u) == 0x20u) {
+            total = 12u;
+        } else {
+            return -1;
+        }
         if (left < total) return -1;
         p->cursor += total;
         p->stats.packs++;
@@ -600,6 +606,7 @@ static int parse_one(SrPsmfProducer *p) {
 SrPsmfProducer *sr_psmf_producer_open(const SrPsmfSource *source,
                                       int64_t presentation_base) {
     if (!source || !source->read || source->size < PSMF_HEADER_BYTES) return NULL;
+    if (presentation_base < -(INT64_C(1) << 33)) return NULL;
     uint8_t header[PSMF_HEADER_BYTES];
     SrPsmfProducer *p = (SrPsmfProducer *)calloc(1, sizeof(*p));
     if (!p) return NULL;
