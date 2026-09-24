@@ -8063,7 +8063,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c4d188e231dba9211aa39e45a3e5204b9c8a27d04f17111d73950417ab1f2422"
+      "sha256": "11d72a03807c8ac03c79c011ab1b42e5e6cd5159b5916a7759fe0edcff00b389"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -9230,7 +9230,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0a491bd341d79cb732e0253e0a9b2085d6fedef949c0860ed9e19d0a08c1fce0"
+      "sha256": "37ee1e29902a0d46418a95256a659873d21647c6add5d9035af7394bbf469bd9"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -9845,12 +9845,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "004860bd507bf7dd7f3727e129c0407f5b6777c7",
-    "candidate_tree": "941065439c1031741110adb03d6c77839c58997c",
+    "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
+    "candidate_tree": "7509890a0290cf0b1d12da41dd88601c1d1e1fe2",
     "refreshed_paths": [
-      "docs/LLE_FIDELITY_ARCHITECTURE.md",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "tools/publish_audit.py",
+      "tools/test_publish_audit.py"
     ]
   }
 }
