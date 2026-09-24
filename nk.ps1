@@ -13,7 +13,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("Doctor", "Build", "Rebuild", "Play", "Verify", "Manager")]
+    [ValidateSet("Doctor", "Build", "Rebuild", "Play", "Verify", "Clean", "Manager")]
     [string]$Action = "Doctor",
 
     [ValidateSet("repo", "inputs", "build", "products", "run", "all")]
@@ -21,6 +21,7 @@ param(
 
     [switch]$Json,
     [switch]$Strict,
+    [switch]$Yes,
 
     [string]$MsysPath = $(if ($env:MSYS_PATH) { $env:MSYS_PATH } else { "C:\msys64\ucrt64\bin" }),
     [string]$VulkanSdk = "",
@@ -111,6 +112,15 @@ try {
         "Verify" {
             if (-not (Invoke-WorkspaceDoctor -DoctorScope "repo" -WarningsFail:$Strict)) { exit 1 }
             if (-not (Invoke-ManagerAction -ManagerAction "Verify")) { exit 1 }
+        }
+        "Clean" {
+            if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "tools\nk_clean.py"))) {
+                throw "Missing workspace cleaner: tools\nk_clean.py"
+            }
+            $arguments = @("tools/nk_clean.py")
+            if ($Yes) { $arguments += "--yes" }
+            & python @arguments | Out-Host
+            if ($LASTEXITCODE -ne 0) { exit 1 }
         }
         "Manager" {
             if (-not (Test-Path -LiteralPath $Manager)) {

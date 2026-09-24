@@ -160,6 +160,44 @@ Before implementing those commands, the project should complete the following in
 5. separate build-time dependencies from the files required only to run a completed local build;
 6. unify the flattened `fs/` and hierarchical `memstick/` mappings under one safe Memory Stick root.
 
+## Output roots and clean preview
+
+`tools/nk_clean.py` is the preview-first workspace cleaner for issue #368. It plans deletions
+against an explicit allowlist of repository-owned output roots and never selects anything
+outside them:
+
+| Root | Category | Contents |
+| --- | --- | --- |
+| `build/`, `fixtures/psp_oracle/build/` | build outputs | generated objects, images, and runtime products |
+| `logs/build_out_recomp.log`, `logs/build_err_recomp.log`, `logs/recomp_err.log`, `logs/obj_err.log`, `logs/link_err.log`, `logs/stdout_run.log`, `logs/stderr_run.log`, `link_err.log` | logs | ephemeral build and run logs |
+| `tmp/`, `.tmp/`, `scratch/`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`, `.cache/`, `htmlcov/`, `compile_commands.json`, `.coverage`, `.eslintcache` | tool scratch | disposable tool caches and indexes |
+
+Everything else — source, assets, docs, keys, `place_game_here/`, `memstick/`, `fs/`,
+`oracle/`, and any unlisted file such as `logs/oracle_run.log` — is never selected.
+Git-tracked files are always skipped, and reparse points (symlinks and Windows junctions)
+are never followed or deleted, so a junction cannot smuggle a protected file into the
+deletion set. A scan or containment failure fails closed with a nonzero exit and no
+deletion.
+
+The default invocation is a dry run that only prints the grouped plan:
+
+```powershell
+.\nk.ps1 Clean
+mingw32-make clean-preview
+python tools/nk_clean.py
+```
+
+Deletion requires an explicit confirmation: `.\nk.ps1 Clean -Yes`, `CONFIRM=1` (which makes
+`make clean-preview` pass `--yes`), or `python tools/nk_clean.py --yes`. An optional age
+bound previews and deletes only files older than N days:
+
+```powershell
+mingw32-make clean-preview OLDER_THAN=7
+```
+
+`make clean`, `clean-fixtures`, `distclean`, and `clean-all` keep their existing pinned
+semantics; `clean-preview` is additive.
+
 ## Deferred build and workspace ergonomics
 
 The governance work intentionally leaves these as separate, evidence-backed follow-ups:
@@ -175,7 +213,7 @@ The governance work intentionally leaves these as separate, evidence-backed foll
    implemented in `tools/nk_doctor_checks.py` (`check_long_paths`, `query_windows_long_paths_enabled`)
    under code `LONG_PATHS`, reporting Windows `LongPathsEnabled` registry policy and MAX_PATH (260) margin
    for the deepest expected build path as an advisory `WARN`;
-5. define bounded artifact accumulation and a safe, scoped `clean-all` workflow;
+5. [DONE - #368] define bounded artifact accumulation and a safe, scoped `clean-all` workflow:
 6. stop root-level artifact pollution and document the intended output roots;
 7. eliminate absolute paths from generated `compile_commands.json` where tooling permits;
 8. audit and bound agent database/worktree accumulation;
