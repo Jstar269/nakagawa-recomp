@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d3e92c1ef9e5ca3d7439fffaeae30834206463146969dbb0150524d4c8607f34"
+      "sha256": "abbdfb125a5b0a4d6e26d9f150178108b5ece20fb74cc76ceb2de1afc0ed48df"
     },
     {
       "path": "NOTICE.md",
@@ -6697,7 +6697,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c69b16067ed7469e8b226f133df650116d7ca7ccf8f7d64716ebab2eb7a274e5"
+      "sha256": "e589bb2984ca32e0d2af1de443055a8bd6f3741625222cefc2855d2969075b3b"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -8921,7 +8921,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9887c97185a0950f3949aff065fc89ca1839d8de3db4951a79057f2c3ebfcb80"
+      "sha256": "adba3e4581d1138be78a8d783d107e45922371adf96c79b8329340cb6db10826"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -9329,7 +9329,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13bcfd2be5ec2dd7c8177d08c87b3e0abf50b4a916f81ccc7d12f405aafdb2c9"
+      "sha256": "0b5f1f12289c06f709a9b5884ff348474e742fcc45591cf0d3c73ec4c3b10d08"
     },
     {
       "path": "tools/test_shader_embed.py",
