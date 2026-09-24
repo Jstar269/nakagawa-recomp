@@ -9032,7 +9032,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e8b64951f20bada552f9728c63c6c0b8061a766bda35d59c7cb4b7f7d9ac2dd6"
+      "sha256": "d20f8de64b57582a44f400b79309f450b7b9fd0a280d8a2bf14bf1629541fbac"
     },
     {
       "path": "tools/test_provenance_ledger.py",
@@ -9044,7 +9044,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bcdc02020d68fd36a6142aecbad9dcb8f50d6177d2f6b08d7a8773a480fc194e"
+      "sha256": "c6ce5e417df8fd21070db404745c7a49e1374c34495166bdade0572b052f68ee"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
