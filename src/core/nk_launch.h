@@ -6,6 +6,7 @@
 
 #include "nk_types.h"
 #include "nk_platform.h"
+#include "nk_title_manifest.h"
 #include "generated/nk_title_catalog.h"
 #include <stdbool.h>
 
@@ -49,6 +50,7 @@ typedef struct {
     char prepared_root[NK_MAX_PATH];
     char dataroot_path[NK_MAX_PATH];
     char font_dir[NK_MAX_PATH];
+    char user_data_root[NK_MAX_PATH];
     /* Memory Stick root handed to the runtime as SR_MEMSTICK. Resolved by
        nk_launch_prepare_session to a directory that is known to be writable;
        a caller with a user-configured save location may overwrite it with an
@@ -58,8 +60,11 @@ typedef struct {
     char memstick_root[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
+    char selected_executable[NK_MAX_EXECUTABLE_PATH];
     uint32_t base_address;
     uint32_t entry_point;
+    bool package_launch;
+    bool experimental_package;
     bool staged_executable_checked;
     NkLaunchExecutableInfo staged_executable_info;
 
@@ -72,7 +77,7 @@ typedef struct {
     int exit_code;
     /* Exact launch-mode evidence recorded while nk_launch_start builds argv. */
     bool argv_has_gui;
-    char last_error[256];
+    char last_error[2048];
 } NkLaunchSession;
 
 /* True when the launcher's executable search can resolve a runtime for `title_id`
@@ -87,6 +92,16 @@ bool nk_launch_runtime_available(const char *root, const char *title_id);
 /* True only when the selected title's identity-matched runtime executable and
  * generated image are both available under `root`. */
 bool nk_launch_runtime_package_available(const char *root, const char *title_id);
+
+/* Validate the v1 package discovered for a concrete player library entry.
+ * The root is the per-user data root (or an explicit test/user override). */
+NkRuntimePackageStatus nk_launch_validate_runtime_package(
+    const char *user_data_root,
+    const NkGameEntry *game,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+);
 
 /* Validate a promoted staging EBOOT.BIN against the selected title manifest.
  * Plain ELF32/MIPS files receive full program-header, load-range, entry, and
