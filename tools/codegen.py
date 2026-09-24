@@ -631,6 +631,12 @@ def _arr(idx):
 
 _EAT = " s->vfpuCtrl[0]=0xe4u; s->vfpuCtrl[1]=0xe4u; s->vfpuCtrl[2]=0u;"
 
+def _vfpu_interp_stmt(addr, w):
+    return (f"s->pc=0x{addr:08x}u; if (sr_vfpu_interp(s,0x{w:08x}u) == SR_VFPU_OTHER) {{ "
+            f"fprintf(stderr, \"VFPU_UNSUPPORTED: pc=0x{addr:08x} word=0x{w:08x} issue=326\\n\"); "
+            f"sr_unimplemented(0x{addr:08x}u, \"VFPU unsupported encoding; issue #326\"); "
+            "sr_end(s, 0u, 0); return; }")
+
 def _half_to_f32_bits(h):
     s = (h >> 15) & 1
     e = (h >> 10) & 0x1F
@@ -888,7 +894,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         # Guest code pages are not guaranteed to remain mapped in the runtime image.
         # Pass the instruction captured from the ELF directly instead of asking dispatch
         # to reread it from MEM[pc] (which can be zero after loader/data overlays).
-        run = f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u);"
+        run = _vfpu_interp_stmt(addr, w)
         return run, (base if op == 0x3d else None), (16 if op == 0x3d else 0)
     # lv.q / sv.q. Aligned accesses stay native; a dynamic alignment violation is
     # delegated to the same authoritative decoder as the explicit left/right forms.
@@ -908,20 +914,20 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             if op == 0x36:  # lv.q
                 parts = " ".join(f"s->vi[{idx[i]}] = MEM_R32(_a + {i*4});" for i in range(4))
                 return (f"{{ uint32_t _a = {base}; {guard}if((_a&15u)==0 && sr_guest_span_readable(_a,16u)){{ {parts} }}else{{"
-                        f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u); }} }}"), None, 0
+                        f"{_vfpu_interp_stmt(addr, w)} }} }}"), None, 0
             parts = " ".join(f"MEM_W32_PC(_a + {i*4}, s->vi[{idx[i]}], 0x{addr:08x}u);" for i in range(4))
             return (f"{{ uint32_t _a = {base}; {guard}if((_a&15u)==0 && sr_guest_span_writable(_a,16u)){{ {parts} }}else{{"
-                    f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u); }} }}"), base, 16  # sv.q
+                    f"{_vfpu_interp_stmt(addr, w)} }} }}"), base, 16  # sv.q
         if op == 0x36:  # lv.q
             # #184: the whole 16-byte span must be readable before any destination
             # lane commits. A straddling/wrapped aligned span falls back to the
             # authoritative interpreter, which rejects it all-or-nothing.
             parts = " ".join(f"s->vi[{idx[i]}] = MEM_R32(_a + {i*4});" for i in range(4))
             return (f"{{ uint32_t _a = {base}; if((_a&15u)==0 && sr_guest_span_readable(_a,16u)){{ {parts} }}else{{"
-                    f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u); }} }}"), None, 0
+                    f"{_vfpu_interp_stmt(addr, w)} }} }}"), None, 0
         parts = " ".join(f"MEM_W32_PC(_a + {i*4}, s->vi[{idx[i]}], 0x{addr:08x}u);" for i in range(4))
         return (f"{{ uint32_t _a = {base}; if((_a&15u)==0 && sr_guest_span_writable(_a,16u)){{ {parts} }}else{{"
-                f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u); }} }}"), base, 16  # sv.q
+                f"{_vfpu_interp_stmt(addr, w)} }} }}"), base, 16  # sv.q
     # lv.s / sv.s. MEASURED (PSP-A3-08): singles need 4-byte alignment (AdEL),
     # so under --lle-cpu the same sr_cpu_guard_access() call as scalars runs
     # first (width 4); default emission below is unchanged.
@@ -948,6 +954,11 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     if op == 0x12:
         sub = (w >> 21) & 0x1F
         imm = w & 0xFF
+        # mfv/mfvc into $zero has no architectural effect (MIPS discards r0 writes), whatever
+        # register is read; `mfvc $zero, 255` (0x486000ff) is a compiler VFPU-sync idiom. The
+        # interpreter completes it the same way, so both lanes agree (#326).
+        if sub == 3 and rt(w) == 0:
+            return "/* mfv/mfvc $zero: no architectural effect */", None, 0
         if sub not in (3, 7) or imm >= 144:
             raise Unsupported(f"cop2 sub {sub} or register {imm} at 0x{addr:08x}")
         if imm < 128:
@@ -1455,7 +1466,7 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
         # runtime guest code pages may be unmapped or overlaid and cannot be reread by PC.
         if (w >> 26) not in (0x12,0x18,0x19,0x1b,0x32,0x34,0x35,0x36,0x37,0x3a,0x3c,0x3d,0x3e,0x3f):
             raise
-        eff = f"s->pc=0x{addr:08x}u; (void)sr_vfpu_interp(s,0x{w:08x}u);"
+        eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
     return f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
 

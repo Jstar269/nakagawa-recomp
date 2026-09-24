@@ -720,6 +720,7 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         f"{stem}_recomp_1.o",
         f"{stem}_recomp_2.o",
         "ge.o",
+        "flight_recorder.o",
         "recomp.o",
         "guest_interp.o",
         "title_config.o",

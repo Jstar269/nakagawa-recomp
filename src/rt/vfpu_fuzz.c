@@ -235,6 +235,15 @@ int main(int argc, char **argv) {
         s_rng = (uint32_t)strtoul(getenv("FUZZ_SEED"), NULL, 0);
     }
 
+    if (trials <= 0) {
+        fprintf(stderr, "vfpu_fuzz: trials must be positive\n");
+        return 2;
+    }
+    if (FUZZ_NCASES <= 0) {
+        fprintf(stderr, "vfpu_fuzz: no admitted cases\n");
+        return 2;
+    }
+
     int tested = 0, skipped = 0;
     sr_mem_init();
     int bad_cases = check_transcendentals()+check_unaligned_dispatch()+check_vcrs_width_guard();
@@ -346,5 +355,5 @@ int main(int argc, char **argv) {
     printf("vfpu_fuzz: %d/%d distinct words tested (%d not covered by interp oracle), "
            "%d words diverge, %llu/%llu trials mismatched\n",
            tested, FUZZ_NCASES, skipped, bad_cases, mismatches, total);
-    return bad_cases ? 1 : 0;
+    return (bad_cases || skipped || tested != FUZZ_NCASES) ? 1 : 0;
 }

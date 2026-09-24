@@ -1,8 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+import shutil
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 import codegen
+
+
+CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 
 class VfpuFallbackTests(unittest.TestCase):
@@ -16,12 +23,55 @@ class VfpuFallbackTests(unittest.TestCase):
                     self.assertNotIn("sr_vfpu_interp", effect)
                     self.assertIn(f"s->vfpuCtrl[{imm - 128}]", effect)
 
+    def test_mfvc_into_zero_is_a_no_op_but_real_gpr_stays_unsupported(self):
+        # `mfvc $zero, 255` (0x486000ff) is a compiler VFPU-sync idiom: writes to r0 are
+        # discarded, so it must not reach the fail-closed interpreter fallback.
+        effect, _, _ = codegen.vfpu_effect(0x08804000, 0x486000FF)
+        self.assertNotIn("sr_vfpu_interp", effect)
+        self.assertNotIn("s->r[", effect)
+        with self.assertRaises(codegen.Unsupported):
+            codegen.vfpu_effect(0x08804000, 0x486200FF)  # mfvc $v0, 255
+
     def test_unknown_vfpu_form_stays_inside_translated_function(self):
         word=(0x34<<26)|(31<<21)  # unsupported VFPU4 jump group
         line=codegen.normal_line(0x1234,word)
         self.assertIn("s->pc=0x00001234u",line)
         self.assertIn("sr_vfpu_interp(s,0xd3e00000u)",line)
+        self.assertIn("SR_VFPU_OTHER",line)
+        self.assertIn("VFPU_UNSUPPORTED",line)
+        self.assertIn("sr_unimplemented",line)
+        self.assertIn("issue=326",line)
         self.assertIn("sr_end",line)
+
+    @unittest.skipUnless(CC, "a host C compiler is required")
+    def test_unknown_vfpu_form_stops_before_following_instruction(self):
+        word = (0x34 << 26) | (31 << 21)
+        line = codegen.normal_line(0x1234, word)
+        source = f'''#include <stdint.h>
+#include <stdio.h>
+#define SR_VFPU_OTHER 0
+typedef struct CpuState {{ uint32_t pc; uint32_t r[32]; }} CpuState;
+static void sr_begin(CpuState *s, uint32_t pc, uint32_t op) {{ (void)s; (void)pc; (void)op; }}
+static void sr_end(CpuState *s, uint32_t addr, uint32_t size) {{ (void)s; (void)addr; (void)size; }}
+static int sr_vfpu_interp(CpuState *s, uint32_t op) {{ (void)s; return op == 0xd3e00000u ? SR_VFPU_OTHER : 1; }}
+static int unsupported;
+static void sr_unimplemented(uint32_t pc, const char *reason) {{ (void)pc; (void)reason; unsupported = 1; }}
+static void generated(CpuState *s) {{ {line} s->r[0] = 0xdeadbeefu; }}
+int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && s.r[0] == 0u ? 0 : 1; }}
+'''
+        with tempfile.TemporaryDirectory(prefix="vfpu_census_fallback_") as tmp:
+            root = Path(tmp)
+            source_path = root / "fallback.c"
+            exe_path = root / ("fallback.exe" if Path(CC).suffix.lower() == ".exe" else "fallback")
+            source_path.write_text(source, encoding="ascii", newline="\n")
+            compiled = subprocess.run(
+                [CC, "-std=c11", "-O0", str(source_path), "-o", str(exe_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            ran = subprocess.run([str(exe_path)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
 
     def test_left_right_quad_ops_always_use_single_step_decoder(self):
         for op in (0x35,0x3d):

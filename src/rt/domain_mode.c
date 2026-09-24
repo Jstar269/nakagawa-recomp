@@ -13,6 +13,7 @@
 #include "domain_mode.h"
 
 #include "recomp.h"
+#include "flight_recorder.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -249,6 +250,7 @@ static int sr_import_fatal(
     uint32_t nid,
     uint32_t stub_pc,
     const char *reason) {
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_IMPORT, stub_pc, nid, 0u);
     fprintf(stderr,
             "SR_IMPORT_FATAL: nid 0x%08x stub_pc 0x%08x: %s\n",
             nid, stub_pc, reason);
