@@ -1107,7 +1107,6 @@ static void test_multistream_selection(void) {
     free(bytes);
 }
 
-<<<<<<< HEAD
 static void test_mpeg_ycbcr_guest_contract(void) {
     enum {
         TD_MPEG_DESC = 0x08100000u,
@@ -1197,8 +1196,6 @@ static void test_mpeg_ycbcr_guest_contract(void) {
           "MPEG teardown frees guest YCbCr state");
 }
 
-int main(void) {
-=======
 int main(int argc, char **argv) {
     unsigned fuzz_iterations = 0;
     for (int i = 1; i < argc; i++) {
@@ -1210,7 +1207,6 @@ int main(int argc, char **argv) {
             }
         }
     }
->>>>>>> 2a1eb6d2689575eb6771c78b76c621f60b8e35f9
     static uint8_t arena[ARENA_BYTES];
     g_mem = arena;
     memset(arena, 0, sizeof(arena));
@@ -1223,11 +1219,8 @@ int main(int argc, char **argv) {
     test_instance_isolation();
     test_destination_refusal();
     test_legacy_feed_take_path();
-<<<<<<< HEAD
     test_mpeg_ycbcr_guest_contract();
-=======
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
->>>>>>> 2a1eb6d2689575eb6771c78b76c621f60b8e35f9
 
     if (failures) {
         fprintf(stderr, "psmf_media_selftest: %d checks, %d FAILURES\n", checks, failures);
