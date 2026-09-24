@@ -501,7 +501,7 @@ def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIAL
             raise ProtocolError(f"unexpected or duplicate DMAC matrix case {record.case_id!r}")
         observed.add(key)
         values = dict(record.values)
-        required = {f"out{i}" for i in range(9)}
+        required = {f"out{i}" for i in range(10)}
         if not required <= values.keys():
             raise ProtocolError(f"DMAC matrix case {record.case_id!r} is missing scalar fields")
         numbers = {key: int(value, 0) for key, value in values.items() if key.startswith("out")}
@@ -515,6 +515,7 @@ def validate_dmac_size_matrix(text: str, *, trials: int = DMAC_SIZE_MATRIX_TRIAL
             "trial count": (numbers["out6"], trials),
             "failed trials": (numbers["out7"], 0),
             "source-guard mutation": (numbers["out8"], 0),
+            "post-request guard mutation": (numbers["out9"], 0),
         }
         if record.status != "PASS":
             raise ProtocolError(f"DMAC matrix case {record.case_id!r} is {record.status}")
