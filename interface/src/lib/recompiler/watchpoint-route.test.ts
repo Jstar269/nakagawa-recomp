@@ -104,7 +104,7 @@ test("watchpoint POST/DELETE/GET flow with strict parsing and shared limit", asy
 
   // The derived file exists, is an envelope, and carries a hash.
   const file = JSON.parse(readFileSync(filePath, "utf8"));
-  assert.equal(file.format, "hst-watchpoints");
+  assert.equal(file.format, "nk-watchpoints");
   assert.match(file.contentHash as string, /^[0-9a-f]{64}$/);
 });
 

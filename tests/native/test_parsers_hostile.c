@@ -31,6 +31,31 @@ static void fill_dir_chain(uint8_t *sec, size_t target_off) {
     }
 }
 
+static void put_both32(uint8_t *p, uint32_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+    p[2] = (uint8_t)(value >> 16);
+    p[3] = (uint8_t)(value >> 24);
+    p[4] = (uint8_t)(value >> 24);
+    p[5] = (uint8_t)(value >> 16);
+    p[6] = (uint8_t)(value >> 8);
+    p[7] = (uint8_t)value;
+}
+
+static void write_dir_record(uint8_t *sec, size_t offset, const char *name,
+                             size_t name_len, uint32_t lba, uint32_t size,
+                             bool directory) {
+    size_t record_len = 33 + name_len;
+    if ((record_len & 1u) != 0) record_len++;
+    memset(sec + offset, 0, record_len);
+    sec[offset] = (uint8_t)record_len;
+    put_both32(sec + offset + 2, lba);
+    put_both32(sec + offset + 10, size);
+    sec[offset + 25] = directory ? 0x02 : 0x00;
+    sec[offset + 32] = (uint8_t)name_len;
+    memcpy(sec + offset + 33, name, name_len);
+}
+
 static void test_hostile_library_json(const char *test_dir) {
     char fpath[512];
     NkLibrary lib;
@@ -288,16 +313,25 @@ static void test_hostile_iso_parser(const char *test_dir) {
     /* 8. Duplicate SFO keys */
     printf("[HOSTILE_TEST] Subtest 8a: conflicting duplicate SFO keys (must reject as ambiguous)\n"); fflush(stdout);
     snprintf(fpath, sizeof(fpath), "%s%cdup_sfo_conflict.iso", test_dir, nk_platform_path_separator());
-    uint8_t dup_iso[18 * 2048];
+    uint8_t dup_iso[20 * 2048];
     memset(dup_iso, 0, sizeof(dup_iso));
     uint8_t *pvd_dup = &dup_iso[16 * 2048];
     pvd_dup[0] = 0x01;
     memcpy(&pvd_dup[1], "CD001", 5);
     memcpy(&pvd_dup[40], "DUP_SFO_VOL                     ", 32);
-    pvd_dup[158] = 17; pvd_dup[165] = 17;
-    pvd_dup[167] = 0x08; pvd_dup[172] = 0x08;
+    pvd_dup[158] = 17; pvd_dup[159] = 0; pvd_dup[160] = 0; pvd_dup[161] = 0;
+    pvd_dup[162] = 0; pvd_dup[163] = 0; pvd_dup[164] = 0; pvd_dup[165] = 0;
+    pvd_dup[166] = 0x00; pvd_dup[167] = 0x08; pvd_dup[168] = 0; pvd_dup[169] = 0;
+    pvd_dup[170] = 0; pvd_dup[171] = 0; pvd_dup[172] = 0; pvd_dup[173] = 0x08;
+    write_dir_record(pvd_dup, 156, "\0", 1, 17, 2048, true);
+    write_dir_record(&dup_iso[17 * 2048], 0, "\0", 1, 17, 2048, true);
+    write_dir_record(&dup_iso[17 * 2048], 34, "\1", 1, 17, 2048, true);
+    write_dir_record(&dup_iso[17 * 2048], 68, "PSP_GAME", 8, 18, 2048, true);
+    write_dir_record(&dup_iso[18 * 2048], 0, "\0", 1, 18, 2048, true);
+    write_dir_record(&dup_iso[18 * 2048], 34, "\1", 1, 17, 2048, true);
+    write_dir_record(&dup_iso[18 * 2048], 68, "PARAM.SFO;1", 11, 19, 100, false);
 
-    uint8_t *sfo = &dup_iso[17 * 2048];
+    uint8_t *sfo = &dup_iso[19 * 2048];
     sfo[0] = 0x00; sfo[1] = 'P'; sfo[2] = 'S'; sfo[3] = 'F';
     sfo[4] = 0x01; sfo[5] = 0x01;
     sfo[8] = 52; sfo[9] = 0; sfo[10] = 0; sfo[11] = 0;
@@ -305,18 +339,19 @@ static void test_hostile_iso_parser(const char *test_dir) {
     sfo[16] = 2; sfo[17] = 0; sfo[18] = 0; sfo[19] = 0;
 
     sfo[20] = 0; sfo[21] = 0;
-    sfo[22] = 0x04; sfo[23] = 0x02;  /* parameter format: NUL-terminated UTF-8 */
+    sfo[22] = 0x04; sfo[23] = 0x02;
     sfo[24] = 10; sfo[25] = 0; sfo[26] = 0; sfo[27] = 0;
+    sfo[28] = 16; sfo[29] = 0; sfo[30] = 0; sfo[31] = 0;
     sfo[32] = 0; sfo[33] = 0; sfo[34] = 0; sfo[35] = 0;
 
     sfo[36] = 8; sfo[37] = 0;
-    sfo[38] = 0x04; sfo[39] = 0x02;  /* parameter format: NUL-terminated UTF-8 */
+    sfo[38] = 0x04; sfo[39] = 0x02;
     sfo[40] = 10; sfo[41] = 0; sfo[42] = 0; sfo[43] = 0;
+    sfo[44] = 16; sfo[45] = 0; sfo[46] = 0; sfo[47] = 0;
     sfo[48] = 10; sfo[49] = 0; sfo[50] = 0; sfo[51] = 0;
 
     memcpy(&sfo[52], "DISC_ID\0", 8);
     memcpy(&sfo[60], "DISC_ID\0", 8);
-
     memcpy(&sfo[68], "UCUS98701\0", 10);
     memcpy(&sfo[78], "MALICIOUS\0", 10);
 
@@ -391,11 +426,6 @@ static void test_hostile_iso_parser(const char *test_dir) {
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_trunc, &meta) == NK_ERROR_INVALID_ISO);
 
-    /* 10. Raw-scan identity must not satisfy the catalog.
-       A valid image with no PARAM.SFO anywhere, but carrying the ASCII bytes of
-       a catalog-known disc id in its data. The id may be reported as a guess;
-       it must NOT mark the disc supported or verified, because a byte sequence
-       occurring somewhere in an image is not evidence of disc identity. */
     char fpath_scan[512];
     snprintf(fpath_scan, sizeof(fpath_scan), "%s%cscan_identity.iso", test_dir, nk_platform_path_separator());
     static uint8_t scan_iso[20 * 2048];
@@ -412,18 +442,13 @@ static void test_hostile_iso_parser(const char *test_dir) {
     write_test_file(fpath_scan, scan_iso, sizeof(scan_iso));
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_scan, &meta) == NK_OK);
-    assert(strcmp(meta.disc_id, "TEST00001") == 0);   /* still reported */
+    assert(strcmp(meta.disc_id, "UNKNOWN") == 0);
+    assert(strcmp(meta.title_name, "Unknown PSP Title") == 0);
     assert(meta.param_sfo_parsed == false);
-    assert(meta.is_supported == false);               /* but never trusted */
+    assert(meta.is_supported == false);
     assert(meta.status != NK_STATUS_VERIFIED);
     assert(meta.matched_title == NULL);
 
-    /* An SFO reached only by scanning raw bytes has no filesystem provenance.
-       The earlier case above embedded a bare disc-id string; this one embeds a
-       STRUCTURALLY VALID SFO carrying a catalog-known DISC_ID in a sector the
-       directory tree never references. Parsing succeeds, so the values may be
-       reported -- but nothing about where they were found authorizes trusting
-       them, and a crafted image must not be matched to a catalog title. */
     printf("[HOSTILE_TEST] embedded valid SFO with no directory provenance\n"); fflush(stdout);
     char fpath_embed[512];
     snprintf(fpath_embed, sizeof(fpath_embed), "%s%cembedded_sfo.iso", test_dir, nk_platform_path_separator());
@@ -456,9 +481,10 @@ static void test_hostile_iso_parser(const char *test_dir) {
     write_test_file(fpath_embed, embed_iso, sizeof(embed_iso));
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_embed, &meta) == NK_OK);
-    assert(strcmp(meta.disc_id, "TEST00001") == 0);   /* parsed, so reported */
+    assert(strcmp(meta.disc_id, "UNKNOWN") == 0);
+    assert(strcmp(meta.title_name, "Unknown PSP Title") == 0);
     assert(meta.param_sfo_parsed == false);
-    assert(meta.is_supported == false);               /* but never trusted   */
+    assert(meta.is_supported == false);
     assert(meta.status != NK_STATUS_VERIFIED);
     assert(meta.matched_title == NULL);
 
@@ -485,32 +511,29 @@ static void test_hostile_iso_parser(const char *test_dir) {
     fpvd[0] = 0x01;
     memcpy(&fpvd[1], "CD001", 5);
     memcpy(&fpvd[40], "FMT_PROBE_VOL                   ", 32);
-    /* Root directory record at PVD byte 156: extent sector 17, one sector. */
-    fpvd[158] = 17; fpvd[165] = 17;
-    fpvd[167] = 0x08; fpvd[172] = 0x08;
+    fpvd[158] = 17; fpvd[159] = 0; fpvd[160] = 0; fpvd[161] = 0;
+    fpvd[162] = 0; fpvd[163] = 0; fpvd[164] = 0; fpvd[165] = 0;
+    fpvd[166] = 0x00; fpvd[167] = 0x08; fpvd[168] = 0; fpvd[169] = 0;
+    fpvd[170] = 0; fpvd[171] = 0; fpvd[172] = 0; fpvd[173] = 0x08;
+    write_dir_record(fpvd, 156, "\0", 1, 17, 2048, true);
+    write_dir_record(&fmt_iso[17 * 2048], 0, "\0", 1, 17, 2048, true);
+    write_dir_record(&fmt_iso[17 * 2048], 34, "\1", 1, 17, 2048, true);
+    write_dir_record(&fmt_iso[17 * 2048], 68, "PSP_GAME", 8, 18, 2048, true);
+    write_dir_record(&fmt_iso[18 * 2048], 0, "\0", 1, 18, 2048, true);
+    write_dir_record(&fmt_iso[18 * 2048], 34, "\1", 1, 17, 2048, true);
+    write_dir_record(&fmt_iso[18 * 2048], 68, "PARAM.SFO;1", 11, 19, 100, false);
 
-    /* Sector 17: a directory holding PARAM.SFO at sector 18. */
-    uint8_t *fdir = &fmt_iso[17 * 2048];
-    fdir[0] = 44;               /* record length        */
-    fdir[2] = 18;               /* extent LBA (LE)      */
-    fdir[9] = 18;               /* extent LBA (BE low)  */
-    fdir[10] = 0x00; fdir[11] = 0x08;   /* data length LE   */
-    fdir[17] = 0x08;            /* data length BE       */
-    fdir[32] = 11;              /* identifier length    */
-    memcpy(&fdir[33], "PARAM.SFO;1", 11);
-
-    uint8_t *fsfo = &fmt_iso[18 * 2048];
-    fsfo[1] = 'P'; fsfo[2] = 'S'; fsfo[3] = 'F';
+    uint8_t *fsfo = &fmt_iso[19 * 2048];
+    fsfo[0] = 0x00; fsfo[1] = 'P'; fsfo[2] = 'S'; fsfo[3] = 'F';
     fsfo[4] = 0x01; fsfo[5] = 0x01;
-    fsfo[8] = 36;               /* key table offset     */
-    fsfo[12] = 44;              /* data table offset    */
-    fsfo[16] = 1;               /* one entry            */
-    fsfo[20] = 0; fsfo[21] = 0; /* key offset 0         */
-    fsfo[22] = 0x04;            /* format 0x0404:       */
-    fsfo[23] = 0x04;            /* uint32, NOT a string */
-    fsfo[24] = 10;              /* data length          */
-    fsfo[28] = 10;              /* data max length      */
-    fsfo[32] = 0;               /* data offset 0        */
+    fsfo[8] = 36; fsfo[9] = 0; fsfo[10] = 0; fsfo[11] = 0;
+    fsfo[12] = 44; fsfo[13] = 0; fsfo[14] = 0; fsfo[15] = 0;
+    fsfo[16] = 1; fsfo[17] = 0; fsfo[18] = 0; fsfo[19] = 0;
+    fsfo[20] = 0; fsfo[21] = 0;
+    fsfo[22] = 0x04; fsfo[23] = 0x04;
+    fsfo[24] = 10; fsfo[25] = 0; fsfo[26] = 0; fsfo[27] = 0;
+    fsfo[28] = 10; fsfo[29] = 0; fsfo[30] = 0; fsfo[31] = 0;
+    fsfo[32] = 0; fsfo[33] = 0; fsfo[34] = 0; fsfo[35] = 0;
     memcpy(&fsfo[36], "DISC_ID", 7);
     memcpy(&fsfo[44], "TEST00001", 9);
 

@@ -7,11 +7,15 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,6 +34,16 @@ DOCUMENT_NAMESPACE_BASE = "https://spdx.org/spdxdocs/nakagawa-recomp"
 SUPPORTED_NPM_LOCKFILE_VERSIONS = (2, 3)
 SUPPORTED_NPM_PACKAGES_FORMATS = (2, 3)
 
+PYTHON_RELEASE_INDEX_SCHEMA_VERSION = 1
+PYTHON_HASH_EVIDENCE_SCHEMA = "nakagawa-python-artifact-hash:v1"
+PYTHON_RELEASE_INDEX_IDENTITY = "assets/pypi_tool_metadata_2026-09-24.json"
+PYTHON_RELEASE_INDEX_PATH = ROOT / PYTHON_RELEASE_INDEX_IDENTITY
+SBOM_CREATED = "2026-08-06T00:00:00Z"
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+PYTHON_NAME_PATTERN = re.compile(r"[a-zA-Z0-9_.-]+")
+PYTHON_VERSION_PATTERN = re.compile(r"[a-zA-Z0-9_.-]+")
+PythonArtifactMetadata = dict[tuple[str, str], list[dict[str, str]]]
+
 
 class LockfileParseError(Exception):
     """A declared dependency lockfile could not be parsed completely.
@@ -39,6 +53,202 @@ class LockfileParseError(Exception):
     conform to the repository's declared lockfile format. Callers must abort
     rather than treat the failure as "no dependencies" (issue #375).
     """
+
+
+def _normalize_python_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def live_metadata_requested() -> bool:
+    return os.environ.get("NAKAGAWA_SBOM_FETCH_LIVE_METADATA", "").strip().lower() in {
+        "1", "true", "yes",
+    }
+
+
+def _parse_pypi_release_index(document: object, source_label: str) -> PythonArtifactMetadata:
+    if not isinstance(document, dict):
+        raise LockfileParseError(f"trusted Python metadata {source_label} must be a JSON object")
+    expected_keys = {"schema_version", "retrieved_utc", "sources"}
+    if set(document) != expected_keys:
+        raise LockfileParseError(
+            f"trusted Python metadata {source_label} must contain exactly "
+            f"{sorted(expected_keys)}"
+        )
+    if document["schema_version"] != PYTHON_RELEASE_INDEX_SCHEMA_VERSION:
+        raise LockfileParseError(
+            f"trusted Python metadata {source_label} has unsupported schema_version "
+            f"{document['schema_version']!r}"
+        )
+    retrieved_utc = document["retrieved_utc"]
+    if not isinstance(retrieved_utc, str):
+        raise LockfileParseError(
+            f"trusted Python metadata {source_label} has invalid retrieved_utc"
+        )
+    try:
+        parsed_date = date.fromisoformat(retrieved_utc)
+    except ValueError as exc:
+        raise LockfileParseError(
+            f"trusted Python metadata {source_label} has invalid retrieved_utc {retrieved_utc!r}"
+        ) from exc
+    if parsed_date.isoformat() != retrieved_utc:
+        raise LockfileParseError(
+            f"trusted Python metadata {source_label} retrieved_utc must use YYYY-MM-DD"
+        )
+    sources = document["sources"]
+    if not isinstance(sources, list) or not sources:
+        raise LockfileParseError(
+            f"trusted Python metadata {source_label} has no non-empty sources list"
+        )
+
+    result: PythonArtifactMetadata = {}
+    for source_index, source in enumerate(sources, start=1):
+        label = f"{source_label} source {source_index}"
+        if not isinstance(source, dict) or set(source) != {"url", "name", "version", "artifacts"}:
+            raise LockfileParseError(
+                f"trusted Python metadata {label} must contain exactly url, name, version, and artifacts"
+            )
+        name = source["name"]
+        version = source["version"]
+        if not isinstance(name, str) or not PYTHON_NAME_PATTERN.fullmatch(name):
+            raise LockfileParseError(f"trusted Python metadata {label} has invalid name {name!r}")
+        if not isinstance(version, str) or not PYTHON_VERSION_PATTERN.fullmatch(version):
+            raise LockfileParseError(
+                f"trusted Python metadata {label} has invalid version {version!r}"
+            )
+        expected_url = (
+            f"https://pypi.org/pypi/{quote(name, safe='')}/{quote(version, safe='')}/json"
+        )
+        if source["url"] != expected_url:
+            raise LockfileParseError(
+                f"trusted Python metadata {label} URL {source['url']!r} does not match "
+                f"the official release URL {expected_url!r}"
+            )
+        key = (_normalize_python_name(name), version)
+        if key in result:
+            raise LockfileParseError(
+                f"trusted Python metadata {source_label} has duplicate release {name}=={version}"
+            )
+        artifacts = source["artifacts"]
+        if not isinstance(artifacts, list) or not artifacts:
+            raise LockfileParseError(
+                f"trusted Python metadata {label} has no wheel or sdist artifact records"
+            )
+        filenames: set[str] = set()
+        records: list[dict[str, str]] = []
+        for artifact_index, artifact in enumerate(artifacts, start=1):
+            artifact_label = f"{label} artifact {artifact_index}"
+            if not isinstance(artifact, dict) or set(artifact) != {"filename", "sha256"}:
+                raise LockfileParseError(
+                    f"trusted Python metadata {artifact_label} must contain exactly filename and sha256"
+                )
+            filename = artifact["filename"]
+            digest = artifact["sha256"]
+            if (
+                not isinstance(filename, str)
+                or not filename
+                or "/" in filename
+                or "\\" in filename
+                or not (filename.endswith(".whl") or filename.endswith(".tar.gz"))
+            ):
+                raise LockfileParseError(
+                    f"trusted Python metadata {artifact_label} has invalid wheel/sdist filename {filename!r}"
+                )
+            if filename in filenames:
+                raise LockfileParseError(
+                    f"trusted Python metadata {label} has duplicate filename {filename}"
+                )
+            if not isinstance(digest, str) or not SHA256_PATTERN.fullmatch(digest):
+                raise LockfileParseError(
+                    f"trusted Python metadata {artifact_label} has malformed SHA-256 hash {digest!r}; "
+                    "expected 64 lowercase hexadecimal characters"
+                )
+            filenames.add(filename)
+            records.append({"filename": filename, "sha256": digest})
+        result[key] = records
+    return result
+
+
+def load_pypi_release_index(path: Path) -> PythonArtifactMetadata:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise LockfileParseError(
+            f"cannot read trusted Python artifact metadata {path}: {exc}"
+        ) from exc
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LockfileParseError(
+            f"trusted Python artifact metadata {path} is not valid UTF-8 JSON: {exc}"
+        ) from exc
+    return _parse_pypi_release_index(document, str(path))
+
+
+def fetch_live_python_metadata(
+    releases: list[tuple[str, str]], timeout: float = 30.0,
+) -> PythonArtifactMetadata:
+    if timeout <= 0:
+        raise LockfileParseError("trusted Python metadata fetch timeout must be positive")
+    sources: list[dict] = []
+    for name, version in sorted(set(releases)):
+        url = f"https://pypi.org/pypi/{quote(name, safe='')}/{quote(version, safe='')}/json"
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "nakagawa-recomp-sbom-verifier/1",
+            },
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                raw = response.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                raise LockfileParseError(
+                    f"live PyPI metadata for {name}=={version} exceeds the 8 MiB safety limit"
+                )
+            document = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise LockfileParseError(
+                f"cannot fetch live PyPI metadata for {name}=={version} from {url}: {exc}"
+            ) from exc
+        info = document.get("info") if isinstance(document, dict) else None
+        urls = document.get("urls") if isinstance(document, dict) else None
+        if not isinstance(info, dict) or not isinstance(urls, list):
+            raise LockfileParseError(f"live PyPI metadata for {name}=={version} has an invalid shape")
+        if _normalize_python_name(str(info.get("name", ""))) != _normalize_python_name(name) \
+                or info.get("version") != version:
+            raise LockfileParseError(
+                f"live PyPI metadata identity does not match requested release {name}=={version}"
+            )
+        artifacts: list[dict] = []
+        for artifact in urls:
+            if not isinstance(artifact, dict) \
+                    or artifact.get("packagetype") not in {"bdist_wheel", "sdist"}:
+                continue
+            digests = artifact.get("digests")
+            artifacts.append({
+                "filename": artifact.get("filename"),
+                "sha256": digests.get("sha256") if isinstance(digests, dict) else None,
+            })
+        sources.append({
+            "url": url,
+            "name": info["name"],
+            "version": info["version"],
+            "artifacts": artifacts,
+        })
+    return _parse_pypi_release_index(
+        {"schema_version": 1, "retrieved_utc": date.today().isoformat(), "sources": sources},
+        "live PyPI API",
+    )
+
+
+def resolve_pypi_release_index(
+    path: Path, fetch_live: bool = False, timeout: float = 30.0,
+) -> PythonArtifactMetadata:
+    snapshot = load_pypi_release_index(path)
+    if not fetch_live:
+        return snapshot
+    return fetch_live_python_metadata(list(snapshot), timeout=timeout)
 
 
 #: Schema version of the generated lockfile evidence binding.
@@ -173,7 +383,8 @@ def resolve_declared_lockfiles(manifest_data: object, manifest_path: Path) -> tu
 
 
 def parse_lockfiles(npm_lock_path: Path, py_lock_path: Path,
-                    repo_root: Path | None = None) -> dict:
+                    repo_root: Path | None = None,
+                    python_artifact_metadata: PythonArtifactMetadata | None = None) -> dict:
     """Parse both lockfiles from single snapshots and derive all binding data.
 
     Returns the dependency inventories, the lock evidence, and the
@@ -185,7 +396,9 @@ def parse_lockfiles(npm_lock_path: Path, py_lock_path: Path,
     npm_snap = snapshot_lockfile(npm_lock_path, "npm", repo_root)
     py_snap = snapshot_lockfile(py_lock_path, "Python", repo_root)
     npm_packages = _parse_npm_lock_text(npm_snap, npm_lock_path)
-    py_packages = _parse_python_lock_text(py_snap, py_lock_path)
+    if python_artifact_metadata is None:
+        python_artifact_metadata = load_pypi_release_index(PYTHON_RELEASE_INDEX_PATH)
+    py_packages = _parse_python_lock_text(py_snap, py_lock_path, python_artifact_metadata)
     lock_files = build_lock_file_entries(npm_snap, py_snap)
     lock_relationships = build_lock_relationship_entries(lock_files)
     return {
@@ -370,60 +583,169 @@ def parse_npm_lockfile(lock_path: Path) -> list[dict]:
     return _parse_npm_lock_text(snap, lock_path)
 
 
-def parse_python_lockfile(lock_path: Path) -> list[dict]:
-    """Parse the pinned Python requirements path from a single byte snapshot."""
+def parse_python_lockfile(
+    lock_path: Path,
+    artifact_metadata: PythonArtifactMetadata | None = None,
+) -> list[dict]:
     snap = snapshot_lockfile(lock_path, "Python")
-    return _parse_python_lock_text(snap, lock_path)
+    if artifact_metadata is None:
+        artifact_metadata = load_pypi_release_index(PYTHON_RELEASE_INDEX_PATH)
+    return _parse_python_lock_text(snap, lock_path, artifact_metadata)
 
 
-def _parse_python_lock_text(snap: LockfileSnapshot, lock_path: Path) -> list[dict]:
-    """Parse the snapshotted Python requirements text into package records.
-
-    The repository's declared format is one `name==version` pin per nonblank,
-    non-comment line, with an optional single `--hash=sha256:<64 hex>` digest.
-    Every other nonblank/non-comment line is a parse error (issue #375): the
-    previous best-effort loop silently skipped requirement lines it could not
-    parse, dropping them from the release inventory. A file whose only
-    non-comment content is blank or comments is a valid empty lockfile and
-    yields an empty inventory.
-    """
-    text = snap.text
-
-    packages: list[dict] = []
-    seen_pypi: set[tuple[str, str]] = set()
+def _python_lock_logical_lines(text: str, lock_path: Path):
+    pending = ""
+    start_line = 0
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not pending and (not line or line.startswith("#")):
             continue
-        match = re.match(
-            r"^([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)"
-            r"(?:\s+--hash=sha256:([0-9a-fA-F]{64}))?$",
-            line,
+        if pending and (not line or line.startswith("#")):
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: incomplete backslash continuation"
+            )
+        if not pending:
+            start_line = lineno
+        if line.endswith("\\"):
+            pending += f"{line[:-1].rstrip()} "
+            continue
+        logical_line = f"{pending}{line}"
+        pending = ""
+        yield start_line, logical_line
+    if pending:
+        raise LockfileParseError(
+            f"Python lockfile {lock_path} line {start_line}: incomplete backslash continuation"
+        )
+
+
+def _parse_python_lock_text(
+    snap: LockfileSnapshot,
+    lock_path: Path,
+    artifact_metadata: PythonArtifactMetadata,
+) -> list[dict]:
+    packages: list[dict] = []
+    seen_pypi: set[tuple[str, str]] = set()
+    for lineno, logical_line in _python_lock_logical_lines(snap.text, lock_path):
+        fields = logical_line.split()
+        if not fields:
+            continue
+        match = re.fullmatch(
+            r"([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)", fields[0]
         )
         if not match:
             raise LockfileParseError(
-                f"Python lockfile {lock_path} line {lineno}: requirement does not match the "
-                "declared pinned format 'name==version[ --hash=sha256:<64 hex>]': "
-                f"{line!r}"
+                f"Python lockfile {lock_path} line {lineno}: requirement must start with an exact "
+                f"name==version pin: {logical_line!r}"
             )
-        name, version, sha256_hash = match.groups()
-        if (name, version) in seen_pypi:
+        name, version = match.groups()
+        if not fields[1:]:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: requirement {name}=={version} "
+                "has no SHA-256 hashes"
+            )
+        declared_hashes: list[str] = []
+        for field in fields[1:]:
+            if not field.startswith("--hash="):
+                raise LockfileParseError(
+                    f"Python lockfile {lock_path} line {lineno}: unsupported token {field!r}; "
+                    "only repeated --hash=sha256:<64 lowercase hex> options are accepted"
+                )
+            digest = field.removeprefix("--hash=")
+            if not digest.startswith("sha256:") \
+                    or not SHA256_PATTERN.fullmatch(digest.removeprefix("sha256:")):
+                raise LockfileParseError(
+                    f"Python lockfile {lock_path} line {lineno}: malformed SHA-256 hash {digest!r}; "
+                    "expected sha256: followed by 64 lowercase hexadecimal characters"
+                )
+            sha256_hash = digest.removeprefix("sha256:")
+            if sha256_hash in declared_hashes:
+                raise LockfileParseError(
+                    f"Python lockfile {lock_path} line {lineno}: duplicate SHA-256 hash "
+                    f"{sha256_hash} for {name}=={version}"
+                )
+            declared_hashes.append(sha256_hash)
+        key = (name, version)
+        if key in seen_pypi:
             raise LockfileParseError(
                 f"Python lockfile {lock_path} line {lineno}: duplicate requirement pin "
                 f"{name}=={version}"
             )
-        seen_pypi.add((name, version))
+        seen_pypi.add(key)
+        release_artifacts = artifact_metadata.get((_normalize_python_name(name), version))
+        if release_artifacts is None:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: no trusted artifact metadata for "
+                f"{name}=={version}"
+            )
+        release_by_hash = {
+            artifact["sha256"]: artifact for artifact in release_artifacts
+        }
+        unmatched = [digest for digest in declared_hashes if digest not in release_by_hash]
+        if unmatched:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: declared SHA-256 hash "
+                f"{unmatched[0]} matches no trusted artifact for {name}=={version}"
+            )
+        missing_release = sorted(set(release_by_hash) - set(declared_hashes))
+        if missing_release:
+            raise LockfileParseError(
+                f"Python lockfile {lock_path} line {lineno}: {name}=={version} does not declare "
+                f"every trusted artifact SHA-256; missing {missing_release[0]}"
+            )
+        verified_hashes = [artifact["sha256"] for artifact in release_artifacts]
         packages.append({
             "name": name,
             "version": version,
             "spdx_id": f"SPDXRef-pip-{name}-{version}",
             "license": "NOASSERTION",
-            "sha256": sha256_hash or "",
+            "sha256": declared_hashes[0],
+            "declared_sha256": declared_hashes,
+            "verified_sha256": verified_hashes,
+            "artifacts": [dict(artifact) for artifact in release_artifacts],
             "purl": f"pkg:pypi/{name}@{version}",
             "ecosystem": "pypi",
         })
 
     return packages
+
+
+def _python_hash_annotation_comment(
+    status: str,
+    package: dict,
+    sha256_hash: str,
+    filename: str | None = None,
+) -> str:
+    fields = [
+        PYTHON_HASH_EVIDENCE_SCHEMA,
+        f"status={status}",
+        f"name={package['name']}",
+        f"version={package['version']}",
+        f"sha256={sha256_hash}",
+    ]
+    if filename is not None:
+        fields.append(f"filename={filename}")
+    return ";".join(fields)
+
+
+def _python_hash_annotations(package: dict) -> list[dict]:
+    annotations = [
+        {
+            "annotationDate": SBOM_CREATED,
+            "annotationType": "OTHER",
+            "annotator": "Tool: nakagawa-recomp-generate_sbom-0.1.0",
+            "comment": _python_hash_annotation_comment(
+                "declared", package, sha256_hash),
+        }
+        for sha256_hash in package["declared_sha256"]
+    ]
+    annotations.extend({
+        "annotationDate": SBOM_CREATED,
+        "annotationType": "OTHER",
+        "annotator": "Tool: nakagawa-recomp-generate_sbom-0.1.0",
+        "comment": _python_hash_annotation_comment(
+            "verified", package, artifact["sha256"], artifact["filename"]),
+    } for artifact in package["artifacts"])
+    return annotations
 
 
 def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: list[dict],
@@ -530,7 +852,7 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
 
     # Ingest PyPI packages
     for pkg in py_packages:
-        packages.append({
+        package_entry = {
             "SPDXID": pkg["spdx_id"],
             "name": pkg["name"],
             "versionInfo": pkg["version"],
@@ -539,6 +861,11 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
             "licenseConcluded": pkg["license"],
             "licenseDeclared": pkg["license"],
             "copyrightText": "NOASSERTION",
+            "checksums": [
+                {"algorithm": "SHA256", "checksumValue": sha256_hash}
+                for sha256_hash in pkg["verified_sha256"]
+            ],
+            "annotations": _python_hash_annotations(pkg),
             "externalRefs": [
                 {
                     "referenceCategory": "PACKAGE-MANAGER",
@@ -546,7 +873,8 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
                     "referenceLocator": pkg["purl"],
                 }
             ],
-        })
+        }
+        packages.append(package_entry)
         relationships.append({
             "spdxElementId": root_pkg_id,
             "relationshipType": "DEV_DEPENDENCY_OF",
@@ -561,7 +889,7 @@ def generate_spdx23(manifest_data: dict, npm_packages: list[dict], py_packages: 
         "documentNamespace": f"{DOCUMENT_NAMESPACE_BASE}-{manifest_data.get('version', '0.1.0')}",
         "creationInfo": {
             "creators": ["Tool: nakagawa-recomp-generate_sbom-0.1.0", "Organization: psp-recomp"],
-            "created": "2026-08-06T00:00:00Z",
+            "created": SBOM_CREATED,
         },
         "packages": packages,
         "relationships": relationships,
@@ -611,6 +939,19 @@ def generate_spdx301(manifest_data: dict, npm_packages: list[dict], py_packages:
             "spdx:name": pkg["name"],
             "spdx:packageVersion": pkg["version"],
             "spdx:purl": pkg["purl"],
+            "spdx:sourceInfo": "\n".join(
+                annotation["comment"]
+                for annotation in _python_hash_annotations(pkg)
+                if "status=declared" in annotation["comment"]
+            ),
+            "spdx:verifiedUsing": [
+                {
+                    "@type": "spdx:Hash",
+                    "spdx:algorithm": "sha256",
+                    "spdx:hashValue": artifact["sha256"],
+                }
+                for artifact in pkg["artifacts"]
+            ],
         })
 
     for family in manifest_data.get("provenance_families", []):
@@ -677,6 +1018,30 @@ def generate_cyclonedx(manifest_data: dict, npm_packages: list[dict], py_package
         }
         if pkg.get("ecosystem") == "npm":
             entry["licenses"] = [{"license": {"id": pkg["license"] if pkg["license"] != "NOASSERTION" else "unspecified"}}]
+        if pkg.get("ecosystem") == "pypi":
+            entry["hashes"] = [
+                {"alg": "SHA-256", "content": sha256_hash}
+                for sha256_hash in pkg["verified_sha256"]
+            ]
+            entry["properties"] = [
+                {
+                    "name": "nakagawa:python-lock-sha256",
+                    "value": (
+                        f"{PYTHON_HASH_EVIDENCE_SCHEMA};status=declared;sha256="
+                        f"{','.join(pkg['declared_sha256'])}"
+                    ),
+                },
+                {
+                    "name": "nakagawa:pypi-artifact-sha256",
+                    "value": (
+                        f"{PYTHON_HASH_EVIDENCE_SCHEMA};status=verified;artifacts="
+                        + ",".join(
+                            f"{artifact['filename']}@{artifact['sha256']}"
+                            for artifact in pkg["artifacts"]
+                        )
+                    ),
+                },
+            ]
         components.append(entry)
 
     for pkg in npm_packages:
@@ -698,6 +1063,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, default=ROOT / "assets" / "release_manifest.json")
     parser.add_argument("--npm-lock", type=Path, default=ROOT / "interface" / "package-lock.json")
     parser.add_argument("--py-lock", type=Path, default=ROOT / "tools" / "requirements-lock.txt")
+    parser.add_argument(
+        "--trusted-metadata",
+        dest="release_index",
+        type=Path,
+        default=PYTHON_RELEASE_INDEX_PATH,
+        help="Trusted PyPI name/version/filename/SHA-256 metadata snapshot",
+    )
+    parser.add_argument(
+        "--fetch-live-metadata",
+        action="store_true",
+        default=live_metadata_requested(),
+        help="Fetch exact pinned releases from the official PyPI JSON API before generation",
+    )
+    parser.add_argument(
+        "--metadata-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout in seconds for each live PyPI metadata request",
+    )
     parser.add_argument("--spdx-out", type=Path, help="Output path for SPDX 2.3 JSON")
     parser.add_argument("--spdx3-out", type=Path, help="Output path for SPDX 3.0.1 JSON-LD")
     parser.add_argument("--cyclonedx-out", type=Path, help="Output path for CycloneDX 1.5 JSON")
@@ -730,8 +1114,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"release manifest ({declared}); release evidence may only be "
                     "generated from the manifest-declared dependency lockfiles"
                 )
-        parsed = parse_lockfiles(declared_npm_lock, declared_py_lock,
-                                 repo_root=manifest_repo_root)
+        python_artifact_metadata = resolve_pypi_release_index(
+            args.release_index,
+            fetch_live=args.fetch_live_metadata,
+            timeout=args.metadata_timeout,
+        )
+        parsed = parse_lockfiles(
+            declared_npm_lock,
+            declared_py_lock,
+            repo_root=manifest_repo_root,
+            python_artifact_metadata=python_artifact_metadata,
+        )
     except LockfileParseError as exc:
         # Fail closed: never emit a partial/empty-inventory SBOM because a
         # declared lockfile could not be parsed completely (issue #375).

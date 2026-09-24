@@ -627,8 +627,11 @@ class TestProductionSmokePackage(unittest.TestCase):
                    "ULUS99998", "--user-data-root", str(user_root)]
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("plaintext ELF", result.stderr)
-        self.assertIn("in the works (#295)", result.stderr)
+        # The refusal names the per-title folder for user-supplied decrypted inputs.
+        self.assertIn("supply decrypted modules at", result.stderr)
+        self.assertIn(str(Path("titles") / "ULUS99998" / "decrypted"), result.stderr)
+        self.assertIn("(#295)", result.stderr)
+        self.assertIn("in the works", result.stderr)
         self.assertFalse((user_root / "cache").exists())
 
     def test_library_cli_extracts_plaintext_elf_before_named_build_boundary(self):
