@@ -514,6 +514,26 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn('PROBE_HOST0_LOG "host0:/model_profile_log.txt"', self.probe)
         self.assertIn("-lpspkubridge", self.makefile)
 
+    def test_hardware_records_have_host0_mirrors_when_stdout_route_is_absent(self) -> None:
+        # A one-shot PSPLink capture can contain only the load reply when
+        # pluser stdout is unavailable. Keep transport and #303 DMAC results
+        # on host0 so capture does not depend on that route.
+        stdout_capture = "Load/Start host0:/transport-write.prx UID: 0x12345678\n"
+        self.assertEqual(_record_summary(stdout_capture), ("NO_RECORD", 0))
+        for case, filename in (
+            ("PSP_ORACLE_CASE_TRANSPORT_WRITE", "transport_write_log.txt"),
+            ("PSP_ORACLE_CASE_DMAC_SURVEY", "dmac_survey_log.txt"),
+            ("PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST", "dmac_invalid_tail_memcpy_dst_log.txt"),
+            ("PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_SRC", "dmac_invalid_tail_memcpy_src_log.txt"),
+            ("PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_DST", "dmac_invalid_tail_try_dst_log.txt"),
+            ("PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC", "dmac_invalid_tail_try_src_log.txt"),
+        ):
+            self.assertIn(
+                f'#elif PSP_ORACLE_CASE == {case}\n#define PROBE_HOST0_LOG "host0:/{filename}"',
+                self.probe,
+            )
+        self.assertIn("sceIoOpen(PROBE_HOST0_LOG", self.probe)
+
     def test_probe_preprocessor_guards_are_balanced(self) -> None:
         open_guards: list[int] = []
         for line_number, line in enumerate(self.probe.splitlines(), 1):

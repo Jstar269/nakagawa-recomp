@@ -162,6 +162,18 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #define PROBE_HOST0_LOG "host0:/model_profile_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SURVEY
+#define PROBE_HOST0_LOG "host0:/dmac_survey_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST
+#define PROBE_HOST0_LOG "host0:/dmac_invalid_tail_memcpy_dst_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_SRC
+#define PROBE_HOST0_LOG "host0:/dmac_invalid_tail_memcpy_src_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_DST
+#define PROBE_HOST0_LOG "host0:/dmac_invalid_tail_try_dst_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+#define PROBE_HOST0_LOG "host0:/dmac_invalid_tail_try_src_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TRANSPORT_WRITE
+#define PROBE_HOST0_LOG "host0:/transport_write_log.txt"
 #endif
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
