@@ -13,6 +13,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import generate_sbom
+import nk_doctor_checks
 import record_toolchain
 import verify_sbom
 
@@ -514,7 +515,12 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             obs_path.unlink(missing_ok=True)
 
     def test_live_toolchain_recorder_and_verification(self):
-        recorded = record_toolchain.record_observed_toolchain()
+        # Inspects the real build environment; hosts without the native toolchain (for example
+        # the Linux Python-only CI shards, which have no SDL3) skip rather than fail.
+        try:
+            recorded = record_toolchain.record_observed_toolchain()
+        except (nk_doctor_checks.Sdl3ProviderError, FileNotFoundError, OSError) as exc:
+            self.skipTest(f"native toolchain not available on this host: {exc}")
         expected = {"compiler", "make", "python", "sdl3", "vulkan_sdk"}
         self.assertEqual(set(recorded.keys()), expected)
         for comp in expected:
