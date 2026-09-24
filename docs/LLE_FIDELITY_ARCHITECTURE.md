@@ -158,7 +158,8 @@ end to end by source-owned tests:
   read, loose VFS entry, or in-memory fixture), forms PSP-shaped access units (aud-delimited
   pictures, ATRAC3plus frame records with the private-stream-1 sub-header), and hands them to
   per-track compressed-access-unit queues with backpressure, bounded parsing, and fail-closed
-  malformed-input handling.
+  malformed-input handling. Its H.264 boundary accepts both Annex-B start-code forms:
+  `00 00 01` and `00 00 00 01` (the latter keeps its leading zero in the first access unit).
 - The `scePsmfPlayer*` handlers remain host HLE for now: they own the guest control block and the
   output contract, and drive that producer plus the host codecs (Media Foundation H.264 for
   pictures, the project's ATRAC3plus decoder import for audio). A getter returns success only for

@@ -22,6 +22,7 @@ from psp_oracle.protocol import (
     parse_output,
     provenance_issues,
     validate_dmac_size_matrix,
+    validate_dmac_size_matrix_size,
     DMAC_SIZE_MATRIX_SIZES,
     DMAC_SIZE_MATRIX_TRIALS,
 )
@@ -56,13 +57,37 @@ def dmac_matrix_stream() -> str:
     )]
     for api, api_name in enumerate(("memcpy", "try")):
         for size in DMAC_SIZE_MATRIX_SIZES:
+            allocation_bytes = (size + 0x2FFF) & ~0xFFF
             lines.append(
                 "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
                 f"case_id=size-matrix-{api_name}-0x{size:08x} status=PASS "
                 f"result=0x0 out0=0x{size:x} out1=0x{size:x} out2=0x0 "
                 f"out3=0x1 out4=0x10 out5=0x{api:x} "
-                f"out6=0x{DMAC_SIZE_MATRIX_TRIALS:x} out7=0x0 out8=0x0 out9=0x0\n"
+                f"out6=0x{DMAC_SIZE_MATRIX_TRIALS:x} out7=0x0 out8=0x0 out9=0x0 "
+                f"out10=0x0 out11=0x1000 out12=0x{allocation_bytes:x} "
+                f"out13=0x2 out14=0x1000 out15=0x8801000 out16=0x8c01000 "
+                f"out17=0x1 out18=0x2\n"
             )
+    return "".join(lines)
+
+
+def dmac_matrix_cell_stream(size: int) -> str:
+    lines = [META.format(
+        source="psp", model="PSP-3000", firmware="6.61-ARK",
+        binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+    )]
+    allocation_bytes = (size + 0x2FFF) & ~0xFFF
+    for api, api_name in enumerate(("memcpy", "try")):
+        lines.append(
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+            f"case_id=size-matrix-{api_name}-0x{size:08x} status=PASS "
+            f"result=0x0 out0=0x{size:x} out1=0x{size:x} out2=0x0 "
+            f"out3=0x1 out4=0x10 out5=0x{api:x} "
+            f"out6=0x{DMAC_SIZE_MATRIX_TRIALS:x} out7=0x0 out8=0x0 out9=0x0 "
+            f"out10=0x0 out11=0x1000 out12=0x{allocation_bytes:x} "
+            f"out13=0x2 out14=0x1000 out15=0x8801000 out16=0x8c01000 "
+            f"out17=0x1 out18=0x2\n"
+        )
     return "".join(lines)
 
 
@@ -128,6 +153,23 @@ class PspDmacProtocolTests(unittest.TestCase):
         text = dmac_matrix_stream().replace("out9=0x0", "out9=0x1", 1)
         with self.assertRaises(ProtocolError):
             validate_dmac_size_matrix(text)
+
+    def test_size_matrix_single_size_validator_requires_both_api_cells(self) -> None:
+        text = dmac_matrix_cell_stream(0xBFFF)
+        parsed = validate_dmac_size_matrix_size(text, 0xBFFF)
+        self.assertEqual(len(parsed.results), 2)
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix_size(text, 0xC000)
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix_size(text.split("NAKAGAWA_PSP_TEST", 2)[0], 0xBFFF)
+
+    def test_size_matrix_validator_rejects_overlapping_or_unowned_spans(self) -> None:
+        text = dmac_matrix_cell_stream(0xC000).replace("out16=0x8c01000", "out16=0x8801000", 1)
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix_size(text, 0xC000)
+        text = dmac_matrix_cell_stream(0xC000).replace("out17=0x1", "out17=0x0", 1)
+        with self.assertRaises(ProtocolError):
+            validate_dmac_size_matrix_size(text, 0xC000)
 
     def test_size_matrix_validator_requires_post_request_guard(self) -> None:
         text = dmac_matrix_stream().replace(" out9=0x0", "", 1)
@@ -394,12 +436,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 54)
+        self.assertEqual(len(routes), 55)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 55)))
+        self.assertEqual(set(ids), set(range(1, 56)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -453,6 +495,9 @@ class PspDmacProbeTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+    def assert_probe_contains(self, needle: str) -> None:
+        self.assertTrue(needle in self.probe, f"probe is missing required source: {needle}")
+
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
             "dma-concurrency",
@@ -461,6 +506,7 @@ class PspDmacProbeTests(unittest.TestCase):
             "dma-invalid-tail-try-dst",
             "dma-invalid-tail-try-src",
             "dma-size-matrix",
+            "dma-size-matrix-cell",
         ):
             self.assertIn(f"else ifeq ($(CASE),{case})", self.makefile)
         self.assertIn("LIBS = -lpspdmac", self.makefile)
@@ -498,21 +544,97 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn('emit_dmac_invalid_setup(emulated, "SKIP"', body)
 
     def test_size_matrix_covers_boundaries_repeats_and_cache_guards(self) -> None:
-        self.assertIn("DMAC_SIZE_BYTES 0x00100000u", self.probe)
-        self.assertIn("DMAC_SIZE_TRIALS 3u", self.probe)
+        self.assert_probe_contains("DMAC_SIZE_TRIALS 3u")
+        self.assert_probe_contains("DMAC_SIZE_ALIGNMENT 0x1000u")
+        self.assert_probe_contains("DMAC_SIZE_REDZONE_BYTES 0x1000u")
         for size in ("0x0000bfffu", "0x0000c000u", "0x0000c001u", "0x0000d000u",
                      "0x0000f000u", "0x0000ffffu", "0x00010000u", "0x00100000u"):
-            self.assertIn(size, self.probe)
-        self.assertIn("sceKernelDcacheWritebackRange", self.probe)
-        self.assertIn("sceKernelDcacheInvalidateRange", self.probe)
-        self.assertIn("memset(DMAC_SIZE_DST, DMAC_SIZE_SENTINEL, DMAC_SIZE_BYTES)", self.probe)
-        self.assertIn("dmac_size_cache_sync(DMAC_SIZE_DST, DMAC_SIZE_BYTES)", self.probe)
-        self.assertIn("sceKernelDcacheInvalidateRange(DMAC_SIZE_DST, DMAC_SIZE_BYTES)", self.probe)
-        self.assertIn("for (uint32_t offset = requested; offset < DMAC_SIZE_BYTES; ++offset)", self.probe)
-        self.assertIn("dmac_size_tail_mutations(requested)", self.probe)
-        self.assertIn("dmac_size_source_mutations", self.probe)
-        self.assertIn('PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"', self.probe)
-        self.assertIn('"size-matrix-%s-0x%08x"', self.probe)
+            self.assert_probe_contains(size)
+        for needle in (
+            "DMAC_SIZE_REQUEST",
+            "sceKernelDcacheWritebackRange",
+            "sceKernelDcacheInvalidateRange",
+            "dmac_size_guard_mutations",
+            "source_block_uid",
+            "destination_block_uid",
+            'PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"',
+            '"size-matrix-%s-0x%08x"',
+        ):
+            self.assert_probe_contains(needle)
+
+    def test_size_matrix_allocates_its_data_and_guard_spans(self) -> None:
+        body = self.probe.split("static void run_dmac_size_matrix", 1)[1].split(
+            "\n}\n#endif", 1
+        )[0]
+        matrix_source = self.probe.split("#define DMAC_SIZE_PARTITION", 1)[1].split(
+            "#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY", 1
+        )[0]
+        allocation_helpers = self.probe.split("struct dmac_size_buffer {", 1)[1].split(
+            "static void dmac_size_reset_source", 1
+        )[0]
+        for needle in (
+            "sceKernelAllocPartitionMemory",
+            "PSP_SMEM_High",
+            "sceKernelGetBlockHeadAddr",
+            "DMAC_SIZE_PARTITION",
+            "DMAC_SIZE_REDZONE_BYTES",
+        ):
+            self.assertTrue(
+                needle in allocation_helpers,
+                f"matrix allocation helper does not establish ownership: {needle}",
+            )
+        self.assertTrue("dmac_size_spans_overlap" in body, "allocated spans are not checked")
+        self.assertFalse(
+            "0x04000000u" in matrix_source,
+            "matrix still uses fixed VRAM destination",
+        )
+        self.assertFalse("0x04100000u" in matrix_source, "matrix still uses fixed VRAM source")
+
+    def test_size_matrix_syncs_both_owned_allocations_for_each_transfer(self) -> None:
+        body = self.probe.split("static void run_dmac_size_matrix", 1)[1].split(
+            "\n}\n#endif", 1
+        )[0]
+        transfer = body.index("dmac_call(")
+        trial_loop = body.rindex("for (uint32_t trial", 0, transfer)
+        before_transfer = body[trial_loop:transfer]
+        self.assertGreaterEqual(before_transfer.count("dmac_size_cache_sync("), 2)
+        self.assertTrue("source_buffer" in before_transfer, "source is not synced per transfer")
+        self.assertTrue(
+            "destination_buffer" in before_transfer,
+            "destination is not synced per transfer",
+        )
+        after_transfer = body[transfer:]
+        self.assertTrue(
+            "sceKernelDcacheInvalidateRange(source_buffer.head" in after_transfer,
+            "source is not invalidated after transfer",
+        )
+        self.assertTrue(
+            "sceKernelDcacheInvalidateRange(destination_buffer.head" in after_transfer,
+            "destination is not invalidated after transfer",
+        )
+
+    def test_size_matrix_build_can_isolate_one_size_per_session(self) -> None:
+        self.assertTrue("DMAC_SIZE_REQUEST" in self.makefile, "Makefile cannot select one size")
+        self.assertTrue("-DDMAC_SIZE_REQUEST=" in self.makefile, "selector is not passed to PSP C")
+        self.assert_probe_contains("dmac_size_matrix_cell_log.txt")
+
+    def test_size_matrix_records_are_closed_before_the_next_cell(self) -> None:
+        body = self.probe.split("static void run_dmac_size_matrix", 1)[1].split(
+            "\n}\n#endif", 1
+        )[0]
+        self.assertRegex(
+            body,
+            re.compile(
+                r"for \(uint32_t i = 0;.*?for \(uint32_t api = 0;.*?"
+                r"for \(uint32_t trial = 0;.*?emit_record_extended\(.*?"
+                r"dmac_size_release_buffer",
+                re.DOTALL,
+            ),
+        )
+        writer = self.probe.split("static void emit_record_extended", 1)[1].split(
+            "\n}\n#endif", 1
+        )[0]
+        self.assertLess(writer.index("sceIoWrite(fd"), writer.index("sceIoClose(fd)"))
 
     def test_model_profile_uses_the_user_bridge_and_raw_firmware_word(self) -> None:
         self.assertIn("PSP_ORACLE_CASE_MODEL_PROFILE", self.probe)
@@ -534,6 +656,7 @@ class PspDmacProbeTests(unittest.TestCase):
             ("PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_SRC", "dmac_invalid_tail_memcpy_src_log.txt"),
             ("PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_DST", "dmac_invalid_tail_try_dst_log.txt"),
             ("PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC", "dmac_invalid_tail_try_src_log.txt"),
+            ("PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL", "dmac_size_matrix_cell_log.txt"),
         ):
             self.assertIn(
                 f'#elif PSP_ORACLE_CASE == {case}\n#define PROBE_HOST0_LOG "host0:/{filename}"',

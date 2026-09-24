@@ -14,12 +14,17 @@ The supported and tested core development environment is:
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - A current Vulkan SDK and Vulkan-capable GPU.
 
-The PowerShell floor is a static-evidence minimum: a syntax/cmdlet inventory of every
-tracked `.ps1` proves no script needs anything above the automatic `$IsWindows`
-variable (PowerShell 6.0), and 7.4 is the oldest non-EOL line (LTS, end of support
-2026-11-10). The scripts have not been executed on 7.4 itself; the multi-version
-runtime matrix remains open in
-[issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337).
+The PowerShell floor is 7.4, the oldest line Microsoft still supports. A syntax/cmdlet
+inventory of every tracked `.ps1` finds nothing newer than the automatic `$IsWindows`
+variable (PowerShell 6.0). On 2026-09-24 every PowerShell-backed test (the two `.ps1`
+suites plus the manager-safety, title-planning, manager-adapter, visual-oracle,
+manifest, Doctor and production-smoke Python suites) passed under 7.4.20, 7.5.11 and
+7.6.6 (see [issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337)).
+The one host difference found: assigning `''` to an environment variable removes it on
+7.4 but keeps an empty value on 7.5+, so scripts treat empty and absent alike.
+
+Microsoft ends support for both 7.4 and 7.5 on 2026-11-10. After that date the floor
+moves to 7.6 (LTS, supported until 2028-11-14).
 
 The environment doctor is the executable form of this contract:
 

@@ -60,22 +60,22 @@ REQUIRED_FILES = {
 }
 
 SPDX_C = (
-    "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+    "// SPDX-License-Identifier: GPL-3.0-or-later\n"
     "/* synthetic fixture - not a real implementation */\n"
     "int synthetic_stub(void) { return 0; }\n"
 )
 SPDX_PY = (
-    "# SPDX-License-Identifier: GPL-2.0-or-later\n"
+    "# SPDX-License-Identifier: GPL-3.0-or-later\n"
     "# synthetic fixture - not a real implementation\n"
     "def synthetic_stub():\n    return 0\n"
 )
 SPDX_TS = (
-    "// SPDX-License-Identifier: GPL-2.0-or-later\n"
+    "// SPDX-License-Identifier: GPL-3.0-or-later\n"
     "// synthetic fixture - not a real implementation\n"
     "export function syntheticStub(): number { return 0; }\n"
 )
 SPDX_PS1 = (
-    "# SPDX-License-Identifier: GPL-2.0-or-later\n"
+    "# SPDX-License-Identifier: GPL-3.0-or-later\n"
     "# synthetic fixture - not a real implementation\n"
     "Write-Output 'synthetic stub'\n"
 )

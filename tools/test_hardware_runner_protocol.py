@@ -47,6 +47,7 @@ from psp_oracle.run_psplink import (
     CampaignCase,
     PsplinkCampaignRunner,
     _campaign_host0_log_path,
+    _parse_campaign_records,
     _parse_usbipd_psplink_devices,
     _verify_psplink_shell,
     PsplinkProcessTransport,
@@ -848,6 +849,36 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             _campaign_host0_log_path(root, "dma-invalid-tail-memcpy-dst").name,
             "dmac_invalid_tail_memcpy_dst_log.txt",
         )
+        self.assertEqual(
+            _campaign_host0_log_path(
+                root, "dmac-size-matrix-size-0x0000bfff"
+            ).name,
+            "dmac_size_matrix_cell_log.txt",
+        )
+
+    def test_campaign_dmac_size_case_validates_only_its_two_api_records(self):
+        size = 0xBFFF
+        allocation_bytes = (size + 0x2FFF) & ~0xFFF
+        metadata = (
+            "NAKAGAWA_PSP_META schema=1 source=psp model=PSP-3000 "
+            "firmware=6.61-ARK binary_sha256=" + "a" * 64 + " source_commit=" + "b" * 40 + "\n"
+        )
+        records = []
+        for api, name in enumerate(("memcpy", "try")):
+            records.append(
+                "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+                f"case_id=size-matrix-{name}-0x{size:08x} status=PASS "
+                f"result=0x0 out0=0x{size:x} out1=0x{size:x} out2=0x0 "
+                f"out3=0x1 out4=0x10 out5=0x{api:x} out6=0x3 out7=0x0 "
+                f"out8=0x0 out9=0x0 out10=0x0 out11=0x1000 "
+                f"out12=0x{allocation_bytes:x} out13=0x2 out14=0x1000 "
+                "out15=0x8801000 out16=0x8c01000 out17=0x1 out18=0x2\n"
+            )
+        case_id = f"dmac-size-matrix-size-0x{size:08x}"
+        parsed = _parse_campaign_records(metadata + "".join(records), case_id)
+        self.assertEqual(len(parsed.results), 2)
+        with self.assertRaises(ValueError):
+            _parse_campaign_records(metadata + records[0], case_id)
 
     def test_18_real_adapter_bounds_timeouts_and_keeps_partial_output_nonsemantic(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
