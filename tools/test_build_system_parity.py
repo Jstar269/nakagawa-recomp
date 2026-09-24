@@ -54,6 +54,7 @@ class BuildSystemParityTests(unittest.TestCase):
         expected_player = [
             "src/player/main.c",
             "src/player/player_state.c",
+            "src/player/input_settings.c",
             "src/player/iso_reader.c",
             "src/player/ui_renderer.c",
         ]

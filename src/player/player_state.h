@@ -8,6 +8,7 @@
 #include "nk_iso.h"
 #include "nk_library.h"
 #include "nk_launch.h"
+#include "input_settings.h"
 #include "generated/nk_title_catalog.h"
 
 #include <stdbool.h>
@@ -31,7 +32,8 @@ typedef enum {
     /* Dedicated post-staging library state. It renders the normal library
        card, but lets tests and the event loop distinguish a newly completed
        setup transaction from an ordinary library visit. */
-    PLAYER_VIEW_READY_LIBRARY
+    PLAYER_VIEW_READY_LIBRARY,
+    VIEW_CONTROLLER_SETTINGS
 } PlayerView;
 
 typedef enum {
@@ -176,6 +178,11 @@ typedef struct {
     /* Navigation & Focus */
     int focus_index; /* current focused UI element index for gamepad/keyboard */
     int active_tab;   /* for settings: 0=Display, 1=Audio, 2=Controller, 3=Logs */
+
+    /* Controller settings and live input monitor (#357) */
+    InputSettingsState input_settings;
+    bool host_buttons_live[NK_HOST_BUTTON_COUNT];
+    int16_t host_axes_live[NK_HOST_AXIS_COUNT];
 
     /* Window & layout metrics */
     int window_width;
