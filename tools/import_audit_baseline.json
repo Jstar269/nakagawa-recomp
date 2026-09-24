@@ -78,10 +78,11 @@
     "status": "unreviewed"
   },
   "0x0c116e1b": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceAtracLowLevelDecode",
-    "status": "stub"
+    "refusal_error": "0x80630004",
+    "status": "controlled_unsupported"
   },
   "0x0c622081": {
     "classification": "dedicated",
@@ -90,10 +91,11 @@
     "status": "unreviewed"
   },
   "0x0cae832b": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceRegCloseCategory",
-    "status": "stub"
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0x0da7535e": {
     "classification": "dedicated",
@@ -180,16 +182,18 @@
     "status": "unreviewed"
   },
   "0x1575d64b": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceAtracLowLevelInitDecoder",
-    "status": "stub"
+    "refusal_error": "0x80630004",
+    "status": "controlled_unsupported"
   },
   "0x1579a159": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceUtilityLoadNetModule",
-    "status": "stub"
+    "refusal_error": "0x80110001",
+    "status": "controlled_unsupported"
   },
   "0x1579a30a": {
     "classification": "dedicated",
@@ -234,10 +238,11 @@
     "status": "complete"
   },
   "0x1d8a762e": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceRegOpenCategory",
-    "status": "stub"
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0x1e490401": {
     "classification": "dedicated",
@@ -282,10 +287,10 @@
     "status": "unreviewed"
   },
   "0x20628e6f": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_UmdGetErrorStat",
     "name": "sceUmdGetErrorStat",
-    "status": "stub"
+    "status": "compatibility"
   },
   "0x2085d15d": {
     "classification": "dedicated",
@@ -312,10 +317,11 @@
     "status": "unreviewed"
   },
   "0x231fc6b7": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "_sceAtracGetContextAddress",
-    "status": "stub"
+    "refusal_error": "0x80630003",
+    "status": "controlled_unsupported"
   },
   "0x235d8787": {
     "classification": "dedicated",
@@ -378,10 +384,11 @@
     "status": "unreviewed"
   },
   "0x28a8e98a": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceRegGetKeyValue",
-    "status": "stub"
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0x28b6489c": {
     "classification": "dedicated",
@@ -769,7 +776,7 @@
   },
   "0x4b85c861": {
     "classification": "fake_success",
-    "handler": "h_OskUpdate",
+    "handler": "h_ok",
     "name": "sceUtilityOskUpdate",
     "status": "stub"
   },
@@ -828,10 +835,10 @@
     "status": "unreviewed"
   },
   "0x54f5fb11": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_IoDevctl",
     "name": "sceIoDevctl",
-    "status": "stub"
+    "status": "partial"
   },
   "0x55c20a00": {
     "classification": "dedicated",
@@ -990,10 +997,11 @@
     "status": "unreviewed"
   },
   "0x64d50c56": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceUtilityUnloadNetModule",
-    "status": "stub"
+    "refusal_error": "0x80110001",
+    "status": "controlled_unsupported"
   },
   "0x67179b1b": {
     "classification": "dedicated",
@@ -1068,10 +1076,11 @@
     "status": "unreviewed"
   },
   "0x6af9b50a": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceUmdCancelWaitDriveStat",
-    "status": "stub"
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0x6b30100f": {
     "classification": "dedicated",
@@ -1404,10 +1413,11 @@
     "status": "unreviewed"
   },
   "0x92e41280": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceRegOpenRegistry",
-    "status": "stub"
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0x93440b11": {
     "classification": "dedicated",
@@ -1962,10 +1972,11 @@
     "status": "unreviewed"
   },
   "0xd1f59fdb": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceAtracStartEntry",
-    "status": "stub"
+    "refusal_error": "0x80630004",
+    "status": "controlled_unsupported"
   },
   "0xd1ff982a": {
     "classification": "dedicated",
@@ -1974,10 +1985,11 @@
     "status": "unreviewed"
   },
   "0xd4475aa8": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceRegGetKeyInfo",
-    "status": "stub"
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0xd4b95ffb": {
     "classification": "dedicated",
@@ -2376,10 +2388,11 @@
     "status": "unreviewed"
   },
   "0xfa8a5739": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
     "name": "sceRegCloseRegistry",
-    "status": "stub"
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0xfaa4f89b": {
     "classification": "dedicated",

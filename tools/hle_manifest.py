@@ -5,10 +5,10 @@
 """Generate the authoritative HLE-registration manifest from src/rt/hle.c.
 
 This replaces ad hoc regular-expression scraping (tools/nid_auditor.py) with a
-fail-closed extraction: every textual occurrence of `sr_hle_register(` in
-hle.c must be accounted for as either (a) the function definition, (b) a
-fully-parsed literal registration `sr_hle_register(0x…, "name", handler);`, or
-(c) the one known dynamic form (the sas_ok[] loop, whose NID array is itself
+fail-closed extraction: every textual occurrence of an HLE registration call in
+hle.c must be accounted for as either (a) a function definition, (b) a
+fully-parsed literal `sr_hle_register(0x…, "name", handler);`, (c) an explicit
+`sr_hle_register_unsupported(0x…, "name", error);`, or (d) the one known dynamic form (the sas_ok[] loop, whose NID array is itself
 parsed). Any occurrence that matches none of these is a hard error, so a new
 registration style can never be silently dropped from the manifest. Extracted
 handler names are cross-checked against handler definitions in the file, and
@@ -43,11 +43,14 @@ DEFAULT_BASELINE = ROOT / "tools" / "import_audit_baseline.json"
 
 MANIFEST_SCHEMA = 1
 
-_CALL_TOKEN = "sr_hle_register("
+_REGISTRATION_CALL_RE = re.compile(r"\bsr_hle_register(?:_unsupported)?\s*\(")
 _LITERAL_RE = re.compile(
     r"sr_hle_register\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,\s*\"([^\"\\]+)\"\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;"
 )
-_DEFINITION_RE = re.compile(r"\bvoid\s+sr_hle_register\(")
+_UNSUPPORTED_LITERAL_RE = re.compile(
+    r"sr_hle_register_unsupported\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,\s*\"([^\"\\]+)\"\s*,\s*0x([0-9a-fA-F]{1,8})[uU]?\s*\)\s*;"
+)
+_DEFINITION_RE = re.compile(r"\bvoid\s+(sr_hle_register(?:_unsupported)?)\(")
 _SAS_LOOP_RE = re.compile(r"sr_hle_register\(\s*sas_ok\[i\]\s*,\s*\"([^\"]+)\"\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;")
 _SAS_ARRAY_RE = re.compile(r"\bsas_ok\[\]\s*=\s*\{([^}]*)\}\s*;", re.DOTALL)
 _HANDLER_DEF_RE = re.compile(r"\b(?:static\s+)?uint32_t\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*CpuState\s*\*")
@@ -174,9 +177,8 @@ def classify(handler: str, mechanical_stubs: frozenset[str] | set[str] = frozens
 # Mechanical zero-returning stub detection
 # ---------------------------------------------------------------------------
 # Curated GENERIC_SUCCESS_HANDLERS only names h_ok, so dedicated one-line
-# `return 0` stubs (h_FreeFpl, h_GeDrawSync, h_OskUpdate, ...) and
-# log-then-return-0 stubs (h_IoDevctl, h_StopModule_Trace, ...) were invisible
-# to the census. This pass recognises them by body shape instead of by name:
+# `return 0` stubs and log-then-return-0 stubs must also be found mechanically.
+# This pass recognises them by body shape instead of by name:
 # a handler that returns 0 on its success path while performing no
 # guest/host-observable work besides `(void)s` silencing and diagnostic
 # logging. Anything that writes guest memory (MEM_W*), writes runtime state
@@ -391,8 +393,20 @@ def extract_registrations(raw_source: str) -> list[dict]:
         nid = int(m.group(1), 16)
         regs.append({"nid": nid, "name": m.group(2), "handler": m.group(3), "origin": "static"})
 
+    for m in _UNSUPPORTED_LITERAL_RE.finditer(source):
+        accounted.add(m.start())
+        regs.append(
+            {
+                "nid": int(m.group(1), 16),
+                "name": m.group(2),
+                "handler": "h_ControlledUnsupported",
+                "origin": "static_unsupported",
+                "refusal_error": int(m.group(3), 16),
+            }
+        )
+
     for m in _DEFINITION_RE.finditer(source):
-        accounted.add(m.end() - len(_CALL_TOKEN))
+        accounted.add(m.start(1))
 
     sas_loops = list(_SAS_LOOP_RE.finditer(source))
     if sas_loops:
@@ -410,11 +424,8 @@ def extract_registrations(raw_source: str) -> list[dict]:
             regs.append({"nid": nid, "name": sas_name, "handler": sas_handler, "origin": "sas_ok_loop"})
 
     unaccounted = []
-    start = 0
-    while True:
-        idx = source.find(_CALL_TOKEN, start)
-        if idx < 0:
-            break
+    for call in _REGISTRATION_CALL_RE.finditer(source):
+        idx = call.start()
         # Occurrences inside a C string literal are diagnostics (the
         # unimplemented-NID hint template), not registrations: an odd number
         # of unescaped double quotes precedes the token on its line.
@@ -423,10 +434,9 @@ def extract_registrations(raw_source: str) -> list[dict]:
         if idx not in accounted and not in_string:
             line = source.count("\n", 0, idx) + 1
             unaccounted.append(f"line {line}: {source[idx: source.find(chr(10), idx)].strip()!r}")
-        start = idx + 1
     if unaccounted:
         raise ManifestError(
-            "sr_hle_register( occurrences the extractor cannot account for "
+            "HLE registration occurrences the extractor cannot account for "
             "(teach tools/hle_manifest.py the new form before merging):\n  " + "\n  ".join(unaccounted)
         )
 
@@ -557,6 +567,8 @@ def build_manifest(source: str | None = None) -> dict:
                 "origin": r["origin"],
                 "classification": classification,
                 "status": status,
+                **({"refusal_error": f"0x{r['refusal_error']:08x}"}
+                   if "refusal_error" in r else {}),
             }
         )
     findings = compute_findings(regs)
@@ -571,15 +583,18 @@ def build_manifest(source: str | None = None) -> dict:
 
 
 def manifest_to_baseline(manifest: dict) -> dict:
-    return {
-        r["nid"]: {
+    baseline = {}
+    for r in manifest["registrations"]:
+        entry = {
             "name": r["name"],
             "handler": r["handler"],
             "classification": r["classification"],
             "status": r["status"],
         }
-        for r in manifest["registrations"]
-    }
+        if "refusal_error" in r:
+            entry["refusal_error"] = r["refusal_error"]
+        baseline[r["nid"]] = entry
+    return baseline
 
 
 def dump_json(obj: dict, path: Path) -> None:
@@ -721,7 +736,11 @@ def registration_scopes(raw_source: str) -> dict[int, dict]:
         return {"production", "selftest"} if scope == "both" else {scope}
 
     out: dict[int, dict] = {}
-    for m in _LITERAL_RE.finditer(source):
+    registration_matches = [
+        *_LITERAL_RE.finditer(source),
+        *_UNSUPPORTED_LITERAL_RE.finditer(source),
+    ]
+    for m in registration_matches:
         idx = source.count("\n", 0, m.start())
         owner, own_scope = owners[idx], scopes[idx]
         if own_scope != "both" or owner in (None, "sr_hle_init"):
