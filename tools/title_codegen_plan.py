@@ -48,7 +48,6 @@ import time
 from typing import Any
 
 import title_manifest
-from nk_core import package_cache
 
 GAME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MIN_FUNCS_PER_CHUNK = 1
@@ -963,6 +962,9 @@ def _cache_key_for_build(
     public_safe: bool,
     compiler_name: str,
 ) -> dict[str, Any]:
+    # Imported lazily: planning (--manager-plan) must not depend on the package cache.
+    from nk_core import package_cache
+
     options = _cache_codegen_options(
         plan,
         selected_optional=selected_optional,
@@ -1000,6 +1002,8 @@ def build_package(
     native_only: bool = False,
 ) -> dict[str, Any]:
     """Run the canonical two-phase Make build and emit package/report JSON."""
+    from nk_core import package_cache
+
     try:
         normalized = title_manifest.validate_manifest(manifest)
     except ValueError as exc:
