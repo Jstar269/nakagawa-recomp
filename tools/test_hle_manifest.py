@@ -605,8 +605,10 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
 class MpegDirtyNotificationContractTests(unittest.TestCase):
     def test_mpeg_avc_decode_dirty_notification_invariants(self) -> None:
         mpeg_src = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
-        self.assertIn("gotFrame = sr_h264_frame(ctx->h264, eos, buffer,", mpeg_src,
-                      "mpeg_avc_decode must pass guest buffer address to sr_h264_frame")
+        self.assertIn("target.guest_buffer = buffer;", mpeg_src,
+                      "mpeg_avc_decode must pass the guest buffer address to the H.264 backend")
+        self.assertIn("gotFrame = sr_h264_frame_ex(ctx->h264, eos, &target, &info);", mpeg_src,
+                      "mpeg_avc_decode must decode through the backend-neutral frame target")
         self.assertIn("if (gotFrame <= 0 && !ctx->h264Frames) {", mpeg_src,
                       "mpeg_avc_decode must scope full-buffer dirty notification strictly to clear_video_buffer")
 

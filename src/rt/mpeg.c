@@ -21,11 +21,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include "recomp.h"
-#ifdef SR_SDL3VK
-/* Portable H.264 decode backend seam (sr_h264.h): Media Foundation on Windows (h264_mf.c),
- * a null/blank backend elsewhere (h264_null.c), libavcodec droppable in later. */
 #include "sr_h264.h"
-#endif
 /* Outside the SR_SDL3VK guard on purpose: call_guest3() is unconditional, so a
  * declaration that only exists in the SDL3 build is an implicit-declaration
  * error in every other one (portable-core caught exactly that). */
@@ -143,7 +139,7 @@ typedef struct {
     uint32_t totalPackets;       /* streamSize/packetSize: whole-movie packet count */
     uint32_t fedPackets;         /* cumulative packets the game has put into the ring */
     uint32_t headerAddr;         /* guest address of the PSMF header passed to QueryStreamOffset */
-    int h264;                    /* SDL3 build: Media Foundation H.264 decoder id (-1 = none) */
+    int h264;                    /* host H.264 backend id (-1 = none) */
     int h264Init, h264Frames;
     int defaultFrameWidth, pixelMode;
     uint32_t streamWidth, streamHeight;
@@ -215,6 +211,12 @@ static int64_t mpeg_ts(uint32_t a) {
 static uint32_t mpeg_contract_error(const char *api, const char *boundary, uint32_t error) {
     fprintf(stderr, "MPEG_CONTRACT: %s: %s; in the works (#302)\n", api, boundary);
     return error;
+}
+
+static uint32_t h264_backend_error(const char *api) {
+    fprintf(stderr, "H264_CONTRACT: %s: %s\n", api,
+            sr_h264_backend_unavailable_reason());
+    return SCE_MPEG_ERROR_NO_DATA;
 }
 
 static int getMpegVersion(uint32_t raw) {
@@ -696,12 +698,23 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
         return mpeg_contract_error("sceMpegAvcDecode", "invalid destination span", SCE_MPEG_ERROR_INVALID_VALUE);
 
     g_mpeg_avcdec++;
+    if (!ctx->h264Init || ctx->h264 < 0) {
+        MEM_W32(initAddr, 0u);
+        return h264_backend_error("sceMpegAvcDecode");
+    }
     ctx->videoPts += videoTimestampStep;
     int gotFrame = 0;
 #ifdef SR_SDL3VK
-    if (ctx->h264Init && ctx->h264 >= 0) {
+    {
         int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
-        gotFrame = sr_h264_frame(ctx->h264, eos, buffer, (int)width, ctx->pixelMode);
+        SrH264FrameTarget target;
+        SrH264FrameInfo info;
+        memset(&target, 0, sizeof(target));
+        target.kind = SR_H264_TARGET_GUEST;
+        target.guest_buffer = buffer;
+        target.frame_width = (int)width;
+        target.pixel_mode = ctx->pixelMode;
+        gotFrame = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
         if (gotFrame > 0) ctx->h264Frames++;
     }
 #endif
@@ -884,34 +897,43 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     if (!b || !ycbcr_state_usable(b, 0))
         return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "missing, stale, or modified guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
     g_mpeg_avcdec++;
+    if (!ctx->h264Init || ctx->h264 < 0) {
+        b->valid = 0;
+        MEM_W32(initAddr, 0u);
+        return h264_backend_error("sceMpegAvcDecodeYCbCr");
+    }
     ctx->videoPts += videoTimestampStep;
     ctx->ycbcrWant++;
     int got = 0;
     int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
 #ifdef SR_SDL3VK
-    if (ctx->h264Init && ctx->h264 >= 0) {
-        while (ctx->h264Frames < ctx->ycbcrWant) {
-            int r = sr_h264_frame_host(ctx->h264, eos, b->rgba, (int)b->width, (int)b->width * 4);
-            if (r > 0) {
-                got = r;
-                b->valid = 1;
-                ctx->h264Frames++;
-            } else if (r < 0) {
-                b->valid = 0;
-                MEM_W32(initAddr, 0u);
-                return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "H.264 backend rejected the access unit", SCE_MPEG_ERROR_NO_DATA);
-            } else {
-                break;
-            }
+    while (ctx->h264Frames < ctx->ycbcrWant) {
+        SrH264FrameTarget target;
+        SrH264FrameInfo info;
+        memset(&target, 0, sizeof(target));
+        target.kind = SR_H264_TARGET_HOST;
+        target.host_buffer = b->rgba;
+        target.host_width = (int)b->width;
+        target.host_stride = (int)b->width * 4;
+        int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
+        if (r > 0) {
+            got = r;
+            b->valid = 1;
+            ctx->h264Frames++;
+        } else if (r < 0) {
+            b->valid = 0;
+            MEM_W32(initAddr, 0u);
+            return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "H.264 backend rejected the access unit", SCE_MPEG_ERROR_NO_DATA);
+        } else {
+            break;
         }
     }
 #endif
     if (got <= 0) {
         b->valid = 0;
         MEM_W32(initAddr, 0u);
-        if (eos || !ctx->h264Init || ctx->h264 < 0) {
-            return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "no decoder or drained picture", SCE_MPEG_ERROR_NO_DATA);
-        }
+        if (eos)
+            return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "no decoded picture at end of stream", SCE_MPEG_ERROR_NO_DATA);
         return 0;
     }
     MEM_W32(initAddr, 1u);

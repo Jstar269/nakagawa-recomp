@@ -442,8 +442,19 @@ static int convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8
     return 1;
 }
 
+static SrH264PixelFormat guest_pixel_format(int pixelMode) {
+    switch (pixelMode) {
+        case 0: return SR_H264_PIXEL_5650;
+        case 1: return SR_H264_PIXEL_5551;
+        case 2: return SR_H264_PIXEL_4444;
+        case 3: return SR_H264_PIXEL_8888;
+        default: return SR_H264_PIXEL_NONE;
+    }
+}
+
 static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
-                    uint8_t *host, int hostW, int hostStride) {
+                     uint8_t *host, int hostW, int hostStride,
+                     SrH264FrameInfo *info) {
     /* 1 = a picture was produced AND delivered, 2 = produced but there was nowhere to write
      * it (the caller asked for a frame it cannot receive), 0 = need more input, -1 = decoder
      * failure.  Distinguishing 2 from 1 is what keeps "a frame was written" from becoming a
@@ -494,6 +505,17 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
                 IMFMediaBuffer_Release(cbuf);
             }
         }
+        if (delivered && info) {
+            memset(info, 0, sizeof(*info));
+            info->width = host ? (d->outW < hostW ? d->outW : hostW) :
+                               (d->outW < frameWidth ? d->outW : frameWidth);
+            info->height = d->outH < 272 ? d->outH : 272;
+            info->stride = host ? hostStride : frameWidth * (pixelMode == 3 ? 4 : 2);
+            info->native_format = SR_H264_PIXEL_NATIVE_NV12;
+            info->delivered_format = host ? SR_H264_PIXEL_RGBA8888 :
+                                         guest_pixel_format(pixelMode);
+            info->pts = -1;
+        }
         IMFMediaBuffer_Release(mb); IMFSample_Release(smp);
         return delivered ? 1 : 2;
     }
@@ -501,7 +523,19 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
 
 /* ================= public API (called from mpeg.c) ================= */
 
-int sr_h264_create(void) {
+static void dec_release(Dec *d) {
+    if (!d) return;
+    if (d->xf) IMFTransform_Release(d->xf);
+    free(d->ps);
+    free(d->es);
+    free(d->ck);
+    d->xf = NULL;
+    d->ps = NULL;
+    d->es = NULL;
+    d->ck = NULL;
+}
+
+int sr_h264_mf_create(void) {
     if (getenv("SR_NOH264")) return -1;
     for (int i = 0; i < MAX_DEC; i++) if (!s_dec[i].used) {
         Dec *d = &s_dec[i];
@@ -509,7 +543,7 @@ int sr_h264_create(void) {
         d->used = 1;
         d->firstAudioPts = -1;
         if (!dec_open(d)) {
-            if (d->xf) { IMFTransform_Release(d->xf); d->xf = NULL; }
+            dec_release(d);
             d->used = 0;
             return -1;
         }
@@ -519,59 +553,78 @@ int sr_h264_create(void) {
     return -1;
 }
 
-void sr_h264_destroy(int id) {
+int sr_h264_mf_reset(int id) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
+    Dec *d = &s_dec[id];
+    dec_release(d);
+    memset(d, 0, sizeof(*d));
+    d->used = 1;
+    d->firstAudioPts = -1;
+    if (!dec_open(d)) {
+        dec_release(d);
+        d->used = 0;
+        return -1;
+    }
+    return 0;
+}
+
+void sr_h264_mf_destroy(int id) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return;
     Dec *d = &s_dec[id];
-    if (d->xf) IMFTransform_Release(d->xf);
-    free(d->ps); free(d->es); free(d->ck);
+    dec_release(d);
     memset(d, 0, sizeof(*d));
 }
 
-void sr_h264_feed(int id, const uint8_t *data, uint32_t len) {
-    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !data || !len) return;
+int sr_h264_mf_feed(int id, const uint8_t *data, uint32_t len) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !data || !len) return -1;
     Dec *d = &s_dec[id];
-    if (d->failed) return;
-    if (len > H264_MAX_PS_BYTES - d->psLen ||
+    if (d->failed) return -1;
+    if (d->psLen > H264_MAX_PS_BYTES || len > H264_MAX_PS_BYTES - d->psLen ||
         !buf_reserve(&d->ps, &d->psCap, d->psLen + len, H264_MAX_PS_BYTES)) {
         d->failed = 1;
-        return;
+        return -1;
     }
     memcpy(d->ps + d->psLen, data, len);
     d->psLen += len;
     while (ps_parse_one(d)) {}
-    if (d->failed) return;
-    if (d->psPos > (1u << 20)) {            /* drop the parsed prefix */
+    if (d->failed) return -1;
+    if (d->psPos > (1u << 20)) {
         memmove(d->ps, d->ps + d->psPos, d->psLen - d->psPos);
         d->psBase += d->psPos;
         d->psLen -= d->psPos;
         d->psPos = 0;
     }
+    return 0;
 }
 
-/* Feed one already-demuxed access unit (the scePsmfPlayer media path, which owns its own
- * MPEG-PS parsing). The bytes join the same ES fifo the PS demux fills, pictures are still
- * delimited by AUD NALs, and every picture that becomes complete is immediately eligible for
- * decoding -- the caller does not have to mirror the au_take() consumption bookkeeping.
- * psStart is only au_take()'s consumed-byte report; on this path it is a diagnostic ES
- * offset and no caller ever reads it back. */
-void sr_h264_submit_au(int id, const uint8_t *au, uint32_t len) {
-    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !len) return;
+int sr_h264_mf_submit_au(int id, const uint8_t *au, uint32_t len) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !len) return -1;
     Dec *d = &s_dec[id];
-    if (d->failed) return;
-    if (!es_append(d, au, len, -1, (uint64_t)d->esLen)) { d->failed = 1; return; }
+    if (!((len >= 3u && au[0] == 0u && au[1] == 0u && au[2] == 1u) ||
+          (len >= 4u && au[0] == 0u && au[1] == 0u && au[2] == 0u && au[3] == 1u))) {
+        d->failed = 1;
+        return -1;
+    }
+    if (d->failed) return -1;
+    if (!es_append(d, au, len, -1, (uint64_t)d->esLen)) {
+        d->failed = 1;
+        return -1;
+    }
     d->takeCk = d->nCk - (d->ckOpen ? 1u : 0u);
+    return 0;
 }
 
 /* Decode the next frame into buffer (guest video buffer address). eos != 0 once the
  * game has fed the whole movie, so the MFT gets drained for the last buffered frames.
  * Returns 1 if a frame was written, 0 if none is available yet, -1 if decoding failed. */
 static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode,
-                      uint8_t *host, int hostW, int hostStride) {
+                       uint8_t *host, int hostW, int hostStride,
+                       SrH264FrameInfo *info) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     Dec *d = &s_dec[id];
     if (d->failed || !d->xf) return -1;
     for (int guard = 0; guard < 4096; guard++) {
-        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostStride);
+        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostStride, info);
         /* A refused destination (r == 2) is reported as "no frame written" but does NOT poison
          * the decoder: the picture was already consumed from the MFT, the stream is still
          * valid, and a later call with a usable buffer must keep working.  Only decoder-level
@@ -604,21 +657,45 @@ static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixe
     return 0;
 }
 
+int sr_h264_mf_frame_ex(int id, int eos, const SrH264FrameTarget *target,
+                        SrH264FrameInfo *info) {
+    if (!target) return -1;
+    if (info) {
+        memset(info, 0, sizeof(*info));
+        info->pts = -1;
+    }
+    if (target->kind == SR_H264_TARGET_GUEST) {
+        if (!target->guest_buffer || target->frame_width <= 0 ||
+            target->pixel_mode < 0 || target->pixel_mode > 3) return -1;
+        return pull_frame(id, eos, target->guest_buffer, target->frame_width,
+                          target->pixel_mode, NULL, 0, 0, info);
+    }
+    if (target->kind == SR_H264_TARGET_HOST) {
+        if (!target->host_buffer || target->host_width <= 0 ||
+            target->host_width > INT_MAX / 4 ||
+            target->host_stride < target->host_width * 4) return -1;
+        return pull_frame(id, eos, 0, 0, 0, target->host_buffer,
+                          target->host_width, target->host_stride, info);
+    }
+    return -1;
+}
+
 int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode) {
-    return pull_frame(id, eos, buffer, frameWidth, pixelMode, NULL, 0, 0);
+    SrH264FrameTarget target;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_GUEST;
+    target.guest_buffer = buffer;
+    target.frame_width = frameWidth;
+    target.pixel_mode = pixelMode;
+    return sr_h264_frame_ex(id, eos, &target, NULL);
 }
 
-int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
-    if (!dst) return -1;
-    return pull_frame(id, eos, 0, 0, 0, dst, maxW, strideBytes);
-}
-
-int64_t sr_h264_first_audio_pts(int id) {
+int64_t sr_h264_mf_first_audio_pts(int id) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     return s_dec[id].firstAudioPts;
 }
 
-int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
+int sr_h264_mf_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     Dec *d = &s_dec[id];
     if (d->failed) return -1;
@@ -633,5 +710,17 @@ int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
     if (pts) *pts = d->ck[i].pts;
     return 1;
 }
+
+const SrH264Backend sr_h264_mf_backend = {
+    "media-foundation",
+    sr_h264_mf_create,
+    sr_h264_mf_destroy,
+    sr_h264_mf_reset,
+    sr_h264_mf_feed,
+    sr_h264_mf_submit_au,
+    sr_h264_mf_frame_ex,
+    sr_h264_mf_au_take,
+    sr_h264_mf_first_audio_pts
+};
 
 #endif /* _WIN32 */

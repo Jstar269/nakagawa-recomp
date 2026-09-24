@@ -53,6 +53,42 @@ changing guest semantics. Vulkan cannot be assumed. Any port must follow the tar
 SDK, distribution, and homebrew or licensed-development rules; do not place proprietary SDK
 material in this repository.
 
+## H.264 backend decision record
+
+**Status: awaiting maintainer decision.** No portable decoder dependency is added by this change.
+The existing Windows backend remains the only real decoder. A build without a usable backend
+returns `H.264 backend unavailable; in the works (#283)` and does not produce a placeholder frame.
+
+### Backend conformance contract
+
+The source-authored fixture is the acceptance corpus. A backend must:
+
+- deliver exactly three pictures for its three authored I_PCM access units, including the final
+  access unit released by EOS, with no duplicate after a repeated drain;
+- report the fixture's 64x64 dimensions and the delivered row stride, and distinguish its native
+  format from the delivered host/guest format;
+- preserve known normalized video timestamps in nondecreasing order (`0`, `3003`); an access unit
+  whose PES has no PTS remains unknown and is extrapolated by the consumer, never fabricated by
+  the backend;
+- make reset equivalent to a fresh decoder instance, with no picture from the previous stream;
+- reject malformed access-unit input without writing a frame.
+
+For the current host RGBA conversion, the selected-pixel contract is exact for every fixture pixel:
+`(255,203,138,255)`, `(130,130,130,255)`, and `(79,144,195,255)`, in that order. A backend with a
+different conversion must document its selected pixels and tolerance before it is accepted; it
+must not silently weaken this contract.
+
+### Candidate dependencies
+
+| Candidate | Licence position | Packaging and decision still required |
+| --- | --- | --- |
+| Cisco OpenH264 | BSD-2-Clause is generally compatible with GPL-3.0-or-later, subject to the exact binary's notices and any codec/patent terms. | Prefer a pinned shared library or source-built package per host. Verify redistribution terms, notice retention, architecture coverage, and decoder error behavior. **Awaiting maintainer decision.** |
+| FFmpeg/libavcodec H.264 decoder | An LGPL-2.1-or-later build is generally compatible with GPL-3.0-or-later; a GPL-configured FFmpeg would change the distribution obligations. | Pin codec/build options, retain LGPL notices, choose shared-library versus static-link obligations, and validate the cross-platform ABI and patent/distribution position. **Awaiting maintainer decision.** |
+| dav1d | Not a candidate: it decodes AV1, not H.264. | No H.264 backend may be represented by dav1d. |
+
+Until one candidate is selected, the null backend is an explicit controlled boundary, not a
+portable decoder implementation.
+
 ## Completed Milestones (ux-investigation)
 
 1. **Native Core Layer (`src/core/`):**
