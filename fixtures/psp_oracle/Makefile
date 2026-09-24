@@ -134,11 +134,23 @@ else ifeq ($(CASE),dma-size-matrix)
 CASE_ID = 53
 else ifeq ($(CASE),model-profile)
 CASE_ID = 54
+else ifeq ($(CASE),dma-size-matrix-cell)
+CASE_ID = 55
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
 
 CFLAGS = -O2 -G0 -Wall -Wextra -std=c11 -DPSP_ORACLE_CASE=$(CASE_ID)
+ifeq ($(CASE),dma-size-matrix-cell)
+ifeq ($(strip $(DMAC_SIZE_REQUEST)),)
+$(error CASE=dma-size-matrix-cell requires DMAC_SIZE_REQUEST=<supported size>)
+endif
+endif
+ifneq ($(filter dma-size-matrix dma-size-matrix-cell,$(CASE)),)
+ifneq ($(strip $(DMAC_SIZE_REQUEST)),)
+CFLAGS += -DDMAC_SIZE_REQUEST=$(DMAC_SIZE_REQUEST)
+endif
+endif
 
 # Cases 23-28 and 31-43 are standalone probes, each in its own source file, that
 # record the build commit in their output. The exception probes raise exactly
