@@ -97,12 +97,13 @@ The matrix distinguishes between architectural staging, implementation completen
 | 5 | Module Decryption | External toolchain | **NOT_IMPLEMENTED** (KIRK engine pending) | **NOT_IMPLEMENTED** (Requires pre-decrypted inputs) |
 | 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
 | 7 | Graphics Settings | Web localStorage | Native JSON configuration (`settings.json`) & CLI env | **PASS** (Atomically persisted and round-trip verified) |
-| 8 | Gamepad Calibration | Web Gamepad API | Dedicated native Controller Settings screen (`VIEW_CONTROLLER_SETTINGS`) with interactive button remapping (14 digital PSP controls + analog stick), non-destructive conflict detection, deadzone & trigger threshold calibration, live input/deadzone monitor, and atomic profile persistence. Resting/extreme trigger calibration is in the works (#357) | **PASS** (Remapping, deadzone/trigger calibration, live monitor, atomic profile persistence verified; resting/extreme trigger calibration in the works under #357) |
+| 8 | Gamepad Calibration | Web Gamepad API | Dedicated native Controller Settings screen (`VIEW_CONTROLLER_SETTINGS`) with interactive button remapping (14 digital PSP controls + analog stick), non-destructive conflict detection, deadzone & trigger threshold calibration, live input/deadzone monitor, guided resting/extreme calibration wizard (#357), and atomic profile persistence | **PASS** (Remapping, deadzone/trigger calibration, live monitor, guided stick/trigger calibration, and atomic profile persistence verified) |
 | 9 | Preflight Checks | `nk_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
 | 10 | Progress Feedback | Server-Sent Events (SSE) | Reactive SDL staging events | **PARTIAL** — native copy/unpack progress supplies bounded file counts and percentages; decryption and hosted/retail progress remain unavailable |
 | 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
 | 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |
 | 13 | Multi-Title Support | Hardcoded HST strings | Data-driven manifest catalog | **IN_PROGRESS** (Unifying title contract) |
+| 14 | In-Game Performance Overlay | Web Studio Profiler | Running game window HUD (F1 / `SR_HUD=1` opt-in) rendering presented FPS, frame time, VBlank rate, and audio active status from `SR_PERF` telemetry; zero guest timing impact; zero GPU work when disabled | **PASS** (SDL3 debug text presentation path overlay, SR_HUD and F1 toggle verified, headless smoke parity maintained) |
 
 ---
 

@@ -203,7 +203,12 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
 - **Live Input Monitor**: A real-time visualizer panel displays active host button presses, numerical stick coordinates, and an interactive 2D deadzone box so users can immediately observe calibration effects.
 - **Safe Navigation & Defaults**: Keyboard Escape always backs out or cancels capture, preventing navigation lockouts. "RESET DEFAULTS" restores the baseline profile.
 - **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the profile via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime.
-- **In the Works**: Continuous trigger resting/extreme value calibration (#357) and in-game pause overlay controller configuration remain in the works.
+- **Guided Stick & Trigger Calibration**: A multi-stage calibration wizard ("CALIBRATE STICK & TRIGGERS") guides the user through:
+  1. *Resting state*: sampling resting analog stick and trigger axes for 1000 ms to establish neutral/center points.
+  2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
+  3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
+  Values are stored in the unified `input_profile.json` (schema 1 backward compatible) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
+- **In the Works**: In-game pause overlay controller configuration remains in the works (pause menu requires guest-clock semantics; out of scope for this milestone).
 
 ---
 

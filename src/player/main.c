@@ -1109,6 +1109,8 @@ int main(int argc, char *argv[]) {
                         } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
                             if (input_settings_is_capturing(&app.input_settings)) {
                                 input_settings_cancel_capture(&app.input_settings);
+                            } else if (input_settings_is_calibrating(&app.input_settings)) {
+                                input_settings_cancel_calibration(&app.input_settings);
                             } else {
                                 player_app_set_view(&app, VIEW_SETTINGS);
                             }
@@ -1261,7 +1263,11 @@ int main(int argc, char *argv[]) {
                         if (app.active_view == VIEW_SETUP_WIZARD) {
                             player_app_wizard_back(&app);
                         } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
-                            player_app_set_view(&app, VIEW_SETTINGS);
+                            if (input_settings_is_calibrating(&app.input_settings)) {
+                                input_settings_cancel_calibration(&app.input_settings);
+                            } else {
+                                player_app_set_view(&app, VIEW_SETTINGS);
+                            }
                         } else {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         }
@@ -1360,6 +1366,19 @@ int main(int argc, char *argv[]) {
         } else {
             memset(app.host_buttons_live, 0, sizeof(app.host_buttons_live));
             memset(app.host_axes_live, 0, sizeof(app.host_axes_live));
+        }
+
+        /* Update guided analog calibration when active (#357) */
+        if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
+            static uint64_t s_last_cal_tick = 0;
+            uint64_t cur_tick = SDL_GetTicks();
+            if (s_last_cal_tick == 0) s_last_cal_tick = cur_tick;
+            uint32_t dt_ms = (uint32_t)(cur_tick - s_last_cal_tick);
+            s_last_cal_tick = cur_tick;
+            if (input_settings_is_calibrating(&app.input_settings)) {
+                input_settings_update_calibration(&app.input_settings, dt_ms,
+                                                  app.host_axes_live);
+            }
         }
 
         ui_render_frame(renderer, &app, &input);

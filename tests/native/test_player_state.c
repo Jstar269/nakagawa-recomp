@@ -797,7 +797,15 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_SETTINGS;
         assert(player_app_focus_count(stops) == 14);
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
-        assert(player_app_focus_count(stops) == 21);
+        assert(player_app_focus_count(stops) == 22);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
+        assert(player_app_focus_count(stops) == 1);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_EXTREMES;
+        assert(player_app_focus_count(stops) == 2);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_RESULT;
+        assert(player_app_focus_count(stops) == 2);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_INACTIVE;
+        assert(player_app_focus_count(stops) == 22);
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 

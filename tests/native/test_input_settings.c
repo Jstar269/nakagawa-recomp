@@ -340,6 +340,154 @@ static void test_sr_padscript_semantics_untouched(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 8 PASSED!\n");
 }
 
+/* -----------------------------------------------------------------------------
+ * 9. Guided Calibration and Resting/Extreme Transform Math
+ * -------------------------------------------------------------------------- */
+static void test_guided_calibration_and_resting_extremes(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 9: Guided calibration and resting/extreme transforms...\n");
+
+    /* 9a. Calibrated Axis Transform Math */
+    /* Neutral stick with resting offset 500: at raw 500, output must be exact center 128 */
+    uint8_t center_val = nk_input_profile_transform_axis_calibrated(500, 7849, 0, false, 500, -30000, 30000);
+    assert(center_val == 128);
+
+    /* Within deadzone around rest (e.g. 500 + 4000 = 4500): still 128 */
+    assert(nk_input_profile_transform_axis_calibrated(4500, 7849, 0, false, 500, -30000, 30000) == 128);
+    assert(nk_input_profile_transform_axis_calibrated(-3500, 7849, 0, false, 500, -30000, 30000) == 128);
+
+    /* At positive extreme 30000: output must be 255 */
+    assert(nk_input_profile_transform_axis_calibrated(30000, 7849, 0, false, 500, -30000, 30000) == 255);
+    /* At negative extreme -30000: output must be 0 */
+    assert(nk_input_profile_transform_axis_calibrated(-30000, 7849, 0, false, 500, -30000, 30000) == 0);
+
+    /* 9b. Calibrated Trigger Evaluation Math */
+    /* Trigger resting at 200, extreme at 30000, threshold at 8192 (~25%) */
+    /* At rest (raw 200): not pressed */
+    assert(!nk_input_profile_eval_trigger_calibrated(200, 8192, 200, 30000));
+    assert(!nk_input_profile_eval_trigger_calibrated(100, 8192, 200, 30000));
+    /* Pull 5000 (below threshold): not pressed */
+    assert(!nk_input_profile_eval_trigger_calibrated(5000, 8192, 200, 30000));
+    /* Pull 15000 (~50%): pressed */
+    assert(nk_input_profile_eval_trigger_calibrated(15000, 8192, 200, 30000));
+    /* Pull 30000 (100%): pressed */
+    assert(nk_input_profile_eval_trigger_calibrated(30000, 8192, 200, 30000));
+
+    /* 9c. Guided Calibration State Machine */
+    InputSettingsState state;
+    input_settings_init(&state);
+
+    assert(!input_settings_is_calibrating(&state));
+    assert(input_settings_get_calibration_stage(&state) == CALIBRATION_STAGE_INACTIVE);
+
+    bool started = input_settings_start_calibration(&state);
+    assert(started);
+    assert(input_settings_is_calibrating(&state));
+    assert(input_settings_get_calibration_stage(&state) == CALIBRATION_STAGE_REST);
+
+    /* Advance time during rest stage with host axes at resting drift */
+    int16_t rest_axes[NK_HOST_AXIS_COUNT] = {0};
+    rest_axes[NK_HOST_AXIS_LEFTX] = 450;
+    rest_axes[NK_HOST_AXIS_LEFTY] = -320;
+    rest_axes[NK_HOST_AXIS_LEFT_TRIGGER] = 80;
+    rest_axes[NK_HOST_AXIS_RIGHT_TRIGGER] = 90;
+
+    /* Tick 500ms -> still in rest */
+    input_settings_update_calibration(&state, 500, rest_axes);
+    assert(input_settings_get_calibration_stage(&state) == CALIBRATION_STAGE_REST);
+
+    /* Tick remaining 500ms -> should transition to EXTREMES stage */
+    input_settings_update_calibration(&state, 500, rest_axes);
+    assert(input_settings_get_calibration_stage(&state) == CALIBRATION_STAGE_EXTREMES);
+
+    /* Simulate user moving stick in circles and pulling triggers */
+    int16_t move_axes[NK_HOST_AXIS_COUNT] = {0};
+    move_axes[NK_HOST_AXIS_LEFTX] = -29500;
+    move_axes[NK_HOST_AXIS_LEFTY] = -31000;
+    move_axes[NK_HOST_AXIS_LEFT_TRIGGER] = 31200;
+    move_axes[NK_HOST_AXIS_RIGHT_TRIGGER] = 30800;
+    input_settings_update_calibration(&state, 100, move_axes);
+
+    move_axes[NK_HOST_AXIS_LEFTX] = 30500;
+    move_axes[NK_HOST_AXIS_LEFTY] = 29800;
+    input_settings_update_calibration(&state, 100, move_axes);
+
+    /* User clicks Finish Sampling */
+    bool finished = input_settings_finish_calibration_extremes(&state);
+    assert(finished);
+    assert(input_settings_get_calibration_stage(&state) == CALIBRATION_STAGE_RESULT);
+
+    /* User clicks Accept */
+    bool accepted = input_settings_accept_calibration(&state);
+    assert(accepted);
+    assert(!input_settings_is_calibrating(&state));
+    assert(input_settings_get_calibration_stage(&state) == CALIBRATION_STAGE_INACTIVE);
+
+    /* Verify profile has the calibrated values */
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_X].rest == 450);
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_X].min_val == -29500);
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_X].max_val == 30500);
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_Y].rest == -320);
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_Y].min_val == -31000);
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_Y].max_val == 29800);
+    assert(state.profile.trigger_rest == 90);
+    assert(state.profile.trigger_extreme == 31200);
+
+    /* 9d. Save/load round-trip preserves calibrated fields */
+    const char *calib_file = "build/test_calib_profile.json";
+    assert(input_settings_save(&state, calib_file) == NK_OK);
+
+    InputSettingsState loaded;
+    assert(input_settings_load(&loaded, calib_file) == NK_OK);
+    assert(loaded.profile.axes[NK_PSP_AXIS_ANALOG_X].rest == 450);
+    assert(loaded.profile.axes[NK_PSP_AXIS_ANALOG_X].min_val == -29500);
+    assert(loaded.profile.axes[NK_PSP_AXIS_ANALOG_X].max_val == 30500);
+    assert(loaded.profile.trigger_rest == 90);
+    assert(loaded.profile.trigger_extreme == 31200);
+    remove(calib_file);
+
+    /* 9e. Backward compatibility: load profile without calibration fields */
+    const char *legacy_file = "build/test_legacy_profile.json";
+    FILE *lf = fopen(legacy_file, "w");
+    assert(lf != NULL);
+    fputs("{\n"
+          "  \"schema_version\": 1,\n"
+          "  \"device\": {\n"
+          "    \"guid\": \"legacy_test\",\n"
+          "    \"name_hint\": \"Legacy Controller\"\n"
+          "  },\n"
+          "  \"calibration\": {\n"
+          "    \"trigger_threshold\": 8192,\n"
+          "    \"analog_x\": {\n"
+          "      \"host_axis\": \"leftx\",\n"
+          "      \"deadzone_inner\": 7849,\n"
+          "      \"deadzone_outer\": 0,\n"
+          "      \"inverted\": false\n"
+          "    },\n"
+          "    \"analog_y\": {\n"
+          "      \"host_axis\": \"lefty\",\n"
+          "      \"deadzone_inner\": 7849,\n"
+          "      \"deadzone_outer\": 0,\n"
+          "      \"inverted\": false\n"
+          "    }\n"
+          "  },\n"
+          "  \"psp_bindings\": [],\n"
+          "  \"navigation_bindings\": []\n"
+          "}\n", lf);
+    fclose(lf);
+
+    InputSettingsState legacy_loaded;
+    assert(input_settings_load(&legacy_loaded, legacy_file) == NK_OK);
+    /* Should have defaulted cleanly */
+    assert(legacy_loaded.profile.axes[NK_PSP_AXIS_ANALOG_X].rest == 0);
+    assert(legacy_loaded.profile.axes[NK_PSP_AXIS_ANALOG_X].min_val == -32768);
+    assert(legacy_loaded.profile.axes[NK_PSP_AXIS_ANALOG_X].max_val == 32767);
+    assert(legacy_loaded.profile.trigger_rest == 0);
+    assert(legacy_loaded.profile.trigger_extreme == 32767);
+    remove(legacy_file);
+
+    printf("[INPUT_SETTINGS_TEST] Subtest 9 PASSED!\n");
+}
+
 int main(void) {
     printf("=================================================================\n");
     printf("Starting Nakagawa Native Player Input Settings Test Suite\n");
@@ -353,6 +501,7 @@ int main(void) {
     test_reset_to_defaults();
     test_save_load_roundtrip();
     test_sr_padscript_semantics_untouched();
+    test_guided_calibration_and_resting_extremes();
 
     printf("=================================================================\n");
     printf("ALL INPUT SETTINGS TESTS PASSED SUCCESSFULLY!\n");

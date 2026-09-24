@@ -178,10 +178,21 @@ int player_app_focus_count(const PlayerApp *app) {
              * in draw order. */
             return 14;
         case VIEW_CONTROLLER_SETTINGS:
+            if (input_settings_is_calibrating(&app->input_settings)) {
+                switch (input_settings_get_calibration_stage(&app->input_settings)) {
+                    case CALIBRATION_STAGE_REST:
+                        return 1;
+                    case CALIBRATION_STAGE_EXTREMES:
+                    case CALIBRATION_STAGE_RESULT:
+                        return 2;
+                    default:
+                        return 1;
+                }
+            }
             /* 14 digital controls rebind buttons + deadzone [-]/[+] (2) +
-             * trigger threshold [-]/[+] (2) + save (1) + reset (1) + back (1),
+             * trigger threshold [-]/[+] (2) + guided calibration (1) + save (1) + reset (1) + back (1),
              * in draw order. */
-            return 21;
+            return 22;
         case VIEW_ERROR:
             return 1;
         case VIEW_SETUP_WIZARD:

@@ -133,6 +133,9 @@ void gui_init(const char *title) {
         const char *v = getenv("SR_VIDEO");
         if (!v || strcmp(v, "gdi") != 0) {
             if (sdl3vk_init(title)) {
+                extern int sr_audio_is_active(void);
+                extern void sdl3vk_set_audio_active_cb(int (*cb)(void));
+                sdl3vk_set_audio_active_cb(sr_audio_is_active);
                 s_sdl3 = 1;
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
                 s_last_ns = SDL_GetTicksNS();

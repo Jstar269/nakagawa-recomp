@@ -584,6 +584,22 @@ FS: Open(./sce_lbn0x0e0f) -> 0x00000000
 VIDEO: present fb=0x04000000 fmt=3 stride=512
 ```
 
+## In-Game Performance Overlay (HUD)
+
+The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance overlay (HUD) that can be toggled at runtime or enabled at process start:
+
+- **Startup Switch**: Launch with `SR_HUD=1` to have the overlay enabled at startup.
+- **Runtime Toggle**: Press `F1` while the game window is focused to toggle the overlay on or off.
+- **Telemetry Displayed**:
+  - **FPS & Frame Time**: Presented frames per second and average millisecond latency per presented frame.
+  - **VBlank Rate**: Cadence of the scheduler's VBlank ticks in Hertz.
+  - **Audio Status**: Whether the host audio stream is actively producing output (`Active` vs. `Inactive`).
+- **Timing and Performance Guarantees**:
+  - Reuses the low-overhead counters already tracked by `SR_PERF`; no parallel measurement system or polling thread is introduced.
+  - When disabled, overhead is a single branch check (`if (s_hud_enabled && ...)`), executing zero extra Vulkan commands and performing zero extra GPU work.
+  - When enabled, host-side drawing renders text onto an SDL3 surface after the guest frame is composed and copies it directly into the swapchain staging buffer, guaranteeing zero impact on guest-visible timing or emulation clocks.
+  - Snapshot captures (`SR_FBSNAP` / visual evidence capture) capture the pristine guest framebuffer before the presentation blit, keeping automated tests and snapshots free of HUD artifacts.
+
 ## Troubleshooting
 
 ### Black screen
