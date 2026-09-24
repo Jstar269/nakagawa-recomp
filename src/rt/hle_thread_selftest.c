@@ -5414,6 +5414,26 @@ static void test_b23_second_round(void) {
 #define VPL_EXHAUSTED_ERR     0x800200d9u
 #define VPL_INFO              0x00240a00u
 #define VPL_OUTPTR            0x00240a80u
+#define NID_MBX_CREATE        0x8125221du
+#define NID_MBX_DELETE        0x86255adau
+#define NID_MBX_SEND          0xe9b3061eu
+#define NID_MBX_RECV          0x18260574u
+#define NID_MBX_RECV_CB       0xf3986382u
+#define NID_MBX_POLL          0x0d81716au
+#define NID_MBX_CANCEL        0x87d4dd36u
+#define NID_MBX_REFER         0xa8e8c846u
+#define MBX_UNKNOWN_ID_ERR    0x8002019bu
+#define MBX_EMPTY_ERR         0x800201b2u
+#define MBX_WAIT_TIMEOUT_ERR  0x800201a8u
+#define MBX_WAIT_CANCEL_ERR   0x800201a9u
+#define MBX_WAIT_DELETE_ERR   0x800201b5u
+#define MBX_NAMEBUF           0x00241100u
+#define MBX_MSG_BASE          0x00241200u
+#define MBX_OUTPTR            0x00241300u
+#define MBX_TIMEOUT_PTR       0x00241304u
+#define MBX_NUMWAIT_PTR       0x00241308u
+#define MBX_INFO              0x00241400u
+#define MBX_PRIORITY_ATTR     0x400u
 
 /* Fresh FPL_NBLOCKS x FPL_BSIZE pool. Returns 0 on arrangement failure. */
 static uint32_t fpl_make_pool(void) {
@@ -10863,6 +10883,97 @@ static void selftest_vpl_waiter_fiber_body(void *arg) {
     selftest_park_on_scheduler();
 }
 
+/* Mailbox receive waiter. toptr==0 means an infinite wait (no timeout word). */
+typedef struct {
+    uint32_t uid;
+    TCB     *tcb;
+    uint32_t mbx_uid;
+    uint32_t outptr;
+    uint32_t toptr;
+    int      is_cb;
+    uint32_t ret;
+    int      returned;
+} SelftestMbxWaiterCtx;
+
+int s_mbx_parks = 0;
+
+static void selftest_mbx_waiter_fiber_body(void *arg) {
+    SelftestMbxWaiterCtx *ctx = (SelftestMbxWaiterCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = ctx->mbx_uid;
+    cpu.r[5] = ctx->outptr;
+    cpu.r[6] = ctx->toptr;
+    ctx->ret = sr_syscall(&cpu, ctx->is_cb ? NID_MBX_RECV_CB : NID_MBX_RECV);
+    ctx->returned = 1;
+    s_mbx_parks++;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t selftest_mbx_create(uint32_t attr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = MBX_NAMEBUF;
+    cpu.r[5] = attr;
+    cpu.r[6] = 0;
+    return sr_syscall(&cpu, NID_MBX_CREATE);
+}
+
+static uint32_t selftest_mbx_delete(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_MBX_DELETE);
+}
+
+static uint32_t selftest_mbx_send(uint32_t uid, uint32_t msg) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = msg;
+    return sr_syscall(&cpu, NID_MBX_SEND);
+}
+
+static uint32_t selftest_mbx_recv(uint32_t uid, uint32_t outptr, uint32_t toptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = outptr;
+    cpu.r[6] = toptr;
+    return sr_syscall(&cpu, NID_MBX_RECV);
+}
+
+static uint32_t selftest_mbx_poll(uint32_t uid, uint32_t outptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = outptr;
+    return sr_syscall(&cpu, NID_MBX_POLL);
+}
+
+static uint32_t selftest_mbx_cancel(uint32_t uid, uint32_t nump) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = nump;
+    return sr_syscall(&cpu, NID_MBX_CANCEL);
+}
+
+static uint32_t selftest_mbx_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_MBX_REFER);
+}
+
+/* Guest SceKernelMsgPacket at base: next@0, msgPriority@4, dummy@8. */
+static void mbx_init_packet(uint32_t base, uint32_t priority) {
+    MEM_W32(base + 0, 0);
+    MEM_W32(base + 4, priority);
+    MEM_W32(base + 8, 0);
+}
+
 static uint32_t selftest_fpl_create(uint32_t bsize, uint32_t nblocks) {
     CpuState cpu;
     memset(&cpu, 0, sizeof cpu);
@@ -11341,6 +11452,216 @@ static void test_vpl_blocking_waits(void) {
     expect(w_del.returned == 1 && w_del.ret == 0x800201b5u, "VPL: waiter returned WAIT_DELETE (0x800201b5)");
     expect(MEM_R32(out2) == 0xfeedfaceu, "VPL: deleted pool writes no output pointer");
     sr_coro_destroy(w_del.tcb->coro); w_del.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+}
+
+/* =========================================================================
+ * Mailbox object model tests (issue #339)
+ * Measured anchors from docs/HARDWARE_ORACLE.md (campaign psp-hw-20260917):
+ * unknown id 0x8002019B, timeout 0x800201A8 with remaining 0, Cancel waiters
+ * 0x800201A9, empty poll 0x800201B2, FIFO circular next links, attr 0x400
+ * ascending msgPriority, waitType 5.
+ * ========================================================================= */
+
+static void test_mbx_lifecycle_and_ordering(void) {
+    extern void sr_hle_test_partition_reset(void);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    TCB *cur = fixture_thread(0x150u, TH_RUNNING, 32);
+    s_cur = (int)(cur - s_tcb);
+    cur->started = 1;
+
+    uint32_t out = MBX_OUTPTR;
+
+    /* ---- 1. Unknown id on every op ---- */
+    expect(selftest_mbx_poll(0xdeadbeefu, out) == MBX_UNKNOWN_ID_ERR,
+           "MBX: PollMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_send(0xdeadbeefu, MBX_MSG_BASE) == MBX_UNKNOWN_ID_ERR,
+           "MBX: SendMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_recv(0xdeadbeefu, out, 0) == MBX_UNKNOWN_ID_ERR,
+           "MBX: ReceiveMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_cancel(0xdeadbeefu, MBX_NUMWAIT_PTR) == MBX_UNKNOWN_ID_ERR,
+           "MBX: CancelReceiveMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_refer(0xdeadbeefu, MBX_INFO) == MBX_UNKNOWN_ID_ERR,
+           "MBX: ReferMbxStatus unknown id is 0x8002019B");
+    expect(selftest_mbx_delete(0xdeadbeefu) == MBX_UNKNOWN_ID_ERR,
+           "MBX: DeleteMbx unknown id is 0x8002019B");
+
+    /* ---- 2. Empty poll is MBX_EMPTY (0x800201B2) ---- */
+    uint32_t mbx = selftest_mbx_create(0);
+    expect(mbx != 0 && (mbx >> 31) == 0, "MBX: CreateMbx returns a UID");
+    MEM_W32(out, 0xfeedfaceu);
+    expect(selftest_mbx_poll(mbx, out) == MBX_EMPTY_ERR,
+           "MBX: empty poll returns 0x800201B2");
+    expect(MEM_R32(out) == 0xfeedfaceu, "MBX: empty poll leaves outptr untouched");
+
+    /* ---- 3. FIFO circular delivery ---- */
+    uint32_t m0 = MBX_MSG_BASE + 0x00u;
+    uint32_t m1 = MBX_MSG_BASE + 0x10u;
+    uint32_t m2 = MBX_MSG_BASE + 0x20u;
+    mbx_init_packet(m0, 0);
+    mbx_init_packet(m1, 0);
+    mbx_init_packet(m2, 0);
+    expect(selftest_mbx_send(mbx, m0) == 0, "MBX: SendMbx #0 succeeds");
+    expect(selftest_mbx_send(mbx, m1) == 0, "MBX: SendMbx #1 succeeds");
+    expect(selftest_mbx_send(mbx, m2) == 0, "MBX: SendMbx #2 succeeds");
+
+    /* HARDWARE_ORACLE: FIFO mailboxes link packets circularly. */
+    expect(MEM_R32(m0 + 0) == m1, "MBX: FIFO circular link m0->next == m1");
+    expect(MEM_R32(m1 + 0) == m2, "MBX: FIFO circular link m1->next == m2");
+    expect(MEM_R32(m2 + 0) == m0, "MBX: FIFO circular link m2->next == m0 (circular)");
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: ReferMbxStatus succeeds");
+    expect(MEM_R32(MBX_INFO + 44) == 3u, "MBX: Refer numMessages == 3");
+    expect(MEM_R32(MBX_INFO + 48) == m0, "MBX: Refer firstMessage == FIFO head");
+    expect(MEM_R32(MBX_INFO + 40) == 0u, "MBX: Refer numWaitThreads == 0 when idle");
+
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: poll delivers first");
+    expect(MEM_R32(out) == m0, "MBX: poll order is FIFO head");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_recv(mbx, out, 0) == 0, "MBX: receive delivers second");
+    expect(MEM_R32(out) == m1, "MBX: receive order is FIFO second");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: poll delivers third");
+    expect(MEM_R32(out) == m2, "MBX: poll order is FIFO third");
+    expect(selftest_mbx_poll(mbx, out) == MBX_EMPTY_ERR,
+           "MBX: poll after drain is empty");
+
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: DeleteMbx succeeds");
+    expect(selftest_mbx_delete(mbx) == MBX_UNKNOWN_ID_ERR,
+           "MBX: double DeleteMbx is unknown id");
+
+    /* ---- 4. Priority mailbox (attr 0x400): ascending msgPriority, FIFO among equals ---- */
+    mbx = selftest_mbx_create(MBX_PRIORITY_ATTR);
+    expect(mbx != 0 && (mbx >> 31) == 0, "MBX: CreateMbx priority returns a UID");
+    mbx_init_packet(m0, 5);
+    mbx_init_packet(m1, 1);
+    mbx_init_packet(m2, 3);
+    uint32_t m3 = MBX_MSG_BASE + 0x30u;
+    mbx_init_packet(m3, 1);
+    expect(selftest_mbx_send(mbx, m0) == 0, "MBX: priority Send #0 (pri 5)");
+    expect(selftest_mbx_send(mbx, m1) == 0, "MBX: priority Send #1 (pri 1)");
+    expect(selftest_mbx_send(mbx, m2) == 0, "MBX: priority Send #2 (pri 3)");
+    expect(selftest_mbx_send(mbx, m3) == 0, "MBX: priority Send #3 (pri 1)");
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: priority Refer succeeds");
+    expect(MEM_R32(MBX_INFO + 44) == 4u, "MBX: priority numMessages == 4");
+    expect(MEM_R32(MBX_INFO + 48) == m1,
+           "MBX: priority firstMessage is lowest priority (1, first of equals)");
+
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 1");
+    expect(MEM_R32(out) == m1, "MBX: priority order [0] == pri 1 (first send)");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 2");
+    expect(MEM_R32(out) == m3, "MBX: priority order [1] == pri 1 (FIFO among equals)");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 3");
+    expect(MEM_R32(out) == m2, "MBX: priority order [2] == pri 3");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 4");
+    expect(MEM_R32(out) == m0, "MBX: priority order [3] == pri 5");
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: priority DeleteMbx succeeds");
+
+    /* ---- 5. Timeout == 0 on empty mailbox writes remaining 0 and WAIT_TIMEOUT ---- */
+    mbx = selftest_mbx_create(0);
+    MEM_W32(MBX_TIMEOUT_PTR, 0);
+    MEM_W32(out, 0xfeedfaceu);
+    expect(selftest_mbx_recv(mbx, out, MBX_TIMEOUT_PTR) == MBX_WAIT_TIMEOUT_ERR,
+           "MBX: timeout 0 on empty returns WAIT_TIMEOUT");
+    expect(MEM_R32(MBX_TIMEOUT_PTR) == 0u,
+           "MBX: timeout 0 writes remaining timeout 0");
+    expect(MEM_R32(out) == 0xfeedfaceu,
+           "MBX: timed-out receive leaves outptr untouched");
+
+    /* ---- 6. Blocking receive wakes on Send (waitType 5, handoff) ---- */
+    SelftestMbxWaiterCtx w; memset(&w, 0, sizeof w);
+    w.uid = 0x151u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = 0;
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: waiter blocked on empty mailbox");
+    expect(w.tcb->wait_kind == 5, "MBX: waiter wait_kind is 5 (PSP mailbox)");
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: Refer while waiter blocked");
+    expect(MEM_R32(MBX_INFO + 40) == 1u,
+           "MBX: Refer numWaitThreads == 1 while blocked");
+
+    mbx_init_packet(m0, 0);
+    MEM_W32(out, 0xfeedfaceu);
+    expect(selftest_mbx_send(mbx, m0) == 0, "MBX: Send wakes blocked receiver");
+    expect(w.tcb->state == TH_READY, "MBX: waiter woke to TH_READY on Send");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == 0, "MBX: waiter returned 0 after handoff");
+    expect(MEM_R32(out) == m0, "MBX: waiter received the sent packet");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: Refer after handoff");
+    expect(MEM_R32(MBX_INFO + 40) == 0u, "MBX: numWaitThreads back to 0");
+    expect(MEM_R32(MBX_INFO + 44) == 0u, "MBX: numMessages back to 0");
+
+    /* ---- 7. CancelReceiveMbx wakes waiter with WAIT_CANCEL and reports count ---- */
+    memset(&w, 0, sizeof w);
+    w.uid = 0x152u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = 0;
+    MEM_W32(out, 0xfeedfaceu);
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: waiter blocked before cancel");
+
+    MEM_W32(MBX_NUMWAIT_PTR, 0xdeadbeefu);
+    expect(selftest_mbx_cancel(mbx, MBX_NUMWAIT_PTR) == 0,
+           "MBX: CancelReceiveMbx succeeds");
+    expect(MEM_R32(MBX_NUMWAIT_PTR) == 1u,
+           "MBX: Cancel reports numWaitThreads == 1");
+    expect(w.tcb->state == TH_READY, "MBX: cancel woke waiter to TH_READY");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == MBX_WAIT_CANCEL_ERR,
+           "MBX: cancelled waiter returns 0x800201A9");
+    expect(MEM_R32(out) == 0xfeedfaceu,
+           "MBX: cancelled receive writes no message");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- 8. DeleteMbx wakes waiter with WAIT_DELETE ---- */
+    memset(&w, 0, sizeof w);
+    w.uid = 0x153u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = 0;
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: waiter blocked before delete");
+
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: DeleteMbx with waiter succeeds");
+    expect(w.tcb->state == TH_READY, "MBX: delete woke waiter to TH_READY");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == MBX_WAIT_DELETE_ERR,
+           "MBX: waiter on deleted mailbox returns 0x800201B5");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
     s_cur = (int)(cur - s_tcb);
 }
 
@@ -11936,13 +12257,14 @@ static void check_coroutine_lifecycle(void) {
     {
         extern int s_mtx_parks;
         extern int s_pool_parks;
-        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks;
+        extern int s_mbx_parks;
+        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
         char msg[256];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs = %d, observed %lu)",
-                 ic_expected_parks(), s_mtx_parks, s_pool_parks, expected_parks, s_parks);
+                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
+                 ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -13976,6 +14298,7 @@ int main(int argc, char **argv) {
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
     test_vpl_blocking_waits();
+    test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();
     test_psp_mutex();
     test_real_module_start_lifecycle();

@@ -97,6 +97,12 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0x0d81716a": {
+    "classification": "dedicated",
+    "handler": "h_PollMbx",
+    "name": "sceKernelPollMbx",
+    "status": "partial"
+  },
   "0x0da7535e": {
     "classification": "dedicated",
     "handler": "h_FontGetFontInfo",
@@ -218,6 +224,12 @@
     "handler": "h_StdFd",
     "name": "sceKernelStdin",
     "status": "unreviewed"
+  },
+  "0x18260574": {
+    "classification": "dedicated",
+    "handler": "h_ReceiveMbx",
+    "name": "sceKernelReceiveMbx",
+    "status": "partial"
   },
   "0x1839852a": {
     "classification": "dedicated",
@@ -1286,6 +1298,12 @@
     "name": "sceKernelClearEventFlag",
     "status": "unreviewed"
   },
+  "0x8125221d": {
+    "classification": "dedicated",
+    "handler": "h_CreateMbx",
+    "name": "sceKernelCreateMbx",
+    "status": "partial"
+  },
   "0x82826f70": {
     "classification": "dedicated",
     "handler": "h_SleepThreadCB",
@@ -1316,6 +1334,12 @@
     "name": "sceKernelWaitThreadEndCB",
     "status": "unreviewed"
   },
+  "0x86255ada": {
+    "classification": "dedicated",
+    "handler": "h_DeleteMbx",
+    "name": "sceKernelDeleteMbx",
+    "status": "partial"
+  },
   "0x868120b5": {
     "classification": "dedicated",
     "handler": "h_AtracSetLoopNum",
@@ -1333,6 +1357,12 @@
     "handler": "h_MpegFinish",
     "name": "sceMpegFinish",
     "status": "unreviewed"
+  },
+  "0x87d4dd36": {
+    "classification": "dedicated",
+    "handler": "h_CancelReceiveMbx",
+    "name": "sceKernelCancelReceiveMbx",
+    "status": "partial"
   },
   "0x87d9223c": {
     "classification": "dedicated",
@@ -1664,6 +1694,12 @@
     "handler": "h_FontOpen",
     "name": "sceFontOpen",
     "status": "unreviewed"
+  },
+  "0xa8e8c846": {
+    "classification": "dedicated",
+    "handler": "h_ReferMbxStatus",
+    "name": "sceKernelReferMbxStatus",
+    "status": "partial"
   },
   "0xa9c2cb9a": {
     "classification": "dedicated",
@@ -2213,6 +2249,12 @@
     "name": "sceAtracGetInternalErrorInfo",
     "status": "unreviewed"
   },
+  "0xe9b3061e": {
+    "classification": "dedicated",
+    "handler": "h_SendMbx",
+    "name": "sceKernelSendMbx",
+    "status": "partial"
+  },
   "0xeadb1bd7": {
     "classification": "dedicated",
     "handler": "h_PowerLock",
@@ -2295,6 +2337,12 @@
     "classification": "dedicated",
     "handler": "h_MpegAvcDecodeStopYCbCr",
     "name": "sceMpegAvcDecodeStopYCbCr",
+    "status": "partial"
+  },
+  "0xf3986382": {
+    "classification": "dedicated",
+    "handler": "h_ReceiveMbxCB",
+    "name": "sceKernelReceiveMbxCB",
     "status": "partial"
   },
   "0xf3f76017": {

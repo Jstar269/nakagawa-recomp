@@ -187,6 +187,43 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "Memory Stick devctl callback events unmodeled and flat I/O root separate from savedata (#281, #334, #341)",
     },
+    # Mailboxes (issue #339). Measured contracts live in docs/HARDWARE_ORACLE.md
+    # (campaign psp-hw-20260917): unknown id 0x8002019B, timeout 0x800201A8 with
+    # remaining 0, CancelReceiveMbx waiters 0x800201A9, empty poll 0x800201B2,
+    # FIFO circular next links, attr 0x400 ascending msgPriority, waitType 5.
+    # Each handler stays partial until its own named gaps are closed.
+    "h_CreateMbx": {
+        "status": "partial",
+        "limitation": "NULL-name create error and interrupt-context placement unmeasured (#339, #341)",
+    },
+    "h_DeleteMbx": {
+        "status": "partial",
+        "limitation": "delete-while-waited is corroborated by campaign psp-hw-20260917 but not mailbox-measured; interrupt-context placement unmeasured (#339, #341)",
+    },
+    "h_SendMbx": {
+        "status": "partial",
+        "limitation": "invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)",
+    },
+    "h_ReceiveMbx": {
+        "status": "partial",
+        "limitation": "ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)",
+    },
+    "h_ReceiveMbxCB": {
+        "status": "partial",
+        "limitation": "callback-dispatch interleaving during a mailbox wait unmeasured; ILLEGAL_CONTEXT precedence unmeasured (#339, #341)",
+    },
+    "h_PollMbx": {
+        "status": "partial",
+        "limitation": "invalid-message-pointer error class unmeasured (#339, #341)",
+    },
+    "h_CancelReceiveMbx": {
+        "status": "partial",
+        "limitation": "cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)",
+    },
+    "h_ReferMbxStatus": {
+        "status": "partial",
+        "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.

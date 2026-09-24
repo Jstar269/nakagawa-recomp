@@ -228,6 +228,7 @@
     "docs/PROJECT_MODEL.md",
     "docs/PROVENANCE_MERGE_GATE.md",
     "docs/PSPDEV_LOCAL_VERIFICATION.md",
+    "docs/PSP_INTR_WAITS_CENSUS.md",
     "docs/PSP_INTR_WAITS_MATRIX.md",
     "docs/PUBLICATION_READINESS.md",
     "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -959,6 +960,7 @@
     "tools/test_visual_oracle.ps1",
     "tools/test_visual_oracle.py",
     "tools/test_vulkan_sdk.py",
+    "tools/test_waits_census.py",
     "tools/test_workspace_paths.py",
     "tools/test_xb_probe.py",
     "tools/title_catalog_codegen.py",
@@ -978,6 +980,7 @@
     "tools/vfpu_synth_gen.py",
     "tools/vulkan_sdk.ps1",
     "tools/vulkan_sdk.py",
+    "tools/waits_census.py",
     "tools/xb_probe.py",
     "tools/test_ppmdiff_coverage.py"
   ]
