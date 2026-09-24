@@ -925,7 +925,10 @@ class TestSanitizedBringup(unittest.TestCase):
             title="Synthetic Bring-up",
         )
 
-    def _run_case(self, failure=None, *, launch_code=0, launch_output="", timeout=False):
+    def _run_case(
+        self, failure=None, *, launch_code=0, launch_output="", timeout=False,
+        flight_events=None, flight_dropped=0,
+    ):
         case_root = self.root / (failure or "success")
         report_path = case_root / "bringup.json"
         args = argparse.Namespace(
@@ -971,8 +974,17 @@ class TestSanitizedBringup(unittest.TestCase):
             stage_observer("build_package", "PASS", 2)
             return 0
 
-        def fake_popen(command, **_kwargs):
+        def fake_popen(command, **kwargs):
             launch_commands.append(list(command))
+            flight_path = kwargs.get("env", {}).get("SR_FLIGHT_OUTPUT")
+            if flight_path:
+                events = flight_events
+                if events is None:
+                    events = [{"class": "hle", "kind": 1}]
+                Path(flight_path).write_text(json.dumps({
+                    "recorder": {"dropped": flight_dropped},
+                    "events": events,
+                }), encoding="utf-8")
             return FakeProcess()
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
@@ -1019,6 +1031,33 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(command[5:], ["none", "none", "--sched"])
         nk_cli.validate_bringup_report(report)
 
+    def test_zero_exit_before_first_hle_is_a_named_in_works_boundary(self):
+        status, report = self._run_case(flight_events=[])
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_HLE")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn(308, report["issue_numbers"])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("before its first PSP kernel import", summary)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#285", summary)
+        self.assertIn("#308", summary)
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_dropped_flight_events_is_unverified(self):
+        status, report = self._run_case(flight_events=[], flight_dropped=1)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "GUEST_ACTIVITY_UNVERIFIED")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn("telemetry did not verify a PSP kernel import",
+                      nk_cli._bringup_human_summary(report))
+        nk_cli.validate_bringup_report(report)
+
     def _run_module_fixture(
         self, iso_path: Path, work_root: Path, *,
         user_decrypted_eboot: bytes | None = None,
@@ -1062,13 +1101,20 @@ class TestSanitizedBringup(unittest.TestCase):
             stage_observer("build_package", "PASS", 1)
             return 0
 
+        def fake_popen(_command, **kwargs):
+            Path(kwargs["env"]["SR_FLIGHT_OUTPUT"]).write_text(json.dumps({
+                "recorder": {"dropped": 0},
+                "events": [{"class": "hle", "kind": 1}],
+            }), encoding="utf-8")
+            return FakeProcess()
+
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 0, "", "")
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(
                 nk_cli.subprocess, "run", return_value=completed
             ))
             stack.enter_context(mock.patch.object(
-                nk_cli.subprocess, "Popen", return_value=FakeProcess()
+                nk_cli.subprocess, "Popen", side_effect=fake_popen
             ))
             stack.enter_context(mock.patch.object(
                 nk_cli, "cmd_build_package", side_effect=fake_package_build
