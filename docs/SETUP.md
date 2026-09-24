@@ -11,7 +11,11 @@ The supported and tested core development environment is:
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
 - PowerShell 7.4+ (`pwsh`). Windows PowerShell 5.1 is not supported.
 - CPython 3.14.x (`>=3.14,<3.15`), with `python` resolving to that feature line.
-- Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
+- Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
+  manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
+  (GCC 4.9+), GNU Make 3.81+, SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.14. The rolling
+  MSYS2 packages are not pinned; `tools/record_toolchain.py` records the versions a release
+  candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
 
 The PowerShell floor is 7.4, the oldest line Microsoft still supports. A syntax/cmdlet
@@ -226,6 +230,19 @@ the game actually loads that module, and it does not overwrite an existing dump.
 dump first if you need PPSSPP to regenerate it. Preserve the known-good local files once created,
 and never copy game or firmware material into Git history.
 
+### Per-title decrypted input folder (standalone player and CLI)
+
+For the standalone player (`nakagawa_player.exe`) and `tools/nk_cli.py`:
+When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight checks in both the player and `nk_cli inspect` direct the user to supply their own decrypted modules in a per-title folder under the per-user data directory:
+
+```text
+<user data>/titles/<DISC_ID>/decrypted/
+├── EBOOT.elf
+└── <module>.prx
+```
+
+On Windows, the default per-user data directory is `%LOCALAPPDATA%\Nakagawa\data` (resolving to `<user data>/titles/<DISC_ID>/decrypted/`). When a valid plain MIPS ELF32 `EBOOT.elf` is placed in this folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). The project ships no decryption tools or keys ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) in the works).
+
 ## 3. Build
 
 From the repository root:
@@ -250,7 +267,15 @@ value explicitly; the supported HST workflow above uses `nk_manager.ps1` so thos
 values cannot drift. Direct Make does not perform SDK discovery; export
 `VULKAN_SDK` or pass it as a Make variable when using that escape hatch.
 
-To build a local AOT package from a validated title manifest and plaintext executable ELF, use
+To build a generated v1 runtime package for an imported disc in the player library:
+
+```powershell
+python tools/nk_cli.py build-package <disc_id>
+```
+
+This extracts the plaintext executable (or automatically uses `EBOOT.elf` and guest PRXs from `<user data>/titles/<DISC_ID>/decrypted/`), runs the build pipeline, stages runtime assets, and promotes the package to `<user data>/packages/<DISC_ID>/`. The native player (`build/nakagawa_player.exe`) discovers, validates, and launches packages from that directory ([#297](https://github.com/Jstar269/nakagawa-recomp/issues/297)). An explicit `--module-dir <directory>` can be passed when modules are located elsewhere. In a public checkout this route packages source-owned synthetic fixtures only: a retail title needs the production runtime backends, which are not part of the public tree, and the command refuses with a message naming [#297](https://github.com/Jstar269/nakagawa-recomp/issues/297).
+
+Alternatively, to build a local AOT package directly from a validated title manifest and plaintext executable ELF, use
 the planner's package action. It runs the same two-phase Make pipeline and writes the executable,
 generated objects, `package.json`, and `build-report.json` under one dedicated untracked directory:
 
@@ -270,9 +295,12 @@ The output directory must be untracked and dedicated. The package schema and exp
 semantic-boundary records are defined in
 [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#5-local-aot-package-contract-v1).
 Inputs whose paths contain spaces or shell-sensitive characters (common under a Windows profile
-directory) are copied into `<output-dir>/staged-inputs/` so the Make recipes can use them. The
-output directory itself must not contain such characters; otherwise the route stops with the
-named `PACKAGE_UNSUPPORTED_PATH` boundary tracked by #296.
+directory) are copied into `<output-dir>/staged-inputs/` so the Make recipes can use them. When the
+output directory contains spaces, the route builds in a Make-safe workspace—resolved from
+`NK_BUILD_ROOT` if set, or the parent directory's 8.3 short name on Windows—and atomically promotes
+the finished package to the destination. If neither fallback is available, or if the path contains
+characters that Make recipes cannot quote, the route stops with the named `PACKAGE_UNSUPPORTED_PATH`
+boundary tracked by #296.
 
 `assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 

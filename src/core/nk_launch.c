@@ -901,15 +901,37 @@ NkResult nk_launch_prepare_session(
         }
     }
 
-    /* 5. Resolve font directory */
-    char cand_font[NK_MAX_PATH * 2];
-    int fw = snprintf(cand_font, sizeof(cand_font), "%s%cfont", asset_root, sep);
-    if (fw > 0 && (size_t)fw < sizeof(cand_font) && nk_platform_dir_exists(cand_font)) {
-        char absolute_font[NK_MAX_PATH];
-        if (nk_platform_absolute_path(cand_font, absolute_font, sizeof(absolute_font))) {
-            safe_copy_path(session->font_dir, sizeof(session->font_dir), absolute_font);
-        } else {
-            safe_copy_path(session->font_dir, sizeof(session->font_dir), cand_font);
+    /* 5. Resolve font directory: check user-data cache (<user_data>/fonts/v1), falling back to <asset_root>/font */
+    char cache_font[640];
+    char user_data_base[NK_MAX_PATH];
+    const char *ud_root = session->user_data_root;
+    if (!ud_root || !*ud_root) {
+        if (nk_platform_get_path(NK_PATH_DATA, user_data_base, sizeof(user_data_base))) {
+            ud_root = user_data_base;
+        }
+    }
+    bool found_cache = false;
+    if (ud_root && *ud_root) {
+        int cw = snprintf(cache_font, sizeof(cache_font), "%s%cfonts%cv1", ud_root, sep, sep);
+        if (cw > 0 && (size_t)cw < sizeof(cache_font)) {
+            char manifest_file[1024];
+            snprintf(manifest_file, sizeof(manifest_file), "%s%cmanifest.json", cache_font, sep);
+            if (nk_platform_file_exists(manifest_file)) {
+                safe_copy_path(session->font_dir, sizeof(session->font_dir), cache_font);
+                found_cache = true;
+            }
+        }
+    }
+    if (!found_cache) {
+        char cand_font[NK_MAX_PATH * 2];
+        int fw = snprintf(cand_font, sizeof(cand_font), "%s%cfont", asset_root, sep);
+        if (fw > 0 && (size_t)fw < sizeof(cand_font) && nk_platform_dir_exists(cand_font)) {
+            char absolute_font[NK_MAX_PATH];
+            if (nk_platform_absolute_path(cand_font, absolute_font, sizeof(absolute_font))) {
+                safe_copy_path(session->font_dir, sizeof(session->font_dir), absolute_font);
+            } else {
+                safe_copy_path(session->font_dir, sizeof(session->font_dir), cand_font);
+            }
         }
     }
 

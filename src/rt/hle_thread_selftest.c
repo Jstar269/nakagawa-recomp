@@ -1685,6 +1685,9 @@ static void reset_fixture(void) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+#ifdef SR_SCHED_LIVENESS_TEST
+    sched_liveness_reset();
+#endif
     s_root_seen = 0;
     /* Deliberately install a CAPTURED-role world: this suite exercises the HLE paths
      * that only exist once roles are held, and it fabricates matching TCBs for these
@@ -9875,6 +9878,362 @@ static void test_msgpipe_safety(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "ceiling pipe deletes cleanly");
 }
 
+static uint32_t s_live_sema_obj;
+static uint32_t s_live_sema_ret;
+static int s_live_sema_returned;
+static uint32_t s_live_event_obj;
+static uint32_t s_live_event_out;
+static uint32_t s_live_event_ret;
+static int s_live_event_returned;
+static uint32_t s_live_cb_obj[2];
+static uint32_t s_live_cb_ret[2];
+static int s_live_cb_returned;
+static int s_live_cb_phase;
+static uint32_t s_live_race_obj;
+static uint32_t s_live_race_timeout_ptr;
+static uint32_t s_live_race_ret;
+static int s_live_race_returned;
+
+static void liveness_sema_waiter(void *arg) {
+    (void)arg;
+    CpuState cpu = {0};
+    cpu.r[4] = s_live_sema_obj;
+    cpu.r[5] = 1u;
+    s_live_sema_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_live_sema_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void liveness_event_waiter(void *arg) {
+    (void)arg;
+    CpuState cpu = {0};
+    cpu.r[4] = s_live_event_obj;
+    cpu.r[5] = 1u;
+    cpu.r[6] = 0u;
+    cpu.r[7] = s_live_event_out;
+    s_live_event_ret = sr_syscall(&cpu, NID_CNW_WAIT_EVF);
+    s_live_event_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void liveness_callback_waiter(void *arg) {
+    (void)arg;
+    CpuState cpu = {0};
+    int phase = s_live_cb_phase++;
+    cpu.r[4] = s_live_cb_obj[phase];
+    cpu.r[5] = 1u;
+    cpu.r[6] = 0u;
+    s_live_cb_ret[phase] = sr_syscall(&cpu, NID_CNW_WAIT_SEMA_CB);
+    s_live_cb_returned++;
+    if (phase == 0) {
+        cpu = (CpuState){0};
+        cpu.r[4] = s_live_cb_obj[1];
+        cpu.r[5] = 1u;
+        cpu.r[6] = 0u;
+        s_live_cb_ret[1] = sr_syscall(&cpu, NID_CNW_WAIT_SEMA_CB);
+        s_live_cb_returned++;
+    }
+    selftest_park_on_scheduler();
+}
+
+static void liveness_race_waiter(void *arg) {
+    (void)arg;
+    CpuState cpu = {0};
+    cpu.r[4] = s_live_race_obj;
+    cpu.r[5] = 1u;
+    cpu.r[6] = s_live_race_timeout_ptr;
+    s_live_race_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_live_race_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static TCB *liveness_start_waiter(void (*body)(void *), uint32_t uid, int priority) {
+    TCB *t = fixture_thread(uid, TH_READY, priority);
+    t->started = 1;
+    t->coro = sr_coro_create(body, NULL, (size_t)4 << 20);
+    if (!t->coro) return t;
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    sr_coro_switch(t->coro);
+    return t;
+}
+
+static void liveness_finish_waiter(TCB *t) {
+    if (t && t->coro) {
+        sr_coro_destroy(t->coro);
+        t->coro = NULL;
+    }
+    s_cur = -1;
+}
+
+static void test_hle_liveness_sema_handoff(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *producer = fixture_thread(0x2a01u, TH_RUNNING, 40);
+    s_cur = (int)(producer - s_tcb);
+    producer->started = 1;
+    s_live_sema_obj = wsv_create(0, 1);
+    s_live_sema_ret = 0xffffffffu;
+    s_live_sema_returned = 0;
+    TCB *consumer = liveness_start_waiter(liveness_sema_waiter, 0x2a02u, 16);
+    expect(consumer != NULL && consumer->coro != NULL,
+           "HLE semaphore handoff creates a real waiter coroutine");
+    if (!consumer || !consumer->coro) return;
+    expect(consumer->state == TH_WAIT_OBJ && consumer->wait_obj == s_live_sema_obj,
+           "HLE semaphore handoff blocks on the semaphore object");
+    expect(sched_count_waiters(s_live_sema_obj) == 1,
+           "HLE semaphore handoff records one wait-queue member");
+    s_cur = (int)(producer - s_tcb);
+    CpuState cpu = {0};
+    cpu.r[4] = s_live_sema_obj;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+           "HLE semaphore producer signals the waiting consumer");
+    expect(consumer->state == TH_READY && wsv_count(s_live_sema_obj) == 1,
+           "HLE semaphore signal readies the consumer without consuming its count");
+    int selected = pick_next();
+    expect(selected == (int)(consumer - s_tcb),
+           "HLE semaphore producer-to-consumer order selects the consumer next");
+    s_cur = (int)(consumer - s_tcb);
+    consumer->state = TH_RUNNING;
+    sr_coro_switch(consumer->coro);
+    expect(s_live_sema_returned == 1 && s_live_sema_ret == 0u,
+           "HLE semaphore consumer resumes successfully after the signal");
+    expect(wsv_count(s_live_sema_obj) == 0,
+           "HLE semaphore consumer consumes exactly the signalled count");
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    expect(snap.last_owner_uid == producer->uid && snap.last_selected_uid == consumer->uid,
+           "HLE semaphore trace identifies producer ownership and consumer selection");
+    liveness_finish_waiter(consumer);
+    wsv_delete(s_live_sema_obj);
+}
+
+static void test_hle_liveness_event_handoff(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *producer = fixture_thread(0x2a11u, TH_RUNNING, 40);
+    s_cur = (int)(producer - s_tcb);
+    producer->started = 1;
+    s_live_event_obj = b1_call(NID_B1_CREATE_EVF, WSV_NAMEBUF, 0u, 0u, 0u);
+    s_live_event_out = 0x00250700u;
+    MEM_W32(s_live_event_out, 0u);
+    s_live_event_ret = 0xffffffffu;
+    s_live_event_returned = 0;
+    TCB *consumer = liveness_start_waiter(liveness_event_waiter, 0x2a12u, 16);
+    expect(consumer != NULL && consumer->coro != NULL,
+           "HLE event-flag handoff creates a real waiter coroutine");
+    if (!consumer || !consumer->coro || (int32_t)s_live_event_obj <= 0) return;
+    expect(consumer->state == TH_WAIT_OBJ && consumer->wait_obj == s_live_event_obj,
+           "HLE event-flag handoff blocks on the event object");
+    s_cur = (int)(producer - s_tcb);
+    expect(b1_call(NID_B1_SET_EVF, s_live_event_obj, 1u, 0u, 0u) == 0u,
+           "HLE event-flag producer sets the awaited bit");
+    expect(consumer->state == TH_READY,
+           "HLE event-flag set readies the blocked consumer");
+    expect(pick_next() == (int)(consumer - s_tcb),
+           "HLE event-flag producer-to-consumer order selects the consumer next");
+    s_cur = (int)(consumer - s_tcb);
+    consumer->state = TH_RUNNING;
+    sr_coro_switch(consumer->coro);
+    expect(s_live_event_returned == 1 && s_live_event_ret == 0u,
+           "HLE event-flag consumer resumes successfully after the set");
+    expect(MEM_R32(s_live_event_out) == 1u,
+           "HLE event-flag consumer receives the pre-consume pattern");
+    liveness_finish_waiter(consumer);
+    (void)b1_call(NID_B1_DELETE_EVF, s_live_event_obj, 0u, 0u, 0u);
+}
+
+static void test_hle_liveness_callback_reblock(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *producer = fixture_thread(0x2a21u, TH_RUNNING, 40);
+    s_cur = (int)(producer - s_tcb);
+    producer->started = 1;
+    s_live_cb_obj[0] = wsv_create(0, 1);
+    s_live_cb_obj[1] = wsv_create(0, 1);
+    s_live_cb_ret[0] = s_live_cb_ret[1] = 0xffffffffu;
+    s_live_cb_returned = 0;
+    s_live_cb_phase = 0;
+    TCB *waiter = liveness_start_waiter(liveness_callback_waiter, 0x2a22u, 16);
+    expect(waiter != NULL && waiter->coro != NULL,
+           "HLE callback workload creates a real CB waiter coroutine");
+    if (!waiter || !waiter->coro) return;
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == s_live_cb_obj[0] &&
+           waiter->is_cb_wait == 1,
+           "HLE callback wait preserves its first object and callback flag");
+    s_cur = (int)(producer - s_tcb);
+    CpuState cpu = {0};
+    cpu.r[4] = s_live_cb_obj[0];
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+           "HLE callback producer wakes the first callback wait");
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == s_live_cb_obj[1] &&
+           waiter->is_cb_wait == 1,
+           "HLE callback waiter re-blocks on the second object with callback state");
+    expect(sched_count_waiters(s_live_cb_obj[0]) == 0 &&
+           sched_count_waiters(s_live_cb_obj[1]) == 1,
+           "HLE callback re-block has no duplicate old membership");
+    s_cur = (int)(producer - s_tcb);
+    cpu = (CpuState){0};
+    cpu.r[4] = s_live_cb_obj[1];
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+           "HLE callback producer wakes the re-blocked callback wait");
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(s_live_cb_returned == 2 && s_live_cb_ret[0] == 0u && s_live_cb_ret[1] == 0u,
+           "HLE callback wake and re-block complete with success on both waits");
+    expect(waiter->is_cb_wait == 0 && sched_count_waiters(s_live_cb_obj[1]) == 0,
+           "HLE callback completion clears callback state and wait membership");
+    liveness_finish_waiter(waiter);
+    wsv_delete(s_live_cb_obj[0]);
+    wsv_delete(s_live_cb_obj[1]);
+}
+
+static void test_hle_liveness_timeout_cancel_delete(void) {
+    CpuState cpu = {0};
+    reset_fixture();
+    sr_hle_init();
+    TCB *main_t = fixture_thread(0x2a31u, TH_RUNNING, 40);
+    s_cur = (int)(main_t - s_tcb);
+    main_t->started = 1;
+    s_live_race_obj = wsv_create(0, 1);
+    s_live_race_timeout_ptr = 0x00250780u;
+    MEM_W32(s_live_race_timeout_ptr, 100u);
+    s_live_race_ret = 0xffffffffu;
+    s_live_race_returned = 0;
+    TCB *timed = liveness_start_waiter(liveness_race_waiter, 0x2a32u, 16);
+    expect(timed != NULL && timed->coro != NULL,
+           "HLE timeout race creates a timed waiter");
+    if (!timed || !timed->coro) return;
+    expect(timed->state == TH_WAIT_OBJ && timed->wake == 100u,
+           "HLE timeout race blocks with the supplied deadline");
+    s_vtime_us = 100u;
+    s_cur = (int)(timed - s_tcb);
+    timed->state = TH_READY;
+    sr_coro_switch(timed->coro);
+    expect(s_live_race_returned == 1 && s_live_race_ret == 0x800201a8u,
+           "HLE timeout race returns WAIT_TIMEOUT at the deadline");
+    expect(MEM_R32(s_live_race_timeout_ptr) == 0u,
+           "HLE timeout race clears the remaining timeout word");
+    liveness_finish_waiter(timed);
+    wsv_delete(s_live_race_obj);
+
+    reset_fixture();
+    sr_hle_init();
+    main_t = fixture_thread(0x2a33u, TH_RUNNING, 40);
+    s_cur = (int)(main_t - s_tcb);
+    main_t->started = 1;
+    s_live_race_obj = wsv_create(0, 1);
+    s_live_race_timeout_ptr = 0u;
+    s_live_race_ret = 0xffffffffu;
+    s_live_race_returned = 0;
+    TCB *cancelled = liveness_start_waiter(liveness_race_waiter, 0x2a34u, 16);
+    if (!cancelled || !cancelled->coro) return;
+    s_cur = (int)(main_t - s_tcb);
+    MEM_W32(0x00250784u, 0xffffffffu);
+    cpu = (CpuState){0};
+    cpu.r[4] = s_live_race_obj;
+    cpu.r[5] = 0xffffffffu;
+    cpu.r[6] = 0x00250784u;
+    cpu.r[8] = 0x00250784u;
+    expect(sr_syscall(&cpu, NID_WCR_CANCEL_SEMA) == 0u,
+           "HLE cancel race cancels a blocked semaphore waiter");
+    s_cur = (int)(cancelled - s_tcb);
+    cancelled->state = TH_RUNNING;
+    sr_coro_switch(cancelled->coro);
+    expect(s_live_race_ret == 0x800201a9u,
+           "HLE cancel race returns WAIT_CANCEL to the waiter");
+    liveness_finish_waiter(cancelled);
+    wsv_delete(s_live_race_obj);
+
+    reset_fixture();
+    sr_hle_init();
+    main_t = fixture_thread(0x2a35u, TH_RUNNING, 40);
+    s_cur = (int)(main_t - s_tcb);
+    main_t->started = 1;
+    s_live_race_obj = wsv_create(0, 1);
+    s_live_race_timeout_ptr = 0u;
+    s_live_race_ret = 0xffffffffu;
+    s_live_race_returned = 0;
+    TCB *deleted = liveness_start_waiter(liveness_race_waiter, 0x2a36u, 16);
+    if (!deleted || !deleted->coro) return;
+    s_cur = (int)(main_t - s_tcb);
+    cpu = (CpuState){0};
+    cpu.r[4] = s_live_race_obj;
+    expect(sr_syscall(&cpu, NID_WSV_DELETE_SEMA) == 0u,
+           "HLE delete race deletes a blocked semaphore waiter");
+    s_cur = (int)(deleted - s_tcb);
+    deleted->state = TH_RUNNING;
+    sr_coro_switch(deleted->coro);
+    expect(s_live_race_ret == 0x800201b5u,
+           "HLE delete race returns WAIT_DELETE to the waiter");
+    liveness_finish_waiter(deleted);
+}
+
+static void test_hle_liveness_queue_full_empty(void) {
+    reset_fixture();
+    sr_hle_init();
+    const uint32_t name = 0x08030000u;
+    const uint32_t source = 0x08010000u;
+    const uint32_t destination = 0x08020000u;
+    const uint32_t result = 0x08040000u;
+    MEM_W8(name, 'l');
+    MEM_W8(name + 1u, 'i');
+    MEM_W8(name + 2u, 'v');
+    MEM_W8(name + 3u, 0);
+    MEM_W8(source, 0x5a);
+    CpuState cpu = {0};
+    cpu.r[4] = name;
+    cpu.r[7] = 1u;
+    uint32_t pipe = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+    expect((int32_t)pipe > 0, "HLE queue workload creates a bounded message pipe");
+    if ((int32_t)pipe <= 0) return;
+    int full = 0;
+    int empty = 0;
+    msgpipe_setup(&cpu, pipe, source, 1u, 0u, result);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "HLE queue producer fills the bounded pipe");
+    msgpipe_setup(&cpu, pipe, source, 1u, 0u, result);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_MPP_FULL,
+           "HLE queue producer observes the full boundary");
+    full++;
+    msgpipe_setup(&cpu, pipe, destination, 1u, 0u, result);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u,
+           "HLE queue consumer drains the bounded pipe");
+    msgpipe_setup(&cpu, pipe, destination, 1u, 0u, result);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == SCE_KERNEL_ERROR_MPP_EMPTY,
+           "HLE queue consumer observes the empty boundary");
+    empty++;
+    for (unsigned i = 0; i < 32; i++) {
+        msgpipe_setup(&cpu, pipe, source, 1u, 0u, result);
+        uint32_t send_rc = sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE);
+        if (send_rc == SCE_KERNEL_ERROR_MPP_FULL) full++;
+        else expect(send_rc == 0u, "HLE queue producer returns success or FULL");
+        msgpipe_setup(&cpu, pipe, destination, 1u, 0u, result);
+        uint32_t receive_rc = sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE);
+        if (receive_rc == SCE_KERNEL_ERROR_MPP_EMPTY) empty++;
+        else expect(receive_rc == 0u, "HLE queue consumer returns success or EMPTY");
+        expect(sched_count_waiters(pipe) == 0,
+               "HLE queue Try operations never create a scheduler wait membership");
+    }
+    expect(full > 0 && empty > 0,
+           "HLE queue workload observes both full and empty boundaries");
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    expect(snap.starvation_violations == 0,
+           "HLE queue backpressure workload records no priority starvation");
+    cpu = (CpuState){0};
+    cpu.r[4] = pipe;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "HLE queue workload deletes its bounded pipe");
+}
+
 static void test_td23_guest_pointer_validation(void) {
     reset_fixture();
     sr_hle_init();
@@ -11576,12 +11935,12 @@ static void check_coroutine_lifecycle(void) {
     {
         extern int s_mtx_parks;
         extern int s_pool_parks;
-        int expected_parks = 8 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks;
+        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks;
         char msg[256];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + %d returned conformance legs + %d mutex legs + %d pool legs = %d, observed %lu)",
+                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -13461,6 +13820,11 @@ int main(int argc, char **argv) {
     test_evf_hardware_codes();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
+    test_hle_liveness_sema_handoff();
+    test_hle_liveness_event_handoff();
+    test_hle_liveness_callback_reblock();
+    test_hle_liveness_timeout_cancel_delete();
+    test_hle_liveness_queue_full_empty();
     test_cancel_release_wake_results();
     test_wake_result_is_per_thread();
     test_b23_second_round();

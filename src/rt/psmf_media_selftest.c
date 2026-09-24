@@ -30,6 +30,7 @@
 
 #include "psmf_producer.h"
 #include "sr_h264.h"
+#include "mpeg.c"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,34 @@ static int checks, failures;
 /* sr_h264_frame() writes into guest memory through SR_HOST(), so the selftest owns a flat
  * arena and a no-op VRAM-dirty sink, exactly as the runtime stubs them. */
 uint8_t *g_mem = NULL;
+CpuState *s_cpu;
+int g_sr_heap_watch;
+int g_sr_metadata_watch;
+int g_hle_depth;
+int g_sr_last_writer_enabled;
+uint32_t g_sr_store_context_pc;
+unsigned g_sr_store_context_limit;
+unsigned g_sr_store_context_count;
+int g_sr_store_context_mem_gpr;
+uint32_t g_sr_store_context_mem_offset;
+unsigned g_sr_store_context_mem_words;
+uint32_t g_sr_mem_watch_context_pc;
+unsigned g_sr_mem_watch_context_limit;
+unsigned g_sr_mem_watch_context_count;
+int g_sr_mem_watch_context_fpr;
+uint32_t g_sr_mem_watch_context_fpr_value;
+SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
+int g_sr_mem_watch_count;
+atomic_int_least32_t sr_timeslice;
+void sr_oor(uint32_t addr, uint32_t value, int store) { (void)addr; (void)value; (void)store; }
+uint32_t sr_get_ge_status(void) { return 0; }
+void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc) { (void)addr; (void)width; (void)value; (void)pc; }
+void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc) { (void)addr; (void)width; (void)value; (void)pc; }
+uint32_t sched_current_uid(void) { return 0; }
+int sr_nested_frame_acquire(uint32_t owner, uint32_t *sp, int *handle) { (void)owner; (void)sp; (void)handle; return 0; }
+int sr_nested_frame_release(int handle) { (void)handle; return 0; }
+void dispatch(CpuState *s, uint32_t target) { (void)s; (void)target; }
+RecompFn sr_lookup(uint32_t addr) { (void)addr; return NULL; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) { (void)addr; (void)bytes; }
 
 #define ARENA_BYTES (8u * 1024u * 1024u)
@@ -753,6 +782,90 @@ static void test_legacy_feed_take_path(void) {
     free(bytes);
 }
 
+static uint64_t demux_fuzz_state = 0x3194844345584D58ULL;
+
+static uint64_t demux_fuzz_rand64(void) {
+    uint64_t z = (demux_fuzz_state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+static void demux_fuzz_mutate(uint8_t *data, size_t size) {
+    static const uint32_t values[] = {
+        0, 1, 2, 3, 4, 8, 14, 16, 0x40, 0x80, 0xBD, 0xE0, 0xEF,
+        0x7FFFu, 0x8000u, 0xFFFFu, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu
+    };
+    unsigned operations = (unsigned)(demux_fuzz_rand64() % 8u) + 1u;
+    for (unsigned op = 0; op < operations; op++) {
+        unsigned kind = (unsigned)(demux_fuzz_rand64() % 5u);
+        size_t index = (size_t)(demux_fuzz_rand64() % size);
+        if (kind == 0) {
+            data[index] ^= (uint8_t)(1u << (demux_fuzz_rand64() % 8u));
+        } else if (kind == 1) {
+            data[index] = (uint8_t)demux_fuzz_rand64();
+        } else if (kind == 2 && index + 2u <= size) {
+            uint16_t value = values[demux_fuzz_rand64() %
+                                    (sizeof(values) / sizeof(values[0]))];
+            data[index] = (uint8_t)value;
+            data[index + 1] = (uint8_t)(value >> 8);
+        } else if (kind == 3 && index + 4u <= size) {
+            uint32_t value = values[demux_fuzz_rand64() %
+                                    (sizeof(values) / sizeof(values[0]))];
+            data[index] = (uint8_t)value;
+            data[index + 1] = (uint8_t)(value >> 8);
+            data[index + 2] = (uint8_t)(value >> 16);
+            data[index + 3] = (uint8_t)(value >> 24);
+        } else {
+            size_t run = (size_t)(demux_fuzz_rand64() % 16u) + 1u;
+            if (run > size - index) run = size - index;
+            memset(data + index, (demux_fuzz_rand64() & 1u) ? 0u : 0xFFu, run);
+        }
+    }
+}
+
+static void test_legacy_demux_mutations(unsigned iterations) {
+    if (iterations > 128u) iterations = 128u;
+    demux_fuzz_state = 0x3194844345584D58ULL;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint32_t size = 0;
+    uint8_t *bytes = build_psmf(&size, au_off, au_len);
+    CHECK(bytes != NULL, "demux mutation fixture allocated");
+    if (!bytes) return;
+    uint8_t *mutated = (uint8_t *)malloc(size - 2048u);
+    CHECK(mutated != NULL, "demux mutation buffer allocated");
+    if (!mutated) { free(bytes); return; }
+    unsigned attempted = 0;
+    for (unsigned i = 0; i < iterations; i++) {
+        memcpy(mutated, bytes + 2048u, size - 2048u);
+        demux_fuzz_mutate(mutated, size - 2048u);
+        int decoder = sr_h264_create();
+        if (decoder < 0) {
+            if (attempted == 0) fprintf(stderr, "SKIP: hostile legacy demux needs Media Foundation\n");
+            break;
+        }
+        attempted++;
+        sr_h264_feed(decoder, mutated, size - 2048u);
+        for (unsigned take = 0; take < 32u; take++) {
+            uint64_t consumed = 0;
+            int64_t pts = 0;
+            int rc = sr_h264_au_take(decoder, 0, &consumed, &pts);
+            if (rc <= 0) break;
+        }
+        {
+            uint64_t consumed = 0;
+            int64_t pts = 0;
+            (void)sr_h264_au_take(decoder, 1, &consumed, &pts);
+        }
+        (void)sr_h264_frame(decoder, 1, GUEST_BUF, 64, 3);
+        sr_h264_destroy(decoder);
+    }
+    free(mutated);
+    free(bytes);
+    printf("Legacy MPEG-PS/H.264 mutation: %u iterations, %u executed, 0 crashes\n",
+           iterations, attempted);
+}
+
 /* A malformed audio track must leave the video track alone. */
 static void test_track_independence(void) {
     uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
@@ -994,7 +1107,106 @@ static void test_multistream_selection(void) {
     free(bytes);
 }
 
-int main(void) {
+static void test_mpeg_ycbcr_guest_contract(void) {
+    enum {
+        TD_MPEG_DESC = 0x08100000u,
+        TD_MPEG_DATA = 0x08110000u,
+        TD_MPEG_SIZE = 0x08120000u,
+        TD_MPEG_YCBCR = 0x08130000u,
+        TD_MPEG_RANGE = 0x08140000u,
+        TD_MPEG_DEST = 0x08150000u,
+        TD_MPEG_PTR = 0x08160000u,
+        TD_MPEG_INIT = 0x08170000u,
+        TD_MPEG_AU = 0x08180000u,
+    };
+    MEM_W32(TD_MPEG_DESC, 0u);
+    CHECK(mpeg_create(TD_MPEG_DESC, TD_MPEG_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "MPEG YCbCr fixture creates a context");
+    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_SIZE) == 0,
+          "MPEG YCbCr fixture queries guest geometry");
+    CHECK(MEM_R32(TD_MPEG_SIZE) == 3200u, "MPEG YCbCr fixture uses the checked planar size");
+    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 17u, 32u, TD_MPEG_SIZE) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG YCbCr query rejects unsupported geometry");
+    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_SIZE + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG YCbCr query rejects an unaligned result pointer");
+    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR) == 0,
+          "MPEG YCbCr fixture initializes guest storage");
+    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG YCbCr init rejects an unaligned allocation");
+    YcbcrBuf *state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
+    CHECK(state != NULL && state->rgba != NULL, "MPEG YCbCr fixture retains host state");
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(TD_MPEG_PTR, TD_MPEG_YCBCR);
+    MEM_W32(TD_MPEG_RANGE, 0u);
+    MEM_W32(TD_MPEG_RANGE + 4u, 0u);
+    MEM_W32(TD_MPEG_RANGE + 8u, 64u);
+    MEM_W32(TD_MPEG_RANGE + 12u, 32u);
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, 0u, 64u, TD_MPEG_DEST) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG CSC rejects an invalid range pointer");
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) == 0,
+          "MPEG YCbCr fixture converts an untouched allocation");
+    CHECK(MEM_R8(TD_MPEG_DEST) == 0x40u, "MPEG CSC writes the host picture deterministically");
+    CHECK(mpeg_avc_copy_ycbcr(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_YCBCR + 0x10000u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG Copy rejects an uninitialized source");
+    CHECK(mpeg_avc_decode_ycbcr(TD_MPEG_DESC, TD_MPEG_AU, TD_MPEG_PTR, TD_MPEG_INIT) ==
+              SCE_MPEG_ERROR_NO_DATA && MEM_R32(TD_MPEG_INIT) == 0u,
+          "MPEG Decode reports no picture without a decoder");
+    state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
+    if (state) state->valid = 1;
+    MEM_W32(TD_MPEG_RANGE + 8u, 80u);
+    MEM_W32(TD_MPEG_RANGE + 12u, 40u);
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) == 0,
+          "MPEG CSC clips a partial source range");
+    CHECK(mpeg_avc_decode_stop_ycbcr(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_INIT) == 0 &&
+              MEM_R32(TD_MPEG_INIT) == 0u,
+          "MPEG Stop clears the tracked picture state");
+    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR) == 0,
+          "MPEG YCbCr reinitialization resets the allocation");
+    state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(TD_MPEG_RANGE + 8u, 64u);
+    MEM_W32(TD_MPEG_RANGE + 12u, 32u);
+    MEM_W8(TD_MPEG_YCBCR, 0xa5u);
+    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "guest mutation cannot reuse hidden RGBA state");
+    CHECK(mpeg_query_pcm_es_size(TD_MPEG_DESC, TD_MPEG_SIZE + 0x20u, TD_MPEG_SIZE + 0x24u) == 0 &&
+              MEM_R32(TD_MPEG_SIZE + 0x20u) == 320u && MEM_R32(TD_MPEG_SIZE + 0x24u) == 320u,
+          "MPEG PCM size query returns the documented fixed sizes");
+    uint32_t pcm_sid = mpeg_regist_stream(TD_MPEG_DESC, MPEG_PCM_STREAM, 0u);
+    CHECK(pcm_sid != 0u &&
+              mpeg_get_pcm_au(TD_MPEG_DESC, pcm_sid, TD_MPEG_SIZE + 0x28u, TD_MPEG_SIZE + 0x40u) ==
+                  SCE_MPEG_ERROR_NO_DATA,
+          "MPEG PCM AU remains an explicit no-data refusal");
+    CHECK(mpeg_change_get_au_mode(TD_MPEG_DESC, pcm_sid, MPEG_AU_MODE_SKIP) != 0u,
+          "MPEG AU skip mode fails closed without a queue contract");
+    mpeg_finish();
+    CHECK(ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR) == NULL,
+          "MPEG teardown frees guest YCbCr state");
+}
+
+int main(int argc, char **argv) {
+    unsigned fuzz_iterations = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--fuzz-iters") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            unsigned long value = strtoul(argv[++i], &end, 10);
+            if (end && *end == '\0' && value > 0 && value <= 100000ul) {
+                fuzz_iterations = (unsigned)value;
+            }
+        }
+    }
     static uint8_t arena[ARENA_BYTES];
     g_mem = arena;
     memset(arena, 0, sizeof(arena));
@@ -1007,6 +1219,8 @@ int main(void) {
     test_instance_isolation();
     test_destination_refusal();
     test_legacy_feed_take_path();
+    test_mpeg_ycbcr_guest_contract();
+    if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 
     if (failures) {
         fprintf(stderr, "psmf_media_selftest: %d checks, %d FAILURES\n", checks, failures);

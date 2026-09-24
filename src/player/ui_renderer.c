@@ -1568,6 +1568,7 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
             case PREFLIGHT_STALE: status_text = "STALE"; status_color = COLOR_AMBER; break;
             case PREFLIGHT_UNSUPPORTED: status_text = "UNSUPPORTED"; status_color = COLOR_RED; break;
             case PREFLIGHT_IN_PROGRESS: status_text = "IN PROGRESS"; status_color = COLOR_AMBER; break;
+            case PREFLIGHT_INVALID: status_text = "INVALID"; status_color = COLOR_RED; break;
         }
         float row_y = rows_y + 27.0f * (float)i;
         draw_text_ellipsized(ren, card_x + 32.0f, row_y,
@@ -2229,6 +2230,10 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                         case PREFLIGHT_IN_PROGRESS:
                             status_text = "IN PROGRESS";
                             status_color = COLOR_AMBER;
+                            break;
+                        case PREFLIGHT_INVALID:
+                            status_text = "INVALID";
+                            status_color = COLOR_RED;
                             break;
                     }
                     float row_y = panel_y + 100.0f + (float)i * 25.0f;

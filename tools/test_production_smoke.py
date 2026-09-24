@@ -519,17 +519,153 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertEqual(title_codegen_plan._stage_for_make(safe, stage, "x"), safe)
 
     def test_make_unsafe_output_directory_is_refused_with_remedy(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NK_BUILD_ROOT", None)
+            with mock.patch("title_codegen_plan._windows_short_path", return_value=None):
+                with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
+                    title_codegen_plan.build_package(
+                        self.manifest,
+                        manifest_path=self.manifest_path,
+                        game_elf=self.fixture_dir / "guest.prx",
+                        psp_header=self.fixture_dir / "guest.psp",
+                        output_dir=self.root / "out dir",
+                        public_safe=True,
+                    )
+                self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
+                self.assertIn("contains spaces", str(caught.exception))
+                self.assertIn("8.3 short names are unavailable on this volume", str(caught.exception))
+                self.assertIn("set NK_BUILD_ROOT to a folder without spaces", str(caught.exception))
+
+    def test_make_unsafe_characters_output_directory_is_refused(self):
         with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
             title_codegen_plan.build_package(
                 self.manifest,
                 manifest_path=self.manifest_path,
                 game_elf=self.fixture_dir / "guest.prx",
                 psp_header=self.fixture_dir / "guest.psp",
-                output_dir=self.root / "out dir",
+                output_dir=self.root / "out#dir",
                 public_safe=True,
             )
         self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
-        self.assertIn("choose a location without them", str(caught.exception))
+        self.assertIn("characters the Make recipes cannot quote", str(caught.exception))
+
+    def test_package_builds_to_spaced_destination_via_nk_build_root(self):
+        required = ("mingw32-make", "gcc", "pwsh")
+        if not all(shutil.which(name) for name in required):
+            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+        safe_build_root = self.root / "safe_build_root"
+        safe_build_root.mkdir(parents=True)
+        spaced_dest = self.root / "Spaced Destination Root"
+        with mock.patch.dict(os.environ, {"NK_BUILD_ROOT": str(safe_build_root)}):
+            title_codegen_plan.build_package(
+                self.manifest,
+                manifest_path=self.manifest_path,
+                game_elf=self.fixture_dir / "guest.prx",
+                psp_header=self.fixture_dir / "guest.psp",
+                output_dir=spaced_dest,
+                public_safe=True,
+            )
+        self.assertTrue((spaced_dest / "package.json").is_file())
+        self.assertTrue((spaced_dest / "build-report.json").is_file())
+        self.assertTrue((spaced_dest / "production_smoke.exe").is_file())
+        package_text = (spaced_dest / "package.json").read_text(encoding="utf-8")
+        report_text = (spaced_dest / "build-report.json").read_text(encoding="utf-8")
+        self.assertNotIn(str(safe_build_root), package_text)
+        self.assertNotIn(".build-", package_text)
+        self.assertNotIn(str(safe_build_root), report_text)
+        self.assertNotIn(".build-", report_text)
+        scratch_dirs = list(safe_build_root.glob(".build-*"))
+        self.assertEqual(len(scratch_dirs), 0)
+
+    def test_package_builds_to_spaced_destination_via_short_path_provider(self):
+        required = ("mingw32-make", "gcc", "pwsh")
+        if not all(shutil.which(name) for name in required):
+            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+        safe_short_root = self.root / "SHORTP~1"
+        safe_short_root.mkdir(parents=True)
+        spaced_dest = self.root / "Spaced Destination Short"
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NK_BUILD_ROOT", None)
+            with mock.patch("title_codegen_plan._windows_short_path", return_value=safe_short_root):
+                title_codegen_plan.build_package(
+                    self.manifest,
+                    manifest_path=self.manifest_path,
+                    game_elf=self.fixture_dir / "guest.prx",
+                    psp_header=self.fixture_dir / "guest.psp",
+                    output_dir=spaced_dest,
+                    public_safe=True,
+                )
+        self.assertTrue((spaced_dest / "package.json").is_file())
+        self.assertTrue((spaced_dest / "build-report.json").is_file())
+        self.assertTrue((spaced_dest / "production_smoke.exe").is_file())
+        package_text = (spaced_dest / "package.json").read_text(encoding="utf-8")
+        report_text = (spaced_dest / "build-report.json").read_text(encoding="utf-8")
+        self.assertNotIn(str(safe_short_root), package_text)
+        self.assertNotIn(".build-", package_text)
+        self.assertNotIn(str(safe_short_root), report_text)
+        self.assertNotIn(".build-", report_text)
+        scratch_dirs = list(safe_short_root.glob(".build-*"))
+        self.assertEqual(len(scratch_dirs), 0)
+
+    def test_package_builds_to_real_spaced_destination_without_mocks(self):
+        # Unmocked: the real 8.3 alias must survive (Path.resolve() would expand it back).
+        required = ("mingw32-make", "gcc", "pwsh")
+        if os.name != "nt" or not all(shutil.which(name) for name in required):
+            self.skipTest("real 8.3 short-path route needs Windows and the native toolchain")
+        spaced_parent = self.root / "Real Spaced Parent"
+        spaced_parent.mkdir(parents=True)
+        short = title_codegen_plan._windows_short_path(spaced_parent)
+        if short is None or title_codegen_plan._make_unsafe(short.as_posix()):
+            self.skipTest("8.3 short names are unavailable on this volume")
+        spaced_dest = spaced_parent / "pkg"
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NK_BUILD_ROOT", None)
+            title_codegen_plan.build_package(
+                self.manifest,
+                manifest_path=self.manifest_path,
+                game_elf=self.fixture_dir / "guest.prx",
+                psp_header=self.fixture_dir / "guest.psp",
+                output_dir=spaced_dest,
+                public_safe=True,
+            )
+        self.assertTrue((spaced_dest / "package.json").is_file())
+        self.assertTrue((spaced_dest / "production_smoke.exe").is_file())
+        self.assertNotIn(".build-", (spaced_dest / "package.json").read_text(encoding="utf-8"))
+
+    def test_promotion_failure_leaves_no_partial_package(self):
+        ws = self.root / "mock_ws"
+        ws.mkdir()
+        (ws / "package.json").write_text('{"mock": true}', encoding="utf-8")
+        (ws / "production_smoke.exe").write_bytes(b"mock exe")
+
+        # Test case A: destination did not exist prior to promotion
+        spaced_dest = self.root / "Promo Fail Destination"
+        with mock.patch("os.replace", side_effect=OSError("simulated disk full during atomic replace")):
+            with self.assertRaises(OSError):
+                title_codegen_plan._promote_package(ws, spaced_dest)
+        self.assertFalse(spaced_dest.exists())
+        stagings = list(self.root.glob(f".{spaced_dest.name}.staging-*"))
+        self.assertEqual(len(stagings), 0)
+
+        # Test case B: destination existed prior to promotion and should be restored
+        spaced_dest_existing = self.root / "Promo Restore Destination"
+        spaced_dest_existing.mkdir()
+        (spaced_dest_existing / "original.txt").write_text("original content", encoding="utf-8")
+        original_replace = os.replace
+        def failing_replace_staging(src, dst):
+            if str(spaced_dest_existing) in str(dst) and ".staging-" in str(src):
+                raise OSError("simulated failure replacing target")
+            return original_replace(src, dst)
+        with mock.patch("os.replace", side_effect=failing_replace_staging):
+            with self.assertRaises(OSError):
+                title_codegen_plan._promote_package(ws, spaced_dest_existing)
+        self.assertTrue(spaced_dest_existing.exists())
+        self.assertTrue((spaced_dest_existing / "original.txt").is_file())
+        self.assertFalse((spaced_dest_existing / "production_smoke.exe").exists())
+        stagings = list(self.root.glob(f".{spaced_dest_existing.name}.staging-*"))
+        backups = list(self.root.glob(f".{spaced_dest_existing.name}.backup-*"))
+        self.assertEqual(len(stagings), 0)
+        self.assertEqual(len(backups), 0)
 
     def test_package_builds_from_inputs_under_a_path_with_spaces(self):
         required = ("mingw32-make", "gcc", "pwsh")

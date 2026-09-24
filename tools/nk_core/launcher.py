@@ -298,6 +298,11 @@ class RuntimeLauncher:
         env["SR_FPS_CAP"] = str(fps_cap)
         env["SR_GPU_GE"] = "0" if software_render else ("1" if gpu_ge else "0")
         env["SR_DATAROOT"] = str(g_dir / "extracted")
+        from .fonts import resolve_font_directory
+
+        resolved_font_dir = resolve_font_directory(fallback_root=self.repo_root)
+        if resolved_font_dir:
+            env["SR_FONTDIR"] = str(resolved_font_dir)
 
         if profile == "Performance":
             env["SR_DEBUG"] = "0"

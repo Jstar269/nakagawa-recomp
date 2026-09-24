@@ -16,6 +16,7 @@
  * GPLv2+: it consumes ge.c, whose GE semantics are derived from PPSSPP. */
 
 #include "sdl3vk.h"
+#include "nk_platform.h"
 #include "../perf.h"
 #include "../fbcap_policy.h"
 
@@ -399,6 +400,7 @@ int sdl3vk_init(const char *title) {
 
     if (!create_swapchain()) return 0;
 
+    sdl3vk_init_input_profile();
     if (SDL_HasGamepad()) {
         int npads = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&npads);
@@ -411,6 +413,118 @@ int sdl3vk_init(const char *title) {
 }
 
 /* ---- input -------------------------------------------------------------------------- */
+
+/* The profile's host enums index SDL's arrays directly; keep them numerically identical. */
+_Static_assert((int)SDL_GAMEPAD_BUTTON_SOUTH == (int)NK_HOST_BUTTON_SOUTH, "host button enum drift: SOUTH");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_EAST == (int)NK_HOST_BUTTON_EAST, "host button enum drift: EAST");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_WEST == (int)NK_HOST_BUTTON_WEST, "host button enum drift: WEST");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_NORTH == (int)NK_HOST_BUTTON_NORTH, "host button enum drift: NORTH");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_BACK == (int)NK_HOST_BUTTON_BACK, "host button enum drift: BACK");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_GUIDE == (int)NK_HOST_BUTTON_GUIDE, "host button enum drift: GUIDE");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_START == (int)NK_HOST_BUTTON_START, "host button enum drift: START");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_LEFT_STICK == (int)NK_HOST_BUTTON_LEFT_STICK, "host button enum drift: LEFT_STICK");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_RIGHT_STICK == (int)NK_HOST_BUTTON_RIGHT_STICK, "host button enum drift: RIGHT_STICK");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_LEFT_SHOULDER == (int)NK_HOST_BUTTON_LEFT_SHOULDER, "host button enum drift: LEFT_SHOULDER");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER == (int)NK_HOST_BUTTON_RIGHT_SHOULDER, "host button enum drift: RIGHT_SHOULDER");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_DPAD_UP == (int)NK_HOST_BUTTON_DPAD_UP, "host button enum drift: DPAD_UP");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_DPAD_DOWN == (int)NK_HOST_BUTTON_DPAD_DOWN, "host button enum drift: DPAD_DOWN");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_DPAD_LEFT == (int)NK_HOST_BUTTON_DPAD_LEFT, "host button enum drift: DPAD_LEFT");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_DPAD_RIGHT == (int)NK_HOST_BUTTON_DPAD_RIGHT, "host button enum drift: DPAD_RIGHT");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_MISC1 == (int)NK_HOST_BUTTON_MISC1, "host button enum drift: MISC1");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1 == (int)NK_HOST_BUTTON_RIGHT_PADDLE1, "host button enum drift: RIGHT_PADDLE1");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_LEFT_PADDLE1 == (int)NK_HOST_BUTTON_LEFT_PADDLE1, "host button enum drift: LEFT_PADDLE1");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2 == (int)NK_HOST_BUTTON_RIGHT_PADDLE2, "host button enum drift: RIGHT_PADDLE2");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_LEFT_PADDLE2 == (int)NK_HOST_BUTTON_LEFT_PADDLE2, "host button enum drift: LEFT_PADDLE2");
+_Static_assert((int)SDL_GAMEPAD_BUTTON_TOUCHPAD == (int)NK_HOST_BUTTON_TOUCHPAD, "host button enum drift: TOUCHPAD");
+_Static_assert((int)SDL_GAMEPAD_AXIS_LEFTX == (int)NK_HOST_AXIS_LEFTX, "host axis enum drift: LEFTX");
+_Static_assert((int)SDL_GAMEPAD_AXIS_LEFTY == (int)NK_HOST_AXIS_LEFTY, "host axis enum drift: LEFTY");
+_Static_assert((int)SDL_GAMEPAD_AXIS_RIGHTX == (int)NK_HOST_AXIS_RIGHTX, "host axis enum drift: RIGHTX");
+_Static_assert((int)SDL_GAMEPAD_AXIS_RIGHTY == (int)NK_HOST_AXIS_RIGHTY, "host axis enum drift: RIGHTY");
+_Static_assert((int)SDL_GAMEPAD_AXIS_LEFT_TRIGGER == (int)NK_HOST_AXIS_LEFT_TRIGGER, "host axis enum drift: LEFT_TRIGGER");
+_Static_assert((int)SDL_GAMEPAD_AXIS_RIGHT_TRIGGER == (int)NK_HOST_AXIS_RIGHT_TRIGGER, "host axis enum drift: RIGHT_TRIGGER");
+
+/* Versioned host input profile state (#357). */
+static NkInputProfile s_input_profile;
+static bool s_input_profile_loaded;
+
+static bool padscript_active(void) {
+    const char *sp = getenv("SR_PADSCRIPT");
+    return sp && sp[0] != '\0';
+}
+
+void sdl3vk_reset_input_profile(void) {
+    s_input_profile_loaded = false;
+    nk_input_profile_init_default(&s_input_profile);
+}
+
+void sdl3vk_init_input_profile(void) {
+    if (s_input_profile_loaded) return;
+    s_input_profile_loaded = true;
+    nk_input_profile_init_default(&s_input_profile);
+
+    if (padscript_active()) {
+        /* When SR_PADSCRIPT is active, the profile must not alter anything.
+         * The deterministic scripted/oracle route has highest priority. */
+        return;
+    }
+
+    const char *env_path = getenv("NK_INPUT_PROFILE");
+    if (!env_path || !env_path[0]) {
+        env_path = getenv("SR_INPUT_PROFILE");
+    }
+
+    char path_buf[2048] = {0};
+    const char *target_path = NULL;
+    if (env_path && env_path[0]) {
+        target_path = env_path;
+    } else {
+        char config_dir[1024] = {0};
+        if (nk_platform_get_path(NK_PATH_CONFIG, config_dir, sizeof(config_dir))) {
+            char sep = nk_platform_path_separator();
+            snprintf(path_buf, sizeof(path_buf), "%s%cinput_profile.json", config_dir, sep);
+            target_path = path_buf;
+        }
+    }
+
+    if (target_path && target_path[0] && nk_platform_file_exists(target_path)) {
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
+        NkResult res = nk_input_profile_load(&s_input_profile, target_path, diag, sizeof(diag));
+        if (res != NK_OK) {
+            fprintf(stderr, "input_profile: %s\n", diag[0] ? diag : "unknown error");
+            nk_input_profile_init_default(&s_input_profile);
+        }
+    }
+}
+
+const NkInputProfile *sdl3vk_get_input_profile(void) {
+    if (!s_input_profile_loaded) {
+        sdl3vk_init_input_profile();
+    }
+    return &s_input_profile;
+}
+
+void sdl3vk_map_gamepad(
+    const NkInputProfile *profile,
+    const bool host_buttons[NK_HOST_BUTTON_COUNT],
+    const int16_t host_axes[NK_HOST_AXIS_COUNT],
+    uint32_t *out_buttons,
+    uint8_t *out_lx,
+    uint8_t *out_ly
+) {
+    NkInputProfile def_profile;
+    const NkInputProfile *p = profile;
+    if (!p) {
+        nk_input_profile_init_default(&def_profile);
+        p = &def_profile;
+    }
+
+    if (out_buttons) {
+        *out_buttons = nk_input_profile_eval_buttons(p, host_buttons, host_axes);
+    }
+    if (out_lx || out_ly) {
+        nk_input_profile_eval_analog(p, host_axes, out_lx, out_ly);
+    }
+}
 
 /* Rendering can be slower than the host input event rate while translated code is still
  * unoptimised.  A complete press+release may therefore be queued between two presents; polling
@@ -439,21 +553,14 @@ static uint32_t keyboard_button(SDL_Scancode sc) {
 }
 
 static uint32_t gamepad_button(Uint8 button) {
-    switch (button) {
-    case SDL_GAMEPAD_BUTTON_SOUTH:          return 0x4000;
-    case SDL_GAMEPAD_BUTTON_EAST:           return 0x2000;
-    case SDL_GAMEPAD_BUTTON_WEST:           return 0x8000;
-    case SDL_GAMEPAD_BUTTON_NORTH:          return 0x1000;
-    case SDL_GAMEPAD_BUTTON_START:          return 0x0008;
-    case SDL_GAMEPAD_BUTTON_BACK:           return 0x0001;
-    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:  return 0x0100;
-    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return 0x0200;
-    case SDL_GAMEPAD_BUTTON_DPAD_UP:        return 0x0010;
-    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:      return 0x0040;
-    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:      return 0x0080;
-    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:     return 0x0020;
-    default:                                return 0;
-    }
+    if (button >= NK_HOST_BUTTON_COUNT) return 0;
+    bool host_buttons[NK_HOST_BUTTON_COUNT] = {false};
+    int16_t host_axes[NK_HOST_AXIS_COUNT] = {0};
+    host_buttons[button] = true;
+    uint32_t psp_btn = 0;
+    const NkInputProfile *prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+    sdl3vk_map_gamepad(prof, host_buttons, host_axes, &psp_btn, NULL, NULL);
+    return psp_btn;
 }
 
 static void poll_input(int *quit) {
@@ -499,26 +606,18 @@ static void poll_input(int *quit) {
     uint8_t lx = 128, ly = 128;
     s_pad_present = s_pad != NULL;
     if (s_pad) {
-        #define PB(sdlb, bit) do { if (SDL_GetGamepadButton(s_pad, sdlb)) b |= (bit); } while (0)
-        PB(SDL_GAMEPAD_BUTTON_SOUTH, 0x4000);          /* CROSS    */
-        PB(SDL_GAMEPAD_BUTTON_EAST,  0x2000);          /* CIRCLE   */
-        PB(SDL_GAMEPAD_BUTTON_WEST,  0x8000);          /* SQUARE   */
-        PB(SDL_GAMEPAD_BUTTON_NORTH, 0x1000);          /* TRIANGLE */
-        PB(SDL_GAMEPAD_BUTTON_START, 0x0008);
-        PB(SDL_GAMEPAD_BUTTON_BACK,  0x0001);
-        PB(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  0x0100);
-        PB(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, 0x0200);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_UP,    0x0010);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_DOWN,  0x0040);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_LEFT,  0x0080);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, 0x0020);
-        #undef PB
-        if (SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  > 8192) b |= 0x0100;
-        if (SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8192) b |= 0x0200;
-        int ax = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTX);
-        int ay = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTY);
-        if (ax < -7849 || ax > 7849) lx = (uint8_t)((ax + 32768) * 255 / 65535);
-        if (ay < -7849 || ay > 7849) ly = (uint8_t)((ay + 32768) * 255 / 65535);
+        bool host_buttons[NK_HOST_BUTTON_COUNT];
+        for (int i = 0; i < NK_HOST_BUTTON_COUNT; i++) {
+            host_buttons[i] = SDL_GetGamepadButton(s_pad, (SDL_GamepadButton)i);
+        }
+        int16_t host_axes[NK_HOST_AXIS_COUNT];
+        for (int i = 0; i < NK_HOST_AXIS_COUNT; i++) {
+            host_axes[i] = SDL_GetGamepadAxis(s_pad, (SDL_GamepadAxis)i);
+        }
+        uint32_t pad_buttons = 0;
+        const NkInputProfile *prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+        sdl3vk_map_gamepad(prof, host_buttons, host_axes, &pad_buttons, &lx, &ly);
+        b |= pad_buttons;
     }
     uint32_t published = b | s_button_pulse;
     if (getenv("SR_INLOG")) {
@@ -1219,6 +1318,22 @@ static int cap_test_setenv(const char *name, const char *value) {
 #endif
 }
 
+static void profile_test_setenv(const char *name, const char *value) {
+#ifdef _WIN32
+    if (value && value[0]) {
+        _putenv_s(name, value);
+    } else {
+        _putenv_s(name, "");
+    }
+#else
+    if (value && value[0]) {
+        setenv(name, value, 1);
+    } else {
+        unsetenv(name);
+    }
+#endif
+}
+
 static int cap_test_rmdir(const char *path) {
 #ifdef _WIN32
     return _rmdir(path) == 0;
@@ -1388,6 +1503,211 @@ static int cap_test_image_upload(CapTestImage *t) {
     return 1;
 }
 
+int sdl3vk_input_profile_selftest(void) {
+    int ok = 1;
+
+    /* ---- 5(a) No profile: sampled PSP buttons and analog bytes equal old hard-coded mapping ---- */
+    {
+        static const struct {
+            NkHostGamepadButton host_btn;
+            uint32_t expected_bit;
+        } kButtonTable[] = {
+            { NK_HOST_BUTTON_SOUTH,          0x4000 }, /* CROSS */
+            { NK_HOST_BUTTON_EAST,           0x2000 }, /* CIRCLE */
+            { NK_HOST_BUTTON_WEST,           0x8000 }, /* SQUARE */
+            { NK_HOST_BUTTON_NORTH,          0x1000 }, /* TRIANGLE */
+            { NK_HOST_BUTTON_START,          0x0008 }, /* START */
+            { NK_HOST_BUTTON_BACK,           0x0001 }, /* SELECT */
+            { NK_HOST_BUTTON_LEFT_SHOULDER,  0x0100 }, /* LTRIGGER */
+            { NK_HOST_BUTTON_RIGHT_SHOULDER, 0x0200 }, /* RTRIGGER */
+            { NK_HOST_BUTTON_DPAD_UP,        0x0010 }, /* UP */
+            { NK_HOST_BUTTON_DPAD_DOWN,      0x0040 }, /* DOWN */
+            { NK_HOST_BUTTON_DPAD_LEFT,      0x0080 }, /* LEFT */
+            { NK_HOST_BUTTON_DPAD_RIGHT,     0x0020 }, /* RIGHT */
+        };
+
+        for (size_t i = 0; i < sizeof(kButtonTable) / sizeof(kButtonTable[0]); i++) {
+            bool btns[NK_HOST_BUTTON_COUNT] = {false};
+            int16_t axes[NK_HOST_AXIS_COUNT] = {0};
+            btns[kButtonTable[i].host_btn] = true;
+            uint32_t out_b = 0;
+            uint8_t out_lx = 0, out_ly = 0;
+            sdl3vk_map_gamepad(NULL, btns, axes, &out_b, &out_lx, &out_ly);
+            if (out_b != kButtonTable[i].expected_bit) {
+                fprintf(stderr, "input_profile_selftest: button %d failed: got 0x%04x expected 0x%04x\n",
+                        kButtonTable[i].host_btn, out_b, kButtonTable[i].expected_bit);
+                ok = 0;
+            }
+            if (out_lx != 128 || out_ly != 128) {
+                fprintf(stderr, "input_profile_selftest: neutral analog failed on button press\n");
+                ok = 0;
+            }
+        }
+
+        static const NkHostGamepadButton kUnmapped[] = {
+            NK_HOST_BUTTON_GUIDE, NK_HOST_BUTTON_LEFT_STICK, NK_HOST_BUTTON_RIGHT_STICK,
+            NK_HOST_BUTTON_MISC1, NK_HOST_BUTTON_RIGHT_PADDLE1, NK_HOST_BUTTON_LEFT_PADDLE1,
+            NK_HOST_BUTTON_RIGHT_PADDLE2, NK_HOST_BUTTON_LEFT_PADDLE2, NK_HOST_BUTTON_TOUCHPAD
+        };
+        for (size_t i = 0; i < sizeof(kUnmapped) / sizeof(kUnmapped[0]); i++) {
+            bool btns[NK_HOST_BUTTON_COUNT] = {false};
+            int16_t axes[NK_HOST_AXIS_COUNT] = {0};
+            btns[kUnmapped[i]] = true;
+            uint32_t out_b = 0;
+            sdl3vk_map_gamepad(NULL, btns, axes, &out_b, NULL, NULL);
+            if (out_b != 0) {
+                fprintf(stderr, "input_profile_selftest: unmapped button %d produced 0x%04x\n",
+                        kUnmapped[i], out_b);
+                ok = 0;
+            }
+        }
+
+        int16_t trig_samples[] = {-32768, 0, 8191, 8192, 8193, 16384, 32767};
+        for (size_t i = 0; i < sizeof(trig_samples) / sizeof(trig_samples[0]); i++) {
+            bool btns[NK_HOST_BUTTON_COUNT] = {false};
+            int16_t axes[NK_HOST_AXIS_COUNT] = {0};
+            axes[NK_HOST_AXIS_LEFT_TRIGGER] = trig_samples[i];
+            axes[NK_HOST_AXIS_RIGHT_TRIGGER] = trig_samples[i];
+            uint32_t out_b = 0;
+            sdl3vk_map_gamepad(NULL, btns, axes, &out_b, NULL, NULL);
+            uint32_t expected = 0;
+            if (trig_samples[i] > 8192) expected |= (0x0100 | 0x0200);
+            if (out_b != expected) {
+                fprintf(stderr, "input_profile_selftest: trigger sample %d failed: got 0x%04x expected 0x%04x\n",
+                        trig_samples[i], out_b, expected);
+                ok = 0;
+            }
+        }
+
+        static const int16_t axis_samples[] = {
+            -32768, -32767, -20000, -10000, -7850, -7849, -7848,
+            -100, 0, 100, 7848, 7849, 7850, 10000, 20000, 32767
+        };
+        for (size_t i = 0; i < sizeof(axis_samples) / sizeof(axis_samples[0]); i++) {
+            for (size_t j = 0; j < sizeof(axis_samples) / sizeof(axis_samples[0]); j++) {
+                int ax = axis_samples[i];
+                int ay = axis_samples[j];
+                uint8_t old_lx = 128, old_ly = 128;
+                if (ax < -7849 || ax > 7849) old_lx = (uint8_t)((ax + 32768) * 255 / 65535);
+                if (ay < -7849 || ay > 7849) old_ly = (uint8_t)((ay + 32768) * 255 / 65535);
+
+                bool btns[NK_HOST_BUTTON_COUNT] = {false};
+                int16_t axes[NK_HOST_AXIS_COUNT] = {0};
+                axes[NK_HOST_AXIS_LEFTX] = (int16_t)ax;
+                axes[NK_HOST_AXIS_LEFTY] = (int16_t)ay;
+                uint8_t map_lx = 0, map_ly = 0;
+                sdl3vk_map_gamepad(NULL, btns, axes, NULL, &map_lx, &map_ly);
+                if (map_lx != old_lx || map_ly != old_ly) {
+                    fprintf(stderr, "input_profile_selftest: axis ax=%d ay=%d mismatch: got (%u,%u) expected (%u,%u)\n",
+                            ax, ay, map_lx, map_ly, old_lx, old_ly);
+                    ok = 0;
+                }
+            }
+        }
+    }
+
+    /* ---- 5(b) Custom profile: remaps button, deadzone, inversion ---- */
+    {
+        NkInputProfile custom;
+        nk_input_profile_init_default(&custom);
+        custom.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_NORTH;
+        custom.psp_buttons[NK_PSP_BTN_TRIANGLE].primary.index = NK_HOST_BUTTON_SOUTH;
+        custom.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner = 15000;
+        custom.axes[NK_PSP_AXIS_ANALOG_X].inverted = true;
+
+        bool btns[NK_HOST_BUTTON_COUNT] = {false};
+        int16_t axes[NK_HOST_AXIS_COUNT] = {0};
+        btns[NK_HOST_BUTTON_SOUTH] = true;
+        uint32_t out_b = 0;
+        uint8_t out_lx = 0, out_ly = 0;
+        sdl3vk_map_gamepad(&custom, btns, axes, &out_b, &out_lx, &out_ly);
+        if (out_b != 0x1000) {
+            fprintf(stderr, "input_profile_selftest: custom remap failed: got 0x%04x expected 0x1000\n", out_b);
+            ok = 0;
+        }
+
+        axes[NK_HOST_AXIS_LEFTX] = 10000;
+        sdl3vk_map_gamepad(&custom, btns, axes, NULL, &out_lx, &out_ly);
+        if (out_lx != 128) {
+            fprintf(stderr, "input_profile_selftest: custom deadzone failed: got %u expected 128\n", out_lx);
+            ok = 0;
+        }
+
+        axes[NK_HOST_AXIS_LEFTX] = 20000;
+        sdl3vk_map_gamepad(&custom, btns, axes, NULL, &out_lx, &out_ly);
+        uint8_t expected_inv = nk_input_profile_transform_axis(20000, 15000, 0, true);
+        if (out_lx != expected_inv || out_lx >= 128) {
+            fprintf(stderr, "input_profile_selftest: custom inverted axis failed: got %u expected %u (< 128)\n",
+                    out_lx, expected_inv);
+            ok = 0;
+        }
+    }
+
+    /* ---- 5(c) Invalid profile fallback + diagnostic; missing file fallback ---- */
+    {
+        const char *tmp_invalid = "build/selftest_invalid_profile.json";
+        FILE *f = fopen(tmp_invalid, "w");
+        if (f) {
+            fputs("{\n  \"schema_version\": 999,\n  \"deadzone_inner\": -100\n}\n", f);
+            fclose(f);
+        }
+
+        profile_test_setenv("NK_INPUT_PROFILE", tmp_invalid);
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+
+        const NkInputProfile *prof = sdl3vk_get_input_profile();
+        if (!prof || prof->schema_version != NK_INPUT_PROFILE_SCHEMA_VERSION ||
+            prof->axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner != NK_INPUT_DEFAULT_DEADZONE_INNER) {
+            fprintf(stderr, "input_profile_selftest: invalid profile did not fall back to defaults\n");
+            ok = 0;
+        }
+        remove(tmp_invalid);
+
+        profile_test_setenv("NK_INPUT_PROFILE", "build/selftest_nonexistent_profile_12345.json");
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+        prof = sdl3vk_get_input_profile();
+        if (!prof || prof->schema_version != NK_INPUT_PROFILE_SCHEMA_VERSION) {
+            fprintf(stderr, "input_profile_selftest: missing profile file did not give defaults\n");
+            ok = 0;
+        }
+
+        profile_test_setenv("NK_INPUT_PROFILE", NULL);
+        sdl3vk_reset_input_profile();
+    }
+
+    /* ---- 5(d) SR_PADSCRIPT still wins ---- */
+    {
+        const char *tmp_custom = "build/selftest_custom_profile.json";
+        NkInputProfile custom;
+        nk_input_profile_init_default(&custom);
+        custom.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_NORTH;
+        custom.psp_buttons[NK_PSP_BTN_TRIANGLE].primary.index = NK_HOST_BUTTON_SOUTH;
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
+        nk_input_profile_save(&custom, tmp_custom, diag, sizeof(diag));
+
+        profile_test_setenv("NK_INPUT_PROFILE", tmp_custom);
+        profile_test_setenv("SR_PADSCRIPT", "synthetic_script_active");
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+
+        uint32_t south_mapped = gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH);
+        if (south_mapped != 0x4000) {
+            fprintf(stderr, "input_profile_selftest: SR_PADSCRIPT active did not prioritize defaults: got 0x%04x expected 0x4000\n",
+                    south_mapped);
+            ok = 0;
+        }
+
+        profile_test_setenv("SR_PADSCRIPT", NULL);
+        profile_test_setenv("NK_INPUT_PROFILE", NULL);
+        remove(tmp_custom);
+        sdl3vk_reset_input_profile();
+    }
+
+    return ok;
+}
+
 int sdl3vk_capture_selftest(void) {
     int ok = 1;
 
@@ -1424,6 +1744,12 @@ int sdl3vk_capture_selftest(void) {
         fprintf(stderr, "policy: exit-status table wrong\n"); ok = 0;
     }
     if (!ok) return 1;
+
+    /* ---- input profile mapping selftest (#357); no Vulkan needed ------------------- */
+    if (!sdl3vk_input_profile_selftest()) {
+        fprintf(stderr, "gpu capture selftest: input profile selftest failed\n");
+        return 1;
+    }
 
     /* ---- validation-layer requirement ---------------------------------------------- */
     {
@@ -1866,5 +2192,6 @@ void sdl3vk_shutdown(void) {
     if (s_inst)        vkDestroyInstance(s_inst, NULL);
     if (s_pad)         SDL_CloseGamepad(s_pad);
     if (s_win)         SDL_DestroyWindow(s_win);
+    sdl3vk_reset_input_profile();
     SDL_Quit();
 }

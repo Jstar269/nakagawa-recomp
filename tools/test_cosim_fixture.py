@@ -9,13 +9,17 @@ observed to fail in practice or would make a cell pass vacuously.
 """
 
 import importlib.util
+import shutil
 import struct
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = ROOT / "fixtures" / "cosim" / "generate.py"
+FPU_REFERENCE = ROOT / "fixtures" / "cosim" / "fpu_reference.c"
 
 _spec = importlib.util.spec_from_file_location("cosim_generate", GENERATOR)
 cosim = importlib.util.module_from_spec(_spec)
@@ -88,9 +92,144 @@ class FixtureDeterminismTests(unittest.TestCase):
         self.assertEqual(cosim.build_prx(), cosim.build_prx())
         self.assertEqual(cosim.build_psp_header(), cosim.build_psp_header())
         self.assertEqual(cosim.manifest_header(), cosim.manifest_header())
+        self.assertEqual(cosim.fpu_corpus_header(), cosim.fpu_corpus_header())
 
     def test_manifest_header_is_pure_ascii(self):
         cosim.manifest_header().decode("ascii")
+
+
+class FpuOracleStructureTests(unittest.TestCase):
+    def test_reference_does_not_include_or_call_production_helpers(self):
+        source = FPU_REFERENCE.read_text(encoding="ascii")
+        self.assertNotIn('#include "fp_convert.h"', source)
+        self.assertNotIn("#include <math.h>", source)
+        self.assertNotRegex(source, r"\b(?:float|double)\b")
+        self.assertNotRegex(source, r"\bsr_fpu_[a-z0-9_]+\s*\(")
+        self.assertIn("MIPS32", source)
+
+    def test_generated_corpus_covers_required_boundary_classes(self):
+        corpus = cosim.fpu_corpus_header().decode("ascii")
+        for literal in (
+            "0x00000000u", "0x80000000u", "0x7f800000u", "0xff800000u",
+            "0x7fc00000u", "0x7f800001u", "0x00000001u", "0x007fffffu",
+            "0x00800000u", "0x3f000001u", "0x4effffffu", "0xcf000000u",
+            "0x7f7fffffu",
+        ):
+            self.assertIn(literal, corpus)
+
+    def test_cvt_sw_aot_oracle_loads_the_integer_into_an_fpr(self):
+        words = cosim.cell_layout()["fpu_aot"][1]
+        mtc1 = cosim._fp(0x04, cosim.T0, 14, 0, 0x00)
+        cvt_sw = cosim._fp(0x14, 0, 14, 15, 0x20)
+        self.assertIn(mtc1, words)
+        self.assertIn(cvt_sw, words)
+        self.assertLess(words.index(mtc1), words.index(cvt_sw))
+
+    def test_aot_oracle_cell_is_not_claimed_by_the_two_lane_interpreter(self):
+        self.assertIn("fpu_aot", cosim.AOT_ORACLE_ONLY_CELLS)
+        self.assertIn("fpu_aot", cosim.NON_ENTRY_CELLS)
+        layout = cosim.cell_layout()
+        for name, (_offset, words) in layout.items():
+            if name in cosim.AOT_ORACLE_ONLY_CELLS:
+                continue
+            for word in words:
+                self.assertNotEqual(
+                    cosim.decode_form(word),
+                    ("cop1", 0x10, 0x04),
+                    f"{name} executes sqrt.s outside the AOT-only oracle",
+                )
+
+
+@unittest.skipUnless(shutil.which("gcc"), "gcc is required for the C.cond truth-table regression")
+class FpuCcondTruthTableTests(unittest.TestCase):
+    def test_predicates_match_the_mips_table_for_all_relation_classes(self):
+        with tempfile.TemporaryDirectory(prefix="cosim_ccond_") as tmp:
+            work = Path(tmp)
+            source = work / "ccond_truth.c"
+            executable = work / "ccond_truth.exe"
+            source.write_text(
+                r'''#include <stdint.h>
+#include <stdio.h>
+
+#include "fp_convert.h"
+#include "fpu_reference.h"
+
+struct RelationCase {
+    uint32_t a;
+    uint32_t b;
+    const char *name;
+    unsigned expected[16];
+};
+
+static const struct RelationCase cases[] = {
+    {
+        0x3f800000u, 0x40000000u, "less",
+        {0u, 0u, 0u, 0u, 1u, 1u, 1u, 1u,
+         0u, 0u, 0u, 0u, 1u, 1u, 1u, 1u}
+    },
+    {
+        0x3f800000u, 0x3f800000u, "equal",
+        {0u, 0u, 1u, 1u, 0u, 0u, 1u, 1u,
+         0u, 0u, 1u, 1u, 0u, 0u, 1u, 1u}
+    },
+    {
+        0x40000000u, 0x3f800000u, "greater",
+        {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+         0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u}
+    },
+    {
+        0x7fc00000u, 0x3f800000u, "unordered",
+        {0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u,
+         0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u}
+    },
+};
+
+int main(void) {
+    unsigned failures = 0u;
+    for (unsigned i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+        for (unsigned condition = 0u; condition < 16u; ++condition) {
+            const unsigned expected = cases[i].expected[condition];
+            const unsigned production = sr_fpu_condition_s(
+                condition, cases[i].a, cases[i].b);
+            enum FpuReferenceStatus status;
+            const unsigned reference = fpu_reference_compare(
+                condition, cases[i].a, cases[i].b, &status);
+            if (production != expected || reference != expected) {
+                fprintf(stderr,
+                        "%s condition=%u expected=%u production=%u reference=%u\n",
+                        cases[i].name, condition, expected, production, reference);
+                ++failures;
+            }
+        }
+    }
+    printf("ccond_truth: %s\n", failures == 0u ? "PASS" : "FAIL");
+    return failures == 0u ? 0 : 1;
+}
+''',
+                encoding="ascii",
+            )
+            command = [
+                shutil.which("gcc"),
+                "-std=c11",
+                "-O1",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                str(ROOT / "src" / "rt"),
+                "-I",
+                str(ROOT / "fixtures" / "cosim"),
+                str(source),
+                str(FPU_REFERENCE),
+                "-lm",
+                "-o",
+                str(executable),
+            ]
+            compiled = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr + compiled.stdout)
+            ran = subprocess.run([str(executable)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+            self.assertIn("ccond_truth: PASS", ran.stdout)
 
 
 class FixtureLayoutTests(unittest.TestCase):
@@ -144,7 +283,7 @@ class FixtureLayoutTests(unittest.TestCase):
         register_tail = {"jrtail", "xtail"}
         jump_tail = {"xtailmid"}
         for name, (_offset, words) in self.layout.items():
-            if name in cosim.NON_PROGRAM_CELLS:
+            if name in cosim.NON_PROGRAM_CELLS or name in cosim.AOT_ORACLE_ONLY_CELLS:
                 continue
             self.assertGreaterEqual(len(words), 2, f"cell {name} is too short to have an exit")
             terminator = words[-2]
@@ -318,7 +457,7 @@ class FixtureSemanticTests(unittest.TestCase):
         """
         seen = set()
         for name, (_offset, words) in self.layout.items():
-            if name in cosim.NON_PROGRAM_CELLS:
+            if name in cosim.NON_PROGRAM_CELLS or name in cosim.AOT_ORACLE_ONLY_CELLS:
                 continue
             for word in words:
                 seen.add(decode(word))
@@ -341,7 +480,7 @@ class FixtureSemanticTests(unittest.TestCase):
         """
         seen = set()
         for name, (_offset, words) in self.layout.items():
-            if name in cosim.NON_PROGRAM_CELLS:
+            if name in cosim.NON_PROGRAM_CELLS or name in cosim.AOT_ORACLE_ONLY_CELLS:
                 continue
             for word in words:
                 seen.add(decode(word))
