@@ -7330,7 +7330,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d8903a1c463f678a2f3f750c055bec469652c415bec90cadbea26a01cd5ef4f"
+      "sha256": "69b0e8ee72f274688cbf126e64044dc430ae2263e5c5e7a4cf5a0afe2bcd528d"
     },
     {
       "path": "tools/microtest_gate.py",
@@ -8678,7 +8678,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "6fed706cce4b1193e6dc918e15a2116d881458704476e3c66e967a1fef5ab0fa"
+      "sha256": "9db0d8de4383293b693252e42314986997ef626140388dd57ba1849e3cfa76f4"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
