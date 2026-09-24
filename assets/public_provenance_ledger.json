@@ -462,7 +462,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0fe517024e9e7466ad22f85f5fb9774214891aeb76373250d660e2c3b417a3c9"
+      "sha256": "146df582d5923c24414fee4b5972f4839059b4a2a0152c35c694caa4e1ebde26"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -1080,7 +1080,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96872666c0db350471ef5bf1f5f93f810a76d46ff2b98e1a9c6bb93580fc6cae"
+      "sha256": "5ed47153a7365d4433baec447a73ee1c6855a958c40e738b707a7731a773bb3a"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1171,6 +1171,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "e99de23bfef60324cd27ec7d116c79fb9d33d9e45c7dbbc9f05a0176a8aeb8ad"
+    },
+    {
+      "path": "docs/cleanroom/PGF_SPEC.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "b57ac3defc8c0e7d95dc1462671b03a5efc493aa10fe32aa1116c49b903ddcb4"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
