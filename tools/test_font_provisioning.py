@@ -281,6 +281,25 @@ class FontProvisioningTests(unittest.TestCase):
             res = policy.resolve(cand)
             self.assertEqual(res.disposition, publication_policy.EXCLUDED)
 
+    def test_consumer_documentation_contracts(self) -> None:
+        """README and docs/SETUP.md document user font import, cache path, and issue references."""
+        readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
+        setup_text = (ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
+
+        # README consumer section documents fonts import and issues #300 / #313
+        self.assertIn("tools/nk_cli.py fonts import", readme_text)
+        self.assertIn("#300", readme_text)
+        self.assertIn("#313", readme_text)
+
+        # docs/SETUP.md contains System fonts subsection with command, cache, and issue references
+        self.assertIn("### System fonts", setup_text)
+        self.assertIn("python tools/nk_cli.py fonts import <folder>", setup_text)
+        self.assertIn("fonts/v1", setup_text)
+        self.assertIn("manifest.json", setup_text)
+        self.assertIn("SYSTEM_FONTS", setup_text)
+        self.assertIn("#300", setup_text)
+        self.assertIn("#313", setup_text)
+
 
 if __name__ == "__main__":
     unittest.main()
