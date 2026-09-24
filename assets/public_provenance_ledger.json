@@ -320,7 +320,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f4bb18a43089b9d050abc9dce94372e30471a17c8804099ba4264d22a51325f6"
+      "sha256": "a48b03e6611a3f41ae4ece66f9d3f03de5a47fc41391dc0d26c17611c4279962"
     },
     {
       "path": "THIRD_PARTY_LICENSES/GPL-2.0.txt",
@@ -873,7 +873,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "677ab6a620b987d76f944d66529319254304730e3b142c665edd3af6971db79a"
+      "sha256": "1a97c1693bb6176e430eee23629e44d23f0e980a49bb2818ab45451c06e9c49f"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
