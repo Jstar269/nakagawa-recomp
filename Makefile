@@ -1564,9 +1564,10 @@ PSMF_MEDIA_LIBS :=
 endif
 
 psmf-media-selftest:
-	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_media_selftest.exe \
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections \
+		-o $(BUILD_DIR)/psmf_media_selftest.exe \
 		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c \
-		$(PSMF_MEDIA_LIBS)
+		$(PSMF_MEDIA_LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
 audio-selftest:
