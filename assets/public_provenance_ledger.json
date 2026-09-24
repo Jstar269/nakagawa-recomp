@@ -400,6 +400,18 @@
       "sha256": "1b81ef2992a361e03fe53b447d873cc3c9d813e0009136447612e01bd89484f4"
     },
     {
+      "path": "assets/enhancement_package.schema.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "enhancement-package-schema-327",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a0b86130638d5e419062e04be1ce4a946f684ee9f68d34b2e2b60fa18747c31f"
+    },
+    {
       "path": "assets/flight_recorder_schema.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -450,7 +462,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d1a218bf3092ea81b3a708101d6598cdacc7c641ee1f265fbb063180424b3e9c"
+      "sha256": "b2e39088b9e3e7fa769728e6345af50dc021bc516d4e79280390d046bb537642"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -837,6 +849,18 @@
       "sha256": "c823209b86a95f80fe0c54792178624cbefccfa877914fbb70a801107128e4e1"
     },
     {
+      "path": "docs/ENHANCEMENT_CONTRACT.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "enhancement-contract-327",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "26749c31fab8a65aa648474b30f0faf4ca0bcf5e3718cec51b323fcfcc82ac19"
+    },
+    {
       "path": "docs/HARDWARE_ORACLE.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1044,7 +1068,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "efbf1739f93d65475fb7536301c2f1d2ad90e4812ebdbc007841d43d07f76e25"
+      "sha256": "fc4bc8bd2662661079eaa57850a42a05e059f30c6f8fb3ff4caa7ffb5a824f94"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -7177,6 +7201,18 @@
       "sha256": "14e0d13e03fb6a9913ebb816e7ac5a2331e19914958b88dd4df70a5775c423e3"
     },
     {
+      "path": "tools/enhancement_package.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "enhancement-package-validator-327",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "af21b5844b30916c5f4fce13a8775bf7f7c12b41bb0ee776164bd38b8e2da509"
+    },
+    {
       "path": "tools/entry_frame_balance.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8721,6 +8757,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "7aeebf69ddc6fe96abb39f19218b5d8d8361ba39997eb837944ecb8ca1b8766f"
+    },
+    {
+      "path": "tools/test_enhancement_package.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "enhancement-package-tests-327",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a8238dae86fd7003fcc48664182e2fc30f581784d9dd66692d3caebb2de8b3fe"
     },
     {
       "path": "tools/test_entry_frame_balance.py",
