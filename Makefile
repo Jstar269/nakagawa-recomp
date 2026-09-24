@@ -652,7 +652,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin sdl3-check
+INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin sdl3-check vfpu_fuzz_validate_synthetic
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1809,14 +1809,23 @@ selftest:
 VFPU_FUZZ_H := $(BUILD_DIR)/vfpu_fuzz_cases.h
 VFPU_FUZZ_PREGENERATED ?= 0
 ifeq ($(VFPU_FUZZ_PREGENERATED),1)
+VFPU_FUZZ_TITLE_OBJ :=
+VFPU_FUZZ_CHUNK_OBJS :=
+VFPU_FUZZ_VALIDATE := vfpu_fuzz_validate_synthetic
 # CI/public mode: the caller generated a synthetic cases header explicitly.  Do not
 # introduce a fake GAME_ELF dependency or regenerate from proprietary/private input.
 $(VFPU_FUZZ_H):
-	@$(PYTHON) -c "import sys, os; sys.exit(0 if os.path.isfile(r'$@') else (print('missing pre-generated VFPU fuzz header: $@', file=sys.stderr) or 1))"
+	$(PYTHON) tools/vfpu_fuzz_gen.py --require-synthetic "$@"
 else
+VFPU_FUZZ_TITLE_OBJ := $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+VFPU_FUZZ_CHUNK_OBJS := $(CHUNK_OBJS)
+VFPU_FUZZ_VALIDATE :=
 $(VFPU_FUZZ_H): $(GAME_INPUT_PREREQ) tools/vfpu_fuzz_gen.py tools/analyze.py tools/codegen.py
 	$(PYTHON) tools/vfpu_fuzz_gen.py --env-elf $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)
 endif
+
+vfpu_fuzz_validate_synthetic:
+	$(PYTHON) tools/vfpu_fuzz_gen.py --require-synthetic "$(VFPU_FUZZ_H)"
 
 $(BUILD_DIR)/vfpu_fuzz.o: src/rt/vfpu_fuzz.c $(VFPU_FUZZ_H) src/rt/recomp.h
 	$(CC) -O0 -fno-strict-aliasing -Isrc/rt -I$(BUILD_DIR) -DSR_SDL3VK $(DEPFLAGS) -c src/rt/vfpu_fuzz.c -o $@
@@ -1825,19 +1834,24 @@ $(BUILD_DIR)/vfpu_fuzz.o: src/rt/vfpu_fuzz.c $(VFPU_FUZZ_H) src/rt/recomp.h
 # .c files before this target is parsed, or CHUNK_OBJS ($(wildcard)) resolves empty
 # and the chunk objects are never compiled. Run codegen first, then build/link in a
 # second make pass so the chunk objects are discovered.
+ifeq ($(VFPU_FUZZ_PREGENERATED),1)
+vfpu_fuzz:
+	$(MAKE) VFPU_FUZZ_PREGENERATED=1 vfpu_fuzz_build
+else
 vfpu_fuzz:
 	$(MAKE) pipeline
 	$(MAKE) vfpu_fuzz_build
+endif
 
 # RT_OBJS carries hle.o, which calls into the PR-B ATRAC3+ decode bridge, so
 # every target that links RT_OBJS must also link the bridge and the imported
 # decoder TUs -- exactly as `compile` and `runtime-objects` do. Omitting them
 # here is an undefined-reference link failure, not a smaller binary.
-vfpu_fuzz_build: $(VFPU_FUZZ_H) $(BUILD_DIR)/vfpu_fuzz.o $(CHUNK_OBJS) $(RT_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+vfpu_fuzz_build: $(VFPU_FUZZ_H) $(VFPU_FUZZ_VALIDATE) $(BUILD_DIR)/vfpu_fuzz.o $(VFPU_FUZZ_CHUNK_OBJS) $(RT_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(VFPU_FUZZ_TITLE_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_fuzz.exe \
 		$(BUILD_DIR)/vfpu_fuzz.o \
-		$(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(CHUNK_OBJS) \
+		$(VFPU_FUZZ_TITLE_OBJ) \
+		$(VFPU_FUZZ_CHUNK_OBJS) \
 		$(RT_GE_O) \
 		$(filter-out $(BUILD_DIR)/driver.o,$(RT_OBJS)) \
 		$(ATRAC3P_OBJS) \

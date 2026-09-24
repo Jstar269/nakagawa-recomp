@@ -941,6 +941,7 @@
     "tools/test_title_runtime_config.py",
     "tools/test_validate_assets.py",
     "tools/test_vfpu_addressing.py",
+    "tools/test_vfpu_coverage_census.py",
     "tools/test_vfpu_interp_guards.py",
     "tools/test_vfpu_nan_payload.py",
     "tools/test_vfpu_oracle.py",
