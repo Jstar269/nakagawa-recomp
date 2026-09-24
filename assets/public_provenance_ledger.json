@@ -9953,11 +9953,20 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "996311a7116cb6bee74543e9bf72e16076f22f6f",
-    "candidate_tree": "042863569e30e07abacc244f570b9c1e6d15fef5",
+    "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
+    "candidate_tree": "13bae970e95f86a8d6c0e871d495c4ca274bf90e",
     "refreshed_paths": [
-      "README.md",
-      "docs/SETUP.md"
+      "fixtures/psp_oracle/Makefile",
+      "fixtures/psp_oracle/mutex_imports.S",
+      "fixtures/psp_oracle/threadman_user_imports.S",
+      "interface/src/lib/recompiler/watchpoint-file.d.mts",
+      "interface/src/lib/recompiler/watchpoint-file.mjs",
+      "interface/src/lib/recompiler/watchpoint-file.test.mjs",
+      "interface/src/lib/recompiler/watchpoint-route.test.ts",
+      "interface/src/lib/recompiler/watchpoint-store.test.ts",
+      "src/rt/watchpoints_file.c",
+      "src/rt/watchpoints_file.h",
+      "src/rt/watchpoints_file_selftest.c"
     ]
   }
 }
