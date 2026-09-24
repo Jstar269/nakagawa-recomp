@@ -241,7 +241,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         try:
             errors = verify_sbom.verify_release_locks(
                 generate_sbom.ROOT / "assets" / "release_manifest.json",
-                trusted_metadata_path=metadata_path,
+                release_index_path=metadata_path,
             )
         finally:
             metadata_path.unlink(missing_ok=True)

@@ -34,10 +34,10 @@ DOCUMENT_NAMESPACE_BASE = "https://spdx.org/spdxdocs/nakagawa-recomp"
 SUPPORTED_NPM_LOCKFILE_VERSIONS = (2, 3)
 SUPPORTED_NPM_PACKAGES_FORMATS = (2, 3)
 
-PYTHON_TRUSTED_METADATA_SCHEMA_VERSION = 1
+PYTHON_RELEASE_INDEX_SCHEMA_VERSION = 1
 PYTHON_HASH_EVIDENCE_SCHEMA = "nakagawa-python-artifact-hash:v1"
-PYTHON_TRUSTED_METADATA_IDENTITY = "assets/pypi_tool_metadata_2026-09-24.json"
-PYTHON_TRUSTED_METADATA_PATH = ROOT / PYTHON_TRUSTED_METADATA_IDENTITY
+PYTHON_RELEASE_INDEX_IDENTITY = "assets/pypi_tool_metadata_2026-09-24.json"
+PYTHON_RELEASE_INDEX_PATH = ROOT / PYTHON_RELEASE_INDEX_IDENTITY
 SBOM_CREATED = "2026-08-06T00:00:00Z"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 PYTHON_NAME_PATTERN = re.compile(r"[a-zA-Z0-9_.-]+")
@@ -74,7 +74,7 @@ def _parse_pypi_release_index(document: object, source_label: str) -> PythonArti
             f"trusted Python metadata {source_label} must contain exactly "
             f"{sorted(expected_keys)}"
         )
-    if document["schema_version"] != PYTHON_TRUSTED_METADATA_SCHEMA_VERSION:
+    if document["schema_version"] != PYTHON_RELEASE_INDEX_SCHEMA_VERSION:
         raise LockfileParseError(
             f"trusted Python metadata {source_label} has unsupported schema_version "
             f"{document['schema_version']!r}"
@@ -168,7 +168,7 @@ def _parse_pypi_release_index(document: object, source_label: str) -> PythonArti
     return result
 
 
-def load_trusted_python_metadata(path: Path) -> PythonArtifactMetadata:
+def load_pypi_release_index(path: Path) -> PythonArtifactMetadata:
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -242,10 +242,10 @@ def fetch_live_python_metadata(
     )
 
 
-def resolve_trusted_python_metadata(
+def resolve_pypi_release_index(
     path: Path, fetch_live: bool = False, timeout: float = 30.0,
 ) -> PythonArtifactMetadata:
-    snapshot = load_trusted_python_metadata(path)
+    snapshot = load_pypi_release_index(path)
     if not fetch_live:
         return snapshot
     return fetch_live_python_metadata(list(snapshot), timeout=timeout)
@@ -397,7 +397,7 @@ def parse_lockfiles(npm_lock_path: Path, py_lock_path: Path,
     py_snap = snapshot_lockfile(py_lock_path, "Python", repo_root)
     npm_packages = _parse_npm_lock_text(npm_snap, npm_lock_path)
     if python_artifact_metadata is None:
-        python_artifact_metadata = load_trusted_python_metadata(PYTHON_TRUSTED_METADATA_PATH)
+        python_artifact_metadata = load_pypi_release_index(PYTHON_RELEASE_INDEX_PATH)
     py_packages = _parse_python_lock_text(py_snap, py_lock_path, python_artifact_metadata)
     lock_files = build_lock_file_entries(npm_snap, py_snap)
     lock_relationships = build_lock_relationship_entries(lock_files)
@@ -589,7 +589,7 @@ def parse_python_lockfile(
 ) -> list[dict]:
     snap = snapshot_lockfile(lock_path, "Python")
     if artifact_metadata is None:
-        artifact_metadata = load_trusted_python_metadata(PYTHON_TRUSTED_METADATA_PATH)
+        artifact_metadata = load_pypi_release_index(PYTHON_RELEASE_INDEX_PATH)
     return _parse_python_lock_text(snap, lock_path, artifact_metadata)
 
 
@@ -671,28 +671,28 @@ def _parse_python_lock_text(
                 f"{name}=={version}"
             )
         seen_pypi.add(key)
-        trusted_artifacts = artifact_metadata.get((_normalize_python_name(name), version))
-        if trusted_artifacts is None:
+        release_artifacts = artifact_metadata.get((_normalize_python_name(name), version))
+        if release_artifacts is None:
             raise LockfileParseError(
                 f"Python lockfile {lock_path} line {lineno}: no trusted artifact metadata for "
                 f"{name}=={version}"
             )
-        trusted_by_hash = {
-            artifact["sha256"]: artifact for artifact in trusted_artifacts
+        release_by_hash = {
+            artifact["sha256"]: artifact for artifact in release_artifacts
         }
-        unmatched = [digest for digest in declared_hashes if digest not in trusted_by_hash]
+        unmatched = [digest for digest in declared_hashes if digest not in release_by_hash]
         if unmatched:
             raise LockfileParseError(
                 f"Python lockfile {lock_path} line {lineno}: declared SHA-256 hash "
                 f"{unmatched[0]} matches no trusted artifact for {name}=={version}"
             )
-        missing_trusted = sorted(set(trusted_by_hash) - set(declared_hashes))
-        if missing_trusted:
+        missing_release = sorted(set(release_by_hash) - set(declared_hashes))
+        if missing_release:
             raise LockfileParseError(
                 f"Python lockfile {lock_path} line {lineno}: {name}=={version} does not declare "
-                f"every trusted artifact SHA-256; missing {missing_trusted[0]}"
+                f"every trusted artifact SHA-256; missing {missing_release[0]}"
             )
-        verified_hashes = [artifact["sha256"] for artifact in trusted_artifacts]
+        verified_hashes = [artifact["sha256"] for artifact in release_artifacts]
         packages.append({
             "name": name,
             "version": version,
@@ -701,7 +701,7 @@ def _parse_python_lock_text(
             "sha256": declared_hashes[0],
             "declared_sha256": declared_hashes,
             "verified_sha256": verified_hashes,
-            "artifacts": [dict(artifact) for artifact in trusted_artifacts],
+            "artifacts": [dict(artifact) for artifact in release_artifacts],
             "purl": f"pkg:pypi/{name}@{version}",
             "ecosystem": "pypi",
         })
@@ -1065,8 +1065,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--py-lock", type=Path, default=ROOT / "tools" / "requirements-lock.txt")
     parser.add_argument(
         "--trusted-metadata",
+        dest="release_index",
         type=Path,
-        default=PYTHON_TRUSTED_METADATA_PATH,
+        default=PYTHON_RELEASE_INDEX_PATH,
         help="Trusted PyPI name/version/filename/SHA-256 metadata snapshot",
     )
     parser.add_argument(
@@ -1113,8 +1114,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"release manifest ({declared}); release evidence may only be "
                     "generated from the manifest-declared dependency lockfiles"
                 )
-        python_artifact_metadata = resolve_trusted_python_metadata(
-            args.trusted_metadata,
+        python_artifact_metadata = resolve_pypi_release_index(
+            args.release_index,
             fetch_live=args.fetch_live_metadata,
             timeout=args.metadata_timeout,
         )

@@ -79,7 +79,7 @@ def verify_dashboard_toolchain_compatibility(pkg_json_path: Path) -> list[str]:
 
 def verify_release_locks(
     manifest_path: Path,
-    trusted_metadata_path: Path = generate_sbom.PYTHON_TRUSTED_METADATA_PATH,
+    release_index_path: Path = generate_sbom.PYTHON_RELEASE_INDEX_PATH,
     fetch_live_metadata: bool = False,
     metadata_timeout: float = 30.0,
 ) -> list[str]:
@@ -99,8 +99,8 @@ def verify_release_locks(
     if not manifest_path.is_file():
         return [f"Release manifest file missing: {manifest_path}"]
     try:
-        python_artifact_metadata = generate_sbom.resolve_trusted_python_metadata(
-            trusted_metadata_path,
+        python_artifact_metadata = generate_sbom.resolve_pypi_release_index(
+            release_index_path,
             fetch_live=fetch_live_metadata,
             timeout=metadata_timeout,
         )
@@ -344,7 +344,7 @@ def verify_sbom_matches(
     manifest_path: Path,
     npm_lock_path: Path,
     py_lock_path: Path,
-    trusted_metadata_path: Path = generate_sbom.PYTHON_TRUSTED_METADATA_PATH,
+    release_index_path: Path = generate_sbom.PYTHON_RELEASE_INDEX_PATH,
     fetch_live_metadata: bool = False,
     metadata_timeout: float = 30.0,
 ) -> tuple[list[str], dict]:
@@ -379,8 +379,8 @@ def verify_sbom_matches(
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         errors.extend(verify_provenance_families(manifest_data))
         try:
-            python_artifact_metadata = generate_sbom.resolve_trusted_python_metadata(
-                trusted_metadata_path,
+            python_artifact_metadata = generate_sbom.resolve_pypi_release_index(
+                release_index_path,
                 fetch_live=fetch_live_metadata,
                 timeout=metadata_timeout,
             )
@@ -508,8 +508,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--py-lock", type=Path, default=ROOT / "tools" / "requirements-lock.txt")
     parser.add_argument(
         "--trusted-metadata",
+        dest="release_index",
         type=Path,
-        default=generate_sbom.PYTHON_TRUSTED_METADATA_PATH,
+        default=generate_sbom.PYTHON_RELEASE_INDEX_PATH,
         help="Trusted PyPI name/version/filename/SHA-256 metadata snapshot",
     )
     parser.add_argument(
@@ -530,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
 
     errors = verify_release_locks(
         args.manifest,
-        trusted_metadata_path=args.trusted_metadata,
+        release_index_path=args.release_index,
         fetch_live_metadata=args.fetch_live_metadata,
         metadata_timeout=args.metadata_timeout,
     )
@@ -560,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
             args.manifest,
             args.npm_lock,
             args.py_lock,
-            trusted_metadata_path=args.trusted_metadata,
+            release_index_path=args.release_index,
             fetch_live_metadata=args.fetch_live_metadata,
             metadata_timeout=args.metadata_timeout,
         )
