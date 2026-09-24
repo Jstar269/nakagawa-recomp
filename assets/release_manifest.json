@@ -17,16 +17,16 @@
     "npm": "interface/package-lock.json",
     "python": "tools/requirements-lock.txt"
   },
-  "toolchain_locks": {
-    "compiler": "gcc-14.2.0-ucrt64",
-    "make": "make-4.4.1",
-    "python": "python-3.14.0",
-    "sdl3": "sdl3-3.2.0",
-    "vulkan_sdk": "vulkan-sdk-1.3.296.0"
+  "toolchain_policy": {
+    "compiler": ">=4.9.0 (rolling-msys2)",
+    "make": ">=3.81 (rolling-msys2)",
+    "python": ">=3.14,<3.15",
+    "sdl3": ">=3.0.0 (rolling-msys2)",
+    "vulkan_sdk": ">=1.1.0"
   },
   "release_locks": {
-    "status": "REPRODUCIBLE_MANIFEST_VERIFIED",
-    "comment": "Reproducible release SBOM and dependency locks verified via tools/generate_sbom.py and tools/verify_sbom.py."
+    "status": "DEPENDENCY_LOCKS_AND_TOOLCHAIN_POLICY_VERIFIED",
+    "comment": "Release dependency lockfiles, authenticated artifact hashes, and toolchain policy shape verified via tools/verify_sbom.py."
   },
   "provenance_families": [
     {

@@ -780,6 +780,7 @@
     "tools/public_export.py",
     "tools/publication_policy.py",
     "tools/publish_audit.py",
+    "tools/record_toolchain.py",
     "tools/requirements-lock.txt",
     "tools/shader_embed.py",
     "tools/sync_drift_check.py",
