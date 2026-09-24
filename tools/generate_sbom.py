@@ -626,11 +626,11 @@ def _parse_python_lock_text(
     packages: list[dict] = []
     seen_pypi: set[tuple[str, str]] = set()
     for lineno, logical_line in _python_lock_logical_lines(snap.text, lock_path):
-        tokens = logical_line.split()
-        if not tokens:
+        fields = logical_line.split()
+        if not fields:
             continue
         match = re.fullmatch(
-            r"([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)", tokens[0]
+            r"([a-zA-Z0-9_.-]+)==([a-zA-Z0-9_.-]+)", fields[0]
         )
         if not match:
             raise LockfileParseError(
@@ -638,19 +638,19 @@ def _parse_python_lock_text(
                 f"name==version pin: {logical_line!r}"
             )
         name, version = match.groups()
-        if not tokens[1:]:
+        if not fields[1:]:
             raise LockfileParseError(
                 f"Python lockfile {lock_path} line {lineno}: requirement {name}=={version} "
                 "has no SHA-256 hashes"
             )
         declared_hashes: list[str] = []
-        for token in tokens[1:]:
-            if not token.startswith("--hash="):
+        for field in fields[1:]:
+            if not field.startswith("--hash="):
                 raise LockfileParseError(
-                    f"Python lockfile {lock_path} line {lineno}: unsupported token {token!r}; "
+                    f"Python lockfile {lock_path} line {lineno}: unsupported token {field!r}; "
                     "only repeated --hash=sha256:<64 lowercase hex> options are accepted"
                 )
-            digest = token.removeprefix("--hash=")
+            digest = field.removeprefix("--hash=")
             if not digest.startswith("sha256:") \
                     or not SHA256_PATTERN.fullmatch(digest.removeprefix("sha256:")):
                 raise LockfileParseError(
