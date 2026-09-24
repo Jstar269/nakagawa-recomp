@@ -20,7 +20,9 @@
  */
 
 #include "player_state.h"
+#include "iso_reader.h"
 #include "nk_font.h"
+#include "nk_platform.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -1283,6 +1285,162 @@ int main(int argc, char **argv) {
         remove(pgf_corrupt_glyph);
         remove(manifest_path);
         remove(installed_font);
+    }
+
+    /* 15. Player settings persistence.
+     *
+     * Persist render resolution, frame cadence, VSync, fullscreen, reduce
+     * motion, and master volume to a versioned JSON file. Verify defaults,
+     * round trip with non-defaults, corrupt file fallback with notice, and
+     * unknown version fallback with notice. */
+    {
+        printf("[PLAYER_STATE_TEST] Subtest 15: player settings persistence\n");
+        fflush(stdout);
+
+        char cache_dir[512];
+        char test_settings_path[700];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(test_settings_path, sizeof(test_settings_path), "%s%csettings_test.json",
+                 cache_dir, nk_platform_path_separator());
+        remove(test_settings_path);
+
+        /* Default settings */
+        PlayerApp *s_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(s_app != NULL);
+        player_app_settings_init_default(&s_app->settings);
+        assert(s_app->settings.resolution_scale == 4);
+        assert(s_app->settings.fps_cap == 60);
+        assert(s_app->settings.vsync == true);
+        assert(s_app->settings.fullscreen == false);
+        assert(s_app->settings.reduce_motion == false);
+        assert(s_app->settings.master_volume == 80);
+
+        /* Mutate all settings and round-trip */
+        s_app->settings.resolution_scale = 2;
+        s_app->settings.fps_cap = 30;
+        s_app->settings.vsync = false;
+        s_app->settings.fullscreen = true;
+        s_app->settings.reduce_motion = true;
+        s_app->settings.master_volume = 55;
+
+        assert(player_app_save_settings(s_app, test_settings_path) == NK_OK);
+
+        PlayerApp *s_app2 = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(s_app2 != NULL);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.resolution_scale == 2);
+        assert(s_app2->settings.fps_cap == 30);
+        assert(s_app2->settings.vsync == false);
+        assert(s_app2->settings.fullscreen == true);
+        assert(s_app2->settings.reduce_motion == true);
+        assert(s_app2->settings.master_volume == 55);
+        assert(s_app2->settings_notice[0] == '\0');
+
+        /* Corrupt JSON file resets to defaults and produces notice */
+        write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
+        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.fps_cap == 60);
+        assert(s_app2->settings.vsync == true);
+        assert(s_app2->settings.fullscreen == false);
+        assert(s_app2->settings.reduce_motion == false);
+        assert(s_app2->settings.master_volume == 80);
+        assert(strstr(s_app2->settings_notice, "corrupt") != NULL);
+
+        /* Unknown / unsupported schema version resets to defaults and produces notice */
+        write_text_file(test_settings_path, "{\"schema_version\": 999, \"resolution_scale\": 8}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
+        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.fps_cap == 60);
+        assert(s_app2->settings.vsync == true);
+        assert(s_app2->settings.fullscreen == false);
+        assert(s_app2->settings.reduce_motion == false);
+        assert(s_app2->settings.master_volume == 80);
+        assert(strstr(s_app2->settings_notice, "Unsupported settings schema version") != NULL);
+
+        remove(test_settings_path);
+        free(s_app);
+        free(s_app2);
+    }
+
+    /* 16. Icon and PNG image validation / fallback logic.
+     *
+     * Disc icons (ICON0.PNG and PIC1.PNG) are read through the ISO reader and
+     * decoded with bounds checks (<= 1 MiB, <= 2048x2048). Missing, corrupt,
+     * or oversized images report appropriate error status for badge fallback. */
+    {
+        printf("[PLAYER_STATE_TEST] Subtest 16: icon and image fallback logic\n");
+        fflush(stdout);
+
+        uint32_t w = 0;
+        uint32_t h = 0;
+
+        /* Missing or null buffers */
+        assert(nk_iso_validate_png_header(NULL, 0, &w, &h) == NK_ICON_ERR_CORRUPT);
+        uint8_t short_buf[16] = { 0 };
+        assert(nk_iso_validate_png_header(short_buf, sizeof(short_buf), &w, &h) == NK_ICON_ERR_CORRUPT);
+
+        /* Corrupt signature */
+        uint8_t bad_sig[33] = "NOT_A_PNG_FILE_HEADER_LONGER_BUF";
+        assert(nk_iso_validate_png_header(bad_sig, sizeof(bad_sig), &w, &h) == NK_ICON_ERR_CORRUPT);
+
+        /* Valid signature but bad chunk type (must be IHDR) */
+        uint8_t bad_chunk[33] = {
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0x00, 0x00, 0x00, 0x0d,
+            'N', 'O', 'P', 'E',
+            0x00, 0x00, 0x00, 0x90,
+            0x00, 0x00, 0x00, 0x50,
+            0x08, 0x06, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        };
+        assert(nk_iso_validate_png_header(bad_chunk, sizeof(bad_chunk), &w, &h) == NK_ICON_ERR_CORRUPT);
+
+        /* Zero dimensions */
+        uint8_t zero_dim[33] = {
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0x00, 0x00, 0x00, 0x0d,
+            'I', 'H', 'D', 'R',
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x50,
+            0x08, 0x06, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        };
+        assert(nk_iso_validate_png_header(zero_dim, sizeof(zero_dim), &w, &h) == NK_ICON_ERR_CORRUPT);
+
+        /* Oversized dimensions (> 2048) */
+        uint8_t oversized_dim[33] = {
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0x00, 0x00, 0x00, 0x0d,
+            'I', 'H', 'D', 'R',
+            0x00, 0x00, 0x09, 0x00, /* 2304 > 2048 */
+            0x00, 0x00, 0x05, 0x00,
+            0x08, 0x06, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        };
+        assert(nk_iso_validate_png_header(oversized_dim, sizeof(oversized_dim), &w, &h) == NK_ICON_ERR_OVERSIZED);
+
+        /* Valid synthetic PNG header: 144x80 (standard PSP ICON0 dimension) */
+        uint8_t valid_hdr[33] = {
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0x00, 0x00, 0x00, 0x0d,
+            'I', 'H', 'D', 'R',
+            0x00, 0x00, 0x00, 0x90, /* 144 */
+            0x00, 0x00, 0x00, 0x50, /* 80 */
+            0x08, 0x06, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        };
+        assert(nk_iso_validate_png_header(valid_hdr, sizeof(valid_hdr), &w, &h) == NK_ICON_OK);
+        assert(w == 144);
+        assert(h == 80);
+
+        /* Missing ISO / image entry */
+        uint8_t *bytes = NULL;
+        size_t size = 0;
+        assert(nk_iso_read_image_entry("nonexistent_disc.iso", "PSP_GAME/ICON0.PNG",
+                                       &bytes, &size, &w, &h) == NK_ICON_ERR_MISSING);
+        assert(bytes == NULL);
+        assert(size == 0);
     }
 
     free(app);

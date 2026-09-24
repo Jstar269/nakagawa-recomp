@@ -71,8 +71,8 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 | Unsupported Title | `native_05_unsupported_game.png` | 1280×720 | Fail-closed boundary preventing unregistered execution |
 | Legacy Preparation View | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" remains an honest fallback for non-wizard preparation requests; wizard Step 3 now has a separate bounded staging progress view |
 | Ready Library | `native_07_ready_library.png` | 1280×720 | Hero game card with "PLAY NOW" & Quick Specs Rail |
-| Settings Dialog | `native_08_settings.png` | 1280×720 | Live resolution/FPS presets, display toggles, reduce-motion switch and volume stepper (in-memory launch preferences); keyboard/gamepad focus on every control; single-column flow on narrow windows |
-| Visual Craft | n/a | all | Runtime system-font typography (SDL3_ttf dlopen, zero bundled fonts, DebugText fallback), rounded cards/buttons/pills with shadows, generated disc-ID monograms, density-aware raster |
+| Settings Dialog | `native_08_settings.png` | 1280×720 | Live resolution/FPS presets, display toggles, reduce-motion switch and volume stepper (persisted to settings.json); keyboard/gamepad focus on every control; single-column flow on narrow windows |
+| Visual Craft | n/a | all | Runtime system-font typography (SDL3_ttf dlopen, zero bundled fonts, DebugText fallback), rounded cards/buttons/pills with shadows, disc ICON0.PNG runtime texture extraction with monogram fallback, dimmed PIC1.PNG hero backdrop, density-aware raster |
 | Missing Source Error | `native_09_missing_source_error.png` | 1280×720 | Structured error recovery for moved or missing ISOs |
 | 1080p Library | `native_10_library_1080p.png` | 1920×1080 | Verified responsive scaling on Full HD displays |
 | 1080p Settings | `native_11_settings_1080p.png` | 1920×1080 | Verified responsive settings modal on Full HD displays |
@@ -96,7 +96,7 @@ The matrix distinguishes between architectural staging, implementation completen
 | 4 | Asset Extraction | External PowerShell script | Native ISO/XB staging worker | **PARTIAL** (synthetic native path is verified; decryption/VFS integration pending) |
 | 5 | Module Decryption | External toolchain | **NOT_IMPLEMENTED** (KIRK engine pending) | **NOT_IMPLEMENTED** (Requires pre-decrypted inputs) |
 | 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
-| 7 | Graphics Settings | Web localStorage | Native JSON configuration & CLI env | **PASS** (Verified serialization) |
+| 7 | Graphics Settings | Web localStorage | Native JSON configuration (`settings.json`) & CLI env | **PASS** (Atomically persisted and round-trip verified) |
 | 8 | Gamepad Calibration | Web Gamepad API | SDL3 gamepad detection, library selection and full focus navigation | **PARTIAL** — a pad is opened, named and drives d-pad/shoulder selection plus focus moves, SOUTH activates, EAST goes back and START toggles settings; the badge reports the real state. There is no calibration, binding or deadzone UI; the web baseline's calibration screen has no native counterpart |
 | 9 | Preflight Checks | `nk_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
 | 10 | Progress Feedback | Server-Sent Events (SSE) | Reactive SDL staging events | **PARTIAL** — native copy/unpack progress supplies bounded file counts and percentages; decryption and hosted/retail progress remain unavailable |
