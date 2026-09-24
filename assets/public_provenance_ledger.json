@@ -1311,7 +1311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9efbc91331cb0c0053d3f94823dcbdd7a26ad282995b49dbefdcea1f32a70a72"
+      "sha256": "b52705a0b37546b9401ddd0730328f31f810441b9233e70fd09debf949c9103b"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -1329,7 +1329,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "1b0baea88bdc772d1661b6806de4d82534557687d6917d5d20b58d89ad27c894"
+      "sha256": "8e19a379ba51b8ff63aa3b41d5c6352df58f5a5ca90440512e4701a079ebf327"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -9113,7 +9113,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "01ad95c392cf4f1697f73e6eb7bb3a9044c1395bf28755a911ac66bb4a84dc7f"
+      "sha256": "a0f1ae6b7fba10323e4ac6bfe1d9c5f67cc4bb3b5bf7d1af069d78677ab7b6eb"
     },
     {
       "path": "tools/test_psp_parsers.py",
