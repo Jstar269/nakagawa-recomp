@@ -397,7 +397,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6d311002997a555c3373da109524b176c25341c21840dbf96ffdc67fa9a496f4"
+      "sha256": "17238e0eab1cfcdf9efc603189f24f93e713bddfc1e605328a0ca74cd16a2066"
     },
     {
       "path": "assets/enhancement_package.schema.json",
@@ -7181,7 +7181,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "458a185c9d9d8459d215339cce40357d95f235e4dc376a87a311c438c62f5410"
+      "sha256": "61587467d9e002de6496b21a8b29a4a74c6ddfaba294e4a9a3427e9e75045dd2"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7736,7 +7736,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31eb0cca3750116d68ccb5b62c8c0d01cdcf876928939ef3a3d0f37e72fc1b36"
+      "sha256": "581d6ca4e0d21906bf9db294d03052ba74b31a6fd69f214f7f7bb96cbf23be67"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -9428,7 +9428,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d1911718c89d580ec4acf5b7000c3f46887bf3c0d60ebff4c5b0a9a3a88c2dd2"
+      "sha256": "0d3955b63b824c580f2c61e347a4203348168e73bdbbec1cf532dace5b0dbaed"
     },
     {
       "path": "tools/test_progress_evidence.py",
