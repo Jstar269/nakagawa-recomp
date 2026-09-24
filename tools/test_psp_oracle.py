@@ -8,8 +8,10 @@ import re
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -28,6 +30,7 @@ from psp_oracle.run_psplink import (
     _split_command,
     _validate_host0_capture,
     annotate_terminal_outcome,
+    main as run_psplink_main,
 )
 
 
@@ -277,6 +280,38 @@ class PspOracleRunnerTests(unittest.TestCase):
                 "ldstart host0:/nakagawa_psp_oracle.prx",
             ],
         )
+
+    def test_capture_uses_selected_scratch_results_directory(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix="run-psplink-", dir=root / "fixtures" / "psp_oracle"
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            results = scratch / "results"
+            report = scratch / "capture.json"
+            with patch(
+                "psp_oracle.run_psplink._run_command",
+                return_value=(
+                    0,
+                    "NAKAGAWA_PSP_TEST schema=1 test_id=TEST case_id=1 status=PASS\n",
+                    "",
+                    "PROCESS_EXITED",
+                ),
+            ):
+                self.assertEqual(
+                    run_psplink_main(
+                        [
+                            "--command", "fake-pspsh",
+                            "--results-directory", str(results),
+                            "--out", str(report),
+                        ]
+                    ),
+                    0,
+                )
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            captured = (root / payload["stdout_file"]).resolve()
+            self.assertEqual(captured.parent, results.resolve())
+            self.assertIn("status=PASS", captured.read_text(encoding="utf-8"))
 
     def test_model_code_is_derived_without_the_old_n1000_mapping(self) -> None:
         command = [
