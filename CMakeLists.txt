@@ -82,6 +82,7 @@ add_executable(test_player_state
     src/player/player_state.c
     src/player/input_settings.c
     src/player/iso_reader.c
+    src/player/package_builder.c
 )
 target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
@@ -89,6 +90,17 @@ target_include_directories(test_player_state PRIVATE
 )
 target_link_libraries(test_player_state PRIVATE nakagawa_core)
 add_test(NAME player_state_test COMMAND test_player_state)
+
+add_executable(test_package_builder
+    tests/native/test_package_builder.c
+    src/player/package_builder.c
+)
+target_include_directories(test_package_builder PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+)
+target_link_libraries(test_package_builder PRIVATE nakagawa_core)
+add_test(NAME package_builder_test COMMAND test_package_builder)
 
 add_executable(test_input_settings
     tests/native/test_input_settings.c
@@ -150,6 +162,7 @@ if(BUILD_PLAYER)
         src/player/iso_reader.c
         src/player/setup_staging.c
         src/player/ui_renderer.c
+        src/player/package_builder.c
     )
 
     add_executable(nakagawa_player ${PLAYER_SOURCES})
