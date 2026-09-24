@@ -222,7 +222,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dae8852725c2ba101687af07d5b3b1b6effd6f21ad8bba16166a36539c82381d"
+      "sha256": "cb7b1152b65cb61468a3ebc9de87a48bfeb9bbf1c985662e628370da423a101f"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "2f888436a3169d309e85c1f21fd86c6e4bd7d117c39dbc8e7a1fe5d3c2637b1d"
+      "sha256": "b101cf4c1be356260ce6cbcb5b08d0187e4a8f9c8c7d16a6daf20985e38f8f6c"
     },
     {
       "path": "NOTICE.md",
@@ -8522,7 +8522,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f1ebd7af79752b4a46d7f3e1902c1d0cfb4d0e5a97943337b6c7f3c3dbf42e8"
+      "sha256": "0b2b09d58a5090041918b93c5d789466e205082936aba27c147045200e5a1c61"
     },
     {
       "path": "tools/test_build_truth.py",
@@ -9269,7 +9269,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e34e797bdb3dda981f07ffb07b6f441013df7c6380945f4540fe6d1adb0411a8"
+      "sha256": "d855adae6d0b67d7ef65b093d43ef2cd0cfdf823992a1ce5c0f2353263a40844"
     },
     {
       "path": "tools/test_nid_name_proof.py",
