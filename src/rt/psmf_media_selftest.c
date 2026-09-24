@@ -11,9 +11,8 @@
  * extracted capture, no third-party bitstream is involved.
  *
  * The producer/demux assertions run on every platform.  The decode assertions run wherever a
- * real H.264 backend exists (the Windows Media Foundation backend, src/rt/h264_mf.c); on a
- * build without one they report SKIP, and the demux half still runs, so the fixture itself
- * always stays covered.
+ * real H.264 backend selected by the registry exists; on a build without one they report SKIP,
+ * and the demux half still runs, so the fixture itself always stays covered.
  *
  * Coverage that matters most:
  *   - AU formation across PES boundaries, with fragmented source reads;
@@ -589,17 +588,37 @@ static void test_real_decode_into_guest_buffer(void) {
     /* Feed exactly like the guest player: every produced access unit goes to the decoder, and
      * frames are pulled while the stream is still being fed (eos = 0). */
     int frames_before_eos = 0, frames_after_eos = 0, aus = 0;
+    int64_t last_pts = -1;
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_GUEST;
+    target.guest_buffer = GUEST_BUF;
+    target.frame_width = 64;
+    target.pixel_mode = 3;
     for (int guard = 0; guard < 65536; guard++) {
         sr_psmf_producer_pump(p, 4);
         SrPsmfAu au;
         while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) {
+            if (au.has_pts) {
+                CHECK(au.pts >= last_pts, "known video timestamps remain ordered");
+                last_pts = au.pts;
+            }
             sr_h264_submit_au(dec, au.data, au.size);
             sr_psmf_au_release(&au);
             aus++;
         }
-        int r = sr_h264_frame(dec, 0, GUEST_BUF, 64, 3);
+        int r = sr_h264_frame_ex(dec, 0, &target, &info);
         CHECK(r >= 0, "decoding a fed access unit never fails");
-        if (r > 0) frames_before_eos++;
+        if (r > 0) {
+            CHECK(info.width == 64 && info.height == 64, "decoded frame reports the fixture dimensions");
+            CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
+                  "decoder-native format remains explicit");
+            CHECK(info.delivered_format == SR_H264_PIXEL_8888,
+                  "guest delivery format remains explicit");
+            CHECK(info.stride == 64 * 4, "guest delivery stride is explicit");
+            frames_before_eos++;
+        }
         if (sr_psmf_producer_eof(p) && r == 0) break;
     }
     MEDIA_DEBUG("decode: aus=%d before_eos=%d after_eos=%d\n", aus, frames_before_eos, frames_after_eos);
@@ -609,7 +628,7 @@ static void test_real_decode_into_guest_buffer(void) {
     /* Drain: the last picture has no following delimiter to close it, so only end-of-stream
      * can release it.  Before that release existed this loop produced nothing. */
     for (int i = 0; i < 16; i++) {
-        int r = sr_h264_frame(dec, 1, GUEST_BUF, 64, 3);
+        int r = sr_h264_drain(dec, &target, &info);
         CHECK(r >= 0, "end-of-stream drain never fails");
         if (r <= 0) break;
         frames_after_eos++;
@@ -620,7 +639,7 @@ static void test_real_decode_into_guest_buffer(void) {
 
     /* Repeated end-of-stream must not duplicate output. */
     int extra = 0;
-    for (int i = 0; i < 8; i++) if (sr_h264_frame(dec, 1, GUEST_BUF, 64, 3) > 0) extra++;
+    for (int i = 0; i < 8; i++) if (sr_h264_drain(dec, &target, &info) > 0) extra++;
     CHECK(extra == 0, "a drained decoder produces no further pictures");
     sr_h264_destroy(dec);
     sr_psmf_producer_close(p);
@@ -649,6 +668,13 @@ static void test_decoded_pixels(void) {
     if (!p) { CHECK(0, "producer opens"); free(bytes); sr_h264_destroy(dec); return; }
 
     int seen = 0;
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_HOST;
+    target.host_buffer = host;
+    target.host_width = 64;
+    target.host_stride = 64 * 4;
     for (int guard = 0; guard < 65536 && seen < FIX_PICTURES; guard++) {
         SrPsmfAu au;
         sr_psmf_producer_pump(p, 2);
@@ -658,9 +684,15 @@ static void test_decoded_pixels(void) {
         }
         int eos = sr_psmf_producer_eof(p);
         while (seen < FIX_PICTURES) {
-            int r = sr_h264_frame_host(dec, eos, host, 64, 64 * 4);
+            int r = sr_h264_frame_ex(dec, eos, &target, &info);
             if (r < 0) { CHECK(0, "host decode failed"); break; }
             if (r == 0) break;
+            CHECK(info.width == 64 && info.height == 64, "host frame reports the fixture dimensions");
+            CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
+                  "host delivery preserves the native format distinction");
+            CHECK(info.delivered_format == SR_H264_PIXEL_RGBA8888,
+                  "host delivery reports RGBA8888 explicitly");
+            CHECK(info.stride == 64 * 4, "host delivery reports its row stride");
             const uint8_t *want = expect[seen];
             int bad = 0;
             for (int y = 0; y < 64 && !bad; y++)
@@ -782,6 +814,98 @@ static void test_legacy_feed_take_path(void) {
     free(bytes);
 }
 
+typedef struct {
+    const char *name;
+    int (*create)(void);
+    void (*destroy)(int);
+    int (*reset)(int);
+    int (*submit_au)(int, const uint8_t *, uint32_t);
+    int (*frame_ex)(int, int, const SrH264FrameTarget *, SrH264FrameInfo *);
+    int (*drain)(int, const SrH264FrameTarget *, SrH264FrameInfo *);
+} SrH264ConformanceBackend;
+
+static const SrH264ConformanceBackend conformance_backend = {
+    "registry",
+    sr_h264_create,
+    sr_h264_destroy,
+    sr_h264_reset,
+    sr_h264_submit_au,
+    sr_h264_frame_ex,
+    sr_h264_drain
+};
+
+static void test_backend_registry_fail_closed(void) {
+    CHECK(sr_h264_select_backend("not-a-backend") == 0,
+          "an unknown backend selection is refused");
+    CHECK(sr_h264_select_backend("null"), "the null backend can be selected explicitly");
+    CHECK(strcmp(sr_h264_selected_backend(), "null") == 0,
+          "selection reports the null backend");
+    CHECK(!sr_h264_backend_available(), "the null backend is not reported as usable");
+    int id = sr_h264_create();
+    CHECK(id < 0, "the null backend never creates a decoder instance");
+    CHECK(strcmp(sr_h264_backend_unavailable_reason(), SR_H264_UNAVAILABLE_BOUNDARY) == 0,
+          "selection exposes the named unavailable boundary");
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_HOST;
+    target.host_buffer = (uint8_t *)&info;
+    target.host_width = 1;
+    target.host_stride = 4;
+    CHECK(sr_h264_frame_ex(-1, 1, &target, &info) < 0,
+          "an unavailable backend cannot fabricate a frame");
+    CHECK(sr_h264_select_backend("auto"), "automatic backend selection can be restored");
+}
+
+static void test_backend_reset_and_restart(void) {
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint8_t es[65536];
+    uint32_t es_len = 0;
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
+          "reset fixture stream builds");
+    int id = conformance_backend.create();
+    if (id < 0) {
+        fprintf(stderr, "SKIP: reset lifecycle needs a real H.264 backend\n");
+        return;
+    }
+    CHECK(conformance_backend.submit_au(id, es + au_off[0], au_len[0]) == 0,
+          "first stream AU is accepted");
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_GUEST;
+    target.guest_buffer = GUEST_BUF;
+    target.frame_width = 64;
+    target.pixel_mode = 3;
+    CHECK(conformance_backend.frame_ex(id, 0, &target, &info) >= 0,
+          "a decoder can be exercised before reset");
+    CHECK(conformance_backend.reset(id) == 0, "decoder reset succeeds");
+    for (int i = 0; i < FIX_PICTURES; i++)
+        CHECK(conformance_backend.submit_au(id, es + au_off[i], au_len[i]) == 0,
+              "restart stream AU is accepted");
+    int frames = 0;
+    for (int i = 0; i < FIX_PICTURES + 4; i++) {
+        int r = conformance_backend.drain(id, &target, &info);
+        if (r < 0) break;
+        if (r == 0) break;
+        frames++;
+    }
+    CHECK(frames == FIX_PICTURES, "reset exposes no stale picture and restarts at the first AU");
+    conformance_backend.destroy(id);
+}
+
+static void test_backend_malformed_input(void) {
+    int id = conformance_backend.create();
+    if (id < 0) {
+        fprintf(stderr, "SKIP: malformed-input contract needs a real H.264 backend\n");
+        return;
+    }
+    static const uint8_t malformed[] = { 0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04 };
+    CHECK(conformance_backend.submit_au(id, malformed, sizeof(malformed)) < 0,
+          "malformed access-unit submission fails closed");
+    conformance_backend.destroy(id);
+}
+
 static uint64_t demux_fuzz_state = 0x3194844345584D58ULL;
 
 static uint64_t demux_fuzz_rand64(void) {
@@ -841,7 +965,7 @@ static void test_legacy_demux_mutations(unsigned iterations) {
         demux_fuzz_mutate(mutated, size - 2048u);
         int decoder = sr_h264_create();
         if (decoder < 0) {
-            if (attempted == 0) fprintf(stderr, "SKIP: hostile legacy demux needs Media Foundation\n");
+            if (attempted == 0) fprintf(stderr, "SKIP: hostile legacy demux needs a real H.264 backend\n");
             break;
         }
         attempted++;
@@ -1219,6 +1343,9 @@ int main(int argc, char **argv) {
     test_instance_isolation();
     test_destination_refusal();
     test_legacy_feed_take_path();
+    test_backend_registry_fail_closed();
+    test_backend_reset_and_restart();
+    test_backend_malformed_input();
     test_mpeg_ycbcr_guest_contract();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 

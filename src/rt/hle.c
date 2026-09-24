@@ -2865,7 +2865,12 @@ static void psmf_produce(SrPsmfPlayer *p) {
  * stop, loop restart, and teardown so no decoded output survives a stream discontinuity. */
 static void psmf_media_reset(SrPsmfPlayer *p) {
     if (!p) return;
-    if (p->h264 >= 0) { sr_h264_destroy(p->h264); p->h264 = -1; }
+    if (p->h264 >= 0) {
+        if (sr_h264_reset(p->h264) < 0) {
+            sr_h264_destroy(p->h264);
+            p->h264 = -1;
+        }
+    }
     p->h264Unavailable = 0;
     atrac3p_bridge_destroy(p->atrac);
     p->atrac = NULL;
@@ -2909,13 +2914,15 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             p->h264 = sr_h264_create();
             if (p->h264 < 0) {
                 p->h264Unavailable = 1;
-                if (psmf_log_on()) fprintf(stderr, "PSMF video: no H.264 backend on this build; movie advances without pictures\n");
+                fprintf(stderr, "%s\n", sr_h264_backend_unavailable_reason());
             }
         }
         if (p->h264 >= 0) {
-            if (slot->hostData && slot->bytes)
-                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes);
-            psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+            if (slot->hostData && slot->bytes &&
+                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes) < 0)
+                p->videoErrors++;
+            else
+                psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
         }
         free(slot->hostData);
         slot->hostData = NULL;
@@ -2930,9 +2937,23 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
                            int pixelMode, int64_t *pts_out) {
     if (!p || p->h264 < 0) return 0;
     int eos = p->producer && sr_psmf_producer_eof(p->producer);
-    int r = sr_h264_frame(p->h264, eos, displaybuf, bufw, pixelMode);
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_GUEST;
+    target.guest_buffer = displaybuf;
+    target.frame_width = bufw;
+    target.pixel_mode = pixelMode;
+    int r = eos ? sr_h264_drain(p->h264, &target, &info) :
+                  sr_h264_frame_ex(p->h264, 0, &target, &info);
     if (r < 0) { p->videoErrors++; return -1; }
     if (r == 0) { if (eos) p->videoDrained = 1; return 0; }
+    if (info.width <= 0 || info.height <= 0 || info.stride <= 0 ||
+        info.delivered_format < SR_H264_PIXEL_5650 ||
+        info.delivered_format > SR_H264_PIXEL_8888) {
+        p->videoErrors++;
+        return -1;
+    }
     int64_t value = -1;
     if (p->auPtsCount) {
         value = p->auPts[p->auPtsHead];
