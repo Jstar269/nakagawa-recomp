@@ -13,7 +13,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 
 | When you are about to | Read |
 | --- | --- |
-| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md) |
+| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
@@ -32,6 +32,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
+- [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) — Linux/WSL development commands and gate inventory (issue #306).
 - [`ENHANCEMENT_CONTRACT.md`](ENHANCEMENT_CONTRACT.md) — authentic-vs-enhanced
   boundary and package declarations; no enhancement loader yet (in the works).
 - [`STATIC_VERIFY.md`](STATIC_VERIFY.md) — oracle-free verification and blocked
@@ -119,6 +120,7 @@ in this slice; classification comes first, directory moves separately.
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
 | `PLATFORM_PORTABILITY.md` | CURRENT | Portability plan; host-neutral gate is not platform support |
+| `LINUX_DEVELOPMENT.md` | CURRENT | Linux/WSL dev commands and gate inventory (issue #306) |
 | `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract and package validator; loader in the works |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
 | `HARDWARE_ORACLE.md` | CURRENT | Bounded proposal + measured-cells index; trace oracle unbuilt |
