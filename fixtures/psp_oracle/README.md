@@ -203,31 +203,23 @@ The invalid-tail cases isolate one API and invalid endpoint per launch:
 - `dma-invalid-tail-try-src`.
 
 The Makefile keeps the invalid-tail variants on the bounded public memory
-baseline, but the probe no longer assumes a fixed partition end. Before
-calling DMAC it allocates a page-aligned `0x10000`-byte block from the current
-high end of partition 2, uses its final `0xC000` bytes as the valid prefix, and
+baseline, and the probe does not assume a fixed partition end. It allocates a
+page-aligned `0x10000`-byte block from the current high end of partition 2 and
 probes an allocation beginning at the next address while the block is held.
-Only a strict allocator rejection passes the safety gate; a successful or
-ambiguous adjacent allocation emits `SKIP` and no invalid-tail call is issued.
-The requested size is `0xC001`, so exactly one requested byte lies beyond the
-allocator-proven boundary. No byte outside an owned block is read by the probe
-itself.
+Even when the allocator rejects that adjacent allocation, it has only proved
+an ownership boundary; it has not proved that the address is unmapped or
+outside reserved/kernel memory. The probe therefore emits `SKIP` and never
+passes a span beyond its owned block to DMAC. The configured `0xC001` request
+and `0xC000` prefix remain in the record as the unrun measurement shape.
+Issue #303's invalid-span hardware semantics remain unmeasured until a
+PSP-specific safe boundary can be established.
 
-For invalid-tail records, `result` is the DMAC return and `out0` is the setup
-mask (`0x7` means every allocator gate passed). `out1`/`out2` are the requested
-and measured-prefix sizes; `out3` is the invalid endpoint (`0` destination,
-`1` source); `out4` is the API (`0` blocking, `1` try); `out5`/`out6` are the
-prefix pattern-match and non-sentinel mutation counts; `out7` is lead-guard
-mutation; `out8`/`out9` report the valid destination tail and post-request
-guard where observable (`0xFFFFFFFF` otherwise); `out10` verifies the source
-prefix; `out11` is wall time; `out12` is the rejected boundary-allocation
-error; and `out13` is the runtime-discovered boundary block size.
-For an explicit `SKIP` setup record, `out5` carries the tail-probe result and
-`out6` carries the discovered block size instead of the post-call mutation
-fields.
-`status=PASS` means that the call returned and the scalar measurement
-completed; it does not mean that the observed DMA semantics match Nakagawa or
-close issue #23.
+For current invalid-tail `SKIP` records, `result` and `out5` carry the adjacent
+allocation result, and `out0` is the setup mask (`0x7` means all allocator
+gates passed). `out1`/`out2` are the configured request and measured-prefix
+sizes; `out3` is the endpoint (`0` destination, `1` source); `out4` is the API
+(`0` blocking, `1` try); and `out6` is the discovered block size. No DMAC
+return, copy count, guard mutation, or timing value is claimed.
 
 Terminal outcomes are deliberately distinct:
 

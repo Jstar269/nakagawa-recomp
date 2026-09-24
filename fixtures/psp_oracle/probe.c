@@ -758,6 +758,8 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 #define DMAC_MEASURED_PREFIX 0x0000c000u
 #define DMAC_REFERENCE_BUSY 0x80000021u
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
 static int dmac_call(uint32_t api, void *dst, const void *src, uint32_t size) {
     return api == DMAC_API_TRY_MEMCPY
         ? sceDmacTryMemcpy(dst, src, size)
@@ -772,6 +774,7 @@ static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
     const uint64_t elapsed = end >= start ? end - start : 0;
     return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
 }
+#endif
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
@@ -1118,17 +1121,12 @@ static void run_dmac_concurrency(int emulated) {
 #if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
     PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
 /* The old probe baked in a 32 MiB partition end.  That premise was false on
-   some PSP-3000/ARK configurations and made every tail result vacuous.  The
-   replacement discovers a boundary in the current allocator state: a
-   page-aligned high block is held, and the next address is probed while that
-   block is still live.  A successful adjacent allocation (or any allocator
-   ambiguity) is a strict SKIP, so the invalid-tail syscall is issued only
-   after the allocator itself rejects the candidate. */
-#define DMAC_BOUNDARY_LEAD 0x00004000u
+   some PSP-3000/ARK configurations and made every tail result vacuous.  This
+   probe discovers the current allocator boundary, but never sends a DMA span
+   past an owned block: allocator rejection does not prove the next address is
+   unmapped or outside reserved/kernel memory. */
 #define DMAC_BOUNDARY_BLOCK_BYTES 0x00010000u
 #define DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)
-#define DMAC_BOUNDARY_SENTINEL 0xa5u
-#define DMAC_BOUNDARY_GUARD 0x6du
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST
 #define DMAC_INVALID_API DMAC_API_MEMCPY
@@ -1148,28 +1146,6 @@ static void run_dmac_concurrency(int emulated) {
 #define DMAC_INVALID_CASE_ID "invalid-tail-try-src"
 #endif
 
-static uint8_t s_dmac_valid_source[DMAC_INVALID_REQUEST]
-    __attribute__((aligned(64)));
-static uint8_t s_dmac_valid_destination[DMAC_INVALID_REQUEST + 1u]
-    __attribute__((aligned(64)));
-
-static uint32_t dmac_count_pattern(const uint8_t *bytes, uint32_t size) {
-    uint32_t count = 0;
-    for (uint32_t offset = 0; offset < size; ++offset) {
-        if (bytes[offset] == dmac_pattern(offset)) ++count;
-    }
-    return count;
-}
-
-static uint32_t dmac_count_not(const uint8_t *bytes, uint32_t size,
-                               uint8_t value) {
-    uint32_t count = 0;
-    for (uint32_t offset = 0; offset < size; ++offset) {
-        if (bytes[offset] != value) ++count;
-    }
-    return count;
-}
-
 static void emit_dmac_invalid_setup(int emulated, const char *status,
                                     uint32_t result, uint32_t setup_mask,
                                     uint32_t tail_allocation_result) {
@@ -1188,9 +1164,8 @@ static void emit_dmac_invalid_setup(int emulated, const char *status,
 
 static void run_dmac_invalid_tail(int emulated) {
     uint32_t setup_mask = 0;
-    /* Allocate from the high end so the candidate immediately after the
-       page-aligned block has no unobserved space above it.  The allocation is
-       kept live throughout the tail call. */
+    /* Allocate a page-aligned block from the high end and check whether an
+       adjacent partition-2 allocation can begin immediately after it. */
     const SceUID block = sceKernelAllocPartitionMemory(
         2, "oracle-dmac-boundary", PSP_SMEM_High,
         DMAC_BOUNDARY_BLOCK_BYTES, NULL);
@@ -1224,85 +1199,9 @@ static void run_dmac_invalid_tail(int emulated) {
         return;
     }
     setup_mask |= 4u;
-
-    uint8_t *const boundary_prefix = block_head + DMAC_BOUNDARY_LEAD;
-    memset(block_head, DMAC_BOUNDARY_GUARD, DMAC_BOUNDARY_LEAD);
-    for (uint32_t offset = 0; offset < DMAC_INVALID_REQUEST; ++offset) {
-        s_dmac_valid_source[offset] = dmac_pattern(offset);
-    }
-    memset(s_dmac_valid_destination, DMAC_BOUNDARY_SENTINEL,
-           sizeof(s_dmac_valid_destination));
-    if (DMAC_INVALID_DIRECTION == 0u) {
-        memset(boundary_prefix, DMAC_BOUNDARY_SENTINEL,
-               DMAC_MEASURED_PREFIX);
-    } else {
-        for (uint32_t offset = 0; offset < DMAC_MEASURED_PREFIX; ++offset) {
-            boundary_prefix[offset] = dmac_pattern(offset);
-        }
-    }
-    sceKernelDcacheWritebackInvalidateRange(
-        block_head, DMAC_BOUNDARY_BLOCK_BYTES);
-    sceKernelDcacheWritebackInvalidateRange(
-        s_dmac_valid_source, sizeof(s_dmac_valid_source));
-    sceKernelDcacheWritebackInvalidateRange(
-        s_dmac_valid_destination, sizeof(s_dmac_valid_destination));
-
-    void *const dst = DMAC_INVALID_DIRECTION == 0u
-        ? (void *)boundary_prefix : (void *)s_dmac_valid_destination;
-    const void *const src = DMAC_INVALID_DIRECTION == 0u
-        ? (const void *)s_dmac_valid_source : (const void *)boundary_prefix;
-    const uint64_t start_us = sceKernelGetSystemTimeWide();
-    const uint32_t result = (uint32_t)dmac_call(
-        DMAC_INVALID_API, dst, src, DMAC_INVALID_REQUEST);
-    const uint64_t end_us = sceKernelGetSystemTimeWide();
-
-    uint8_t *const valid_destination = DMAC_INVALID_DIRECTION == 0u
-        ? boundary_prefix : s_dmac_valid_destination;
-    const uint8_t *const expected_source = DMAC_INVALID_DIRECTION == 0u
-        ? s_dmac_valid_source : boundary_prefix;
-    sceKernelDcacheInvalidateRange(valid_destination, DMAC_MEASURED_PREFIX);
-    sceKernelDcacheInvalidateRange(block_head, DMAC_BOUNDARY_LEAD);
-    if (DMAC_INVALID_DIRECTION != 0u) {
-        sceKernelDcacheInvalidateRange(
-            s_dmac_valid_destination, sizeof(s_dmac_valid_destination));
-    }
-
-    const uint32_t prefix_matches = dmac_count_pattern(
-        valid_destination, DMAC_MEASURED_PREFIX);
-    const uint32_t prefix_non_sentinel = dmac_count_not(
-        valid_destination, DMAC_MEASURED_PREFIX, DMAC_BOUNDARY_SENTINEL);
-    const uint32_t guard_changed = dmac_count_not(
-        block_head, DMAC_BOUNDARY_LEAD, DMAC_BOUNDARY_GUARD);
-    const uint32_t valid_tail_changed = DMAC_INVALID_DIRECTION == 0u
-        ? UINT32_MAX
-        : (uint32_t)(s_dmac_valid_destination[DMAC_MEASURED_PREFIX] !=
-                     DMAC_BOUNDARY_SENTINEL);
-    const uint32_t post_request_changed = DMAC_INVALID_DIRECTION == 0u
-        ? UINT32_MAX
-        : (uint32_t)(s_dmac_valid_destination[DMAC_INVALID_REQUEST] !=
-                     DMAC_BOUNDARY_SENTINEL);
-    const uint32_t source_prefix_matches = dmac_count_pattern(
-        expected_source, DMAC_MEASURED_PREFIX);
-    const uint32_t out[] = {
-        setup_mask,
-        DMAC_INVALID_REQUEST,
-        DMAC_MEASURED_PREFIX,
-        DMAC_INVALID_DIRECTION,
-        DMAC_INVALID_API,
-        prefix_matches,
-        prefix_non_sentinel,
-        guard_changed,
-        valid_tail_changed,
-        post_request_changed,
-        source_prefix_matches,
-        dmac_elapsed_us(start_us, end_us),
-        tail_error,
-        DMAC_BOUNDARY_BLOCK_BYTES,
-    };
     sceKernelFreePartitionMemory(block);
-    emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
-                         "PASS", result, out,
-                         sizeof(out) / sizeof(out[0]));
+    emit_dmac_invalid_setup(emulated, "SKIP", tail_error, setup_mask,
+                            tail_error);
 }
 #endif
 

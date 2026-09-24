@@ -490,6 +490,13 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)", self.probe)
         self.assertNotIn("boundary_prefix[DMAC_MEASURED_PREFIX]", self.probe)
 
+    def test_invalid_tail_probe_never_dma_accesses_unowned_memory(self) -> None:
+        marker = "static void run_dmac_invalid_tail(int emulated) {"
+        self.assertIn(marker, self.probe)
+        body = self.probe.split(marker, 1)[1].split("\n}\n#endif", 1)[0]
+        self.assertNotIn("dmac_call(", body)
+        self.assertIn('emit_dmac_invalid_setup(emulated, "SKIP"', body)
+
     def test_size_matrix_covers_boundaries_repeats_and_cache_guards(self) -> None:
         self.assertIn("DMAC_SIZE_BYTES 0x00100000u", self.probe)
         self.assertIn("DMAC_SIZE_TRIALS 3u", self.probe)
