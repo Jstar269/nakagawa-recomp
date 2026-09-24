@@ -846,7 +846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6ce2186ce787feeb61cc6c10673828d9b3eaa9e382f52cce2393417f1b58eaa1"
+      "sha256": "bcc72ce1bd0c35843230159d0b282e02010c01e765d0acd0475e92e0309eac5f"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -6159,7 +6159,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e689afdfcb5d5c95390201fb7290fa807f4b9d0e8056290406edab68d5b6b7d5"
+      "sha256": "eef1eb12da5f918dff449ef00f69e4857dcb53b4de58ec0f9ed550dfb076b249"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -6183,7 +6183,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ad06795ff96c71eed9a73392e43c7196ca515b2399521c16c44012bdd43cc182"
+      "sha256": "c0b5aeb6641df7be284f4d9adf0fe6cf424a700542e06e4192866922b07a8037"
     },
     {
       "path": "src/rt/recomp.c",
@@ -9845,13 +9845,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "cfb6bff45e12fd9041f491f538abbcc6edd1189e",
-    "candidate_tree": "a2f9a1fcce350fca67d0050ed2879cbd06c0a9d7",
+    "trusted_tree": "004860bd507bf7dd7f3727e129c0407f5b6777c7",
+    "candidate_tree": "941065439c1031741110adb03d6c77839c58997c",
     "refreshed_paths": [
-      "docs/SETUP.md",
-      "src/rt/hle.c",
-      "tools/nk_doctor_checks.py",
-      "tools/test_generic_title_planning_proof.py"
+      "docs/LLE_FIDELITY_ARCHITECTURE.md",
+      "src/rt/psmf_producer.c",
+      "src/rt/psmf_producer_selftest.c"
     ]
   }
 }
