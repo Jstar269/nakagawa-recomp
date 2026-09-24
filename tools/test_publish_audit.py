@@ -663,6 +663,183 @@ class TestPublishAudit(unittest.TestCase):
         )
         self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
 
+    def _lineage_provenance_findings(
+        self,
+        source_path: str,
+        source_bytes: bytes,
+        classification: str,
+        exceptions: dict | None = None,
+        license_id: str | None = "GPL-3.0-or-later",
+    ):
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            ledger_path = "assets/public_provenance_ledger.json"
+            source_file = repo / source_path
+            source_file.parent.mkdir(parents=True, exist_ok=True)
+            source_file.write_bytes(source_bytes)
+            source_record = {
+                "path": source_path,
+                "classification": classification,
+                "evidence": {"license": license_id} if license_id else {"source": "test"},
+                "sha256": hashlib.sha256(source_bytes).hexdigest(),
+            }
+            ledger_record = {
+                "path": ledger_path,
+                "classification": "reviewed_configuration",
+                "evidence": {"source": "test"},
+                "sha256": "unused-for-self-record",
+            }
+            ledger_bytes = json.dumps({"entries": [source_record, ledger_record]}).encode("utf-8")
+            ledger_file = repo / ledger_path
+            ledger_file.parent.mkdir(parents=True, exist_ok=True)
+            ledger_file.write_bytes(ledger_bytes)
+            policy_file, _ = hermetic_policy(repo, [source_path, ledger_path])
+            policy = publication_policy.load_policy(policy_file)
+            entries = [
+                publish_audit.GitEntry("100644", "", "0", source_path, "file"),
+                publish_audit.GitEntry("100644", "", "0", ledger_path, "file"),
+            ]
+            return publish_audit._provenance_ledger_findings(
+                policy,
+                entries,
+                {},
+                publish_audit.CONTENT_WORKTREE,
+                repo,
+                None,
+                self_consistency=True,
+                lineage_exceptions=exceptions,
+            )
+
+    def test_lineage_contradiction_detected_for_synthetic_derived_header(self):
+        cases = (
+            (
+                "src/synthetic.c",
+                b"/* SPDX-License-Identifier: GPL-3.0-or-later */\n// Derived from PPSSPP (GPL-2.0-or-later)\nint x;\n",
+                "project_authored_attested",
+                "GPL-3.0-or-later",
+            ),
+            (
+                "src/synthetic_port.c",
+                b"/* SPDX-License-Identifier: GPL-3.0-or-later */\n// Ported from JPCSP\nint x;\n",
+                "project_authored_attested",
+                "GPL-3.0-or-later",
+            ),
+            (
+                "tools/synthetic_tool.py",
+                b"# SPDX-License-Identifier: GPL-3.0-or-later\n# Based on sal063/PSP-recompilation-project\nx = 1\n",
+                "project_authored_attested",
+                "GPL-3.0-or-later",
+            ),
+            (
+                "src/rt/synthetic_indep.c",
+                b"/* SPDX-License-Identifier: GPL-2.0-or-later */\n// Clean-room implementation\nint x;\n",
+                "upstream_derived",
+                "GPL-2.0-or-later",
+            ),
+            (
+                "src/rt/synthetic_indep2.c",
+                b"/* SPDX-License-Identifier: GPL-2.0-or-later */\n// Independently authored implementation\nint x;\n",
+                "upstream_derived",
+                "GPL-2.0-or-later",
+            ),
+        )
+        for source_path, source_bytes, classification, license_id in cases:
+            with self.subTest(source_path=source_path):
+                findings = self._lineage_provenance_findings(
+                    source_path,
+                    source_bytes,
+                    classification,
+                    exceptions={},
+                    license_id=license_id,
+                )
+                self.assertTrue(
+                    any(f.code == "LINEAGE_CONTRADICTION" for f in findings),
+                    f"Expected LINEAGE_CONTRADICTION for {source_path}, got: {findings}",
+                )
+
+    def test_lineage_contradiction_excepted_passes(self):
+        source_path = "src/synthetic.c"
+        source_bytes = (
+            b"/* SPDX-License-Identifier: GPL-3.0-or-later */\n"
+            b"// Derived from PPSSPP (GPL-2.0-or-later)\nint x;\n"
+        )
+        exceptions = {
+            source_path: {
+                "issue": "#342",
+                "reason": "synthetic test exception for tracking issue #342",
+            }
+        }
+        findings = self._lineage_provenance_findings(
+            source_path,
+            source_bytes,
+            "project_authored_attested",
+            exceptions=exceptions,
+        )
+        self.assertFalse(
+            any(f.code in ("LINEAGE_CONTRADICTION", "LINEAGE_CONTRADICTION_STALE") for f in findings),
+            findings,
+        )
+
+    def test_lineage_contradiction_stale_exception_fails(self):
+        source_path = "src/synthetic_clean.c"
+        source_bytes = (
+            b"/* SPDX-License-Identifier: GPL-3.0-or-later */\n"
+            b"// Project-authored clean implementation.\nint x;\n"
+        )
+        exceptions = {
+            source_path: {
+                "issue": "#342",
+                "reason": "stale exception that should fail because header has no contradiction",
+            }
+        }
+        findings = self._lineage_provenance_findings(
+            source_path,
+            source_bytes,
+            "project_authored_attested",
+            exceptions=exceptions,
+        )
+        self.assertTrue(
+            any(f.code == "LINEAGE_CONTRADICTION_STALE" for f in findings),
+            f"Expected LINEAGE_CONTRADICTION_STALE for {source_path}, got: {findings}",
+        )
+
+    def test_lineage_exception_invalid_missing_fields(self):
+        source_path = "src/synthetic.c"
+        source_bytes = (
+            b"/* SPDX-License-Identifier: GPL-3.0-or-later */\n"
+            b"// Derived from PPSSPP (GPL-2.0-or-later)\nint x;\n"
+        )
+        exceptions = {
+            source_path: {
+                "issue": "",
+                "reason": "",
+            }
+        }
+        findings = self._lineage_provenance_findings(
+            source_path,
+            source_bytes,
+            "project_authored_attested",
+            exceptions=exceptions,
+        )
+        self.assertTrue(
+            any(f.code == "LINEAGE_EXCEPTION_INVALID" for f in findings),
+            f"Expected LINEAGE_EXCEPTION_INVALID, got: {findings}",
+        )
+
+    def test_checked_in_lineage_exceptions_structure_and_active_entries(self):
+        self.assertIn("src/rt/evf.h", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertIn("tools/gen_nidnames.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertIn("tools/test_funcdiff_cmp.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertIn("tools/test_nidseq.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+
+        for path, info in publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS.items():
+            with self.subTest(path=path):
+                self.assertIsInstance(info, dict)
+                self.assertIn("issue", info)
+                self.assertIn("reason", info)
+                self.assertTrue(str(info["issue"]).endswith("342"))
+                self.assertTrue(len(str(info["reason"])) > 0)
+
     def test_deterministic_report_output_and_aggregate_sha(self):
         entries = [
             publish_audit.GitEntry("100644", "abc1234", "0", "LICENSE", "file"),
