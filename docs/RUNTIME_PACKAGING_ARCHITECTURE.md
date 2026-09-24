@@ -137,6 +137,8 @@ an unsupported path is rejected as `PACKAGE_UNSUPPORTED_PATH` (#296).
 | `generated_objects` | Sorted relative object paths and SHA-256 hashes. |
 | `required_local_assets` | Manifest title-data/resource roots, selected or optional guest PRXs, and host SDL3/Vulkan runtime requirements. These are references; title assets are not copied into the package. |
 | `build_report` | Relative path `build-report.json`. |
+| `cache` | Versioned AOT/native cache key, codegen options, and runtime ABI compatibility decision. |
+| `completion-manifest.json` | Completion marker containing the cache key and SHA-256 for every published artifact; written last. |
 
 `build-report.json` has format `nakagawa-build-report`, schema version `1`, the
 same `input_hashes`, Python/planner/analyzer/codegen/Make versions, the compiler
@@ -154,3 +156,62 @@ This package command still requires the developer toolchain. It does not unwrap
 an ISO or make the player launch the generated package. The player-side consumer
 and run-directory provisioning are tracked by #297; analyzer ownership and
 stack-balance gates remain tracked by #291.
+
+## 6. Private content-addressed cache contract (#316)
+
+A package is reusable only when every semantic input that can affect its output
+is identified. The package layer, rather than a project release string, owns the
+following key components:
+
+| Key component | AOT generated C | Native objects/runtime package |
+| --- | --- | --- |
+| Exact executable bytes SHA-256 | required | required |
+| Validated manifest/profile and selected guest-module/PSP-header digests | required | required |
+| Analyzer/codegen semantics epoch and analyzer/codegen content digests | required | required |
+| Codegen options (profile, base/entry, spans, chunking, selected options, correctness modes) | required | required |
+| Generated-code ABI epoch | required | required |
+| Runtime ABI epoch | compatibility decision | required |
+| Compiler identity and target triple | not required | required |
+| Runtime source/header digest and output-affecting compile/link flags | not required | required |
+
+The current package-layer epochs are `analyzer-codegen-v1`,
+`GENERATED_CODE_ABI_EPOCH = 1`, and `RUNTIME_ABI_EPOCH = 1`. The generated-code
+and runtime epoch values are compatibility contracts, not release versions. A
+change to the generated C/runtime helper boundary must bump
+`GENERATED_CODE_ABI_EPOCH`; a runtime-package ABI change must bump
+`RUNTIME_ABI_EPOCH`. The package layer documents the bump because the codegen
+agent owns the implementation epoch source.
+
+The cache decision has three levels:
+
+* `reuse`: the complete AOT and native key matches. No AOT generation or native
+  compilation is run.
+* `native-recompile`: generated C is reusable, but a compiler, target, runtime
+  source, flag, or explicitly compatible runtime ABI change requires native
+  objects to be rebuilt and relinked.
+* `aot-regenerate`: executable bytes, manifest/bindings, analyzer/codegen
+  semantics, codegen options, or an incompatible generated/runtime ABI requires
+  fresh AOT output.
+
+A runtime ABI change reuses generated C only when the package layer explicitly
+maps the previous epoch to the current epoch as compatible. Unknown or missing
+compatibility is never treated as compatible. The decision record names every
+changed component (`aot:executable_sha256`, `native:compiler_identity`, and so
+on) for the CLI, player preflight, and Doctor.
+
+The private cache root is `<user data>/cache/packages/<DISC_ID>/`, never the
+repository. Builds are written to a content-addressed entry below that root,
+assembled in a staging directory, and promoted with a directory rename. The
+completion manifest is written last as `completion-manifest.json`; it contains
+the canonical cache key and a SHA-256 record for every published file. Missing,
+incomplete, symlinked, or digest-mismatched completion entries are not valid
+packages and cannot be launched. The player and launcher report the failed
+component and the `build-package <DISC_ID>` action instead of falling back to a
+possibly stale executable. Completed cache entries are bounded to eight by
+default; set `NK_AOT_CACHE_MAX_ENTRIES` to a positive per-title limit. Cleanup
+never follows entry symlinks and preserves the entry used by the current build.
+
+The cache contains private title-derived bytes and is intentionally outside the
+public export and provenance tree. Publication policy remains default-deny for
+`cache/` paths; a cache artifact accidentally proposed for publication is
+rejected by the public-scope audit.

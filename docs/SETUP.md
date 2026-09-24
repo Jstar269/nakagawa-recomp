@@ -343,6 +343,18 @@ python tools/nk_cli.py build-package <disc_id>
 
 This extracts the plaintext executable (or automatically uses `EBOOT.elf` and guest PRXs from `<user data>/titles/<DISC_ID>/decrypted/`), runs the build pipeline, stages runtime assets, and promotes the package to `<user data>/packages/<DISC_ID>/`. The native player (`build/nakagawa_player.exe`) discovers, validates, and launches packages from that directory ([#297](https://github.com/Jstar269/nakagawa-recomp/issues/297)). An explicit `--module-dir <directory>` can be passed when modules are located elsewhere. In a public checkout this route packages source-owned synthetic fixtures only: a retail title needs the production runtime backends, which are not part of the public tree, and the command refuses with a message naming [#297](https://github.com/Jstar269/nakagawa-recomp/issues/297).
 
+Package work is content-addressed below `<user data>/cache/packages/<DISC_ID>/`; the cache key covers executable bytes, analyzer/codegen semantics, codegen options, generated-code/runtime ABI epochs, compiler identity/target, and native flags. An unchanged key reuses the published package, an ABI-compatible runtime or compiler change recompiles native objects while retaining generated C, and any other semantic change regenerates AOT. The builder writes and verifies `completion-manifest.json` before an atomic directory promotion; interrupted or corrupt entries are refused by the player and launcher. The full contract and rebuild-component names are in [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#6-private-content-addressed-cache-contract-316), tracked by [#316](https://github.com/Jstar269/nakagawa-recomp/issues/316).
+
+To inspect a private package cache with Doctor, pass the user-data root and disc ID:
+
+```powershell
+python tools/nk_doctor.py --scope products `
+  --user-data-root "$env:LOCALAPPDATA\Nakagawa\data" `
+  --disc-id <disc_id>
+```
+
+Doctor reports a missing, incomplete, or stale cache entry and names the changed key component when a current key is available. Cache cleanup is bounded per title; set `NK_AOT_CACHE_MAX_ENTRIES` to a positive limit when the default of eight is unsuitable.
+
 Alternatively, to build a local AOT package directly from a validated title manifest and plaintext executable ELF, use
 the planner's package action. It runs the same two-phase Make pipeline and writes the executable,
 generated objects, `package.json`, and `build-report.json` under one dedicated untracked directory:
