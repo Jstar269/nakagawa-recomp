@@ -267,7 +267,7 @@ def check_long_paths(
     else:
         report.pass_(
             "LONG_PATHS",
-            f"Repository path length within 260 characters and Windows LongPathsEnabled is enabled",
+            "Repository path length within 260 characters and Windows LongPathsEnabled is enabled",
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
             metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": False, "max_path": 260},

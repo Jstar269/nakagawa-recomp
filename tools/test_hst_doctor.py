@@ -779,20 +779,20 @@ class LongPathDiagnosticTests(unittest.TestCase):
             self.assertFalse(nk_doctor_checks.query_windows_long_paths_enabled())
 
     def test_long_paths_pass_when_enabled_and_under_260(self) -> None:
-        report = nk_doctor.Report(Path(r"C:\nk"), "build")
+        report = nk_doctor.Report(Path(r"C:\work\repo"), "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=True), \
              mock.patch.object(os, "name", "nt"):
-            nk_doctor_checks.check_long_paths(report, Path(r"C:\nk"))
+            nk_doctor_checks.check_long_paths(report, Path(r"C:\work\repo"))
         results = [r for r in report.results if r.code == "LONG_PATHS"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "PASS")
         self.assertLessEqual(results[0].metadata.get("total_len", 0), 260)
 
     def test_long_paths_warn_when_policy_disabled(self) -> None:
-        report = nk_doctor.Report(Path(r"C:\nk"), "build")
+        report = nk_doctor.Report(Path(r"C:\work\repo"), "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
              mock.patch.object(os, "name", "nt"):
-            nk_doctor_checks.check_long_paths(report, Path(r"C:\nk"))
+            nk_doctor_checks.check_long_paths(report, Path(r"C:\work\repo"))
         results = [r for r in report.results if r.code == "LONG_PATHS"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "WARN")
