@@ -721,16 +721,23 @@ def inspect_compatibility_preflight(
             "issues": [296, 297],
         }
 
-    if (root / "font" / "jpn0.pgf").is_file():
+    from .fonts import inspect_font_cache
+
+    font_status, font_message = inspect_font_cache(user_data_root=root, fallback_root=root)
+    if font_status == "OK":
         fonts_check = {
             "code": "SYSTEM_FONTS", "status": "OK",
-            "message": "User-supplied PSP system font jpn0.pgf is available.", "issues": [],
+            "message": font_message, "issues": [],
+        }
+    elif font_status == "INVALID":
+        fonts_check = {
+            "code": "SYSTEM_FONTS", "status": "INVALID",
+            "message": font_message, "issues": [300],
         }
     else:
         fonts_check = {
             "code": "SYSTEM_FONTS", "status": "MISSING",
-            "message": "PSP font jpn0.pgf missing; provisioning is in the works (#300).",
-            "issues": [300],
+            "message": font_message, "issues": [300],
         }
     audio_check = {
         "code": "AUDIO_OUTPUT", "status": "OK",
