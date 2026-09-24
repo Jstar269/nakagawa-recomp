@@ -41,6 +41,108 @@ static void write_file(const char *path) {
     assert(fclose(file) == 0);
 }
 
+static void write_text_file(const char *path, const char *text) {
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    size_t length = strlen(text);
+    assert(fwrite(text, 1, length, file) == length);
+    assert(fclose(file) == 0);
+}
+
+static const char *const FIXTURE_SHA256 =
+    "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
+
+static void write_runtime_package_fixture(const char *user_root,
+                                          const char *disc_id,
+                                          const char *title_id,
+                                          uint32_t abi_version,
+                                          const char *executable_relative_path,
+                                          const char *input_executable_sha256) {
+    char packages[768], package_dir[896], executable[1100], image[1100];
+    char package_json[8192], report_json[4096];
+    snprintf(packages, sizeof(packages), "%s%cpackages", user_root,
+             nk_platform_path_separator());
+    snprintf(package_dir, sizeof(package_dir), "%s%c%s", packages,
+             nk_platform_path_separator(), disc_id);
+    assert(nk_platform_mkdir_p(package_dir));
+    snprintf(executable, sizeof(executable), "%s%c%s.exe", package_dir,
+             nk_platform_path_separator(), title_id);
+    snprintf(image, sizeof(image), "%s%c%s_image.bin", package_dir,
+             nk_platform_path_separator(), title_id);
+    write_file(executable);
+    write_file(image);
+
+    int report_length = snprintf(report_json, sizeof(report_json),
+        "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
+        "\"title_id\":\"%s\",\"runtime_abi\":{\"name\":\"CpuState\",\"version\":%u},"
+        "\"input_hashes\":{\"manifest\":{\"sha256\":\"%064d\"},"
+        "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"tools\":{},\"coverage\":{},\"unsupported\":{\"imports\":[],"
+        "\"instructions\":[],\"regions\":[]},\"analysis_diagnostics\":[],\"artifacts\":{}}\n",
+        title_id, (unsigned)abi_version, 0, input_executable_sha256);
+    assert(report_length > 0 && (size_t)report_length < sizeof(report_json));
+    char report_path[1100];
+    snprintf(report_path, sizeof(report_path), "%s%cbuild-report.json", package_dir,
+             nk_platform_path_separator());
+    write_text_file(report_path, report_json);
+
+    int package_length = snprintf(package_json, sizeof(package_json),
+        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,"
+        "\"title\":{\"id\":\"%s\",\"display_name\":\"Synthetic fixture\","
+        "\"kind\":\"retail\",\"manifest_sha256\":\"%064d\","
+        "\"protected_digest\":\"%064d\"},"
+        "\"inputs\":{\"manifest\":{\"sha256\":\"%064d\"},"
+        "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"runtime\":{\"abi\":\"CpuState\",\"abi_version\":%u,"
+        "\"abi_header_sha256\":\"%064d\",\"run_entry\":\"0x00000000\","
+        "\"runtime_contract\":null,\"runtime_bindings\":{},"
+        "\"required_runtime_bindings\":[]},"
+        "\"executable\":{\"path\":\"%s\",\"sha256\":\"%s\","
+        "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
+        "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
+        title_id, 0, 0, 0, input_executable_sha256, (unsigned)abi_version,
+        0, executable_relative_path, FIXTURE_SHA256);
+    assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
+    char package_path[1100];
+    snprintf(package_path, sizeof(package_path), "%s%cpackage.json", package_dir,
+             nk_platform_path_separator());
+    write_text_file(package_path, package_json);
+}
+
+static void write_experimental_profile_fixture(const char *user_root,
+                                               const char *disc_id,
+                                               const char *title_id,
+                                               const char *selected_executable,
+                                               const char *executable_sha256) {
+    char experimental[768], profile_dir[896], profile_path[1100];
+    char profile_json[4096];
+    snprintf(experimental, sizeof(experimental), "%s%cexperimental", user_root,
+             nk_platform_path_separator());
+    snprintf(profile_dir, sizeof(profile_dir), "%s%c%s", experimental,
+             nk_platform_path_separator(), disc_id);
+    assert(nk_platform_mkdir_p(profile_dir));
+    snprintf(profile_path, sizeof(profile_path), "%s%cprofile.json", profile_dir,
+             nk_platform_path_separator());
+    int length = snprintf(profile_json, sizeof(profile_json),
+        "{\"schema_version\":1,\"manifest\":{\"schema_version\":1,"
+        "\"id\":\"%s\",\"game_name\":\"%s\","
+        "\"display_name\":\"Synthetic experiment\",\"kind\":\"retail\","
+        "\"disc\":{\"id\":\"%s\",\"region\":\"NA\","
+        "\"revision_policy\":\"exact-disc-id\"},"
+        "\"executable\":{\"base\":0,\"entry\":0,\"bss_metadata_source\":\"none\","
+        "\"extra_executable_spans\":[]},\"modules\":[],"
+        "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"savedata\","
+        "\"device_prefixes\":[\"disc0:\",\"ms0:\"]},\"hle_profile\":\"generic\","
+        "\"feature_requirements\":[],\"verification_profile\":\"experimental-unverified\"},"
+        "\"input_identity\":{\"disc_id\":\"%s\","
+        "\"selected_executable\":\"PSP_GAME/SYSDIR/%s\","
+        "\"executable_sha256\":\"%s\",\"elf_sha256\":\"%s\"}}\n",
+        title_id, title_id, disc_id, disc_id, selected_executable,
+        executable_sha256, executable_sha256);
+    assert(length > 0 && (size_t)length < sizeof(profile_json));
+    write_text_file(profile_path, profile_json);
+}
+
 static const PlayerPreflightCheck *find_preflight_check(
     const PlayerCompatibilityPreflight *preflight, const char *code) {
     if (!preflight || !code) return NULL;
@@ -50,7 +152,40 @@ static const PlayerPreflightCheck *find_preflight_check(
     return NULL;
 }
 
-int main(void) {
+static const char *runtime_package_status_name(NkRuntimePackageStatus status) {
+    switch (status) {
+        case NK_RUNTIME_PACKAGE_OK: return "OK";
+        case NK_RUNTIME_PACKAGE_MISSING: return "MISSING";
+        case NK_RUNTIME_PACKAGE_INCOMPATIBLE: return "INCOMPATIBLE";
+        case NK_RUNTIME_PACKAGE_STALE: return "STALE";
+        default: return "UNKNOWN";
+    }
+}
+
+int main(int argc, char **argv) {
+    if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
+        char *end = NULL;
+        unsigned long experimental = strtoul(argv[5], &end, 10);
+        if (!end || *end || experimental > 1) return 2;
+        PlayerApp *probe = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(probe != NULL);
+        player_app_set_runtime_root(probe, argv[2]);
+        GameRecord game;
+        memset(&game, 0, sizeof(game));
+        snprintf(game.disc_id, sizeof(game.disc_id), "%s", argv[3]);
+        snprintf(game.title_id, sizeof(game.title_id), "%s", argv[4]);
+        game.is_experimental = experimental != 0;
+        snprintf(game.selected_executable, sizeof(game.selected_executable), "%s", argv[6]);
+        NkRuntimePackageInfo info;
+        char reason[2048];
+        NkRuntimePackageStatus status = player_app_validate_runtime_package(
+            probe, &game, &info, reason, sizeof(reason));
+        printf("PACKAGE_STATUS=%s\nPACKAGE_REASON=%s\n",
+               runtime_package_status_name(status), reason);
+        free(probe);
+        return 0;
+    }
+
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     assert(app != NULL);
@@ -183,32 +318,32 @@ int main(void) {
     player_app_sync_library(fresh);
     assert(fresh->game_count == 0);
 
-    /* Point the same probe at a disposable fixture root. A real display-smoke
-       build is not a prerequisite of native-core-tests, but the entry must be
-       marked prepared when its executable and generated image are present. */
+    /* Point package discovery at a disposable root. A bare executable/image
+       pair must not make the fixture launchable; only a matching v1 package
+       enables Play. */
     char cache_dir[512];
     char fixture_root[700];
-    char fixture_dir[800];
-    char fixture_exe[900];
-    char fixture_image[900];
+    char fixture_package_dir[900];
+    char fixture_package_json[1100];
+    char fixture_report[1100];
+    char fixture_exe[1100];
+    char fixture_image[1100];
     assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
     snprintf(fixture_root, sizeof(fixture_root), "%s%cpr177_player_state_root",
              cache_dir, nk_platform_path_separator());
-    snprintf(fixture_dir, sizeof(fixture_dir), "%s%cbuild%cdisplay-smoke-v1",
+    snprintf(fixture_package_dir, sizeof(fixture_package_dir), "%s%cpackages%cTEST00006",
              fixture_root, nk_platform_path_separator(), nk_platform_path_separator());
-    snprintf(fixture_exe, sizeof(fixture_exe), "%s%cdisplay-smoke-v1%s",
-             fixture_dir, nk_platform_path_separator(),
-#if defined(_WIN32) || defined(_WIN64)
-             ".exe"
-#else
-             ""
-#endif
-    );
+    /* The synthetic package names display-smoke-v1.exe on every host. */
+    snprintf(fixture_exe, sizeof(fixture_exe), "%s%cdisplay-smoke-v1.exe",
+             fixture_package_dir, nk_platform_path_separator());
     snprintf(fixture_image, sizeof(fixture_image), "%s%cdisplay-smoke-v1_image.bin",
-             fixture_dir, nk_platform_path_separator());
-    assert(nk_platform_mkdir_p(fixture_dir));
-    write_file(fixture_exe);
-    write_file(fixture_image);
+             fixture_package_dir, nk_platform_path_separator());
+    snprintf(fixture_package_json, sizeof(fixture_package_json), "%s%cpackage.json",
+             fixture_package_dir, nk_platform_path_separator());
+    snprintf(fixture_report, sizeof(fixture_report), "%s%cbuild-report.json",
+             fixture_package_dir, nk_platform_path_separator());
+    write_runtime_package_fixture(fixture_root, "TEST00006", "display-smoke-v1", 2,
+                                  "display-smoke-v1.exe", FIXTURE_SHA256);
     player_app_set_runtime_root(fresh, fixture_root);
 
     player_app_populate_sample_games(fresh);
@@ -224,6 +359,8 @@ int main(void) {
     assert(fresh->game_count == before);
     assert(remove(fixture_exe) == 0);
     assert(remove(fixture_image) == 0);
+    assert(remove(fixture_report) == 0);
+    assert(remove(fixture_package_json) == 0);
     free(fresh);
 
     /* 8. A launch started from the player requests a window. */
@@ -384,22 +521,23 @@ int main(void) {
         assert(player_app_focus_count(stops) == 2); /* add + remove */
 
         stops->games[0].is_prepared = true;
-        assert(player_app_focus_count(stops) == 3); /* play + add + remove */
+        assert(player_app_focus_count(stops) == 2); /* no validated package: add + remove */
 
         stops->is_game_running = true;
         assert(player_app_focus_count(stops) == 3); /* stop + add + remove */
 
         /* Overflow adds the two paging stops. */
+        stops->is_game_running = false;
         stops->window_width = 640;
         assert(player_app_visible_library_cards(stops) == 2);
         stops->game_count = 1;
-        assert(player_app_focus_count(stops) == 3);
+        assert(player_app_focus_count(stops) == 2);
         seed_entry(&entry, "FCS00002", "Second");
         stops->games[1] = entry;
         seed_entry(&entry, "FCS00003", "Third");
         stops->games[2] = entry;
         stops->game_count = 3;
-        assert(player_app_focus_count(stops) == 5);
+        assert(player_app_focus_count(stops) == 4);
 
         stops->active_view = VIEW_INSPECTING;
         assert(player_app_focus_count(stops) == 1);
@@ -549,8 +687,11 @@ int main(void) {
                  nk_platform_path_separator());
         const NkTitleEntry *synthetic = nk_title_catalog_find_by_id(
             "synthetic-allegrex-v1");
-        assert(synthetic != NULL && synthetic->game_name != NULL);
+        assert(synthetic != NULL && synthetic->game_name != NULL &&
+               synthetic->primary_disc_id != NULL);
+        const char *synthetic_disc_id = synthetic->primary_disc_id;
         char build_dir[760], runtime_exe[900], runtime_image[900];
+        char package_dir[900], package_json[1100], package_report[1100];
         snprintf(build_dir, sizeof(build_dir), "%s%cbuild%c%s", preflight_root,
                  nk_platform_path_separator(), nk_platform_path_separator(),
                  synthetic->game_name);
@@ -558,10 +699,21 @@ int main(void) {
                  nk_platform_path_separator(), synthetic->game_name);
         snprintf(runtime_image, sizeof(runtime_image), "%s%c%s_image.bin", build_dir,
                  nk_platform_path_separator(), synthetic->game_name);
+        snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s", preflight_root,
+                 nk_platform_path_separator(), nk_platform_path_separator(),
+                 synthetic_disc_id);
+        snprintf(package_json, sizeof(package_json), "%s%cpackage.json", package_dir,
+                 nk_platform_path_separator());
+        snprintf(package_report, sizeof(package_report), "%s%cbuild-report.json", package_dir,
+                 nk_platform_path_separator());
         remove(runtime_exe);
         remove(runtime_image);
+        remove(package_json);
+        remove(package_report);
         remove(font_path);
         player_app_set_runtime_root(wiz, preflight_root);
+        snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
+                 "%s", synthetic_disc_id);
         snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
                  "synthetic-allegrex-v1");
         NkIsoExecutableReport executable_report;
@@ -593,6 +745,12 @@ int main(void) {
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_MISSING);
         write_file(runtime_image);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_MISSING);
+        write_runtime_package_fixture(preflight_root, synthetic_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
         assert(nk_platform_mkdir_p(font_dir));
         write_file(font_path);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -612,6 +770,10 @@ int main(void) {
         assert(check->issue_count == 1 && check->issue_numbers[0] == 295);
 
         wiz->inspecting_game.is_experimental = true;
+        snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
+                 "ULUS99998");
+        snprintf(wiz->inspecting_game.selected_executable,
+                 sizeof(wiz->inspecting_game.selected_executable), "EBOOT.BIN");
         snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
                  "experimental-ulus99998");
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -627,15 +789,78 @@ int main(void) {
         assert(check->issue_count == 2 && check->issue_numbers[0] == 296 &&
                check->issue_numbers[1] == 297);
 
+        /* Native v1 package checks bind the profile executable hash, the
+           player ABI, and a package-contained executable path. */
+        char experimental_package_dir[900], experimental_package_json[1100];
+        char experimental_report[1100], experimental_exe[1100], experimental_image[1100];
+        char experimental_root[900], profile_dir[1000], profile_path[1200];
+        snprintf(experimental_root, sizeof(experimental_root), "%s%cpackages%cULUS99998",
+                 preflight_root, nk_platform_path_separator(), nk_platform_path_separator());
+        snprintf(experimental_package_dir, sizeof(experimental_package_dir), "%s",
+                 experimental_root);
+        snprintf(experimental_package_json, sizeof(experimental_package_json), "%s%cpackage.json",
+                 experimental_package_dir, nk_platform_path_separator());
+        snprintf(experimental_report, sizeof(experimental_report), "%s%cbuild-report.json",
+                 experimental_package_dir, nk_platform_path_separator());
+        snprintf(experimental_exe, sizeof(experimental_exe), "%s%cexperimental-ulus99998.exe",
+                 experimental_package_dir, nk_platform_path_separator());
+        snprintf(experimental_image, sizeof(experimental_image), "%s%cexperimental-ulus99998_image.bin",
+                 experimental_package_dir, nk_platform_path_separator());
+        snprintf(profile_dir, sizeof(profile_dir), "%s%cexperimental%cULUS99998",
+                 preflight_root, nk_platform_path_separator(), nk_platform_path_separator());
+        snprintf(profile_path, sizeof(profile_path), "%s%cprofile.json", profile_dir,
+                 nk_platform_path_separator());
+        write_experimental_profile_fixture(preflight_root, "ULUS99998",
+                                           "experimental-ulus99998", "EBOOT.BIN",
+                                           FIXTURE_SHA256);
+        write_runtime_package_fixture(preflight_root, "ULUS99998",
+                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_OK);
+
+        write_runtime_package_fixture(preflight_root, "ULUS99998",
+                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998.exe",
+                                      "0000000000000000000000000000000000000000000000000000000000000000");
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_STALE);
+
+        write_runtime_package_fixture(preflight_root, "ULUS99998",
+                                      "experimental-ulus99998", 99,
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
+
+        write_runtime_package_fixture(preflight_root, "ULUS99998",
+                                      "experimental-ulus99998", 2,
+                                      "../escape.exe", FIXTURE_SHA256);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
+
+        remove(experimental_package_json);
+        remove(experimental_report);
+        remove(experimental_exe);
+        remove(experimental_image);
+        remove(profile_path);
+        remove(package_json);
+        remove(package_report);
+
         memset(&wiz->games[0], 0, sizeof(wiz->games[0]));
         snprintf(wiz->games[0].disc_id, sizeof(wiz->games[0].disc_id), "ULUS99998");
         snprintf(wiz->games[0].title_id, sizeof(wiz->games[0].title_id),
                  "experimental-ulus99998");
+        snprintf(wiz->games[0].selected_executable,
+                 sizeof(wiz->games[0].selected_executable), "EBOOT.BIN");
         wiz->games[0].is_experimental = true;
         wiz->game_count = 1;
         assert(!player_app_launch_game(wiz, 0));
-        assert(strcmp(wiz->last_error.error_code, "EXPERIMENTAL_RUNTIME_MISSING") == 0);
-        assert(strstr(wiz->last_error.message, "#296/#297") != NULL);
+        assert(strcmp(wiz->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
+        assert(strstr(wiz->last_error.message, "build-package") != NULL);
         player_app_set_view(wiz, VIEW_EXPERIMENTAL_TITLE);
         assert(player_app_focus_count(wiz) == 2);
 

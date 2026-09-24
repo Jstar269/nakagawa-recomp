@@ -3,6 +3,7 @@
 
 #include "nk_launch.h"
 #include "generated/nk_title_catalog.h"
+#include "../rt/recomp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -687,6 +688,23 @@ bool nk_launch_runtime_package_available(const char *root, const char *title_id)
                                 entry->id, image, sizeof(image));
 }
 
+NkRuntimePackageStatus nk_launch_validate_runtime_package(
+    const char *user_data_root,
+    const NkGameEntry *game,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+) {
+    if (!game) {
+        if (reason && reason_size) snprintf(reason, reason_size, "Library entry is missing.");
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+    return nk_title_manifest_validate_aot_package(
+        user_data_root, game->disc_id, game->title_id, game->is_experimental,
+        game->selected_executable, SR_CPUSTATE_ABI_VERSION, out_info,
+        reason, reason_size);
+}
+
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,
     const NkGameEntry *game,
@@ -695,7 +713,12 @@ NkResult nk_launch_prepare_session(
     if (!session || !game) return NK_ERROR_GENERIC;
     memset(session, 0, sizeof(*session));
 
-    const char *root = (repo_or_install_root && *repo_or_install_root) ? repo_or_install_root : ".";
+    char user_data_root[NK_MAX_PATH];
+    const char *root = (repo_or_install_root && *repo_or_install_root) ? repo_or_install_root : NULL;
+    if (!root) {
+        if (nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) root = user_data_root;
+        else root = ".";
+    }
     /* #366: `root` is a directory by contract. A direct file path is not an
        escape hatch in the generic API: handing the launcher an exact legacy
        binary path does not make it a validated runtime for this title, and
@@ -703,8 +726,11 @@ NkResult nk_launch_prepare_session(
        support that path. Assets resolve relative to the root the caller
        named. */
     snprintf(session->working_directory, sizeof(session->working_directory), "%s", root);
+    snprintf(session->user_data_root, sizeof(session->user_data_root), "%s", root);
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
+    snprintf(session->selected_executable, sizeof(session->selected_executable), "%s",
+             game->selected_executable);
     snprintf(session->prepared_root, sizeof(session->prepared_root), "%s", game->prepared_root);
 
     session->config.resolution_scale = 1;
@@ -715,15 +741,46 @@ NkResult nk_launch_prepare_session(
     session->config.diagnostic_mode = false;
     session->config.gui_mode = false;
 
-    /* Resolve the ONE validated catalog entry this session identity names,
-       BEFORE executable discovery (#366). The native launch route uses the
-       same manifest-selected game_name as the manager, bound to the same
-       validated identity: disc_id and title_id must agree, and an identity
-       the catalog does not describe fails closed here -- with the historic
-       unknown-title diagnostic -- rather than after probing paths. */
-    char identity_error[256];
-    const NkTitleEntry *entry = launch_select_entry(game, identity_error,
-                                                    sizeof(identity_error));
+    NkRuntimePackageInfo package_info;
+    char package_error[1024] = "";
+    NkRuntimePackageStatus package_status = nk_launch_validate_runtime_package(
+        root, game, &package_info, package_error, sizeof(package_error));
+    bool package_valid = package_status == NK_RUNTIME_PACKAGE_OK;
+    if (package_valid) {
+        session->package_launch = true;
+        session->experimental_package = game->is_experimental;
+        snprintf(session->working_directory, sizeof(session->working_directory), "%s",
+                 package_info.package_root);
+        snprintf(session->executable_path, sizeof(session->executable_path), "%s",
+                 package_info.executable_path);
+        snprintf(session->image_path, sizeof(session->image_path), "%s",
+                 package_info.image_path);
+    } else if (game->is_experimental) {
+        snprintf(session->last_error, sizeof(session->last_error), "%s",
+                 package_error[0] ? package_error : "Experimental runtime package is not valid.");
+        return package_status == NK_RUNTIME_PACKAGE_MISSING
+            ? NK_ERROR_FILE_NOT_FOUND : NK_ERROR_UNSUPPORTED_TITLE;
+    }
+
+    /* Catalog identities remain tied to the generated catalog. Experimental
+       entries use their validated private profile's generic manifest. */
+    char identity_error[512] = "";
+    NkTitleEntry experimental_entry;
+    const NkTitleEntry *entry = NULL;
+    if (game->is_experimental) {
+        char profile_hash[65];
+        if (!nk_title_manifest_read_experimental_profile(
+                root, game->disc_id, game->title_id, game->selected_executable,
+                &experimental_entry, profile_hash, identity_error,
+                sizeof(identity_error))) {
+            snprintf(session->last_error, sizeof(session->last_error), "%s",
+                     identity_error[0] ? identity_error : "Experimental profile is invalid.");
+            return NK_ERROR_UNSUPPORTED_TITLE;
+        }
+        entry = &experimental_entry;
+    } else {
+        entry = launch_select_entry(game, identity_error, sizeof(identity_error));
+    }
     if (!entry) {
         snprintf(session->last_error, sizeof(session->last_error), "%s",
                  identity_error);
@@ -731,11 +788,9 @@ NkResult nk_launch_prepare_session(
     }
     const char *game_name = entry->game_name;
 
-    /* 1. Resolve executable: the selected title's own build only. Candidates
-       come from the shared generated contract; a stale build of another
-       title in this workspace is irrelevant, and a missing runtime is an
-       honest error rather than a wrong-title rescue. */
-    if (!find_candidate_executable(root, game_name, entry->id,
+    /* Catalogued developer layouts remain available to direct launch API
+       callers. The player UI requires the package validator before Play. */
+    if (!package_valid && !find_candidate_executable(root, game_name, entry->id,
                                    session->executable_path,
                                    sizeof(session->executable_path))) {
         snprintf(session->last_error, sizeof(session->last_error),
@@ -743,11 +798,7 @@ NkResult nk_launch_prepare_session(
                  entry->id, root);
         return NK_ERROR_FILE_NOT_FOUND;
     }
-
-    /* 2. Resolve the selected title's own image.bin. A session without one is
-       not a launch plan: spawning would only reach src/rt/driver.c's usage
-       exit, so this fails closed exactly like the Python planner. */
-    if (!find_candidate_image(session->working_directory,
+    if (!package_valid && !find_candidate_image(session->working_directory,
                               session->executable_path, game_name, entry->id,
                               session->image_path,
                               sizeof(session->image_path))) {
@@ -796,6 +847,8 @@ NkResult nk_launch_prepare_session(
 
     /* 4. Resolve data root */
     char sep = nk_platform_path_separator();
+    const char *asset_root = session->package_launch
+        ? session->user_data_root : session->working_directory;
     if (game->assets_staged && game->prepared_root[0]) {
         /* Native staging deliberately writes the decoded XB tree below
          * prepared_root/xbdata. Prefer a manifest-relative root when it is
@@ -819,7 +872,7 @@ NkResult nk_launch_prepare_session(
     }
     if (session->dataroot_path[0] == '\0' && entry && entry->data_root) {
         char cand_data[NK_MAX_PATH * 2];
-        int w = snprintf(cand_data, sizeof(cand_data), "%s%c%s", session->working_directory, sep, entry->data_root);
+        int w = snprintf(cand_data, sizeof(cand_data), "%s%c%s", asset_root, sep, entry->data_root);
         if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
             /* Catalog data_root values are relative to the repository/install
                root, but SR_DATAROOT is deliberately fail-closed when relative.
@@ -850,9 +903,14 @@ NkResult nk_launch_prepare_session(
 
     /* 5. Resolve font directory */
     char cand_font[NK_MAX_PATH * 2];
-    int fw = snprintf(cand_font, sizeof(cand_font), "%s%cfont", session->working_directory, sep);
+    int fw = snprintf(cand_font, sizeof(cand_font), "%s%cfont", asset_root, sep);
     if (fw > 0 && (size_t)fw < sizeof(cand_font) && nk_platform_dir_exists(cand_font)) {
-        safe_copy_path(session->font_dir, sizeof(session->font_dir), cand_font);
+        char absolute_font[NK_MAX_PATH];
+        if (nk_platform_absolute_path(cand_font, absolute_font, sizeof(absolute_font))) {
+            safe_copy_path(session->font_dir, sizeof(session->font_dir), absolute_font);
+        } else {
+            safe_copy_path(session->font_dir, sizeof(session->font_dir), cand_font);
+        }
     }
 
     /* 5b. Resolve a writable Memory Stick root.
@@ -868,7 +926,7 @@ NkResult nk_launch_prepare_session(
      * per-disc subdirectory, which is writable by construction and keeps
      * titles apart. */
     session->memstick_root[0] = 0;
-    if (game->assets_staged && game->prepared_root[0]) {
+    if (!session->package_launch && game->assets_staged && game->prepared_root[0]) {
         char cand_ms[NK_MAX_PATH * 2];
         if (launch_join_path(game->prepared_root, "memstick",
                              cand_ms, sizeof(cand_ms)) &&
@@ -881,7 +939,8 @@ NkResult nk_launch_prepare_session(
             }
         }
     }
-    if (session->memstick_root[0] == 0 && entry && entry->memory_stick_root && *entry->memory_stick_root) {
+    if (!session->package_launch && session->memstick_root[0] == 0 &&
+        entry && entry->memory_stick_root && *entry->memory_stick_root) {
         char cand_ms[NK_MAX_PATH * 2];
         int w = snprintf(cand_ms, sizeof(cand_ms), "%s%c%s",
                          session->working_directory, sep, entry->memory_stick_root);
@@ -942,12 +1001,32 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         }
     }
 
-    /* Identity binding immediately before spawn (#366): the session must
-       still name a catalog-resolved title, and the resolved executable must
-       BE that title's own identity-shaped build. A runtime produced for
-       title A must not launch as title B merely because its path exists, and
-       a session whose executable or identity was swapped after preparation
-       is refused here rather than spawned. */
+    /* Revalidate the v1 package immediately before spawn so a replaced
+       manifest, executable, image, or title identity fails closed. */
+    if (session->package_launch) {
+        NkGameEntry identity;
+        NkRuntimePackageInfo current;
+        char gate_error[1024] = "";
+        memset(&identity, 0, sizeof(identity));
+        snprintf(identity.disc_id, sizeof(identity.disc_id), "%s", session->disc_id);
+        snprintf(identity.title_id, sizeof(identity.title_id), "%s", session->title_id);
+        snprintf(identity.selected_executable, sizeof(identity.selected_executable), "%s",
+                 session->selected_executable);
+        identity.is_experimental = session->experimental_package;
+        NkRuntimePackageStatus status = nk_launch_validate_runtime_package(
+            session->user_data_root, &identity, &current, gate_error,
+            sizeof(gate_error));
+        if (status != NK_RUNTIME_PACKAGE_OK ||
+            strcmp(current.package_root, session->working_directory) != 0 ||
+            strcmp(current.executable_path, session->executable_path) != 0 ||
+            strcmp(current.image_path, session->image_path) != 0) {
+            snprintf(session->last_error, sizeof(session->last_error), "%s",
+                     gate_error[0] ? gate_error : "Runtime package changed after preparation.");
+            return NK_ERROR_INVALID_EXECUTABLE;
+        }
+    } else {
+    /* Legacy direct API identity binding (#366): the session must still name a
+       catalog-resolved title and the executable must retain that identity. */
     {
         NkGameEntry identity;
         char gate_error[256];
@@ -971,6 +1050,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
                      bound_entry->id, session->executable_path);
             return NK_ERROR_INVALID_EXECUTABLE;
         }
+    }
     }
 
     /* Build environment variables via runtime provider */

@@ -54,6 +54,27 @@ void player_app_set_runtime_root(PlayerApp *app, const char *root) {
     snprintf(app->runtime_root, sizeof(app->runtime_root), "%s", root);
 }
 
+NkRuntimePackageStatus player_app_validate_runtime_package(
+    const PlayerApp *app,
+    const GameRecord *game,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+) {
+    char default_root[NK_MAX_PATH];
+    const char *root = app && app->runtime_root[0] ? app->runtime_root : NULL;
+    if (!root) {
+        if (!nk_platform_get_app_data_dir(default_root, sizeof(default_root))) {
+            if (reason && reason_size) snprintf(reason, reason_size,
+                "Per-user data directory is unavailable; package discovery cannot run.");
+            return NK_RUNTIME_PACKAGE_MISSING;
+        }
+        root = default_root;
+    }
+    return nk_launch_validate_runtime_package(root, game, out_info, reason,
+                                              reason_size);
+}
+
 void player_app_sync_library(PlayerApp *app) {
     if (!app) return;
     app->game_count = 0;
@@ -126,11 +147,10 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                bool game_has_package = game && game->is_experimental &&
-                    nk_launch_runtime_package_available(player_runtime_root(app),
-                                                        game->title_id);
-                if (game && ((game->is_experimental ? game_has_package : game->is_prepared) ||
-                             app->is_game_running)) count++;
+                bool game_has_package = game &&
+                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) ==
+                        NK_RUNTIME_PACKAGE_OK;
+                if (game && (game_has_package || app->is_game_running)) count++;
                 count += 2; /* add + remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
@@ -366,7 +386,8 @@ void player_app_populate_sample_games(PlayerApp *app) {
     snprintf(disp.prepared_root, sizeof(disp.prepared_root), "fixtures/display_smoke");
     snprintf(disp.title_id, sizeof(disp.title_id), "display-smoke-v1");
     disp.iso_size_bytes = 0ULL;
-    disp.is_prepared = nk_launch_runtime_package_available(player_runtime_root(app), disp.title_id);
+    disp.is_prepared = player_app_validate_runtime_package(app, &disp, NULL, NULL, 0) ==
+                       NK_RUNTIME_PACKAGE_OK;
     disp.status = disp.is_prepared ? NK_STATUS_PREPARED : NK_STATUS_IDENTIFIED;
     snprintf(disp.last_played, sizeof(disp.last_played), "Never");
 
@@ -378,11 +399,17 @@ void player_app_populate_sample_games(PlayerApp *app) {
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
+    /* A launch initiated by the player always requests a GUI child, even if
+       package preflight rejects it before launch-session preparation. */
+    app->launch_session.config.gui_mode = true;
 
-    if (game->is_experimental &&
-        !nk_launch_runtime_package_available(player_runtime_root(app), game->title_id)) {
-        player_app_set_error(app, "EXPERIMENTAL_RUNTIME_MISSING", "Runtime Package Missing",
-                             "Experimental title runtime package is missing; generation is in the works (#296/#297).",
+    char package_error[2048] = "";
+    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+        app, game, NULL, package_error, sizeof(package_error));
+    if (package_status != NK_RUNTIME_PACKAGE_OK) {
+        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
+                             package_error[0] ? package_error :
+                                 "Runtime package is missing or incompatible (#297).",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
@@ -390,10 +417,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
     NkResult res = nk_launch_prepare_session(&app->launch_session, game, player_runtime_root(app));
-    /* nk_launch defaults gui_mode to false for headless harnesses. A launch
-       initiated by the player is the interactive path, so PLAY NOW must put
-       --gui on the child argv. Set it even on a failed prepare so diagnostics
-       and tests describe the intended path consistently. */
+    /* nk_launch defaults gui_mode to false for headless harnesses. */
     app->launch_session.config.gui_mode = true;
     if (res != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
@@ -708,7 +732,13 @@ void player_app_build_compatibility_preflight(
     if (!app) return;
     PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
     memset(preflight, 0, sizeof(*preflight));
-    const char *runtime_root = app->runtime_root[0] ? app->runtime_root : ".";
+    char default_runtime_root[NK_MAX_PATH];
+    const char *runtime_root = app->runtime_root[0] ? app->runtime_root : NULL;
+    if (!runtime_root && nk_platform_get_app_data_dir(default_runtime_root,
+                                                      sizeof(default_runtime_root))) {
+        runtime_root = default_runtime_root;
+    }
+    if (!runtime_root) runtime_root = ".";
 
     if (app->inspecting_game.is_experimental) {
         static const unsigned int issues[] = { 285, 308 };
@@ -764,30 +794,25 @@ void player_app_build_compatibility_preflight(
                              issues, 1);
     }
 
-    if (app->inspecting_game.is_experimental &&
-        nk_launch_runtime_package_available(runtime_root,
-                                            app->inspecting_game.title_id)) {
-        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_OK,
-                             "Matching generated experimental runtime package is present.", NULL, 0);
-    } else if (app->inspecting_game.is_experimental) {
-        static const unsigned int issues[] = { 296, 297 };
-        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_MISSING,
-                             "Experimental title runtime package is missing; generation is in the works (#296/#297).",
-                             issues, 2);
-    } else if (!app->inspecting_game.title_id[0]) {
+    if (!app->inspecting_game.title_id[0]) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_UNSUPPORTED,
                              "Title profile missing; generic title support is in the works (#308).",
                              issues, 1);
-    } else if (nk_launch_runtime_package_available(runtime_root,
-                                                   app->inspecting_game.title_id)) {
-        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_OK,
-                             "Generated runtime executable and image are present.", NULL, 0);
     } else {
+        char package_reason[2048] = "";
+        NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+            app, &app->inspecting_game, NULL, package_reason,
+            sizeof(package_reason));
         static const unsigned int issues[] = { 296, 297 };
-        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_MISSING,
-                             "Runtime package missing; generation is in the works (#296/#297).",
-                             issues, 2);
+        PlayerPreflightStatus status = PREFLIGHT_MISSING;
+        if (package_status == NK_RUNTIME_PACKAGE_OK) status = PREFLIGHT_OK;
+        else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) status = PREFLIGHT_INCOMPATIBLE;
+        else if (package_status == NK_RUNTIME_PACKAGE_STALE) status = PREFLIGHT_STALE;
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", status,
+            package_reason[0] ? package_reason : "Runtime package validation did not complete.",
+            status == PREFLIGHT_OK ? NULL : issues,
+            status == PREFLIGHT_OK ? 0 : 2);
     }
 
     char font_path[NK_MAX_PATH * 2];
