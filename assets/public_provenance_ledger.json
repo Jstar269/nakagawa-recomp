@@ -302,7 +302,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "49fde70c43e5533f993b7af966064110e8f198828e72331692c289a6876bc1e6"
+      "sha256": "c9ff0ecbf652dcd7a3df0c49058b624b8c4aa0e28c2e8d5fa909b50c978ae2de"
     },
     {
       "path": "REVIEW.md",
@@ -426,7 +426,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ee1f979d12a5cfacbd8f0d44a128eba6dfba69759b9f2be721187633feadd079"
+      "sha256": "96db0913772aae67c8ca0664467c9fadff81f2cd60132f9dccd96f1c543d2da0"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -447,7 +447,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fb695c4f4088e8507cbb9e3b6b09e1fd963289d2d32ad46bf6d5dfaa4d8b38ef"
+      "sha256": "4ad45669c8b1def79ac5556510c71c56889e868bf54825c98c4edc244ae9a8b8"
     },
     {
       "path": "assets/title_manifest.schema.json",
@@ -1038,7 +1038,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b4b5df65dc68d70c9a9da8f1f568b59a1575fbb94bf7d4b647ccab36e9c7b2b7"
+      "sha256": "aeb77207c5437ef74628af0e5ab0f00c807a61b4b0d6256990bd95e6c4108d07"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -8174,18 +8174,6 @@
       "sha256": "406509033cc14e7352392a668c075a43a7afc4a9fd90f17cb55cbc819b2910b0"
     },
     {
-      "path": "tools/record_toolchain.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "record-toolchain-367",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "e66d214dc4052b3f68f15de2c70b430220bfa121a668539190691361491305ab"
-    },
-    {
       "path": "tools/requirements-lock.txt",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -9368,7 +9356,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "02d03baea62b4454c645d7e6cbdfc35580cfbd27c2d65b1bdef761f0492f12e5"
+      "sha256": "c9547129777b61c7add374b90aaf7582d591ea90cc68f05c01a6f152302623c7"
     },
     {
       "path": "tools/test_savedata_security.py",
@@ -9395,7 +9383,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "490326545b9ce8ebd7b03a03b913dbca50f7b8de691ec5d9ea66812b39c13e99"
+      "sha256": "b61707493e74d18942819a6fbbe8413ceaa81bab89af85741503fcc576ab1cd9"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9859,7 +9847,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ccdac3d793b9f5df5b82223f4c8898724bb0a4408aa669f4ffee14534aa64259"
+      "sha256": "6e8cd00d6455f06b035be3ce83983d4e945c1a95a1646e2a955941dd27438391"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
