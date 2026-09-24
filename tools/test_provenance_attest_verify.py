@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import provenance_attest_verify as verifier  # noqa: E402
 import provenance_ledger  # noqa: E402
+import provenance_refresh  # noqa: E402
 import public_export  # noqa: E402
 from publication_policy import load_policy  # noqa: E402
 
@@ -2256,6 +2257,87 @@ def _canonical(document: dict) -> bytes:
 
 
 class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
+    def test_local_ledger_generation_matches_ephemeral_with_refresh_baseline(self) -> None:
+        baseline = json.loads(self.baseline().read_text(encoding="utf-8"))
+        for entry in baseline["entries"]:
+            if entry["path"] == "docs/notes.md":
+                entry["classification"] = "reviewed_documentation"
+                entry["evidence"] = {"source": "public documentation review"}
+        baseline["refresh"] = {
+            "workflow": "refresh-reviewed",
+            "trusted_tree": "1" * 40,
+            "candidate_tree": "2" * 40,
+            "refreshed_paths": ["docs/notes.md"],
+        }
+        self.repo.write(verifier.LEDGER_PATH, _canonical(baseline))
+        self.base = self.repo.commit("base with refresh metadata")
+        self.repo.branch("local-refresh-parity", self.base)
+        self.repo.write("docs/notes.md", "# changed synthetic notes\n")
+        candidate = self.repo.commit("candidate with documentation edit")
+        candidate_tree = verifier._rev_tree(self.repo.root, candidate)
+
+        local = provenance_refresh.generate_controls(
+            repo=self.repo.root,
+            base_rev=self.base,
+            candidate_tree=candidate_tree,
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / "local-generation",
+        )
+        self.assertEqual(local.generated_ledger["refresh"]["workflow"], "refresh-reviewed")
+        self.assertEqual(local.generated_ledger["refresh"]["trusted_tree"],
+                         verifier._rev_tree(self.repo.root, self.base))
+        self.assertEqual(local.generated_ledger["refresh"]["candidate_tree"], candidate_tree)
+        self.assertEqual(local.generated_ledger["refresh"]["refreshed_paths"], ["docs/notes.md"])
+        self.assertNotIn("candidate_tree", local.generated_export)
+        self.repo.write(verifier.LEDGER_PATH, local.generated_ledger_bytes)
+        self.repo.write(verifier.EXPORT_PATH, local.generated_export_bytes)
+        refreshed_head = self.repo.commit("local refresh controls")
+
+        hosted = self.run_ephemeral(refreshed_head)
+        hosted_ledger = Path(hosted["generated_outputs"]["ledger_path"]).read_bytes()
+        hosted_export = Path(hosted["generated_outputs"]["export_path"]).read_bytes()
+        self.assertEqual(json.loads(hosted_ledger)["refresh"], local.generated_ledger["refresh"])
+        self.assertEqual(local.generated_ledger_bytes, hosted_ledger)
+        self.assertEqual(local.generated_export_bytes, hosted_export)
+        self.assertEqual(hosted["verdict"], "pass", hosted["findings"])
+
+        fixed_point = provenance_refresh.generate_controls(
+            repo=self.repo.root,
+            base_rev=self.base,
+            candidate_tree=verifier._rev_tree(self.repo.root, refreshed_head),
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / "fixed-point-generation",
+        )
+        self.assertEqual(fixed_point.generated_ledger_bytes, local.generated_ledger_bytes)
+        self.assertEqual(fixed_point.generated_export_bytes, local.generated_export_bytes)
+
+    def test_local_refresh_reports_missing_trusted_authority(self) -> None:
+        with self.assertRaises(verifier.VerifyError) as ctx:
+            provenance_refresh.generate_controls(
+                repo=self.repo.root,
+                base_rev=self.base,
+                candidate_tree=verifier._rev_tree(self.repo.root, self.base),
+                trusted_ledger=self.outside / "missing-authority.json",
+                workdir=self.outside / "missing-authority-generation",
+            )
+        self.assertEqual(ctx.exception.code, "TRUSTED_INPUT_MISSING")
+
+    def test_local_refresh_requires_authority_for_a_publication_policy_delta(self) -> None:
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["exclude_paths"] = sorted(set(policy["exclude_paths"]) | {"new-exclusion.txt"})
+        self.repo.write(verifier.POLICY_PATH, _canonical(policy))
+        candidate = self.repo.commit("candidate with synthetic policy delta")
+        with self.assertRaises(verifier.VerifyError) as ctx:
+            provenance_refresh.generate_controls(
+                repo=self.repo.root,
+                base_rev=self.base,
+                candidate_tree=verifier._rev_tree(self.repo.root, candidate),
+                trusted_ledger=self.trusted_ledger,
+                workdir=self.outside / "policy-delta-generation",
+            )
+        self.assertEqual(ctx.exception.code, "POLICY_DELTA_AUTHORITY_REQUIRED")
+
     def _commit_canonical_document_refresh(self) -> str:
         entries = json.loads(self.baseline().read_text(encoding="utf-8"))["entries"]
         for entry in entries:

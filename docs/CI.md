@@ -100,9 +100,24 @@ mingw32-make --no-print-directory check
 the native host-core tests, and a fast Python subset. It does not replace
 `make readiness`: readiness additionally verifies the exact candidate against
 the external detailed ledger and therefore remains `BLOCKED` when
-`NK_TRUSTED_LEDGER` is unavailable. `make provenance-refresh` is the
-ordering-safe wrapper for regenerating the tracked public controls; it also
-stages the worktree because the ledger generator reads the Git index.
+`NK_TRUSTED_LEDGER` is unavailable. `make provenance-refresh` is the single
+local command for regenerating the tracked public controls. It calls the same
+`generate_ephemeral_controls()` implementation as the hosted provenance
+attestation, reads the trusted public ledger from the exact base commit, and
+requires the external detailed ledger through `NK_TRUSTED_LEDGER`. Stage the
+intended candidate changes first. The target stages the generated controls and
+the profile when `--apply-policy` is requested; it does not stage the rest of
+the worktree. It writes a refresh audit block for
+the changed existing public paths and computes the export from those generated
+ledger bytes in the same invocation, so a second pass is not needed.
+
+The base defaults to `merge-base(HEAD, origin/main)`. When the pull request's
+exact base differs, set `PROVENANCE_BASE_SHA` to its full 40-character commit
+SHA before running `mingw32-make provenance-refresh`. A missing detailed
+authority or base ledger is a named failure; the command does not construct
+either trusted input. A changed publication profile also requires both
+`PROVENANCE_TRUSTED_CANDIDATE_POLICY` and
+`PROVENANCE_POLICY_DELTA_AUTHORITY`, each naming an external reviewed input.
 
 Readiness used to be assembled ad hoc and was repeatedly wrong: a locally green
 candidate failed the hosted publication audit, and the repaired candidate then
