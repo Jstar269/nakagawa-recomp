@@ -1251,8 +1251,13 @@ COSIM_GENERATOR  := fixtures/cosim/generate.py
 COSIM_HARNESS    := fixtures/cosim/cosim_selftest.c
 COSIM_BASE_ADDR  := 0x08900000
 # Overridable so the mutation campaign can build the harness against a mutated
-# copy of the interpreter without touching the tree.
+# copy of the interpreter without touching the tree. A pre-included mutated
+# fp_convert.h wins over recomp.h's same-directory include in the final harness
+# and direct production-helper translation units.
 COSIM_INTERP_SRC ?= src/rt/guest_interp.c
+COSIM_FP_CONVERT_PRELUDE ?=
+COSIM_FP_CONVERT_PRELUDE_FLAG = $(if $(strip $(COSIM_FP_CONVERT_PRELUDE)),-include "$(COSIM_FP_CONVERT_PRELUDE)",)
+COSIM_FPU_REFERENCE_SRC ?= fixtures/cosim/fpu_reference.c
 
 # The loader and codegen rules are named directly rather than through `pipeline`.
 # This guest deliberately imports nothing, and tools/imports.py fails closed on an
@@ -1275,7 +1280,9 @@ cosim-selftest:
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
-		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC)
+		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC) \
+		COSIM_FP_CONVERT_PRELUDE=$(COSIM_FP_CONVERT_PRELUDE) \
+		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC)
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.
@@ -1284,17 +1291,17 @@ cosim-selftest:
 # deliberate -- this gate should stay runnable anywhere the toolchain is,
 # not inherit the graphics stack's environment requirements.
 cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
-	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE \
+	$(CC) $(CFLAGS) $(COSIM_FP_CONVERT_PRELUDE_FLAG) -DSR_INSTRUCTION_TRACE \
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
-		$(COSIM_HARNESS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(COSIM_INTERP_SRC) src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
 # Prove the comparator is load-bearing: each mutant is a semantic change to the
-# interpreter that must make the gate FAIL. A mutant that only breaks the build
-# is not a kill and the driver rejects it.
+# interpreter, FPU helper or generator that must make the gate FAIL. A mutant
+# that only breaks the build is not a kill and the driver rejects it.
 cosim-mutants:
 	$(PYTHON) fixtures/cosim/mutate.py --build-dir $(COSIM_DIR)
 

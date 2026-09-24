@@ -314,6 +314,15 @@ static inline float sr_fpu_sub_s(float a, float b, uint32_t fcr31) {
 static inline float sr_fpu_mul_s(float a, float b, uint32_t fcr31) {
     volatile float va = a;
     volatile float vb = b;
+    const uint32_t a_mag = sr_float_bits(va) & 0x7fffffffu;
+    const uint32_t b_mag = sr_float_bits(vb) & 0x7fffffffu;
+    if ((a_mag == 0x7f800000u && b_mag == 0u) ||
+        (b_mag == 0x7f800000u && a_mag == 0u)) {
+        const uint32_t canonical_qnan = 0x7fc00000u;
+        float result;
+        memcpy(&result, &canonical_qnan, sizeof result);
+        return result;
+    }
     const uint32_t saved = sr_fpu_env_save();
     sr_fpu_env_apply_guest(fcr31);
     sr_fpu_scalar_barrier();
@@ -351,6 +360,30 @@ static inline float sr_fpu_cvt_s_w(int32_t value, uint32_t fcr31) {
     sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
     return vr;
+}
+
+/* MIPS32 C.cond.fmt needs raw-word ordering: a host comparison can apply DAZ to
+ * a denormal before the predicate sees it. The reference lane is independent of
+ * this helper, so a mutation of the unordered bit or predicate table is visible. */
+static inline unsigned sr_fpu_condition_s(unsigned condition, uint32_t a_bits,
+                                          uint32_t b_bits) {
+    const unsigned a_sign = a_bits >> 31;
+    const unsigned b_sign = b_bits >> 31;
+    const unsigned a_mag = a_bits & 0x7fffffffu;
+    const unsigned b_mag = b_bits & 0x7fffffffu;
+    const unsigned unordered = ((a_mag & 0x7f800000u) == 0x7f800000u &&
+                                (a_mag & 0x007fffffu) != 0u) ||
+                               ((b_mag & 0x7f800000u) == 0x7f800000u &&
+                                (b_mag & 0x007fffffu) != 0u);
+    const unsigned equal = !unordered && a_mag == b_mag &&
+        (a_mag == 0u || a_sign == b_sign);
+    const unsigned less = !unordered &&
+        !((a_mag == 0u) && (b_mag == 0u)) &&
+        (a_sign != b_sign ? a_sign != 0u :
+         (a_sign != 0u ? a_mag > b_mag : a_mag < b_mag));
+    return (unordered && (condition & 1u)) ||
+           (equal && (condition & 2u)) ||
+           (less && (condition & 4u));
 }
 
 #ifdef __cplusplus
