@@ -7674,7 +7674,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12ae1df2e1d0be9ef76f65f20f14ef3820e51607ce28a0a6d666644d3ea5a005"
+      "sha256": "0abf3ddd5ba5327471ddccc4d7bea2ed87290a79f4ae18b9f682552d7334976f"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -9845,15 +9845,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "6ae67045d3f58d5eca2dfad7815c0400f90771ae",
-    "candidate_tree": "03058632b13c46450a952dcaa531d888d0925eea",
+    "trusted_tree": "72efda43a024fe31ddb618949a3507fa3c548608",
+    "candidate_tree": "f2381aa5ea0921823a12a0c23ba16986d2653571",
     "refreshed_paths": [
-      "Makefile",
-      "docs/CI.md",
-      "docs/PUBLICATION_READINESS.md",
-      "tools/provenance_attest_verify.py",
-      "tools/provenance_refresh.py",
-      "tools/test_provenance_attest_verify.py"
+      "fixtures/psp_oracle/probe.c",
+      "tools/test_psp_oracle.py"
     ]
   }
 }
