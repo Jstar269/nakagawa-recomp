@@ -388,7 +388,7 @@ bool nk_platform_spawn_process(
     /* A NULL block would make CreateProcessW inherit the parent environment. */
     WCHAR *wenv_block = build_controlled_unicode_environment(envp);
     if (!wenv_block) return false;
-    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT;
+    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -417,8 +417,30 @@ bool nk_platform_spawn_process(
         return false;
     }
 
+    HANDLE hJob = CreateJobObjectW(NULL, NULL);
+    if (!hJob) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return false;
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli;
+    memset(&jeli, 0, sizeof(jeli));
+    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli)) ||
+        !AssignProcessToJobObject(hJob, pi.hProcess)) {
+        CloseHandle(hJob);
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return false;
+    }
+
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     out_process->native_handle = (void *)pi.hProcess;
+    out_process->job_handle = (void *)hJob;
     out_process->process_id = (int)pi.dwProcessId;
     out_process->is_active = true;
     return true;
@@ -458,13 +480,22 @@ bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len)
 }
 
 void nk_platform_terminate_process(NkProcessHandle *process) {
-    if (!process || !process->native_handle) return;
-    TerminateProcess((HANDLE)process->native_handle, 1);
+    if (!process) return;
+    if (process->job_handle) {
+        TerminateJobObject((HANDLE)process->job_handle, 1);
+    }
+    if (process->native_handle) {
+        TerminateProcess((HANDLE)process->native_handle, 1);
+    }
     process->is_active = false;
 }
 
 void nk_platform_close_process(NkProcessHandle *process) {
     if (!process) return;
+    if (process->job_handle) {
+        CloseHandle((HANDLE)process->job_handle);
+        process->job_handle = NULL;
+    }
     if (process->native_handle) {
         CloseHandle((HANDLE)process->native_handle);
         process->native_handle = NULL;

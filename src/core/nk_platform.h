@@ -58,6 +58,7 @@ bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len)
 /* Process handle abstraction */
 typedef struct {
     void *native_handle;
+    void *job_handle;
     int process_id;
     bool is_active;
     /* A POSIX child can only be reaped once. nk_platform_is_process_running
