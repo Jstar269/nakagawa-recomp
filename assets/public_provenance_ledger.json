@@ -3789,7 +3789,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9c12834a23128581a1fec557de59094c1ad234ded578bcab176bf4720474781"
+      "sha256": "7b3b0ffb330fc30eed304f5b0c5116390d93940c09d8027a19cb8bef1e44c2f4"
     },
     {
       "path": "src/player/player_state.h",
@@ -6697,7 +6697,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e589bb2984ca32e0d2af1de443055a8bd6f3741625222cefc2855d2969075b3b"
+      "sha256": "71232c09de26b30d327c6836facb5753c6995c1937efbe4bb3fb4a801bc56c4c"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -7424,7 +7424,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36b4221b6df68074f43a2e0e5d5d1f709f891a1b988e416927d6dfacee03e5cd"
+      "sha256": "a415acd6a48cd9434ce91438a046ade7a8eb0273619336fe6e98245f5f93ead1"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7448,7 +7448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49a55152827d35652774e375f4f67b4b77570bfd6c53d60b2b34c1b4c7648661"
+      "sha256": "2854e6c94229d7cf4216b095dc2900655359a04e1d1b0077f0936cdb7951dcdb"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -8762,7 +8762,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a822dc5840ad769832fd998038b6ad3efa9aa5103cd6ef2827f01604b604f280"
+      "sha256": "aedd1ad21df86f02fc3b67561b728b916194c029fa4981a467e1b49668571216"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -9845,12 +9845,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "004860bd507bf7dd7f3727e129c0407f5b6777c7",
-    "candidate_tree": "941065439c1031741110adb03d6c77839c58997c",
+    "trusted_tree": "3c8fa4eea9a3e71990e3c913e54df9ba14941c75",
+    "candidate_tree": "141bacce8d222fc1a57a5409900ef5869ad166bd",
     "refreshed_paths": [
-      "docs/LLE_FIDELITY_ARCHITECTURE.md",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "src/player/player_state.c",
+      "tests/native/test_player_state.c",
+      "tools/nk_cli.py",
+      "tools/nk_core/iso_inspect.py",
+      "tools/test_iso_parity.py"
     ]
   }
 }
