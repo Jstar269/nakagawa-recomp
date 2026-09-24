@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
-#requires -Version 7.6
+#requires -Version 7.4
 #
 # copy_build_assets.ps1 — post-link asset copy for the `compile` Makefile target.
 #
@@ -18,22 +18,31 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$BuildDir,
-    [switch]$ExcludeOptionalFonts
+    [switch]$ExcludeOptionalFonts,
+    [string]$Sdl3DllPath = ''
 )
 
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
 
-if (Test-Path 'SDL3.dll') {
-    Copy-Item 'SDL3.dll' $BuildDir -Force
-} elseif (Test-Path '../SDL3.dll') {
-    Copy-Item '../SDL3.dll' $BuildDir -Force
-} else {
-    $gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
-    if ($gccCmd) {
-        $binDir = Split-Path $gccCmd.Source
-        $toolchainSdl = Join-Path $binDir 'SDL3.dll'
-        if (Test-Path $toolchainSdl) {
-            Copy-Item $toolchainSdl $BuildDir -Force
+$copiedSdl = $false
+if ($Sdl3DllPath -and (Test-Path $Sdl3DllPath)) {
+    Copy-Item $Sdl3DllPath $BuildDir -Force
+    $copiedSdl = $true
+}
+
+if (-not $copiedSdl) {
+    if (Test-Path 'SDL3.dll') {
+        Copy-Item 'SDL3.dll' $BuildDir -Force
+    } elseif (Test-Path '../SDL3.dll') {
+        Copy-Item '../SDL3.dll' $BuildDir -Force
+    } else {
+        $gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
+        if ($gccCmd) {
+            $binDir = Split-Path $gccCmd.Source
+            $toolchainSdl = Join-Path $binDir 'SDL3.dll'
+            if (Test-Path $toolchainSdl) {
+                Copy-Item $toolchainSdl $BuildDir -Force
+            }
         }
     }
 }

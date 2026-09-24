@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import title_manifest
+import test_public_title_isolation
 
 
 #: The host platform backend, chosen the same way the Makefile chooses it.
@@ -82,9 +83,13 @@ class TitleManifestParityTests(unittest.TestCase):
             return False, f"REJECT: {exc}"
 
     def test_public_manifests_parity(self):
-        """All public manifests in assets/titles/ must be accepted by both parsers."""
-        titles_dir = ROOT / "assets" / "titles"
-        manifest_files = list(titles_dir.glob("*.json"))
+        """All *tracked* public manifests must be accepted by both parsers.
+
+        Enumerating the directory instead of the git index would let a
+        developer's ignored private manifest (hst-ucus98701.json) enter the
+        parity sweep and change this test's result (#335).
+        """
+        manifest_files = test_public_title_isolation.tracked_titles()
         self.assertGreater(len(manifest_files), 0, "Expected at least 1 public manifest")
 
         for mf in manifest_files:

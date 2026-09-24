@@ -202,7 +202,6 @@ class GeneratedFpConversionTests(unittest.TestCase):
             elf.write_bytes(_synthetic_elf(_fixture_words()))
 
             env = dict(os.environ)
-            env["HST_EXTRA_SPANS"] = ""
             result = subprocess.run(
                 [sys.executable, str(CODEGEN), str(elf), str(generated), "--profile=hst"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
@@ -353,7 +352,6 @@ def _run_generated_fixture(test, name, words, harness_main, codegen_path=None):
         elf.write_bytes(_synthetic_elf(words))
 
         env = dict(os.environ)
-        env["HST_EXTRA_SPANS"] = ""
         env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
         result = subprocess.run(
             [sys.executable, str(codegen_path), str(elf), str(generated), "--profile=hst"],

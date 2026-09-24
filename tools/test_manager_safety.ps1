@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
-#requires -Version 7.6
+#requires -Version 7.4
 
 <#
 .SYNOPSIS
@@ -22,7 +22,6 @@
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "nk_safety.ps1")
-. (Join-Path $PSScriptRoot "hst_run_support.ps1")
 
 $script:Failures = 0
 function Test-Case {
@@ -49,7 +48,7 @@ function Assert-Throws {
     }
 }
 
-$tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("hst_safety_test_" + [guid]::NewGuid().ToString("N"))
+$tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("nk_safety_test_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
 $onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [System.Runtime.InteropServices.OSPlatform]::Windows)
@@ -162,10 +161,10 @@ try {
         Assert-True ($null -ne $r) "capture failed"
         Assert-True ($r.Action -eq "captured") "expected capture, got $($r.Action)"
         Assert-True ((Get-Content -LiteralPath (Join-Path $base "UCUS98701/DATA0.BIN")) -eq "run0") "content not captured"
-        $mf = Join-Path $base ".hst_savebase_manifest.json"
+        $mf = Join-Path $base ".nk_savebase_manifest.json"
         Assert-True (Test-Path -LiteralPath $mf) "no baseline manifest written"
         $m = Get-Content -LiteralPath $mf -Raw | ConvertFrom-Json
-        Assert-True ($m.format -eq "hst-savebase-manifest/v1") "unexpected manifest format"
+        Assert-True ($m.format -eq "nk-savebase-manifest/v1") "unexpected manifest format"
         Assert-True ($m.file_count -eq 1) "manifest file count wrong"
     }
 
@@ -183,7 +182,7 @@ try {
         Assert-True ((Get-Content -LiteralPath (Join-Path $root "UCUS98701/DATA0.BIN")) -eq "pristine") "save not rolled back"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $root "UCUS98701/EXTRA.BIN"))) "run-added file survived"
         $leftovers = @(Get-ChildItem -LiteralPath (Join-Path $tmpRoot "sb2/PSP") -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like ".hst_savebase_*" })
+            Where-Object { $_.Name -like ".nk_savebase_*" })
         Assert-True ($leftovers.Count -eq 0) "stage/rollback leftovers survived: $($leftovers.Name -join ',')"
     }
 
@@ -308,7 +307,7 @@ try {
         $base = Join-Path $tmpRoot "sb13/base"
         [void](Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot)
         # Interrupted restore leaves its rollback shelter behind.
-        New-Item -ItemType Directory -Path (Join-Path $tmpRoot "sb13/PSP/.hst_savebase_rollback_deadbeef") -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $tmpRoot "sb13/PSP/.nk_savebase_rollback_deadbeef") -Force | Out-Null
         $r = Sync-SaveBase -BasePath $base -SaveRoot $root -ApprovedRoot $tmpRoot
         Assert-True ($null -eq $r) "restore proceeded despite an orphaned swap directory"
         Assert-True ((Get-Content -LiteralPath (Join-Path $root "UCUS98701/DATA0.BIN")) -eq "live") "live save was destroyed"
@@ -429,20 +428,20 @@ try {
     Test-Case "workspace root validation fails closed on missing anchors" {
         $fake = Join-Path $tmpRoot "ws1"
         New-Item -ItemType Directory -Path $fake -Force | Out-Null
-        Assert-Throws { Assert-HstWorkspaceRoot -Root $fake } "anchor-less dir accepted"
+        Assert-Throws { Assert-NkWorkspaceRoot -Root $fake } "anchor-less dir accepted"
         Set-Content -LiteralPath (Join-Path $fake "Makefile") -Value ""
         Set-Content -LiteralPath (Join-Path $fake "AGENTS.md") -Value ""
         New-Item -ItemType Directory -Path (Join-Path $fake "src/rt") -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $fake "tools") -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $fake "src/rt/recomp.c") -Value ""
         Set-Content -LiteralPath (Join-Path $fake "tools/codegen.py") -Value ""
-        $resolved = Assert-HstWorkspaceRoot -Root $fake
+        $resolved = Assert-NkWorkspaceRoot -Root $fake
         Assert-True ($resolved -eq [IO.Path]::GetFullPath($fake)) "root not canonicalized"
         # A sibling path must resolve the same regardless of caller CWD.
         $prev = Get-Location
         try {
             Set-Location -LiteralPath $tmpRoot
-            Assert-True ((Assert-HstWorkspaceRoot -Root $fake) -eq [IO.Path]::GetFullPath($fake)) "root differs by CWD"
+            Assert-True ((Assert-NkWorkspaceRoot -Root $fake) -eq [IO.Path]::GetFullPath($fake)) "root differs by CWD"
         } finally {
             Set-Location -LiteralPath $prev.Path
         }
@@ -464,18 +463,9 @@ try {
     New-Item -ItemType Directory -Path $fakeTools -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $unrelated "logs") -Force | Out-Null
     $managerSrc = Join-Path $PSScriptRoot ".."
-    $targetMgr = if (Test-Path -LiteralPath (Join-Path $managerSrc "nk_manager.ps1")) { "nk_manager.ps1" } else { "hst_manager.ps1" }
+    $targetMgr = "nk_manager.ps1"
     Copy-Item -LiteralPath (Join-Path $managerSrc $targetMgr) -Destination $fakeRepo -Force
-    if (Test-Path -LiteralPath (Join-Path $managerSrc "hst_manager.ps1")) {
-        Copy-Item -LiteralPath (Join-Path $managerSrc "hst_manager.ps1") -Destination $fakeRepo -Force
-    }
-    # Phase 3 (#196): copy nk_safety.ps1 alongside hst_safety.ps1 so nk_manager.ps1's
-    # canonical safety helper lookup succeeds in the fake workspace.
-    $safetyHelpers = @("hst_run_support.ps1", "vulkan_sdk.ps1")
-    foreach ($helper in @("nk_safety.ps1", "hst_safety.ps1")) {
-        $helperPath = Join-Path $PSScriptRoot $helper
-        if (Test-Path -LiteralPath $helperPath) { $safetyHelpers += $helper }
-    }
+    $safetyHelpers = @("nk_safety.ps1", "vulkan_sdk.ps1")
     foreach ($helper in $safetyHelpers) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $helper) -Destination $fakeTools -Force
     }
@@ -519,17 +509,7 @@ try {
         $bare = Join-Path $cwdTestRoot "bare"
         New-Item -ItemType Directory -Path (Join-Path $bare "tools") -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $managerSrc $targetMgr) -Destination $bare -Force
-        if (Test-Path -LiteralPath (Join-Path $managerSrc "hst_manager.ps1")) {
-            Copy-Item -LiteralPath (Join-Path $managerSrc "hst_manager.ps1") -Destination $bare -Force
-        }
-        # Phase 3 (#196): copy nk_safety.ps1 alongside hst_safety.ps1 so the
-        # forwarding wrapper can find its canonical target.
-        foreach ($safetyHelper in @("nk_safety.ps1", "hst_safety.ps1")) {
-            $safetyPath = Join-Path $PSScriptRoot $safetyHelper
-            if (Test-Path -LiteralPath $safetyPath) {
-                Copy-Item -LiteralPath $safetyPath -Destination (Join-Path $bare "tools") -Force
-            }
-        }
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "nk_safety.ps1") -Destination (Join-Path $bare "tools") -Force
         $pwshExe = (Get-Process -Id $PID).Path
         $out = & $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bare $targetMgr) `
             -Action Clean 2>&1 | Out-String

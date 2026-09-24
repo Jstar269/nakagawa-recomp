@@ -126,7 +126,11 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                if (game && (game->is_prepared || app->is_game_running)) count++;
+                bool game_has_package = game && game->is_experimental &&
+                    nk_launch_runtime_package_available(player_runtime_root(app),
+                                                        game->title_id);
+                if (game && ((game->is_experimental ? game_has_package : game->is_prepared) ||
+                             app->is_game_running)) count++;
                 count += 2; /* add + remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
@@ -134,6 +138,7 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_INSPECTING:
             return 1;
         case VIEW_SUPPORTED_TITLE:
+        case VIEW_EXPERIMENTAL_TITLE:
             return 2;
         case VIEW_UNSUPPORTED_TITLE:
             return 1;
@@ -361,7 +366,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
     snprintf(disp.prepared_root, sizeof(disp.prepared_root), "fixtures/display_smoke");
     snprintf(disp.title_id, sizeof(disp.title_id), "display-smoke-v1");
     disp.iso_size_bytes = 0ULL;
-    disp.is_prepared = nk_launch_runtime_available(player_runtime_root(app), disp.title_id);
+    disp.is_prepared = nk_launch_runtime_package_available(player_runtime_root(app), disp.title_id);
     disp.status = disp.is_prepared ? NK_STATUS_PREPARED : NK_STATUS_IDENTIFIED;
     snprintf(disp.last_played, sizeof(disp.last_played), "Never");
 
@@ -373,6 +378,14 @@ void player_app_populate_sample_games(PlayerApp *app) {
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
+
+    if (game->is_experimental &&
+        !nk_launch_runtime_package_available(player_runtime_root(app), game->title_id)) {
+        player_app_set_error(app, "EXPERIMENTAL_RUNTIME_MISSING", "Runtime Package Missing",
+                             "Experimental title runtime package is missing; generation is in the works (#296/#297).",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
 
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
@@ -667,4 +680,135 @@ void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
         snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
                  "%s", app->wizard.extraction_error);
     }
+}
+
+static void player_preflight_add(PlayerCompatibilityPreflight *preflight,
+                                 const char *code, PlayerPreflightStatus status,
+                                 const char *message, const unsigned int *issues,
+                                 size_t issue_count) {
+    if (!preflight || preflight->count >= sizeof(preflight->checks) /
+                                      sizeof(preflight->checks[0])) return;
+    PlayerPreflightCheck *check = &preflight->checks[preflight->count++];
+    memset(check, 0, sizeof(*check));
+    snprintf(check->code, sizeof(check->code), "%s", code ? code : "");
+    check->status = status;
+    snprintf(check->message, sizeof(check->message), "%s", message ? message : "");
+    if (issues) {
+        if (issue_count > sizeof(check->issue_numbers) / sizeof(check->issue_numbers[0])) {
+            issue_count = sizeof(check->issue_numbers) / sizeof(check->issue_numbers[0]);
+        }
+        memcpy(check->issue_numbers, issues, issue_count * sizeof(issues[0]));
+        check->issue_count = issue_count;
+    }
+}
+
+void player_app_build_compatibility_preflight(
+    PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
+    const NkIsoExecutableReport *executables) {
+    if (!app) return;
+    PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
+    memset(preflight, 0, sizeof(*preflight));
+    const char *runtime_root = app->runtime_root[0] ? app->runtime_root : ".";
+
+    if (app->inspecting_game.is_experimental) {
+        static const unsigned int issues[] = { 285, 308 };
+        player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
+                             "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
+                             issues, 2);
+    }
+
+    if (!disc_readable) {
+        player_preflight_add(preflight, "DISC_SFO", PREFLIGHT_UNSUPPORTED,
+                             "Disc metadata could not be read safely; PARAM.SFO and executables were not trusted.",
+                             NULL, 0);
+    } else if (param_sfo_parsed) {
+        player_preflight_add(preflight, "DISC_SFO", PREFLIGHT_OK,
+                             "Disc image is readable and PARAM.SFO was parsed.", NULL, 0);
+    } else {
+        player_preflight_add(preflight, "DISC_SFO", PREFLIGHT_MISSING,
+                             "Disc image is readable, but PSP_GAME/PARAM.SFO is missing or could not be parsed.",
+                             NULL, 0);
+    }
+
+    NkIsoExecutableKind eboot = executables ? executables->eboot.kind : NK_ISO_EXEC_UNKNOWN;
+    bool boot_fallback = executables && executables->selected == NK_ISO_EXEC_SELECTION_BOOT &&
+                         executables->boot_fallback;
+    if (executables && executables->selected == NK_ISO_EXEC_SELECTION_EBOOT) {
+        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
+                             "EBOOT.BIN is a plain MIPS ELF32 and selected for analysis.", NULL, 0);
+    } else if (boot_fallback) {
+        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
+                             "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.", NULL, 0);
+    } else if (eboot == NK_ISO_EXEC_PSP_ENCRYPTED) {
+        static const unsigned int issues[] = { 295 };
+        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                             "Encrypted executable. Decryption support is in the works (#295).",
+                             issues, 1);
+    } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
+        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                             "EBOOT.BIN is empty or zero-filled and cannot be analyzed.", NULL, 0);
+    } else if (eboot == NK_ISO_EXEC_SCE_WRAPPER) {
+        static const unsigned int issues[] = { 295 };
+        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                             "~SCE wrapper is not analyzable; container support is in the works (#295).",
+                             issues, 1);
+    } else if (eboot == NK_ISO_EXEC_PBP) {
+        static const unsigned int issues[] = { 295 };
+        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                             "PBP is not plain ELF; executable unpacking is in the works (#295).",
+                             issues, 1);
+    } else {
+        static const unsigned int issues[] = { 308 };
+        player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                             "Unknown/malformed executable boundary; broader title support is in the works (#308).",
+                             issues, 1);
+    }
+
+    if (app->inspecting_game.is_experimental &&
+        nk_launch_runtime_package_available(runtime_root,
+                                            app->inspecting_game.title_id)) {
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_OK,
+                             "Matching generated experimental runtime package is present.", NULL, 0);
+    } else if (app->inspecting_game.is_experimental) {
+        static const unsigned int issues[] = { 296, 297 };
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_MISSING,
+                             "Experimental title runtime package is missing; generation is in the works (#296/#297).",
+                             issues, 2);
+    } else if (!app->inspecting_game.title_id[0]) {
+        static const unsigned int issues[] = { 308 };
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_UNSUPPORTED,
+                             "Title profile missing; generic title support is in the works (#308).",
+                             issues, 1);
+    } else if (nk_launch_runtime_package_available(runtime_root,
+                                                   app->inspecting_game.title_id)) {
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_OK,
+                             "Generated runtime executable and image are present.", NULL, 0);
+    } else {
+        static const unsigned int issues[] = { 296, 297 };
+        player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_MISSING,
+                             "Runtime package missing; generation is in the works (#296/#297).",
+                             issues, 2);
+    }
+
+    char font_path[NK_MAX_PATH * 2];
+    int written = snprintf(font_path, sizeof(font_path), "%s%cfont%cjpn0.pgf",
+                           runtime_root, nk_platform_path_separator(),
+                           nk_platform_path_separator());
+    if (written > 0 && (size_t)written < sizeof(font_path) &&
+        nk_platform_file_exists(font_path)) {
+        player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_OK,
+                             "User-supplied PSP system font jpn0.pgf is available.", NULL, 0);
+    } else {
+        static const unsigned int issues[] = { 300 };
+        player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_MISSING,
+                             "PSP font jpn0.pgf missing; provisioning is in the works (#300).",
+                             issues, 1);
+    }
+
+    /* The public runtime drives the default device through SDL3 (#301). Whether a
+       device exists is only known when the runtime starts; without one the game
+       keeps running silently and says so once. */
+    player_preflight_add(preflight, "AUDIO_OUTPUT", PREFLIGHT_OK,
+                         "Sound plays through your default audio device. With no device, the game runs silently.",
+                         NULL, 0);
 }

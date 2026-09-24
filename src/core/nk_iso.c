@@ -38,6 +38,8 @@
    Both readers must agree: two different limits for the same field mean the
    inspect and extract paths disagree about what a valid image looks like. */
 #define NK_ISO_MAX_DIR_BYTES (512u * 1024u)
+#define NK_ISO_MAX_EXECUTABLE_BYTES (512u * 1024u * 1024u)
+#define NK_ISO_MAX_ELF_PROGRAM_HEADERS 128u
 
 /* SFO Header Magic: \x00PSF */
 static const uint8_t SFO_MAGIC[4] = { 0x00, 'P', 'S', 'F' };
@@ -504,8 +506,9 @@ static bool sfo_key_is_identity(const char *key) {
         || strcmp(key, "DISC_VERSION") == 0;
 }
 
+
 /* Parse SFO buffer and extract DISC_ID, TITLE, DISC_VERSION with rigorous bounds checking */
-static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
+bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
     if (!sfo || sfo_size < 20 || !meta) return false;
 
     if (memcmp(sfo, SFO_MAGIC, 4) != 0) {
@@ -537,6 +540,7 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         uint32_t data_off = read_le32(sfo + entry_off + 12);
 
         /* Validate key offset and ensure null termination */
+        if (key_off >= data_table_off || (size_t)key_off >= data_table_off - key_table_off) continue;
         size_t abs_key_off = (size_t)key_table_off + key_off;
         if (abs_key_off >= data_table_off) continue;
         const char *key = (const char *)&sfo[abs_key_off];
@@ -551,6 +555,9 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         }
 
         /* Validate data offset and length bounds */
+        if (data_off > sfo_size || (size_t)data_off > sfo_size - data_table_off) {
+            continue;
+        }
         size_t abs_data_off = (size_t)data_table_off + data_off;
         if (abs_data_off > sfo_size || (size_t)data_len > sfo_size - abs_data_off) {
             continue;
@@ -575,11 +582,11 @@ static bool parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         }
 
         char val_buf[256];
-        int copy_len = (int)data_len;
-        if (copy_len >= (int)sizeof(val_buf)) {
-            copy_len = (int)sizeof(val_buf) - 1;
+        size_t copy_len = (size_t)data_len;
+        if (copy_len >= sizeof(val_buf)) {
+            copy_len = sizeof(val_buf) - 1;
         }
-        snprintf(val_buf, sizeof(val_buf), "%.*s", copy_len, (const char *)&sfo[abs_data_off]);
+        snprintf(val_buf, sizeof(val_buf), "%.*s", (int)copy_len, (const char *)&sfo[abs_data_off]);
 
         if (strcmp(key, "DISC_ID") == 0 || strcmp(key, "TITLE_ID") == 0) {
             if (meta->disc_id[0] != '\0') {
@@ -656,7 +663,7 @@ static bool scan_disc_id_in_buffer(const uint8_t *buf, size_t buf_size, char *ou
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     if (!iso_path || !out_meta) return NK_ERROR_GENERIC;
     memset(out_meta, 0, sizeof(*out_meta));
-    /* disc_version is deliberately left empty here. parse_sfo_buffer treats a
+    /* disc_version is deliberately left empty here. nk_iso_parse_sfo_buffer treats a
        non-empty value as evidence that a DISC_VERSION key was already seen, so
        pre-seeding a default made the first genuine entry look like a
        conflicting duplicate and rejected every disc whose version was not
@@ -875,7 +882,8 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             if (sfo_buf) {
                 nk_fseek64(f, (int64_t)sfo_offset, SEEK_SET);
                 if (fread(sfo_buf, 1, sfo_size, f) == sfo_size) {
-                    if (parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
+                    if (nk_iso_parse_sfo_buffer(sfo_buf, sfo_size, out_meta)) {
+                        out_meta->param_sfo_parsed = true;
                         if (out_meta->disc_id[0] != 0) identity_structured = true;
                     } else {
                         if (out_meta->error_message[0] != '\0') {
@@ -900,7 +908,7 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
             /* Search for SFO magic */
             for (size_t i = 0; i + 20 <= bytes_read; i++) {
                 if (memcmp(scan_buf + i, SFO_MAGIC, 4) == 0) {
-                    if (parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
+                    if (nk_iso_parse_sfo_buffer(scan_buf + i, bytes_read - i, out_meta)) {
                         /* Deliberately does NOT set identity_structured. An SFO
                            found by scanning raw bytes has no filesystem
                            provenance: any image can embed a valid SFO blob
@@ -966,6 +974,214 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
         }
     }
 
+    /* Executable classification is advisory preflight data. A valid disc can
+       still be inspected when its SYSDIR files are missing or unsupported. */
+    (void)nk_iso_classify_executables(iso_path, &out_meta->executables);
+
+    return NK_OK;
+}
+
+static bool nk_iso_checked_add_u64(uint64_t left, uint64_t right,
+                                   uint64_t *out_sum) {
+    if (!out_sum || right > UINT64_MAX - left) return false;
+    *out_sum = left + right;
+    return true;
+}
+
+static bool nk_iso_extent_span_valid(NkIsoReader *reader, uint32_t lba,
+                                     uint32_t size, uint64_t offset,
+                                     uint32_t bytes) {
+    if (!reader) return false;
+    uint64_t file_offset = (uint64_t)lba * SECTOR_SIZE;
+    uint64_t file_size = nk_iso_reader_file_size(reader);
+    return file_offset <= file_size && (uint64_t)size <= file_size - file_offset &&
+           offset <= (uint64_t)size && (uint64_t)bytes <= (uint64_t)size - offset;
+}
+
+static bool nk_iso_read_extent_exact(NkIsoReader *reader, uint32_t lba,
+                                     uint32_t size, uint64_t offset,
+                                     void *dst, uint32_t bytes) {
+    if (!dst || !nk_iso_extent_span_valid(reader, lba, size, offset, bytes)) {
+        return false;
+    }
+    return nk_iso_reader_read(reader, lba, offset, dst, bytes) == (int)bytes;
+}
+
+static bool nk_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
+                                     uint32_t size) {
+    uint8_t header[52];
+    if (size < sizeof(header) ||
+        !nk_iso_read_extent_exact(reader, lba, size, 0, header, sizeof(header))) {
+        return false;
+    }
+    if (memcmp(header, "\x7f" "ELF", 4) != 0 || header[4] != 1 ||
+        header[5] != 1 || header[6] != 1) return false;
+
+    uint16_t type = read_le16(header + 16);
+    uint16_t machine = read_le16(header + 18);
+    uint32_t version = read_le32(header + 20);
+    uint32_t entry = read_le32(header + 24);
+    uint32_t phoff = read_le32(header + 28);
+    uint32_t shoff = read_le32(header + 32);
+    uint16_t ehsize = read_le16(header + 40);
+    uint16_t phentsize = read_le16(header + 42);
+    uint16_t phnum = read_le16(header + 44);
+    uint16_t shentsize = read_le16(header + 46);
+    uint16_t shnum = read_le16(header + 48);
+    uint64_t phbytes = (uint64_t)phentsize * phnum;
+    uint64_t phend = 0;
+
+    /* The analyzer takes relocatable (1), executable (2), shared (3) and the
+       PSP PRX format (0xFFA0); many retail BOOT.BIN images are PRX-format. */
+    if ((type != 1 && type != 2 && type != 3 && type != 0xFFA0u) ||
+        machine != 8 || version != 1 ||
+        ehsize != sizeof(header) || phentsize != 32 || phnum == 0 ||
+        phnum > NK_ISO_MAX_ELF_PROGRAM_HEADERS || phoff < ehsize ||
+        !nk_iso_checked_add_u64(phoff, phbytes, &phend) || phend > size) {
+        return false;
+    }
+    if (shnum != 0) {
+        uint64_t shbytes = (uint64_t)shentsize * shnum;
+        uint64_t shend = 0;
+        if (shentsize != 40 || shoff < ehsize ||
+            !nk_iso_checked_add_u64(shoff, shbytes, &shend) || shend > size) {
+            return false;
+        }
+    } else if (shoff != 0) {
+        return false;
+    }
+
+    uint8_t program_headers[NK_ISO_MAX_ELF_PROGRAM_HEADERS * 32u];
+    if (!nk_iso_read_extent_exact(reader, lba, size, phoff, program_headers,
+                                  (uint32_t)phbytes)) return false;
+
+    bool have_load = false;
+    bool entry_executable = false;
+    for (uint16_t i = 0; i < phnum; i++) {
+        const uint8_t *ph = program_headers + (size_t)i * phentsize;
+        uint32_t p_type = read_le32(ph + 0);
+        uint32_t p_offset = read_le32(ph + 4);
+        uint32_t p_vaddr = read_le32(ph + 8);
+        uint32_t p_filesz = read_le32(ph + 16);
+        uint32_t p_memsz = read_le32(ph + 20);
+        uint32_t p_flags = read_le32(ph + 24);
+        uint32_t p_align = read_le32(ph + 28);
+        uint64_t file_end = 0;
+        uint64_t memory_end = 0;
+
+        if (!nk_iso_checked_add_u64(p_offset, p_filesz, &file_end) ||
+            file_end > size) return false;
+        if (p_type != 1) continue;
+        if (p_memsz < p_filesz ||
+            !nk_iso_checked_add_u64(p_vaddr, p_memsz, &memory_end) ||
+            memory_end > (uint64_t)UINT32_MAX + 1u) return false;
+        if (p_align > 1 &&
+            ((p_align & (p_align - 1u)) != 0 ||
+             (p_offset % p_align) != (p_vaddr % p_align))) return false;
+        have_load = true;
+        if ((p_flags & 1u) != 0 && entry >= p_vaddr &&
+            (uint64_t)entry < memory_end) entry_executable = true;
+    }
+    return have_load && entry_executable;
+}
+
+static bool nk_iso_extent_is_zero_filled(NkIsoReader *reader, uint32_t lba,
+                                         uint32_t size) {
+    uint8_t buffer[8192];
+    uint64_t offset = 0;
+    while (offset < size) {
+        uint64_t remaining = (uint64_t)size - offset;
+        uint32_t count = (uint32_t)(remaining < sizeof(buffer)
+            ? remaining : sizeof(buffer));
+        if (!nk_iso_read_extent_exact(reader, lba, size, offset, buffer, count)) {
+            return false;
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            if (buffer[i] != 0) return false;
+        }
+        offset += count;
+    }
+    return true;
+}
+
+static void nk_iso_classify_executable(NkIsoReader *reader, const char *path,
+                                       NkIsoExecutableCandidate *out) {
+    uint32_t lba = 0, size = 0;
+    bool is_directory = false;
+    uint8_t header[0x80] = { 0 };
+    uint32_t header_size;
+
+    memset(out, 0, sizeof(*out));
+    out->kind = NK_ISO_EXEC_UNKNOWN;
+    if (nk_iso_reader_lookup(reader, path, &lba, &size, &is_directory) != 0 ||
+        is_directory || !nk_iso_extent_span_valid(reader, lba, size, 0, size)) {
+        return;
+    }
+    out->present = true;
+    out->size_bytes = size;
+    if (size == 0) {
+        out->kind = NK_ISO_EXEC_EMPTY_OR_ZERO;
+        return;
+    }
+    if (size > NK_ISO_MAX_EXECUTABLE_BYTES) return;
+
+    header_size = size < sizeof(header) ? size : (uint32_t)sizeof(header);
+    if (!nk_iso_read_extent_exact(reader, lba, size, 0, header, header_size)) return;
+    if (header_size >= 4 && memcmp(header, "\x7f" "ELF", 4) == 0) {
+        if (nk_iso_elf32_mips_usable(reader, lba, size)) {
+            out->kind = NK_ISO_EXEC_MIPS_ELF32;
+        }
+        return;
+    }
+    if (header_size >= 4 && memcmp(header, "~SCE", 4) == 0) {
+        out->kind = NK_ISO_EXEC_SCE_WRAPPER;
+        return;
+    }
+    if (header_size >= 4 && memcmp(header, "\0PBP", 4) == 0) {
+        out->kind = NK_ISO_EXEC_PBP;
+        return;
+    }
+    if (header_size >= 4 && memcmp(header, "~PSP", 4) == 0) {
+        if (header_size < 0x64 || header[0x27] == 0 || header[0x27] > 4) return;
+        uint64_t segment_total = 0;
+        for (unsigned i = 0; i < header[0x27]; i++) {
+            uint32_t segment_size = read_le32(header + 0x54 + i * 4u);
+            if (segment_size == 0 || segment_size > NK_ISO_MAX_EXECUTABLE_BYTES ||
+                segment_total > NK_ISO_MAX_EXECUTABLE_BYTES - segment_size) return;
+            segment_total += segment_size;
+        }
+        out->kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        return;
+    }
+    if (nk_iso_extent_is_zero_filled(reader, lba, size)) {
+        out->kind = NK_ISO_EXEC_EMPTY_OR_ZERO;
+    }
+}
+
+NkResult nk_iso_classify_executables(const char *iso_path,
+                                     NkIsoExecutableReport *out_report) {
+    if (!iso_path || !out_report) return NK_ERROR_GENERIC;
+    memset(out_report, 0, sizeof(*out_report));
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    if (!reader) return NK_ERROR_INVALID_ISO;
+
+    nk_iso_classify_executable(reader, "PSP_GAME/SYSDIR/EBOOT.BIN",
+                               &out_report->eboot);
+    nk_iso_classify_executable(reader, "PSP_GAME/SYSDIR/BOOT.BIN",
+                               &out_report->boot);
+    nk_iso_reader_close(reader);
+
+    if (out_report->eboot.kind == NK_ISO_EXEC_MIPS_ELF32) {
+        out_report->selected = NK_ISO_EXEC_SELECTION_EBOOT;
+        snprintf(out_report->selected_path, sizeof(out_report->selected_path),
+                 "EBOOT.BIN");
+    } else if (out_report->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+               out_report->boot.kind == NK_ISO_EXEC_MIPS_ELF32) {
+        out_report->selected = NK_ISO_EXEC_SELECTION_BOOT;
+        out_report->boot_fallback = true;
+        snprintf(out_report->selected_path, sizeof(out_report->selected_path),
+                 "BOOT.BIN");
+    }
     return NK_OK;
 }
 

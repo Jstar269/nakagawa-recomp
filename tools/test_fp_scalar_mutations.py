@@ -323,7 +323,6 @@ class FastPathRemovedStructuralTests(unittest.TestCase):
             elf_path.write_bytes(elf_bytes)
             import os as _os
             env = dict(_os.environ)
-            env["HST_EXTRA_SPANS"] = ""
             env["PYTHONPATH"] = str(ROOT / "tools") + _os.pathsep + env.get("PYTHONPATH", "")
             gen_proc = subprocess.run(
                 [sys.executable, str(tmp_codegen), str(elf_path),

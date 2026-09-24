@@ -1,17 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
-#requires -Version 7.6
+#requires -Version 7.4
 
 <#
 .SYNOPSIS
     Simple, fail-closed entry point for normal Nakagawa Recomp setup and use.
 .DESCRIPTION
-    Canonical successor to hst.ps1 (which is now a deprecated forwarding wrapper).
     Exposes a smaller surface for diagnostics, incremental/full builds, verification,
     and play while delegating the expert/developer console to nk_manager.ps1.
-
-    Change from hst.ps1: points to nk_manager.ps1 and tools/nk_doctor.py instead of
-    the legacy hst_manager.ps1 and tools/hst_doctor.py.
 #>
 
 [CmdletBinding()]

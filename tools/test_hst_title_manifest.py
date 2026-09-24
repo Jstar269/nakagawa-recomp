@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 import sys
 import unittest
@@ -11,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import test_public_title_isolation
 import title_manifest
 
 
@@ -18,9 +18,13 @@ class HstTitleManifestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.path = ROOT / "assets" / "titles" / "hst-ucus98701.json"
-        if not cls.path.is_file():
+        # Opt-in by *tracked bytes*, never by directory presence (#335): an
+        # ignored developer lookalike must not silently stand in for the
+        # private fixture.
+        if not test_public_title_isolation.private_title_tests_enabled("assets/titles/hst-ucus98701.json"):
             raise unittest.SkipTest(
-                "private HST title manifest is unavailable in the sanitized public tree"
+                "private HST title manifest is unavailable (set NK_PRIVATE_TITLE_TESTS=1 to "
+                "opt in with a local ignored manifest)"
             )
 
     def setUp(self) -> None:
@@ -39,46 +43,23 @@ class HstTitleManifestTests(unittest.TestCase):
         self.assertEqual(self.manifest["executable"]["bss_metadata_source"], "psp-header")
         self.assertEqual(self.manifest["codegen_profile"], "hst")
 
-    def test_module_names_and_load_addresses_match_makefile(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        configured = {
-            name: int(address, 0)
-            for name, address in re.findall(
-                r"([A-Za-z0-9_]+\.prx)@(0x[0-9A-Fa-f]+)",
-                makefile,
-            )
-        }
-        declared = {
-            module["name"]: module["load_address"]
-            for module in self.manifest["modules"]
-        }
-        self.assertEqual(declared, configured)
-        self.assertIn("CODEGEN_PROFILE_ARG := --profile=hst", makefile)
-        self.assertIn(
-            "GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN",
-            makefile,
-        )
+    def test_module_names_and_load_addresses_match_private_adapter(self) -> None:
+        adapter = (ROOT / "tools" / "title_manager_plan.ps1").read_text(encoding="utf-8")
+        for module in self.manifest["modules"]:
+            self.assertIn(module["name"], adapter)
+        self.assertNotIn("CODEGEN_PROFILE_ARG := --profile=hst", (ROOT / "Makefile").read_text(encoding="utf-8"))
 
-    def test_extra_executable_span_is_bound_explicitly_by_the_makefile(self) -> None:
-        # The analyzer applies no title-specific default span, so the direct-Make path
-        # binds the HST span explicitly and that binding must agree with the manifest,
-        # which is the source of truth. Otherwise a manager build and a direct Make
-        # build would analyze different address ranges.
+    def test_extra_executable_span_is_owned_by_the_manifest_plan(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        match = re.search(
-            r"HST_EXTRA_SPANS\s*\?=\s*(0x[0-9A-Fa-f]+),(0x[0-9A-Fa-f]+)",
-            makefile,
-        )
-        self.assertIsNotNone(match)
-        assert match is not None
-        expected = [{"start": int(match.group(1), 0), "end": int(match.group(2), 0)}]
-        self.assertEqual(self.manifest["executable"]["extra_executable_spans"], expected)
-        analyzer = (ROOT / "tools" / "analyze.py").read_text(encoding="utf-8")
-        self.assertNotIn("DEFAULT_HST_EXTRA_SPANS", analyzer)
+        self.assertNotIn("HST_EXTRA_SPANS", makefile)
+        self.assertNotIn("0x00303194,0x00306e24", makefile)
+        expected = self.manifest["executable"]["extra_executable_spans"]
+        self.assertEqual(expected, [{"start": 0x00303194, "end": 0x00306E24}])
+        adapter = (ROOT / "tools" / "title_manager_plan.ps1").read_text(encoding="utf-8")
+        self.assertIn("3158420; end = 3173924", adapter)
 
     def test_zero_base_and_entry_match_manager_contract(self) -> None:
-        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
-        manager = mgr_path.read_text(encoding="utf-8")
+        manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8")
         self.assertIn('"GAME_BASE=0"', manager)
         self.assertIn('"GAME_ENTRY=0"', manager)
 

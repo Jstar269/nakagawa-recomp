@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "nk_title_manifest.h"
+#include "nk_iso.h"
 #include "nk_platform.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -1968,4 +1969,392 @@ bool nk_title_manifest_load_overlay(
     size_t error_buf_len
 ) {
     return nk_title_manifest_load_overlay_ext(manifest_path, false, error_buf, error_buf_len);
+}
+
+typedef struct {
+    uint32_t state[8];
+    uint64_t bit_count;
+    uint8_t block[64];
+    size_t block_len;
+} NkSha256;
+
+static uint32_t nk_sha256_rotr(uint32_t value, unsigned int amount) {
+    return (value >> amount) | (value << (32u - amount));
+}
+
+static void nk_sha256_transform(NkSha256 *ctx, const uint8_t block[64]) {
+    static const uint32_t k[64] = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+        0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+        0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+        0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+        0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+        0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+        0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+        0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+    };
+    uint32_t words[64];
+    for (size_t i = 0; i < 16; i++) {
+        words[i] = ((uint32_t)block[i * 4] << 24) |
+                   ((uint32_t)block[i * 4 + 1] << 16) |
+                   ((uint32_t)block[i * 4 + 2] << 8) |
+                   (uint32_t)block[i * 4 + 3];
+    }
+    for (size_t i = 16; i < 64; i++) {
+        uint32_t s0 = nk_sha256_rotr(words[i - 15], 7) ^
+                      nk_sha256_rotr(words[i - 15], 18) ^ (words[i - 15] >> 3);
+        uint32_t s1 = nk_sha256_rotr(words[i - 2], 17) ^
+                      nk_sha256_rotr(words[i - 2], 19) ^ (words[i - 2] >> 10);
+        words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+    }
+
+    uint32_t a = ctx->state[0], b = ctx->state[1], c = ctx->state[2], d = ctx->state[3];
+    uint32_t e = ctx->state[4], f = ctx->state[5], g = ctx->state[6], h = ctx->state[7];
+    for (size_t i = 0; i < 64; i++) {
+        uint32_t sum1 = nk_sha256_rotr(e, 6) ^ nk_sha256_rotr(e, 11) ^ nk_sha256_rotr(e, 25);
+        uint32_t choose = (e & f) ^ (~e & g);
+        uint32_t t1 = h + sum1 + choose + k[i] + words[i];
+        uint32_t sum0 = nk_sha256_rotr(a, 2) ^ nk_sha256_rotr(a, 13) ^ nk_sha256_rotr(a, 22);
+        uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2 = sum0 + majority;
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+    ctx->state[0] += a; ctx->state[1] += b; ctx->state[2] += c; ctx->state[3] += d;
+    ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
+}
+
+static void nk_sha256_init(NkSha256 *ctx) {
+    static const uint32_t initial[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
+    };
+    memcpy(ctx->state, initial, sizeof(initial));
+    ctx->bit_count = 0;
+    ctx->block_len = 0;
+}
+
+static void nk_sha256_update(NkSha256 *ctx, const uint8_t *data, size_t len) {
+    ctx->bit_count += (uint64_t)len * 8u;
+    while (len > 0) {
+        size_t room = sizeof(ctx->block) - ctx->block_len;
+        size_t take = len < room ? len : room;
+        memcpy(ctx->block + ctx->block_len, data, take);
+        ctx->block_len += take;
+        data += take;
+        len -= take;
+        if (ctx->block_len == sizeof(ctx->block)) {
+            nk_sha256_transform(ctx, ctx->block);
+            ctx->block_len = 0;
+        }
+    }
+}
+
+static void nk_sha256_finish(NkSha256 *ctx, uint8_t digest[32]) {
+    uint64_t bits = ctx->bit_count;
+    ctx->block[ctx->block_len++] = 0x80;
+    if (ctx->block_len > 56) {
+        memset(ctx->block + ctx->block_len, 0, sizeof(ctx->block) - ctx->block_len);
+        nk_sha256_transform(ctx, ctx->block);
+        ctx->block_len = 0;
+    }
+    memset(ctx->block + ctx->block_len, 0, 56 - ctx->block_len);
+    for (size_t i = 0; i < 8; i++) {
+        ctx->block[63 - i] = (uint8_t)(bits >> (i * 8));
+    }
+    nk_sha256_transform(ctx, ctx->block);
+    for (size_t i = 0; i < 8; i++) {
+        digest[i * 4] = (uint8_t)(ctx->state[i] >> 24);
+        digest[i * 4 + 1] = (uint8_t)(ctx->state[i] >> 16);
+        digest[i * 4 + 2] = (uint8_t)(ctx->state[i] >> 8);
+        digest[i * 4 + 3] = (uint8_t)ctx->state[i];
+    }
+}
+
+static bool nk_manifest_normalize_disc_id(const char *source, char out[10]) {
+    if (!source || strlen(source) != 9) return false;
+    for (size_t i = 0; i < 9; i++) {
+        unsigned char ch = (unsigned char)source[i];
+        if (i < 4) {
+            if (!isalpha(ch) || ch > 0x7f) return false;
+            out[i] = (char)toupper(ch);
+        } else {
+            if (!isdigit(ch)) return false;
+            out[i] = (char)ch;
+        }
+    }
+    out[9] = '\0';
+    return true;
+}
+
+static bool nk_manifest_json_escape(const char *source, char *out, size_t out_len) {
+    if (!source || !out || out_len == 0) return false;
+    size_t used = 0;
+    for (const unsigned char *p = (const unsigned char *)source; *p; p++) {
+        if (*p == '"' || *p == '\\') {
+            if (used + 2 >= out_len) return false;
+            out[used++] = '\\';
+            out[used++] = (char)*p;
+        } else if (*p < 0x20) {
+            if (used + 6 >= out_len) return false;
+            int written = snprintf(out + used, out_len - used, "\\u%04x", (unsigned)*p);
+            if (written != 6) return false;
+            used += 6;
+        } else {
+            if (used + 1 >= out_len) return false;
+            out[used++] = (char)*p;
+        }
+    }
+    out[used] = '\0';
+    return true;
+}
+
+static bool nk_manifest_hash_iso_executable(const char *iso_path,
+                                            const char *selected_executable,
+                                            char out_hex[65]) {
+    if (!iso_path || !selected_executable || !out_hex) return false;
+    const char *relative_path = NULL;
+    if (strcmp(selected_executable, "EBOOT.BIN") == 0) {
+        relative_path = "PSP_GAME/SYSDIR/EBOOT.BIN";
+    } else if (strcmp(selected_executable, "BOOT.BIN") == 0) {
+        relative_path = "PSP_GAME/SYSDIR/BOOT.BIN";
+    } else {
+        return false;
+    }
+
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    if (!reader) return false;
+    uint32_t lba = 0, size = 0;
+    bool is_dir = false;
+    bool ok = nk_iso_reader_lookup(reader, relative_path, &lba, &size, &is_dir) == 0 &&
+              !is_dir && size > 0 && size <= 512u * 1024u * 1024u;
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    uint8_t buffer[32768];
+    uint64_t offset = 0;
+    while (ok && offset < size) {
+        uint32_t count = (uint32_t)((uint64_t)size - offset < sizeof(buffer)
+            ? (uint64_t)size - offset : sizeof(buffer));
+        int read_count = nk_iso_reader_read(reader, lba, offset, buffer, count);
+        if (read_count != (int)count) {
+            ok = false;
+            break;
+        }
+        nk_sha256_update(&ctx, buffer, count);
+        offset += count;
+    }
+    nk_iso_reader_close(reader);
+    if (!ok) return false;
+
+    uint8_t digest[32];
+    static const char hex[] = "0123456789abcdef";
+    nk_sha256_finish(&ctx, digest);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out_hex[i * 2] = hex[digest[i] >> 4];
+        out_hex[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out_hex[64] = '\0';
+    return true;
+}
+
+static bool nk_manifest_replace_file(const char *temporary, const char *target) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR w_temporary[32768], w_target[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, temporary, -1,
+                            w_temporary, (int)(sizeof(w_temporary) / sizeof(w_temporary[0]))) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, target, -1,
+                            w_target, (int)(sizeof(w_target) / sizeof(w_target[0]))) <= 0) return false;
+    return MoveFileExW(w_temporary, w_target,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return rename(temporary, target) == 0;
+#endif
+}
+
+static void nk_manifest_remove_file(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR w_path[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                            w_path, (int)(sizeof(w_path) / sizeof(w_path[0]))) > 0) {
+        DeleteFileW(w_path);
+    }
+#else
+    remove(path);
+#endif
+}
+
+bool nk_title_manifest_write_experimental_profile(
+    const char *iso_path,
+    bool param_sfo_parsed,
+    const char *disc_id,
+    const char *title,
+    const char *selected_executable,
+    const char *user_data_root,
+    char *out_profile_id,
+    size_t out_profile_id_len,
+    char *error_buf,
+    size_t error_buf_len
+) {
+    if (error_buf && error_buf_len) error_buf[0] = '\0';
+    if (!iso_path || !param_sfo_parsed || !user_data_root || !*user_data_root) {
+        if (error_buf && error_buf_len) {
+            snprintf(error_buf, error_buf_len,
+                     "Experimental profiles require a readable disc and parsed PARAM.SFO.");
+        }
+        return false;
+    }
+
+    char normalized_id[10];
+    if (!nk_manifest_normalize_disc_id(disc_id, normalized_id)) {
+        if (error_buf && error_buf_len) {
+            snprintf(error_buf, error_buf_len, "PARAM.SFO does not contain a valid PSP disc ID.");
+        }
+        return false;
+    }
+    char profile_id[64];
+    for (size_t i = 0; i < 9; i++) profile_id[13 + i] = (char)tolower((unsigned char)normalized_id[i]);
+    memcpy(profile_id, "experimental-", 13);
+    profile_id[22] = '\0';
+    if (!out_profile_id || out_profile_id_len <= strlen(profile_id)) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Profile ID output buffer is too small.");
+        return false;
+    }
+
+    char fallback_title[64];
+    snprintf(fallback_title, sizeof(fallback_title), "PSP Title (%s)", normalized_id);
+    char normalized_title[129];
+    const char *display_name = fallback_title;
+    if (title && *title) {
+        size_t source_len = strlen(title);
+        size_t start = 0, end = source_len;
+        while (start < end && isspace((unsigned char)title[start])) start++;
+        while (end > start && isspace((unsigned char)title[end - 1])) end--;
+        size_t title_len = end - start;
+        bool safe_title = title_len > 0 && title_len <= 128;
+        for (size_t i = start; safe_title && i < end; i++) {
+            if ((unsigned char)title[i] < 0x20) safe_title = false;
+        }
+        if (safe_title && validate_utf8((const uint8_t *)(title + start), title_len)) {
+            memcpy(normalized_title, title + start, title_len);
+            normalized_title[title_len] = '\0';
+            display_name = normalized_title;
+        }
+    }
+
+    const char *region = "OTHER";
+    if (strncmp(normalized_id, "UCUS", 4) == 0 || strncmp(normalized_id, "ULUS", 4) == 0) region = "NA";
+    else if (strncmp(normalized_id, "UCES", 4) == 0 || strncmp(normalized_id, "ULES", 4) == 0) region = "EU";
+    else if (strncmp(normalized_id, "UCJS", 4) == 0 || strncmp(normalized_id, "ULJS", 4) == 0) region = "JP";
+    else if (strncmp(normalized_id, "UCAS", 4) == 0 || strncmp(normalized_id, "ULAS", 4) == 0) region = "ASIA";
+
+    char escaped_title[768];
+    if (!nk_manifest_json_escape(display_name, escaped_title, sizeof(escaped_title))) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "PARAM.SFO title cannot be represented safely.");
+        return false;
+    }
+    char manifest[2048];
+    int manifest_len = snprintf(manifest, sizeof(manifest),
+        "{\"schema_version\":1,\"id\":\"%s\",\"game_name\":\"%s\","
+        "\"display_name\":\"%s\","
+        "\"kind\":\"retail\",\"disc\":{\"id\":\"%s\",\"region\":\"%s\","
+        "\"revision_policy\":\"exact-disc-id\"},"
+        "\"executable\":{\"base\":0,\"entry\":0,\"bss_metadata_source\":\"none\","
+        "\"extra_executable_spans\":[]},\"modules\":[],"
+        "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"savedata\","
+        "\"device_prefixes\":[\"disc0:\",\"ms0:\"]},\"hle_profile\":\"generic\","
+        "\"feature_requirements\":[],\"verification_profile\":\"experimental-unverified\"}",
+        profile_id, profile_id, escaped_title, normalized_id, region);
+    if (manifest_len < 0 || (size_t)manifest_len >= sizeof(manifest)) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental manifest exceeded its size limit.");
+        return false;
+    }
+    NkTitleEntry parsed_entry;
+    if (!nk_title_manifest_parse_buffer(manifest, (size_t)manifest_len, false,
+                                        &parsed_entry, error_buf, error_buf_len)) {
+        return false;
+    }
+
+    char executable_hash[65] = "";
+    const char *identity_executable = "";
+    bool has_executable = selected_executable && selected_executable[0];
+    if (has_executable) {
+        if (!nk_manifest_hash_iso_executable(iso_path, selected_executable, executable_hash)) {
+            if (error_buf && error_buf_len) {
+                snprintf(error_buf, error_buf_len, "Selected executable could not be hashed from the ISO safely.");
+            }
+            return false;
+        }
+        identity_executable = strcmp(selected_executable, "EBOOT.BIN") == 0
+            ? "PSP_GAME/SYSDIR/EBOOT.BIN" : "PSP_GAME/SYSDIR/BOOT.BIN";
+    }
+
+    char identity_executable_json[96];
+    if (!nk_manifest_json_escape(identity_executable, identity_executable_json,
+                                 sizeof(identity_executable_json))) return false;
+    char profile[4096];
+    char hash_json[67] = "null";
+    if (has_executable) {
+        int hash_json_len = snprintf(hash_json, sizeof(hash_json), "\"%s\"", executable_hash);
+        if (hash_json_len < 0 || (size_t)hash_json_len >= sizeof(hash_json)) return false;
+    }
+    int profile_len = snprintf(profile, sizeof(profile),
+        "{\"schema_version\":1,\"manifest\":%s,\"input_identity\":{"
+        "\"disc_id\":\"%s\",\"selected_executable\":\"%s\","
+        "\"executable_sha256\":%s,\"elf_sha256\":%s}}\n",
+        manifest, normalized_id, identity_executable_json,
+        hash_json, hash_json);
+    if (profile_len < 0 || (size_t)profile_len >= sizeof(profile)) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental profile exceeded its size limit.");
+        return false;
+    }
+
+    char experimental_root[NK_MAX_PATH];
+    char profile_dir[NK_MAX_PATH];
+    char profile_path[NK_MAX_PATH];
+    char temporary_path[NK_MAX_PATH];
+    char separator = nk_platform_path_separator();
+    int written = snprintf(experimental_root, sizeof(experimental_root), "%s%cexperimental",
+                           user_data_root, separator);
+    if (written < 0 || (size_t)written >= sizeof(experimental_root) ||
+        !nk_platform_mkdir_p_private(user_data_root) ||
+        !nk_platform_mkdir_p_private(experimental_root)) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "User data directory is unavailable for the experimental profile.");
+        return false;
+    }
+    written = snprintf(profile_dir, sizeof(profile_dir), "%s%c%s", experimental_root,
+                       separator, normalized_id);
+    if (written < 0 || (size_t)written >= sizeof(profile_dir) ||
+        !nk_platform_mkdir_p_private(profile_dir)) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental profile directory could not be created.");
+        return false;
+    }
+    written = snprintf(profile_path, sizeof(profile_path), "%s%cprofile.json", profile_dir, separator);
+    if (written < 0 || (size_t)written >= sizeof(profile_path)) return false;
+    /* The temporary file is a sibling, so replacement is atomic on the host. */
+    written = snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", profile_path);
+    if (written < 0 || (size_t)written >= sizeof(temporary_path)) return false;
+
+    FILE *f = nk_platform_fopen_private(temporary_path, "wb");
+    if (!f) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental profile could not be written to user data.");
+        return false;
+    }
+    bool saved = fwrite(profile, 1, (size_t)profile_len, f) == (size_t)profile_len &&
+                 fflush(f) == 0;
+    if (fclose(f) != 0) saved = false;
+    if (!saved || !nk_manifest_replace_file(temporary_path, profile_path)) {
+        nk_manifest_remove_file(temporary_path);
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental profile could not be committed to user data.");
+        return false;
+    }
+    snprintf(out_profile_id, out_profile_id_len, "%s", profile_id);
+    return true;
 }

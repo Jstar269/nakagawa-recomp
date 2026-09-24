@@ -200,6 +200,20 @@ class RuntimeLauncher:
                 return cand
         return None
 
+    def runtime_package_available(self, title_profile: Any) -> bool:
+        """Return whether this title has both its identity-matched runtime and image."""
+        if title_profile is None:
+            return False
+        try:
+            names = self._identity_names(title_profile)
+        except RuntimeLaunchError:
+            return False
+        exe_path = next(
+            (candidate for candidate in self._exe_candidates(names) if candidate.is_file()),
+            None,
+        )
+        return exe_path is not None and self._resolve_image(exe_path, names) is not None
+
     def build_launch_plan(
         self,
         game_dir: Path | str,

@@ -231,9 +231,6 @@ test("classifyDoctorFailure: maps known failure classes to plain-language remedi
   const script = classifyDoctorFailure("nk_doctor.py not found at C:/some/tools/nk_doctor.py");
   assert.equal(script.reason, "doctor-script-missing");
 
-  const legacyScript = classifyDoctorFailure("hst_doctor.py not found at C:/some/tools/hst_doctor.py");
-  assert.equal(legacyScript.reason, "doctor-script-missing");
-
   const timeout = classifyDoctorFailure("command timed out after 20000 milliseconds");
   assert.equal(timeout.reason, "timeout");
 
@@ -247,7 +244,6 @@ test("classifyDoctorFailure: never discards the raw diagnostic", () => {
     "Error: spawn python ENOENT",
     "repo-root-not-found: anchors missing",
     "nk_doctor.py not found at X",
-    "hst_doctor.py not found at X",
     "command timed out after 20000 milliseconds",
   ]) {
     const classified = classifyDoctorFailure(detail);

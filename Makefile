@@ -23,57 +23,12 @@ NK_INFO_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NK_INFO_ONLY_GOALS),$(M
 # ---------------------------------------------------------------------------
 # GENERIC TITLE CONTRACT (title-neutral, host-portable):
 #   GAME_NAME, GAME_ELF, GAME_BASE, GAME_ENTRY, GAME_EXTRA_ELFS, GAME_PSP_HEADER,
-#   TITLE_EXTRA_SPANS (extra executable span, at most one; legacy HST_EXTRA_SPANS
-#   lives only in the HST PROFILE compatibility block below and is ignored for
-#   generic titles), BUILD_DIR, FUNCS_PER_CHUNK, CODEGEN_PROFILE_ARG, etc., are
-#   all derived from a validated title manifest via tools/title_codegen_plan.py or
-#   TITLE_MANIFEST. Default values below are for a generic rebased ELF; HST-specific
-#   defaults live only in the HST PROFILE block that follows and never affect a
-#   generic title.
+#   TITLE_EXTRA_SPANS (extra executable span, at most one), BUILD_DIR,
+#   FUNCS_PER_CHUNK, CODEGEN_PROFILE_ARG, etc., are all derived from a validated
+#   title manifest via tools/title_codegen_plan.py or TITLE_MANIFEST. Default
+#   values below are for a generic rebased ELF; Make does not infer title data.
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# HST PROFILE (isolated compatibility defaults for the one legacy title).
-#   This block is the ONLY Makefile place that names HST constants (HST span,
-#   module load addresses, psp-header path, O2/O1 tuning). A generic title (including
-#   the three synthetic fixtures) never enters this block unless the
-#   operator explicitly requested GAME_NAME=hst, and a second synthetic title does
-#   not add another conditional here.
-# ---------------------------------------------------------------------------
-ifeq ($(GAME_NAME),hst)
-CODEGEN_PROFILE_ARG := --profile=hst
-GAME_EXTRA_ELFS ?= place_game_here/EXTRACTED/decrypted/libfont.prx@0x09ebfc00 \
-                   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx@0x09ed6000 \
-                   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx@0x09ec7f00
-GAME_PSP_HEADER ?= place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN
-# The analyzer applies no title-specific span of its own: an extra executable span
-# outside the section table is title configuration, so the HST span is bound here
-# explicitly for direct-Make builds. nk_manager.ps1 -TitleManifest supplies the same
-# value from the validated manifest plan; a command-line/environment value overrides
-# this default. LEGACY_ADAPTER: this hard-coded span mirrors the retail HST manifest
-# (assets/titles/hst-ucus98701.json, the source of truth — publication-excluded, never
-# checked in) for manifest-less direct-Make builds only. Retire it with the direct-Make
-# HST default path, never by deleting the span.
-HST_EXTRA_SPANS ?= 0x00303194,0x00306e24
-RUNTIME_OPT ?= -O2
-RECOMP_OPT  ?= -O1
-# HST LEGACY COMPATIBILITY: derive generic TITLE span from legacy HST only when the
-# generic key was never explicitly supplied. Use origin check to distinguish explicit
-# empty (command line `TITLE_EXTRA_SPANS=`) from undefined, so explicit empty stays
-# authoritative and does not fall through to stale legacy state. For non-HST titles
-# this block is not entered and HST_EXTRA_SPANS is ignored completely.
-ifeq ($(origin TITLE_EXTRA_SPANS),undefined)
-TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
-else ifeq ($(origin TITLE_EXTRA_SPANS),default)
-TITLE_EXTRA_SPANS := $(HST_EXTRA_SPANS)
-endif
-endif
-# GENERIC title extra-span: host-portable contract. TITLE_EXTRA_SPANS is the only
-# authoritative span input for generic builds; HST_EXTRA_SPANS is legacy and after
-# the HST block above is ignored for non-HST titles. A stale HST_EXTRA_SPANS
-# environment value must not affect a generic build.
 TITLE_EXTRA_SPANS ?=
-HST_EXTRA_SPANS ?=
 export TITLE_EXTRA_SPANS
 
 CODEGEN_PROFILE_ARG ?=
@@ -150,17 +105,9 @@ GAME_INPUT_PREREQ = $(if $(GAME_INPUT_TRACKED),$(GAME_INPUT_STAMP),)
 # needs a POSIX shell, and Make on Windows falls back to cmd.exe when sh is not on
 # PATH. The span therefore reaches only the primary-image analysis (codegen, VFPU
 # fuzz); rebased extra guest modules never receive it.
-# GENERIC: effective span derives ONLY from TITLE_EXTRA_SPANS. For non-HST titles
-# a stale HST_EXTRA_SPANS (environment or make-arg) is ignored completely. For HST
-# the legacy compatibility translation above has already copied HST into TITLE when
-# TITLE was not explicitly supplied, so the effective value still reflects the HST
-# default/legacy without ever reading HST directly here. Explicit empty TITLE stays
-# empty and does not fall through.
+# GENERIC: effective span derives ONLY from TITLE_EXTRA_SPANS.
 EFFECTIVE_EXTRA_SPANS := $(strip $(TITLE_EXTRA_SPANS))
 EXTRA_SPAN_ARG  = $(if $(strip $(EFFECTIVE_EXTRA_SPANS)),--extra-span=$(strip $(EFFECTIVE_EXTRA_SPANS)),)
-# Preserve legacy variable for profile hash and existing recipes that still expand
-# HST_EXTRA_SPANS directly (HST compatibility). It mirrors the effective span.
-HST_EXTRA_SPANS_EFFECTIVE := $(EFFECTIVE_EXTRA_SPANS)
 
 # GNU Make defines a built-in CC=cc with origin "default". A normal `CC ?= gcc`
 # therefore never takes effect. Treat only that built-in/undefined state as unset,
@@ -181,19 +128,41 @@ endif
 VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
 # glslc from the Vulkan SDK is used ONLY by the opt-in `shaders` target below.
 GLSLC ?= glslc
+
+# SDL3 dependency discovery and isolation (issue #331).
+# An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
+# found (MSYS2 UCRT64 on Windows, pkg-config/system elsewhere). One Python pass
+# writes every SDL3 variable to a fragment, so a parse costs one interpreter
+# start rather than one per variable. Info-only goals skip discovery entirely.
+SDL3_DIR ?=
+SDL3_MAKE_FRAGMENT := build/.sdl3-discovery.mk
+ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
+_SDL3_DISCOVERY := $(shell $(PYTHON) -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
+ifneq ($(strip $(_SDL3_DISCOVERY)),)
+$(error SDL3 discovery failed: $(_SDL3_DISCOVERY))
+endif
+include $(SDL3_MAKE_FRAGMENT)
+else
+SDL3_PROVIDER := none
+SDL3_VERSION := none
+endif
+
 # Native runtime code is host-side C and can be tested independently.
-# HST now has measured -O2 runtime / -O1 generated defaults. Generic/unqualified
-# titles remain conservative -O0/-O0. Explicit overrides remain supported.
-# Generated -O2 is NOT being adopted; -O1's measured build cost is higher but
-# acceptable for HST.
+# Direct Make remains conservative -O0/-O0. Validated private title adapters may
+# request measured profile-specific values; explicit overrides remain supported.
 RUNTIME_OPT ?= -O0
-CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
+CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
 # The extracted HST archive tree has a title-specific extracted-data census
 # (HST: 56,672 files). The generic build has no census (0 = disabled); a
 # title-configured build carries the expectation via runtime_bindings
 # (expected_data_file_count) validated from the title manifest. See
 # tools/title_manifest.py, tools/title_runtime_config.py and docs/PORTING.md C-2.
-LDFLAGS ?= -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
+LDFLAGS ?= $(SDL3_LDFLAGS) -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
+# Optional per-package linker map. Kept separate from LDFLAGS so package builds
+# can request it without replacing the SDK/library search paths.
+LINK_MAP ?=
+LINK_MAP_VALUE = -Wl,-Map,$(LINK_MAP)
+LINK_MAP_ARG = $(if $(strip $(LINK_MAP)),$(LINK_MAP_VALUE),)
 # DirectInput (-ldinput8 -ldxguid) removed: gui.c controller input is now handled entirely by
 # the SDL3 gamepad subsystem (src/rt/gpu_sdl3vk). -lole32 stays (Media Foundation, h264_mf.c);
 # -lwinmm stays (sched.c timeBeginPeriod); -lgdi32 stays (GDI fallback presenter).
@@ -357,7 +326,6 @@ endif
 # and no VBLANK counters -- a broken runtime that looks like a successful build. This is
 # a build-time refusal, not a title default: generic builds are untouched, and nothing
 # here makes `runtime-objects` require a retail or title input.
-HST_TITLE_MANIFEST := assets/titles/hst-ucus98701.json
 ifeq ($(GAME_NAME),hst)
 ifeq ($(strip $(TITLE_MANIFEST)),)
 TITLE_CONFIG_HST_UNBOUND := 1
@@ -398,7 +366,7 @@ $(TITLE_CONFIG_STAMP): $(BUILD_PROFILE_TOOL)
 
 $(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(TITLE_CONFIG_STAMP)
 ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)
-	$(error GAME_NAME=hst needs a title configuration: pass TITLE_MANIFEST=$(HST_TITLE_MANIFEST) (the local HST retail manifest: publication-excluded, never checked in) or build through nk_manager.ps1 -TitleManifest. Building without one would disable every title binding and produce a non-functional HST runtime. Generic builds need no manifest: use a different GAME_NAME.)
+	$(error GAME_NAME=hst needs a validated title manifest: pass TITLE_MANIFEST=<path> or use nk_manager.ps1 -TitleManifest. Direct Make does not infer HST defaults; generic builds need no manifest when they use a different GAME_NAME.)
 endif
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
 
@@ -565,6 +533,7 @@ PUBLIC_TARGETS := \
 	check \
 	test \
 	native-core-tests \
+	fuzz-parsers \
 	readiness \
 	provenance-refresh \
 	all \
@@ -632,6 +601,7 @@ PUBLIC_TARGETS := \
 	atrac3p-bridge-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
+	audio-selftest \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
 	gpu-snapsync-selftest \
@@ -652,13 +622,14 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check
+INTERNAL_TARGETS := FORCE player-vulkan-check sdl3-check
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
 HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
 HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
+HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
 HELP_DESCRIPTION_readiness := run the strict pre-PR gate with external authority
 HELP_DESCRIPTION_provenance-refresh := refresh controls with an external ledger and stage them
 HELP_DESCRIPTION_all := generate and compile the current title runtime
@@ -726,6 +697,7 @@ HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
+HELP_DESCRIPTION_audio-selftest := run the SDL3 host audio output selftest
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
@@ -767,6 +739,9 @@ compiler-info:
 	@echo FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)
 	@echo CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 	@echo PUBLIC_SAFE=$(PUBLIC_SAFE)
+	@echo SDL3_DIR=$(SDL3_DIR)
+	@echo SDL3_PROVIDER=$(SDL3_PROVIDER)
+	@echo SDL3_VERSION=$(SDL3_VERSION)
 
 # One command for the whole pre-pull-request checklist in docs/CI.md.
 #
@@ -878,7 +853,7 @@ production-smoke:
 		GAME_BASE=0x08804000 \
 		GAME_ENTRY=0x08804000 \
 		GAME_PSP_HEADER=$(PRODUCTION_SMOKE_PSP) \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PRODUCTION_SMOKE_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
 		LDFLAGS="$(LDFLAGS) -Wl,-Map,$(PRODUCTION_SMOKE_MAP)"
@@ -901,7 +876,7 @@ display-smoke:
 		GAME_BASE=$(DISPLAY_SMOKE_BASE) \
 		GAME_ENTRY=$(DISPLAY_SMOKE_BASE) \
 		GAME_PSP_HEADER=$(DISPLAY_SMOKE_PSP) \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(DISPLAY_SMOKE_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
@@ -936,7 +911,7 @@ production-smoke-gap:
 		GAME_BASE=0x08804000 \
 		GAME_ENTRY=0x08804000 \
 		GAME_PSP_HEADER=$(PRODUCTION_SMOKE_GAP_FIXTURE)/guest.psp \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=$(PRODUCTION_SMOKE_GAP_CODEGEN_ARGS) \
@@ -979,7 +954,7 @@ platform-ladder-zero:
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-zero/fixture/guest.prx \
 		GAME_BASE=$(PL_ZERO_BASE) \
 		GAME_ENTRY=0x08940040 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-zero \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
@@ -993,7 +968,7 @@ platform-ladder-reloc:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-reloc/fixture/guest.psp \
 		GAME_BASE=$(PL_RELOC_BASE) \
 		GAME_ENTRY=0x088C0020 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-reloc \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
@@ -1010,7 +985,7 @@ platform-ladder-gap:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-gap/fixture/guest.psp \
 		GAME_BASE=0x08A00000 \
 		GAME_ENTRY=0x08A00010 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-gap \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=--omit-aot=0x08A00060
@@ -1025,7 +1000,7 @@ platform-ladder-sched:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-sched/fixture/guest.psp \
 		GAME_BASE=$(PL_SCHED_BASE) \
 		GAME_ENTRY=0x08900010 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-sched \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
@@ -1039,7 +1014,7 @@ platform-ladder-fpu:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-fpu/fixture/guest.psp \
 		GAME_BASE=$(PL_FPU_BASE) \
 		GAME_ENTRY=0x08980008 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fpu \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
@@ -1053,7 +1028,7 @@ platform-ladder-fs:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-fs/fixture/guest.psp \
 		GAME_BASE=$(PL_FS_BASE) \
 		GAME_ENTRY=0x089C0018 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fs \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
@@ -1072,7 +1047,7 @@ platform-ladder-title2:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2/fixture/guest.psp \
 		GAME_BASE=$(PL_TITLE2_BASE) \
 		GAME_ENTRY=0x08A40020 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2 \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=--omit-aot=0x08A40220
@@ -1089,7 +1064,7 @@ platform-ladder-title2-negative:
 		GAME_PSP_HEADER=$(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture/guest.psp \
 		GAME_BASE=$(PL_TITLE2_NEGATIVE_BASE) \
 		GAME_ENTRY=0x08A80020 \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2-negative \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative
@@ -1132,12 +1107,12 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)")
+RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -1234,13 +1209,18 @@ endif
 player-vulkan-check:
 	$(if $(strip $(VULKAN_SDK)),,$(error No usable Vulkan SDK found; set VULKAN_SDK to the SDK root (e.g. mingw32-make player VULKAN_SDK=C:/path/to/VulkanSDK/<version>) or install a current SDK))
 
+# A clear failure when SDL3 dependency is missing or invalid.
+.PHONY: sdl3-check
+sdl3-check:
+	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
+
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 
-$(PLAYER_EXE): | player-vulkan-check
+$(PLAYER_EXE): | player-vulkan-check sdl3-check
 
 $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
@@ -1285,7 +1265,7 @@ cosim-selftest:
 		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
 		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		CODEGEN_TOOL=$(CODEGEN_TOOL)
 	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
@@ -1293,7 +1273,7 @@ cosim-selftest:
 		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
 		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
-		GAME_EXTRA_ELFS= HST_EXTRA_SPANS= TITLE_MANIFEST= \
+		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC)
 
@@ -1330,8 +1310,8 @@ ifeq ($(strip $(filter clean distclean,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 endif
 -include $(DEP_FILES)
 
-compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--no-insert-timestamp -o $(BUILD_DIR)/$(GAME_NAME).exe \
+compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
+	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) -Wl,--no-insert-timestamp -o $(BUILD_DIR)/$(GAME_NAME).exe \
 		$(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(CHUNK_OBJS) \
 		$(RT_GE_O) \
@@ -1339,7 +1319,7 @@ compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUI
 		$(ATRAC3P_OBJS) \
 		$(BUILD_DIR)/atrac3p_bridge.o \
 		$(LIBS)
-	pwsh -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" $(ASSET_COPY_ARGS)
+	pwsh -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME).exe')"
 
 clean:
@@ -1571,6 +1551,12 @@ psmf-media-selftest:
 		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c \
 		$(PSMF_MEDIA_LIBS)
 	$(BUILD_DIR)/psmf_media_selftest.exe
+
+audio-selftest:
+	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
+		src/rt/audio_unavailable.c -lSDL3 -lm \
+		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
+	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST \
@@ -1937,6 +1923,10 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c \
 		tests/native/test_xb_parser.c -o build/test_xb_parser$(EXE_EXT)
 	./build/test_xb_parser$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
+	./build/test_fuzz_parsers$(EXE_EXT) 100
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
@@ -1949,3 +1939,17 @@ else
 		tests/native/test_posix_process.c -o build/test_posix_process$(EXE_EXT)
 	./build/test_posix_process$(EXE_EXT)
 endif
+
+FUZZ_ITERS ?= 5000
+ifeq ($(OS),Windows_NT)
+FUZZ_SAN_FLAGS :=
+else
+FUZZ_SAN_FLAGS := -fsanitize=address,undefined
+endif
+
+fuzz-parsers:
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
+	./build/test_fuzz_parsers$(EXE_EXT) $(FUZZ_ITERS)

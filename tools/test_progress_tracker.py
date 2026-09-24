@@ -143,7 +143,7 @@ class TestPs1Parse(TrackerTestBase):
 
     def test_valid_script_verifies(self):
         good = self._write_ps1("good.ps1",
-                               "function Invoke-HstBuild { param([string]$Mode) Write-Host $Mode }\n")
+                               "function Invoke-NkBuild { param([string]$Mode) Write-Host $Mode }\n")
         self.assertEqual(pt._check_ps1_parse(good), "verified")
 
     def test_broken_script_regresses_with_real_parser(self):

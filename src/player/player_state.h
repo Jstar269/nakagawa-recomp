@@ -22,6 +22,7 @@ typedef enum {
     VIEW_LIBRARY = 0,
     VIEW_INSPECTING,
     VIEW_SUPPORTED_TITLE,
+    VIEW_EXPERIMENTAL_TITLE,
     VIEW_UNSUPPORTED_TITLE,
     VIEW_PREPARING,
     VIEW_SETTINGS,
@@ -97,6 +98,26 @@ typedef enum {
     WIZARD_STEP_READY_LAUNCH
 } WizardStep;
 
+typedef enum {
+    PREFLIGHT_OK = 0,
+    PREFLIGHT_MISSING,
+    PREFLIGHT_UNSUPPORTED,
+    PREFLIGHT_IN_PROGRESS
+} PlayerPreflightStatus;
+
+typedef struct {
+    char code[32];
+    PlayerPreflightStatus status;
+    char message[256];
+    unsigned int issue_numbers[2];
+    size_t issue_count;
+} PlayerPreflightCheck;
+
+typedef struct {
+    PlayerPreflightCheck checks[6];
+    size_t count;
+} PlayerCompatibilityPreflight;
+
 typedef struct {
     WizardStep step;
     bool iso_selected;
@@ -114,6 +135,7 @@ typedef struct {
     char extraction_current_file[MAX_PATH_LEN];
     char extraction_error[256];
     char staging_root[MAX_PATH_LEN];
+    PlayerCompatibilityPreflight preflight;
 } SetupWizardState;
 
 typedef struct {
@@ -225,5 +247,8 @@ void player_app_wizard_set_extraction_progress(PlayerApp *app, int percent,
                                                const char *current_file);
 void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
                                          const char *error_message);
+void player_app_build_compatibility_preflight(
+    PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
+    const NkIsoExecutableReport *executables);
 
 #endif /* NAKAGAWA_PLAYER_STATE_H */

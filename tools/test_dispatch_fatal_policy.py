@@ -13,7 +13,7 @@ Verifies:
 3. Native launch session in src/core/nk_launch.c enforces fail-closed dispatch
    (SR_DISPATCH_FATAL=1) when diagnostic_mode is set, and never injects permissive
    continuation flags.
-4. Production runner (hst_manager.ps1) defaults to SR_DISPATCH_FATAL=1, requiring
+4. Production runner (nk_manager.ps1) defaults to SR_DISPATCH_FATAL=1, requiring
    the explicit alarmingly-named SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS=1 to override.
 """
 
@@ -32,7 +32,7 @@ CORE = ROOT / "src" / "core"
 HLE_C = ROOT / "src" / "rt" / "hle.c"
 RECOMP_C = ROOT / "src" / "rt" / "recomp.c"
 LAUNCH_C = ROOT / "src" / "core" / "nk_launch.c"
-MGR = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
+MGR = ROOT / "nk_manager.ps1"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 

@@ -24,8 +24,7 @@ function isDoctorReportPayload(value: unknown): value is DoctorReport {
   const results = payload.results;
   if (
     payload.schema_version !== 1 ||
-    payload.tool !== "nk_doctor" &&
-    payload.tool !== "hst_doctor" ||
+    payload.tool !== "nk_doctor" ||
     typeof payload.root !== "string" ||
     typeof payload.scope !== "string" ||
     !DOCTOR_SCOPES.has(payload.scope) ||

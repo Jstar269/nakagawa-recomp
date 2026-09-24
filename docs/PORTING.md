@@ -66,8 +66,7 @@ building half of each contract. `-VulkanSdk`, `-RuntimeOpt`, `-RecompOpt`, and
 the contract permits it. The planner default is the single authority for the
 chunk-size default; the matching Make, manager, and codegen fallbacks must agree
 with it rather than define it. Without `-TitleManifest`, `nk_manager.ps1` selects
-`assets/titles/synthetic.json`. The deprecated `hst_manager.ps1` wrapper retains
-the legacy HST manifest and target defaults for compatibility.
+`assets/titles/synthetic.json`.
 
 `assets/titles/pspdev-phase5.json` is one of four materially different
 source-owned fixtures (with `synthetic.json`, `synthetic-title2.json`, and `display-smoke.json`)
@@ -135,9 +134,8 @@ mingw32-make GAME_NAME=mygame GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0x088
 
 Use `nk_manager.ps1 -TitleManifest` with the title's validated manifest and
 explicit private bindings. The canonical manager supports generic title planning;
-this does not prove runtime portability or correctness for another title.
-`hst_manager.ps1` remains a deprecated HST compatibility wrapper. Direct Make
-without a manifest remains an explicit non-canonical escape hatch: it bypasses
+this does not prove runtime portability or correctness for another title. Direct
+Make without a manifest remains an explicit non-canonical escape hatch: it bypasses
 the planner and its protected digest, so it carries no title contract.
 
 The first build can be substantially slower than a runtime-only rebuild because codegen must translate the title's MIPS functions and compile the generated translation units.
@@ -344,9 +342,9 @@ title configuration; see `tools/test_hle_title_isolation.py` and
 
 ### C-3 — Disc ID duplicated outside the manifest — RETIRED
 
-`tools/hst_doctor_core.py` previously defined `EXPECTED_DISC_ID = "UCUS98701"` independently
-of `manifest.disc.id`. The second source of truth has been retired: `tools/hst_doctor.py`
-and `tools/hst_doctor_checks.py` now take disc identity from validated title configuration
+The former HST doctor core previously defined `EXPECTED_DISC_ID = "UCUS98701"` independently
+of `manifest.disc.id`. The second source of truth has been retired: `tools/nk_doctor.py`
+and `tools/nk_doctor_checks.py` take disc identity from validated title configuration
 (`--title-manifest`, `TITLE_MANIFEST`, or local `assets/titles/hst-ucus98701.json`).
 When no manifest is supplied, the doctor operates in generic mode, performing ISO9660
 format validation without title-specific disc ID confirmation.

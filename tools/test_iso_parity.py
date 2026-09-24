@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -17,7 +19,11 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-from nk_core.iso_inspect import inspect_iso
+from nk_core.iso_inspect import (
+    inspect_compatibility_preflight,
+    inspect_iso,
+    write_experimental_profile,
+)
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
@@ -139,6 +145,57 @@ def create_test_iso(
     path.write_bytes(data)
 
 
+def create_test_iso_with_executables(
+    path: Path, eboot: bytes, boot: bytes | None = None,
+    disc_id: str = "TEST00001", title: str = "Test Game",
+) -> None:
+    """Add synthetic SYSDIR executables to the source-owned ISO fixture."""
+    create_test_iso(path, disc_id=disc_id, title=title)
+    sector_size = 2048
+    data = bytearray(path.read_bytes())
+    game_lba, sysdir_lba, eboot_lba, boot_lba = 34, 35, 36, 37
+    game_entries = (
+        _dir_record(bytes([0]), game_lba, sector_size, True)
+        + _dir_record(bytes([1]), 33, sector_size, True)
+        + _dir_record(b"PARAM.SFO;1", 32, len(build_param_sfo(disc_id, title)), False)
+        + _dir_record(b"SYSDIR", sysdir_lba, sector_size, True)
+    )
+    sysdir_entries = (
+        _dir_record(bytes([0]), sysdir_lba, sector_size, True)
+        + _dir_record(bytes([1]), game_lba, sector_size, True)
+        + _dir_record(b"EBOOT.BIN;1", eboot_lba, len(eboot), False)
+    )
+    if boot is not None:
+        sysdir_entries += _dir_record(b"BOOT.BIN;1", boot_lba, len(boot), False)
+    data[game_lba * sector_size : (game_lba + 1) * sector_size] = bytes(sector_size)
+    data[sysdir_lba * sector_size : (sysdir_lba + 1) * sector_size] = bytes(sector_size)
+    data[game_lba * sector_size : game_lba * sector_size + len(game_entries)] = game_entries
+    data[sysdir_lba * sector_size : sysdir_lba * sector_size + len(sysdir_entries)] = sysdir_entries
+    data[eboot_lba * sector_size : eboot_lba * sector_size + len(eboot)] = eboot
+    if boot is not None:
+        data[boot_lba * sector_size : boot_lba * sector_size + len(boot)] = boot
+    path.write_bytes(data)
+
+
+def build_plain_mips_elf(e_type: int = 2) -> bytes:
+    elf = bytearray(88)
+    elf[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", elf, 16, e_type, 8, 1)
+    struct.pack_into("<III", elf, 24, 0x08800000, 52, 0)
+    struct.pack_into("<HHHHH", elf, 40, 52, 32, 1, 0, 0)
+    struct.pack_into("<8I", elf, 52, 1, 84, 0x08800000, 0x08800000, 4, 4, 5, 4)
+    elf[84:88] = b"\x34\x12\x00\x00"
+    return bytes(elf)
+
+
+def build_psp_container() -> bytes:
+    container = bytearray(0x80)
+    container[:4] = b"~PSP"
+    container[0x27] = 1
+    struct.pack_into("<I", container, 0x54, 0x1000)
+    return bytes(container)
+
+
 def _both_endian32(value: int) -> bytes:
     """ECMA-119 7.3.3: a 32-bit value recorded little-endian then big-endian."""
     return value.to_bytes(4, "little") + value.to_bytes(4, "big")
@@ -195,6 +252,7 @@ class IsoParityTests(unittest.TestCase):
         core_srcs = [
             ROOT / "src" / "core" / "nk_iso.c",
             ROOT / "src" / "core" / "nk_library.c",
+            ROOT / "src" / "core" / "nk_title_manifest.c",
             ROOT / "src" / "core" / "generated" / "nk_title_catalog.c",
         ]
         if has_launch:
@@ -210,6 +268,7 @@ class IsoParityTests(unittest.TestCase):
 #include <assert.h>
 #include "nk_iso.h"
 #include "nk_library.h"
+#include "nk_title_manifest.h"
 #if {1 if has_launch else 0}
 #include "nk_launch.h"
 #endif
@@ -233,6 +292,11 @@ int main(int argc, char **argv) {{
         printf("VERSION:%s\\n", meta.disc_version);
         printf("VOLUME_ID:%s\\n", meta.volume_id);
         printf("SUPPORTED:%d\\n", meta.is_supported ? 1 : 0);
+        printf("PARAM_SFO_PARSED:%d\\n", meta.param_sfo_parsed ? 1 : 0);
+        printf("EBOOT_KIND:%d\\n", (int)meta.executables.eboot.kind);
+        printf("BOOT_KIND:%d\\n", (int)meta.executables.boot.kind);
+        printf("SELECTED_EXECUTABLE:%d\\n", (int)meta.executables.selected);
+        printf("BOOT_FALLBACK:%d\\n", meta.executables.boot_fallback ? 1 : 0);
         printf("MATCHED_ID:%s\\n", meta.matched_title ? meta.matched_title->id : "NONE");
         printf("STATUS:%d\\n", (int)meta.status);
         return 0;
@@ -251,6 +315,12 @@ int main(int argc, char **argv) {{
         snprintf(g1.title_id, sizeof(g1.title_id), "hst-ucus98701-v1");
         snprintf(g1.iso_path, sizeof(g1.iso_path), "C:/games/hst.iso");
         g1.status = NK_STATUS_VERIFIED;
+        g1.is_experimental = true;
+        g1.executable_eboot_kind = 2;
+        g1.executable_boot_kind = 1;
+        g1.executable_selection = 2;
+        g1.executable_boot_fallback = true;
+        snprintf(g1.selected_executable, sizeof(g1.selected_executable), "BOOT.BIN");
         g1.is_prepared = true;
         g1.iso_size_bytes = 1000000;
 
@@ -268,6 +338,12 @@ int main(int argc, char **argv) {{
         assert(strcmp(entry->title_id, "hst-ucus98701-v1") == 0);
         assert(entry->status == NK_STATUS_VERIFIED);
         assert(entry->is_prepared == true);
+        assert(entry->is_experimental == true);
+        assert(entry->executable_eboot_kind == 2);
+        assert(entry->executable_boot_kind == 1);
+        assert(entry->executable_selection == 2);
+        assert(entry->executable_boot_fallback == true);
+        assert(strcmp(entry->selected_executable, "BOOT.BIN") == 0);
 
         /* Test remove */
         assert(nk_library_remove(&loaded, "UCUS98701") == NK_OK);
@@ -275,6 +351,44 @@ int main(int argc, char **argv) {{
         assert(nk_library_save(&loaded, lib_json) == NK_OK);
 
         printf("LIBRARY_TEST_PASSED\\n");
+        return 0;
+    }}
+
+    if (strcmp(mode, "experimental_profile") == 0) {{
+        if (argc < 4) return 1;
+        const char *iso_path = argv[2];
+        const char *user_data_root = argv[3];
+        NkIsoMetadata meta;
+        NkResult inspect_result = nk_iso_inspect(iso_path, &meta);
+        if (inspect_result != NK_OK) {{
+            printf("PROFILE_RESULT:ERROR:DISC:%s\\n", meta.error_message);
+            return 0;
+        }}
+        char profile_id[64] = {{0}};
+        char error[256] = {{0}};
+        bool ok = nk_title_manifest_write_experimental_profile(
+            iso_path, meta.param_sfo_parsed, meta.disc_id, meta.title_name,
+            meta.executables.selected_path, user_data_root, profile_id,
+            sizeof(profile_id), error, sizeof(error));
+        if (!ok) {{
+            printf("PROFILE_RESULT:ERROR:%s\\n", error);
+            return 0;
+        }}
+        printf("PROFILE_RESULT:OK\\n");
+        printf("PROFILE_ID:%s\\n", profile_id);
+        printf("PACKAGE_AVAILABLE:%d\\n",
+               nk_launch_runtime_package_available(user_data_root, profile_id) ? 1 : 0);
+        NkGameEntry game;
+        memset(&game, 0, sizeof(game));
+        snprintf(game.disc_id, sizeof(game.disc_id), "%s", meta.disc_id);
+        snprintf(game.title_id, sizeof(game.title_id), "%s", profile_id);
+        snprintf(game.iso_path, sizeof(game.iso_path), "%s", iso_path);
+        NkLaunchSession session;
+        NkResult launch_result = nk_launch_prepare_session(
+            &session, &game, user_data_root);
+        printf("LAUNCH_PREPARE:%s\\n",
+               launch_result == NK_OK ? "OK" : "REFUSED");
+        printf("LAUNCH_REASON:%s\\n", session.last_error);
         return 0;
     }}
 
@@ -413,7 +527,104 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_meta.get("TITLE"), py_meta.title)
         self.assertEqual(c_meta.get("VERSION"), py_meta.version)
         self.assertEqual(c_meta.get("SUPPORTED"), "1")
+        self.assertEqual(c_meta.get("PARAM_SFO_PARSED"), "1")
         self.assertEqual(c_meta.get("MATCHED_ID"), py_meta.matched_profile.id)
+
+    def test_cli_inspect_shows_structured_compatibility_preflight(self) -> None:
+        iso_file = self.temp_dir / "cli-preflight.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root"
+        runtime_root.mkdir()
+        create_test_iso(iso_file, disc_id="TEST00001", title="Synthetic Test Title")
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
+             str(iso_file), "--json", "--root", str(runtime_root)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIn("compatibility_preflight", payload)
+        checks = payload["compatibility_preflight"]["checks"]
+        self.assertEqual(
+            [check["code"] for check in checks],
+            ["DISC_SFO", "EXECUTABLE", "RUNTIME_PACKAGE", "SYSTEM_FONTS", "AUDIO_OUTPUT"],
+        )
+        self.assertTrue(all(check["status"] in {
+            "OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS",
+        } for check in checks))
+        by_code = {check["code"]: check for check in checks}
+        self.assertEqual(by_code["RUNTIME_PACKAGE"]["status"], "MISSING")
+        self.assertEqual(by_code["SYSTEM_FONTS"]["status"], "MISSING")
+        self.assertEqual(by_code["AUDIO_OUTPUT"]["status"], "OK")
+
+        meta = inspect_iso(iso_file)
+        assert meta.matched_profile is not None
+        title_name = meta.matched_profile.game_name
+        package_dir = runtime_root / "build" / title_name
+        package_dir.mkdir(parents=True)
+        (package_dir / f"{title_name}.exe").write_bytes(b"synthetic executable")
+        (package_dir / f"{title_name}_image.bin").write_bytes(b"synthetic image")
+        font_dir = runtime_root / "font"
+        font_dir.mkdir()
+        (font_dir / "jpn0.pgf").write_bytes(b"synthetic font marker")
+        ready = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
+             str(iso_file), "--json", "--root", str(runtime_root)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(ready.returncode, 0, ready.stderr)
+        ready_checks = {check["code"]: check for check in
+                        json.loads(ready.stdout)["compatibility_preflight"]["checks"]}
+        self.assertEqual(ready_checks["RUNTIME_PACKAGE"]["status"], "OK")
+        self.assertEqual(ready_checks["SYSTEM_FONTS"]["status"], "OK")
+
+    def test_cli_preflight_selects_plain_boot_fallback(self) -> None:
+        iso_file = self.temp_dir / "cli-boot-fallback.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root"
+        runtime_root.mkdir()
+        create_test_iso_with_executables(
+            iso_file, build_psp_container(), build_plain_mips_elf()
+        )
+        metadata = inspect_iso(iso_file)
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=metadata, runtime_root=runtime_root
+        )
+        self.assertEqual(report["executables"]["EBOOT.BIN"]["classification"],
+                         "PSP_ENCRYPTED_CONTAINER")
+        self.assertEqual(report["executables"]["BOOT.BIN"]["classification"],
+                         "PLAIN_MIPS_ELF32")
+        self.assertEqual(report["selected_executable"], "BOOT.BIN")
+        self.assertTrue(report["boot_fallback"])
+        native = self._run_native_inspect(iso_file)
+        self.assertEqual(native["PARAM_SFO_PARSED"], "1")
+        self.assertEqual(native["EBOOT_KIND"], "2")
+        self.assertEqual(native["BOOT_KIND"], "1")
+        self.assertEqual(native["SELECTED_EXECUTABLE"], "2")
+        self.assertEqual(native["BOOT_FALLBACK"], "1")
+        executable_check = next(
+            check for check in report["checks"] if check["code"] == "EXECUTABLE"
+        )
+        self.assertEqual(executable_check["status"], "OK")
+        self.assertIn("BOOT.BIN selected for analysis", executable_check["message"])
+
+    def test_prx_format_boot_fallback_is_selected_by_both_inspectors(self) -> None:
+        """Retail BOOT.BIN is often PSP PRX-format (e_type 0xFFA0), which the
+        analyzer and runtime loader accept; the preflight must not call it
+        unusable."""
+        iso_file = self.temp_dir / "prx-boot-fallback.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root-prx"
+        runtime_root.mkdir()
+        create_test_iso_with_executables(
+            iso_file, build_psp_container(), build_plain_mips_elf(0xFFA0)
+        )
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=runtime_root
+        )
+        self.assertEqual(report["executables"]["BOOT.BIN"]["classification"],
+                         "PLAIN_MIPS_ELF32")
+        self.assertEqual(report["selected_executable"], "BOOT.BIN")
+        native = self._run_native_inspect(iso_file)
+        self.assertEqual(native["BOOT_KIND"], "1")
+        self.assertEqual(native["SELECTED_EXECUTABLE"], "2")
 
     def test_second_title_iso_parity(self) -> None:
         """Verify Python and Native C inspector match on second public synthetic disc ID."""
@@ -442,6 +653,97 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_meta.get("SUPPORTED"), "0")
         self.assertEqual(c_meta.get("MATCHED_ID"), "NONE")
         self.assertIsNone(py_meta.matched_profile)
+
+    def test_uncatalogued_param_sfo_disc_is_experimental(self) -> None:
+        """Unknown PSP discs get validated local identity profiles and stay launch-gated."""
+        iso_file = self.temp_dir / "experimental_mock.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root"
+        runtime_root.mkdir()
+        executable_bytes = build_plain_mips_elf() + bytes((i % 251 for i in range(70000)))
+        create_test_iso_with_executables(
+            iso_file, executable_bytes, disc_id="ULUS99998",
+            title="Experimental Fixture",
+        )
+
+        metadata = inspect_iso(iso_file)
+        self.assertIsNone(metadata.matched_profile)
+        preflight = inspect_compatibility_preflight(
+            iso_file, metadata=metadata, runtime_root=runtime_root
+        )
+        self.assertTrue(preflight["is_experimental"])
+        by_code = {check["code"]: check for check in preflight["checks"]}
+        self.assertEqual(by_code["EXPERIMENTAL"]["issues"], [285, 308])
+        self.assertIn("Compatibility is unknown", by_code["EXPERIMENTAL"]["message"])
+        self.assertEqual(by_code["RUNTIME_PACKAGE"]["status"], "MISSING")
+        self.assertEqual(by_code["RUNTIME_PACKAGE"]["issues"], [296, 297])
+
+        python_root = self.temp_dir / "python-user-data"
+        python_profile_path = write_experimental_profile(
+            iso_file, python_root, metadata=metadata
+        )
+        python_profile = json.loads(python_profile_path.read_text(encoding="utf-8"))
+        from title_manifest import validate_manifest
+        manifest = validate_manifest(python_profile["manifest"])
+        identity = python_profile["input_identity"]
+        expected_hash = hashlib.sha256(executable_bytes).hexdigest()
+        self.assertEqual(manifest["disc"]["id"], "ULUS99998")
+        self.assertEqual(manifest["display_name"], "Experimental Fixture")
+        self.assertEqual(manifest["executable"]["base"], 0)
+        self.assertEqual(manifest["executable"]["entry"], 0)
+        self.assertEqual(manifest["modules"], [])
+        self.assertEqual(identity["selected_executable"], "PSP_GAME/SYSDIR/EBOOT.BIN")
+        self.assertEqual(identity["executable_sha256"], expected_hash)
+        self.assertEqual(identity["elf_sha256"], expected_hash)
+        self.assertTrue(python_profile_path.is_relative_to(python_root))
+
+        native_root = self.temp_dir / "native-user-data"
+        native = subprocess.run(
+            [str(self.exe_path), "experimental_profile", str(iso_file), str(native_root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(native.returncode, 0, native.stderr)
+        self.assertIn("PROFILE_RESULT:OK", native.stdout)
+        self.assertIn("PACKAGE_AVAILABLE:0", native.stdout)
+        self.assertIn("LAUNCH_PREPARE:REFUSED", native.stdout)
+        native_profile_path = native_root / "experimental" / "ULUS99998" / "profile.json"
+        native_profile = json.loads(native_profile_path.read_text(encoding="utf-8"))
+        native_manifest = validate_manifest(native_profile["manifest"])
+        self.assertEqual(native_manifest["id"], "experimental-ulus99998")
+        self.assertEqual(native_profile["input_identity"]["executable_sha256"], expected_hash)
+        self.assertEqual(native_profile["input_identity"]["elf_sha256"], expected_hash)
+
+    def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
+        """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""
+        iso_file = self.temp_dir / "non-psp.iso"
+        create_test_iso(iso_file, disc_id="ULUS99997", title="Orphaned SFO")
+        data = bytearray(iso_file.read_bytes())
+        root_off = 33 * 2048
+        original_root = bytes(data[root_off:root_off + 2048])
+        data[root_off:root_off + 2048] = bytes(2048)
+        # Keep only the ISO root's self and parent records, removing PSP_GAME.
+        data[root_off:root_off + 68] = original_root[:68]
+        iso_file.write_bytes(data)
+
+        metadata = inspect_iso(iso_file)
+        runtime_root = self.temp_dir / "empty-runtime-root-non-psp"
+        runtime_root.mkdir()
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=metadata, runtime_root=runtime_root
+        )
+        self.assertFalse(report["is_experimental"])
+        self.assertEqual(report["checks"][0]["code"], "DISC_SFO")
+        with self.assertRaisesRegex(ValueError, "requires PARAM.SFO"):
+            write_experimental_profile(iso_file, self.temp_dir / "refused-user-data",
+                                       metadata=metadata)
+
+        native_root = self.temp_dir / "native-refused-user-data"
+        native = subprocess.run(
+            [str(self.exe_path), "experimental_profile", str(iso_file), str(native_root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(native.returncode, 0, native.stderr)
+        self.assertIn("PROFILE_RESULT:ERROR:Experimental profiles require", native.stdout)
+        self.assertFalse((native_root / "experimental").exists())
 
     def test_unsupported_iso_parity(self) -> None:
         """Verify Python and Native C inspector match on unsupported disc ID."""
@@ -562,6 +864,15 @@ int main(int argc, char **argv) {{
 
         c_conflict = self._run_native_inspect(iso_conflict)
         self.assertTrue(c_conflict.get("RESULT", "").startswith("ERROR"))
+        valid_iso = self.temp_dir / "preflight-valid.iso"
+        create_test_iso(valid_iso)
+        preflight_meta = inspect_iso(valid_iso)
+        preflight = inspect_compatibility_preflight(
+            iso_conflict, metadata=preflight_meta, runtime_root=self.temp_dir
+        )
+        disc_check = next(check for check in preflight["checks"]
+                          if check["code"] == "DISC_SFO")
+        self.assertEqual(disc_check["status"], "UNSUPPORTED")
 
         # 2. Byte-identical keys: Python and Native C must accept
         sfo_identical = build_custom_param_sfo([
