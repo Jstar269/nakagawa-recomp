@@ -112,7 +112,7 @@ static void emit_nal(ByteOut *o, uint8_t hdr, const BitW *rbsp) {
 #define FIX_H_MBS 4
 #define FIX_PICTURES 3
 
-static void write_sps(BitW *w) {
+static void write_sps_ex(BitW *w, uint32_t w_mbs, uint32_t h_mbs) {
     bw_u(w, 66u, 8);          /* profile_idc: baseline */
     bw_u(w, 0u, 8);           /* constraint set flags  */
     bw_u(w, 30u, 8);          /* level_idc 3.0         */
@@ -122,8 +122,8 @@ static void write_sps(BitW *w) {
     bw_ue(w, 0u);             /* log2_max_pic_order_cnt_lsb_minus4 */
     bw_ue(w, 1u);             /* max_num_ref_frames */
     bw_bit(w, 0);             /* gaps_in_frame_num_value_allowed_flag */
-    bw_ue(w, FIX_W_MBS - 1);  /* pic_width_in_mbs_minus1 */
-    bw_ue(w, FIX_H_MBS - 1);  /* pic_height_in_map_units_minus1 */
+    bw_ue(w, w_mbs - 1u);     /* pic_width_in_mbs_minus1 */
+    bw_ue(w, h_mbs - 1u);     /* pic_height_in_map_units_minus1 */
     bw_bit(w, 1);             /* frame_mbs_only_flag */
     bw_bit(w, 1);             /* direct_8x8_inference_flag */
     bw_bit(w, 0);             /* frame_cropping_flag */
@@ -151,7 +151,7 @@ static void write_pps(BitW *w) {
 }
 
 /* One IDR picture, every macroblock I_PCM, so luma and chroma are exactly (y, cb, cr). */
-static void write_idr(BitW *w, int picture, uint8_t y, uint8_t cb, uint8_t cr) {
+static void write_idr_ex(BitW *w, int picture, uint32_t w_mbs, uint32_t h_mbs, uint8_t y, uint8_t cb, uint8_t cr) {
     uint8_t pcm[256 + 64 + 64];
     memset(pcm, y, 256u);
     memset(pcm + 256, cb, 64u);
@@ -165,7 +165,7 @@ static void write_idr(BitW *w, int picture, uint8_t y, uint8_t cb, uint8_t cr) {
     bw_bit(w, 0);                       /* dec_ref_pic_marking.no_output_of_prior_pics_flag */
     bw_bit(w, 0);                       /* dec_ref_pic_marking.long_term_reference_flag */
     bw_ue(w, 0u);                       /* slice_qp_delta (se(0)) */
-    for (int mb = 0; mb < FIX_W_MBS * FIX_H_MBS; mb++) {
+    for (uint32_t mb = 0; mb < w_mbs * h_mbs; mb++) {
         bw_ue(w, 25u);                  /* mb_type: I_PCM */
         bw_raw(w, pcm, (uint32_t)sizeof(pcm));
     }
@@ -179,14 +179,15 @@ static const uint8_t k_cb[FIX_PICTURES] = {  90u, 128u, 160u };
 static const uint8_t k_cr[FIX_PICTURES] = { 160u, 128u,  96u };
 
 /* One access unit = access-unit delimiter + (on the first picture) parameter sets + IDR. */
-static void build_au(int picture, ByteOut *out) {
+static void build_au_ex(int picture, uint32_t w_mbs, uint32_t h_mbs,
+                        uint8_t y, uint8_t cb, uint8_t cr, ByteOut *out) {
     static const uint8_t aud[5] = { 0, 0, 1, 0x09, 0x10 };
     BitW w;
     uint8_t scratch[8192];
     bo_raw(out, aud, sizeof(aud));
     if (picture == 0) {
         w.d = scratch; w.cap = sizeof(scratch); w.n = 0; w.acc = 0; w.bits = 0; w.overflow = 0;
-        write_sps(&w);
+        write_sps_ex(&w, w_mbs, h_mbs);
         CHECK(!w.overflow, "SPS fits the scratch buffer");
         emit_nal(out, 0x67, &w);
         w.n = 0; w.acc = 0; w.bits = 0; w.overflow = 0;
@@ -195,24 +196,32 @@ static void build_au(int picture, ByteOut *out) {
         emit_nal(out, 0x68, &w);
     }
     w.d = scratch; w.cap = sizeof(scratch); w.n = 0; w.acc = 0; w.bits = 0; w.overflow = 0;
-    write_idr(&w, picture, k_y[picture], k_cb[picture], k_cr[picture]);
+    write_idr_ex(&w, picture, w_mbs, h_mbs, y, cb, cr);
     CHECK(!w.overflow, "IDR picture fits the scratch buffer");
     emit_nal(out, 0x65, &w);
 }
 
 /* Build the annex-B elementary stream and report each access unit's byte range, which is what
  * the producer must reproduce exactly. */
-static int build_stream(uint8_t *dst, uint32_t cap, uint32_t au_off[FIX_PICTURES],
-                        uint32_t au_len[FIX_PICTURES], uint32_t *total) {
+static int build_stream_ex(uint8_t *dst, uint32_t cap, uint32_t w_mbs, uint32_t h_mbs,
+                           const uint8_t y[FIX_PICTURES], const uint8_t cb[FIX_PICTURES],
+                           const uint8_t cr[FIX_PICTURES],
+                           uint32_t au_off[FIX_PICTURES], uint32_t au_len[FIX_PICTURES],
+                           uint32_t *total) {
     ByteOut o;
     o.d = dst; o.cap = cap; o.n = 0; o.overflow = 0;
     for (int i = 0; i < FIX_PICTURES; i++) {
         au_off[i] = o.n;
-        build_au(i, &o);
+        build_au_ex(i, w_mbs, h_mbs, y[i], cb[i], cr[i], &o);
         au_len[i] = o.n - au_off[i];
     }
     *total = o.n;
     return !o.overflow;
+}
+
+static int build_stream(uint8_t *dst, uint32_t cap, uint32_t au_off[FIX_PICTURES],
+                        uint32_t au_len[FIX_PICTURES], uint32_t *total) {
+    return build_stream_ex(dst, cap, FIX_W_MBS, FIX_H_MBS, k_y, k_cb, k_cr, au_off, au_len, total);
 }
 
 /* ---- synthetic PSMF container ------------------------------------------------------------ */
@@ -254,32 +263,43 @@ static void put_pts(uint8_t *p, int64_t v) {
  * presentation time; the second flags byte states which timestamps follow, and the
  * optional-header length is what bounds them.  All three are written from `has_pts` here,
  * so a packet that claims a time is one whose declared header actually holds it. */
-static void add_video_pes(Buf *b, int has_pts, int64_t pts, const uint8_t *payload, uint32_t len) {
+static void add_video_pes_sid(Buf *b, uint8_t sid, int has_pts, int64_t pts, const uint8_t *payload, uint32_t len) {
     static const uint8_t pack[14] = { 0,0,1,0xba, 0x44,0,4,0,4,1,0,0,1,0 };
     uint32_t opt = has_pts ? 5u : 0u;
     uint32_t total = 3u + opt + len;
     uint8_t hdr[9];
     put(b, pack, sizeof(pack));
-    hdr[0]=0; hdr[1]=0; hdr[2]=1; hdr[3]=0xe0;
+    hdr[0]=0; hdr[1]=0; hdr[2]=1; hdr[3]=sid;
     hdr[4]=(uint8_t)(total >> 8); hdr[5]=(uint8_t)total;
     hdr[6]=0x80u; hdr[7]=(uint8_t)(has_pts ? 0x80u : 0x00u); hdr[8]=(uint8_t)opt;
     put(b, hdr, sizeof(hdr));
     if (has_pts) { uint8_t p[5]; put_pts(p, pts); put(b, p, sizeof(p)); }
     put(b, payload, len);
 }
+
+static void add_video_pes(Buf *b, int has_pts, int64_t pts, const uint8_t *payload, uint32_t len) {
+    add_video_pes_sid(b, 0xe0u, has_pts, pts, payload, len);
+}
+
 /* Audio access unit: private-stream-1 sub-header + one self-delimiting ATRAC frame. */
-static void add_audio_pes(Buf *b, const uint8_t *frame, uint32_t len) {
+static void add_audio_pes_sub(Buf *b, uint8_t sub_id, int has_pts, int64_t pts, const uint8_t *frame, uint32_t len) {
     static const uint8_t pack[14] = { 0,0,1,0xba, 0x44,0,4,0,4,1,0,0,1,0 };
-    uint8_t prefix[4] = { 0x00, 0x00, 0x00, 0x00 };
-    uint32_t total = 3u + 4u + len;
+    uint32_t opt = has_pts ? 5u : 0u;
+    uint8_t prefix[4] = { sub_id, 0x00, 0x00, 0x00 };
+    uint32_t total = 3u + opt + 4u + len;
     uint8_t hdr[9];
     put(b, pack, sizeof(pack));
     hdr[0]=0; hdr[1]=0; hdr[2]=1; hdr[3]=0xbd;
     hdr[4]=(uint8_t)(total >> 8); hdr[5]=(uint8_t)total;
-    hdr[6]=0x80u; hdr[7]=0; hdr[8]=0;
+    hdr[6]=0x80u; hdr[7]=(uint8_t)(has_pts ? 0x80u : 0x00u); hdr[8]=(uint8_t)opt;
     put(b, hdr, sizeof(hdr));
+    if (has_pts) { uint8_t p[5]; put_pts(p, pts); put(b, p, sizeof(p)); }
     put(b, prefix, sizeof(prefix));
     put(b, frame, len);
+}
+
+static void add_audio_pes(Buf *b, const uint8_t *frame, uint32_t len) {
+    add_audio_pes_sub(b, 0x00u, 0, 0, frame, len);
 }
 /* One self-delimiting ATRAC frame (8-byte header + data); the size field is
  * ((code1 & 3) << 8 | code2 * 8) + 0x10 total bytes. */
@@ -766,12 +786,221 @@ static void test_track_independence(void) {
     free(bytes);
 }
 
+static uint8_t *build_multistream_psmf(uint32_t *size_out,
+                                       uint32_t au0_off[FIX_PICTURES], uint32_t au0_len[FIX_PICTURES],
+                                       uint32_t au1_off[FIX_PICTURES], uint32_t au1_len[FIX_PICTURES]) {
+    uint8_t es0[65536], es1[65536];
+    uint32_t es0_len = 0, es1_len = 0;
+    CHECK(build_stream_ex(es0, sizeof(es0), 4, 4, k_y, k_cb, k_cr, au0_off, au0_len, &es0_len), "stream 0 builds");
+    static const uint8_t k_y2[FIX_PICTURES]  = {  80u, 160u, 240u };
+    static const uint8_t k_cb2[FIX_PICTURES] = { 100u, 128u, 140u };
+    static const uint8_t k_cr2[FIX_PICTURES] = { 150u, 128u, 110u };
+    CHECK(build_stream_ex(es1, sizeof(es1), 2, 2, k_y2, k_cb2, k_cr2, au1_off, au1_len, &es1_len), "stream 1 builds");
+
+    Buf b;
+    b.cap = 2048u + (es0_len + es1_len) * 2u + 8192u;
+    b.d = (uint8_t *)calloc(1, b.cap);
+    b.at = 2048u;
+    b.overflow = 0;
+    if (!b.d) return NULL;
+    b.d[0] = 'P'; b.d[1] = 'S'; b.d[2] = 'M'; b.d[3] = 'F';
+    be32_at(b.d + 8, 2048u);
+    /* Stream table at 0x80 */
+    b.d[0x80] = 0; b.d[0x81] = 4; /* 4 stream entries */
+    /* Entry 0: Video 0 (0xE0) */
+    b.d[0x82] = 0xE0; b.d[0x83] = 0x00;
+    be32_at(b.d + 0x86, 1); be32_at(b.d + 0x8A, 1);
+    b.d[0x8E] = 4; b.d[0x8F] = 4; /* 64x64 */
+    /* Entry 1: Video 1 (0xE1) */
+    b.d[0x92] = 0xE1; b.d[0x93] = 0x01;
+    be32_at(b.d + 0x96, 1); be32_at(b.d + 0x9A, 1);
+    b.d[0x9E] = 2; b.d[0x9F] = 2; /* 32x32 */
+    /* Entry 2: Audio 0 (0xB0, sub 0x00) */
+    b.d[0xA2] = 0xB0; b.d[0xA3] = 0x00;
+    b.d[0xB0] = 2; /* 2 channels */
+    /* Entry 3: Audio 1 (0xB1, sub 0x01) */
+    b.d[0xB2] = 0xB1; b.d[0xB3] = 0x01;
+    b.d[0xC0] = 1; /* 1 channel */
+
+    uint8_t aframe[128];
+    for (int i = 0; i < FIX_PICTURES; i++) {
+        /* Video 0 PES 1 */
+        uint32_t half0 = au0_len[i] / 2u;
+        add_video_pes_sid(&b, 0xE0, k_has_pts[i], FIX_BASE + (int64_t)i * FIX_PTS_STEP, es0 + au0_off[i], half0);
+        /* Video 1 PES 1 */
+        uint32_t half1 = au1_len[i] / 2u;
+        int v1_has_pts = (i != 0);
+        int64_t v1_pts = FIX_BASE + (int64_t)(i + 1) * 3000;
+        add_video_pes_sid(&b, 0xE1, v1_has_pts, v1_pts, es1 + au1_off[i], half1);
+
+        if (i == 0) {
+            uint32_t n = make_audio_frame(aframe, sizeof(aframe), 0x28, 6, 0x11);
+            add_audio_pes_sub(&b, 0x00, 1, FIX_BASE, aframe, n);
+            n = make_audio_frame(aframe, sizeof(aframe), 0x28, 6, 0x33);
+            add_audio_pes_sub(&b, 0x01, 0, 0, aframe, n);
+        } else if (i == 1) {
+            uint32_t n = make_audio_frame(aframe, sizeof(aframe), 0x28, 6, 0x22);
+            add_audio_pes_sub(&b, 0x00, 0, 0, aframe, n);
+            n = make_audio_frame(aframe, sizeof(aframe), 0x28, 6, 0x44);
+            add_audio_pes_sub(&b, 0x01, 1, FIX_BASE + 5000, aframe, n);
+        }
+
+        /* Video 0 PES 2 */
+        add_video_pes_sid(&b, 0xE0, 0, 0, es0 + au0_off[i] + half0, au0_len[i] - half0);
+        /* Video 1 PES 2 */
+        add_video_pes_sid(&b, 0xE1, 0, 0, es1 + au1_off[i] + half1, au1_len[i] - half1);
+    }
+    be32_at(b.d + 12, b.at - 2048u);
+    CHECK(!b.overflow, "multistream synthetic PSMF container fits");
+    *size_out = b.at;
+    return b.d;
+}
+
+static void test_multistream_selection(void) {
+    uint32_t au0_off[FIX_PICTURES], au0_len[FIX_PICTURES];
+    uint32_t au1_off[FIX_PICTURES], au1_len[FIX_PICTURES];
+    uint32_t size = 0;
+    uint8_t *bytes = build_multistream_psmf(&size, au0_off, au0_len, au1_off, au1_len);
+    CHECK(bytes != NULL, "multistream fixture allocated");
+    if (!bytes) return;
+
+    uint8_t es0[65536], es1[65536];
+    uint32_t es0_len = 0, es1_len = 0;
+    static const uint8_t k_y2[FIX_PICTURES]  = {  80u, 160u, 240u };
+    static const uint8_t k_cb2[FIX_PICTURES] = { 100u, 128u, 140u };
+    static const uint8_t k_cr2[FIX_PICTURES] = { 150u, 128u, 110u };
+    build_stream_ex(es0, sizeof(es0), 4, 4, k_y, k_cb, k_cr, au0_off, au0_len, &es0_len);
+    build_stream_ex(es1, sizeof(es1), 2, 2, k_y2, k_cb2, k_cr2, au1_off, au1_len, &es1_len);
+
+    MemSource mem;
+    SrPsmfProducer *p = open_fixture(bytes, size, &mem, 1024u);
+    CHECK(p != NULL, "producer opens multistream PSMF");
+    if (!p) { free(bytes); return; }
+
+    CHECK(sr_psmf_producer_video_streams(p) == 2, "producer identifies 2 video streams");
+    CHECK(sr_psmf_producer_audio_streams(p) == 2, "producer identifies 2 audio streams");
+
+    /* Out-of-range selection checks */
+    CHECK(!sr_psmf_producer_select_streams(p, 2, 0), "selecting video stream 2 refuses out-of-range");
+    CHECK(!sr_psmf_producer_select_streams(p, 0, 2), "selecting audio stream 2 refuses out-of-range");
+    CHECK(!sr_psmf_producer_select_streams(p, 5, 5), "selecting out-of-range streams refuses");
+
+    /* Test Track 0: Video 0, Audio 0 */
+    CHECK(sr_psmf_producer_select_streams(p, 0, 0), "select video 0, audio 0");
+    CHECK(sr_psmf_producer_selected_video_stream(p) == 0, "selected video is 0");
+    CHECK(sr_psmf_producer_selected_audio_stream(p) == 0, "selected audio is 0");
+
+    int n_v0 = 0, n_a0 = 0;
+    for (int guard = 0; guard < 4096 && !sr_psmf_producer_eof(p); guard++) {
+        sr_psmf_producer_pump(p, 2);
+        SrPsmfAu au;
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) {
+            CHECK(n_v0 < FIX_PICTURES, "no extra video AUs for stream 0");
+            if (n_v0 < FIX_PICTURES) {
+                CHECK(au.stream_id == 0xE0, "video AU has stream ID 0xE0");
+                CHECK(au.size == au0_len[n_v0], "video 0 AU size matches authored picture");
+                if (au.size == au0_len[n_v0])
+                    CHECK(memcmp(au.data, es0 + au0_off[n_v0], au.size) == 0, "video 0 AU bytes match stream 0 exactly");
+                CHECK(au.has_pts == k_has_pts[n_v0], "video 0 PTS presence preserved");
+                if (k_has_pts[n_v0])
+                    CHECK(au.pts == (int64_t)n_v0 * FIX_PTS_STEP, "video 0 PTS timestamp normalized");
+            }
+            sr_psmf_au_release(&au);
+            n_v0++;
+        }
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au)) {
+            CHECK(n_a0 < 2, "no extra audio frames for stream 0");
+            if (n_a0 < 2) {
+                CHECK(au.stream_id == 0x00, "audio AU has substream ID 0x00");
+                uint8_t want_fill = (n_a0 == 0) ? 0x11 : 0x22;
+                CHECK(au.data && au.size > 8 && au.data[8] == want_fill, "audio 0 frame has stream 0 payload");
+                if (n_a0 == 0) {
+                    CHECK(au.has_pts == 1, "audio 0 frame 0 has PTS");
+                    CHECK(au.pts == 0, "audio 0 frame 0 timestamp normalized");
+                } else {
+                    CHECK(au.has_pts == 0, "audio 0 frame 1 has no PTS");
+                }
+            }
+            sr_psmf_au_release(&au);
+            n_a0++;
+        }
+    }
+    CHECK(n_v0 == FIX_PICTURES, "got exactly 3 video AUs for stream 0");
+    CHECK(n_a0 == 2, "got exactly 2 audio frames for stream 0");
+
+    /* Test Track 1: Video 1, Audio 1 */
+    CHECK(sr_psmf_producer_select_streams(p, 1, 1), "select video 1, audio 1");
+    CHECK(sr_psmf_producer_selected_video_stream(p) == 1, "selected video is 1");
+    CHECK(sr_psmf_producer_selected_audio_stream(p) == 1, "selected audio is 1");
+
+    int n_v1 = 0, n_a1 = 0;
+    for (int guard = 0; guard < 4096 && !sr_psmf_producer_eof(p); guard++) {
+        sr_psmf_producer_pump(p, 2);
+        SrPsmfAu au;
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) {
+            CHECK(n_v1 < FIX_PICTURES, "no extra video AUs for stream 1");
+            if (n_v1 < FIX_PICTURES) {
+                CHECK(au.stream_id == 0xE1, "video AU has stream ID 0xE1");
+                CHECK(au.size == au1_len[n_v1], "video 1 AU size matches authored picture");
+                if (au.size == au1_len[n_v1])
+                    CHECK(memcmp(au.data, es1 + au1_off[n_v1], au.size) == 0, "video 1 AU bytes match stream 1 exactly");
+                int want_pts = (n_v1 != 0);
+                CHECK(au.has_pts == want_pts, "video 1 PTS presence preserved");
+                if (want_pts)
+                    CHECK(au.pts == (int64_t)(n_v1 + 1) * 3000, "video 1 PTS timestamp normalized");
+            }
+            sr_psmf_au_release(&au);
+            n_v1++;
+        }
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au)) {
+            CHECK(n_a1 < 2, "no extra audio frames for stream 1");
+            if (n_a1 < 2) {
+                CHECK(au.stream_id == 0x01, "audio AU has substream ID 0x01");
+                uint8_t want_fill = (n_a1 == 0) ? 0x33 : 0x44;
+                CHECK(au.data && au.size > 8 && au.data[8] == want_fill, "audio 1 frame has stream 1 payload");
+                if (n_a1 == 0) {
+                    CHECK(au.has_pts == 0, "audio 1 frame 0 has no PTS");
+                } else {
+                    CHECK(au.has_pts == 1, "audio 1 frame 1 has PTS");
+                    CHECK(au.pts == 5000, "audio 1 frame 1 timestamp normalized");
+                }
+            }
+            sr_psmf_au_release(&au);
+            n_a1++;
+        }
+    }
+    CHECK(n_v1 == FIX_PICTURES, "got exactly 3 video AUs for stream 1");
+    CHECK(n_a1 == 2, "got exactly 2 audio frames for stream 1");
+
+    /* Test Track with Video 0 and NO Audio */
+    CHECK(sr_psmf_producer_select_streams(p, 0, SR_PSMF_STREAM_NONE), "select video 0, no audio");
+    int n_v_noaudio = 0, n_a_noaudio = 0;
+    for (int guard = 0; guard < 4096 && !sr_psmf_producer_eof(p); guard++) {
+        sr_psmf_producer_pump(p, 2);
+        SrPsmfAu au;
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) {
+            sr_psmf_au_release(&au);
+            n_v_noaudio++;
+        }
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au)) {
+            sr_psmf_au_release(&au);
+            n_a_noaudio++;
+        }
+    }
+    CHECK(n_v_noaudio == FIX_PICTURES, "got exactly 3 video AUs when audio is disabled");
+    CHECK(n_a_noaudio == 0, "got 0 audio frames when audio is disabled");
+
+    sr_psmf_producer_close(p);
+    free(bytes);
+}
+
 int main(void) {
     static uint8_t arena[ARENA_BYTES];
     g_mem = arena;
     memset(arena, 0, sizeof(arena));
 
     test_demux_and_au_contract();
+    test_multistream_selection();
     test_track_independence();
     test_real_decode_into_guest_buffer();
     test_decoded_pixels();
