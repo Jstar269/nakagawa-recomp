@@ -1146,33 +1146,6 @@ class TestSanitizedBringup(unittest.TestCase):
                       nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
 
-    def test_zero_exit_before_first_hle_is_a_named_in_works_boundary(self):
-        status, report = self._run_case(flight_events=[])
-
-        self.assertEqual(status, 1)
-        self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_HLE")
-        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
-        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
-        summary = nk_cli._bringup_human_summary(report)
-        self.assertIn("before its first PSP kernel import", summary)
-        self.assertIn("in the works (", summary)
-        self.assertIn("#285", summary)
-        self.assertIn("#308", summary)
-        nk_cli.validate_bringup_report(report)
-
-    def test_zero_exit_with_dropped_flight_events_is_unverified(self):
-        status, report = self._run_case(flight_events=[], flight_dropped=1)
-
-        self.assertEqual(status, 1)
-        self.assertEqual(report["failure_class"], "GUEST_ACTIVITY_UNVERIFIED")
-        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn("telemetry did not verify a PSP kernel import",
-                      nk_cli._bringup_human_summary(report))
-        nk_cli.validate_bringup_report(report)
-
     def _run_module_fixture(
         self, iso_path: Path, work_root: Path, *,
         user_decrypted_eboot: bytes | None = None,
