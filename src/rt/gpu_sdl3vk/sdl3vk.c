@@ -448,8 +448,7 @@ static NkInputProfile s_input_profile;
 static bool s_input_profile_loaded;
 
 static bool padscript_active(void) {
-    const char *sp = getenv("SR_PADSCRIPT");
-    return sp && sp[0] != '\0';
+    return nk_input_profile_padscript_active();
 }
 
 void sdl3vk_reset_input_profile(void) {
@@ -468,22 +467,10 @@ void sdl3vk_init_input_profile(void) {
         return;
     }
 
-    const char *env_path = getenv("NK_INPUT_PROFILE");
-    if (!env_path || !env_path[0]) {
-        env_path = getenv("SR_INPUT_PROFILE");
-    }
-
     char path_buf[2048] = {0};
     const char *target_path = NULL;
-    if (env_path && env_path[0]) {
-        target_path = env_path;
-    } else {
-        char config_dir[1024] = {0};
-        if (nk_platform_get_path(NK_PATH_CONFIG, config_dir, sizeof(config_dir))) {
-            char sep = nk_platform_path_separator();
-            snprintf(path_buf, sizeof(path_buf), "%s%cinput_profile.json", config_dir, sep);
-            target_path = path_buf;
-        }
+    if (nk_input_profile_resolve_path(path_buf, sizeof(path_buf)) == NK_OK) {
+        target_path = path_buf;
     }
 
     if (target_path && target_path[0] && nk_platform_file_exists(target_path)) {

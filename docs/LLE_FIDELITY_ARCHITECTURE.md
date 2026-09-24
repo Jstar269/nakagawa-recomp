@@ -63,22 +63,12 @@ PSP UMD disc images contain executables in two primary container formats:
    - Wrapped container beginning with magic `~SCE` (`0x7E 0x53 0x43 0x45`).
    - Contains ECDSA Curve-160 signature blocks, Kirk encryption tags (e.g., `0x08000000`, `0x08D40000`), AES-128-CBC initialization vectors, and encrypted payload extents.
 
-#### KIRK Cryptographic Engine Requirements
+#### Encrypted containers
 
-To accept untouched, encrypted `EBOOT.BIN` and PRX files directly from a user's ISO, Nakagawa requires an authentic implementation of the PSP's KIRK security processor:
-
-- **`KIRK_CMD_DECRYPT_PRX` (CMD 1):** Validates the header checksum, performs AES-128-CBC decryption using the tag-indexed hardware key, and validates the SHA-1 hash over the decrypted output.
-- **`KIRK_CMD_ECDSA_VERIFY` (CMD 2 / CMD 3):** Validates the ECDSA signature over the executable header.
-- **`KIRK_CMD_AES_CBC_DECRYPT` (CMD 7):** Standard AES-128-CBC decryption.
-
-#### Provenance and Key Material Discipline
-
-- **Algorithm Implementation:** The underlying cryptographic algorithms used by KIRK (AES-128-CBC, SHA-1, ECDSA Curve-160, pseudo-random generators) are standard mathematical operations. Independent open-source implementations exist across the emulation ecosystem (`libkirk`, ProCFW `kirk.c`, PPSSPP `Kirk.cpp`, JPCSP `CryptoEngine.java`).
-- **Cryptographic Keys:** Proprietary Sony master keys (Keys `0x01` through `0x7F`) cannot be stored in the public Nakagawa repository (`PUBLIC_EXPORT.json`, `KEY_HISTORY_SCRUB.md`).
-- **Architectural Solution:**
-  1. Nakagawa implements the generic KIRK cryptographic engine in pure C.
-  2. The key store is completely externalized: keys are loaded from an external, user-supplied keyring file (`%LOCALAPPDATA%/nakagawa/keys/kirk_keys.bin`) or derived locally on the user's machine during setup.
-  3. Decryption occurs entirely on the user's local machine; no decrypted retail binaries or proprietary keys are ever distributed by the project.
+Public builds do not decrypt `~PSP`/`~SCE` containers and accept only plain ELF/PRX inputs. Whether
+any lawful decryption capability can be offered, and in what form, is an open maintainer legal
+decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); this document proposes no decryption or key-handling design, and the
+public repository never contains keys.
 
 ---
 

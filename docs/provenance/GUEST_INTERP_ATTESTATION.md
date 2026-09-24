@@ -1,7 +1,9 @@
 # `src/rt/guest_interp.c` / `.h` — attestation disposition
 
-**Status: UNBACKED on `main`.** The public claim is live; the trusted record it
-names is not in the authority. This is a real finding, not documentation drift.
+**Status: BACKED (resolved 2026-09-24, #332).** The trusted detailed
+implementation authority contains the maintainer-authored record
+`daybreak4-guest-interpreter` for both paths, and the trusted verifier resolves
+the public claim to it. The sections below keep the original finding as history.
 
 This document is deliberately limited to facts that are already public. The
 detailed implementation ledger stays private, so its record bodies, evidence
@@ -32,48 +34,35 @@ machine-generated, fully-backed entry looks like.
 
 ## What the trusted authority holds
 
-`private/main:docs/provenance/IMPLEMENTATION_PROVENANCE.json` does **not**
-contain a record with the id `daybreak4-guest-interpreter`, and no record in it
-names `src/rt/guest_interp.c` or `src/rt/guest_interp.h` by any path, exact or
-wildcard. The nearest records the public ledger already names —
-`cpu-core-runtime`, `reference-interpreter`, `vfpu-interpreter` — cover
-different files and say nothing about these two.
+The trusted detailed implementation authority now contains the record
+`daybreak4-guest-interpreter`. It names `src/rt/guest_interp.c` and
+`src/rt/guest_interp.h` by exact path, classifies them as behavior-informed with
+evidence tier `S`, and records its owner lane as issue #116. The record was
+authored by the human maintainer and committed to the authority by the
+maintainer, who confirmed on 2026-09-24 that it is their original record. No
+agent authored, transcribed, or rewrote it.
 
+With the record present, the trusted verifier
+(`tools/provenance_attest_verify.py` against the external authority) no longer
+reports `RECORD_ABSENT` for either path. The generated public ledger entries
+resolve to that record through the same trusted pipeline as every other attested
+path.
+
+## History: the original finding
+
+When this document was written, the authority checkout the public tree named as
+its source did not contain the record, and no record in it named these paths.
 The public artifact derived from the record merged into public `main` with
-`7d404dc`, "runtime: add production AOT-gap interpreter floor (#118)". The
-authority it derives from did not arrive with it. Nothing in the public
-repository could detect that, which is the point: the entry is internally
-perfect, and every public gate compared the candidate only to itself.
+`7d404dc`, "runtime: add production AOT-gap interpreter floor (#118)", without
+its authority. Nothing in the public repository could detect that, because
+every public gate compared the candidate only to itself.
 
-## Disposition
-
-The record was authored by the human maintainer and exists outside
-`private/main`. The resolution is to promote **that existing record, verbatim**,
-into the trusted authority — not to author a replacement.
-
-That is a maintainer action, deliberately not taken by tooling or by an agent.
-The record carries a human attestation. An agent transcribing a human
-attestation into the authority in order to turn its own gate green would be
-performing exactly the bypass this gate exists to prevent: the gate must not be
-made to pass by the class of action it forbids. The same applies to the record
-that must gain `tools/provenance_attest_verify.py` — this change cannot
-authorise its own new tool, and it does not.
-
-Until the record is in `private/main`, `tools/provenance_attest_verify.py`
-reports:
-
-```text
-FAIL  RECORD_ABSENT: src/rt/guest_interp.c: ledger names record_id
-      'daybreak4-guest-interpreter', which does not exist in the trusted
-      detailed implementation ledger; the attestation is unbacked
-FAIL  RECORD_ABSENT: src/rt/guest_interp.h: ...
-```
-
-The alternative disposition — downgrading the public entries — is not
-available. `unresolved` is rejected by `validate_ledger(require_resolved=True)`
-and by `publish_audit`, and no deterministic class fits an implementation file.
-Either the authority holds a record for these paths, or the paths are not
-publishable.
+The disposition was that the maintainer, not tooling or an agent, would promote
+the existing human-authored record into the trusted authority verbatim.
+Downgrading the public entries was not available: `unresolved` is rejected by
+`validate_ledger(require_resolved=True)` and by `publish_audit`, and no
+deterministic class fits an implementation file. That maintainer action is what
+resolved the finding.
 
 ## The record establishes path authority
 
@@ -95,10 +84,10 @@ The one-time admission of a new implementation path still requires external
 authority to bind the exact path and source lineage. Neither private authority
 nor legal, title, or hardware acceptance can be inferred from automated tests.
 
-## Why this is not "documentation drift"
+## Why this was not "documentation drift"
 
 The public tree asserted, to anyone reading it, that an identified provenance
-record supports these two files. No such record existed in the authority the
+record supported these two files. No such record existed in the authority the
 public tree names as its source. The assertion was unverifiable by
 construction, and no gate could have caught it, because every gate compared the
 candidate to itself. That is the defect

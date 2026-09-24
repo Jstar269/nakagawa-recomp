@@ -869,6 +869,8 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_PREPARING);
         } else if (strcmp(test_view, "settings") == 0) {
             player_app_set_view(&app, VIEW_SETTINGS);
+        } else if (strcmp(test_view, "controller") == 0 || strcmp(test_view, "controller_settings") == 0) {
+            player_app_set_view(&app, VIEW_CONTROLLER_SETTINGS);
         } else if (strcmp(test_view, "error") == 0) {
             player_app_set_error(&app, "SOURCE_NOT_FOUND", "Game Source File Not Found",
                                  "Nakagawa could not locate the source ISO file on disk.",
@@ -1041,14 +1043,36 @@ int main(int argc, char *argv[]) {
        and map the d-pad and shoulders onto the same library selection the
        arrow keys drive. */
     SDL_Gamepad *gamepad = NULL;
+    if (SDL_HasGamepad()) {
+        int npads = 0;
+        SDL_JoystickID *ids = SDL_GetGamepads(&npads);
+        if (ids && npads > 0) {
+            gamepad = SDL_OpenGamepad(ids[0]);
+            if (gamepad) {
+                const char *pad_name = SDL_GetGamepadName(gamepad);
+                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                         "%s", pad_name ? pad_name : "Controller");
+                app.settings.controller_connected = true;
+            }
+        }
+        SDL_free(ids);
+    }
     PlayerStagingJob *staging_job = NULL;
 
     bool running = true;
+    uint64_t last_tick = SDL_GetTicks();
     /* The first frame is rendered before the event wait. A bounded wait keeps
        process-exit monitoring alive while the user is idle; staging progress
        and normal input still wake the loop immediately. */
     ui_render_frame(renderer, &app, &input);
     while (running && !app.should_quit) {
+        uint64_t now_tick = SDL_GetTicks();
+        uint32_t delta_ms = (uint32_t)(now_tick >= last_tick ? (now_tick - last_tick) : 0);
+        last_tick = now_tick;
+        if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
+            input_settings_update_capture(&app.input_settings, delta_ms > 0 ? delta_ms : 1);
+        }
+
         input.mouse_clicked = false;
         input.activate_pressed = false;
         SDL_Event event;
@@ -1082,6 +1106,12 @@ int main(int argc, char *argv[]) {
                     if (event.key.key == SDLK_ESCAPE) {
                         if (app.active_view == VIEW_SETUP_WIZARD) {
                             player_app_wizard_back(&app);
+                        } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
+                            if (input_settings_is_capturing(&app.input_settings)) {
+                                input_settings_cancel_capture(&app.input_settings);
+                            } else {
+                                player_app_set_view(&app, VIEW_SETTINGS);
+                            }
                         } else if (!player_view_is_library(app.active_view)) {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
@@ -1178,7 +1208,26 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     break;
+                case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+                    if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
+                        if ((event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
+                             event.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
+                            event.gaxis.value > 16000) {
+                            NkBindingSource src;
+                            src.type = NK_BINDING_HOST_TRIGGER;
+                            src.index = event.gaxis.axis;
+                            input_settings_feed_capture_source(&app.input_settings, src);
+                        }
+                    }
+                    break;
                 case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                    if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
+                        NkBindingSource src;
+                        src.type = NK_BINDING_HOST_BUTTON;
+                        src.index = event.gbutton.button;
+                        input_settings_feed_capture_source(&app.input_settings, src);
+                        break;
+                    }
                     if (player_view_is_library(app.active_view)) {
                         switch (event.gbutton.button) {
                             case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
@@ -1211,6 +1260,8 @@ int main(int argc, char *argv[]) {
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
                         if (app.active_view == VIEW_SETUP_WIZARD) {
                             player_app_wizard_back(&app);
+                        } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
+                            player_app_set_view(&app, VIEW_SETTINGS);
                         } else {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         }
@@ -1223,7 +1274,7 @@ int main(int argc, char *argv[]) {
                                event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
                         player_app_move_focus(&app, 1, ui_focus_count(&app));
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
-                        if (app.active_view == VIEW_SETTINGS) {
+                        if (app.active_view == VIEW_SETTINGS || app.active_view == VIEW_CONTROLLER_SETTINGS) {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
                             player_app_set_view(&app, VIEW_SETTINGS);
@@ -1296,6 +1347,19 @@ int main(int argc, char *argv[]) {
                                          err_msg, "Return to Library", VIEW_LIBRARY);
                 }
             }
+        }
+
+        /* Live input sampling for controller settings monitor (#357) */
+        if (gamepad) {
+            for (int b = 0; b < NK_HOST_BUTTON_COUNT; b++) {
+                app.host_buttons_live[b] = SDL_GetGamepadButton(gamepad, (SDL_GamepadButton)b);
+            }
+            for (int a = 0; a < NK_HOST_AXIS_COUNT; a++) {
+                app.host_axes_live[a] = SDL_GetGamepadAxis(gamepad, (SDL_GamepadAxis)a);
+            }
+        } else {
+            memset(app.host_buttons_live, 0, sizeof(app.host_buttons_live));
+            memset(app.host_axes_live, 0, sizeof(app.host_axes_live));
         }
 
         ui_render_frame(renderer, &app, &input);

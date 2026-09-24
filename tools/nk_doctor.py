@@ -33,6 +33,7 @@ from nk_doctor_checks import (
     check_private_inputs,
     check_repository_contract,
     check_runtime_dependencies,
+    check_runtime_package_cache,
     check_save_root,
     check_toolchain,
     check_vfpu_assets,
@@ -123,6 +124,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--game-name",
         default=None,
         help="optional portable build target name (otherwise use the selected manifest)",
+    )
+    parser.add_argument(
+        "--user-data-root",
+        type=Path,
+        help="per-user data root containing packages/<DISC_ID>",
+    )
+    parser.add_argument(
+        "--disc-id",
+        help="validate the private runtime package cache for this disc ID",
     )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--strict", action="store_true", help="make warnings produce exit status 2")
@@ -221,6 +231,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.scope in {"run", "all"}:
         check_vfpu_assets(report)
         check_runtime_dependencies(report, args.msys_path, title_context.game_name)
+    if args.disc_id:
+        if args.user_data_root is None:
+            report.fail(
+                "RUNTIME_PACKAGE_CACHE",
+                "--disc-id requires --user-data-root for private package validation",
+                remediation="Pass the per-user data root and rerun Doctor.",
+            )
+        elif args.scope in {"products", "run", "all"}:
+            check_runtime_package_cache(report, args.user_data_root, args.disc_id.upper())
 
     output = render_json(report, args.strict) if args.json else render_text(report)
     print(output)

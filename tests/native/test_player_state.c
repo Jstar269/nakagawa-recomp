@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name) {
     memset(entry, 0, sizeof(*entry));
@@ -48,6 +49,127 @@ static void write_text_file(const char *path, const char *text) {
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
     assert(fclose(file) == 0);
+}
+
+typedef struct {
+    uint32_t state[8];
+    uint64_t bits;
+    uint8_t block[64];
+    size_t used;
+} FixtureSha256;
+
+static uint32_t fixture_rotr(uint32_t value, unsigned count) {
+    return (value >> count) | (value << (32u - count));
+}
+
+static void fixture_sha_transform(FixtureSha256 *ctx, const uint8_t block[64]) {
+    static const uint32_t round[64] = {
+        0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+        0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+        0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+        0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+        0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+        0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+        0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+        0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u
+    };
+    uint32_t words[64];
+    for (size_t i = 0; i < 16; i++) {
+        words[i] = ((uint32_t)block[i * 4] << 24) |
+                   ((uint32_t)block[i * 4 + 1] << 16) |
+                   ((uint32_t)block[i * 4 + 2] << 8) |
+                   (uint32_t)block[i * 4 + 3];
+    }
+    for (size_t i = 16; i < 64; i++) {
+        uint32_t s0 = fixture_rotr(words[i - 15], 7) ^ fixture_rotr(words[i - 15], 18) ^ (words[i - 15] >> 3);
+        uint32_t s1 = fixture_rotr(words[i - 2], 17) ^ fixture_rotr(words[i - 2], 19) ^ (words[i - 2] >> 10);
+        words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+    }
+    uint32_t a = ctx->state[0], b = ctx->state[1], c = ctx->state[2], d = ctx->state[3];
+    uint32_t e = ctx->state[4], f = ctx->state[5], g = ctx->state[6], h = ctx->state[7];
+    for (size_t i = 0; i < 64; i++) {
+        uint32_t s1 = fixture_rotr(e, 6) ^ fixture_rotr(e, 11) ^ fixture_rotr(e, 25);
+        uint32_t choose = (e & f) ^ ((~e) & g);
+        uint32_t t1 = h + s1 + choose + round[i] + words[i];
+        uint32_t s0 = fixture_rotr(a, 2) ^ fixture_rotr(a, 13) ^ fixture_rotr(a, 22);
+        uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2 = s0 + majority;
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+    ctx->state[0] += a; ctx->state[1] += b; ctx->state[2] += c; ctx->state[3] += d;
+    ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
+}
+
+static void fixture_sha_init(FixtureSha256 *ctx) {
+    static const uint32_t initial[8] = {
+        0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,
+        0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u
+    };
+    memcpy(ctx->state, initial, sizeof(initial));
+    ctx->bits = 0;
+    ctx->used = 0;
+}
+
+static void fixture_sha_update(FixtureSha256 *ctx, const uint8_t *data, size_t length) {
+    ctx->bits += (uint64_t)length * 8u;
+    while (length > 0) {
+        size_t room = sizeof(ctx->block) - ctx->used;
+        size_t take = length < room ? length : room;
+        memcpy(ctx->block + ctx->used, data, take);
+        ctx->used += take;
+        data += take;
+        length -= take;
+        if (ctx->used == sizeof(ctx->block)) {
+            fixture_sha_transform(ctx, ctx->block);
+            ctx->used = 0;
+        }
+    }
+}
+
+static void fixture_sha_finish(FixtureSha256 *ctx, char out[65]) {
+    ctx->block[ctx->used++] = 0x80;
+    if (ctx->used > 56) {
+        memset(ctx->block + ctx->used, 0, sizeof(ctx->block) - ctx->used);
+        fixture_sha_transform(ctx, ctx->block);
+        ctx->used = 0;
+    }
+    memset(ctx->block + ctx->used, 0, 56 - ctx->used);
+    for (size_t i = 0; i < 8; i++) {
+        ctx->block[63 - i] = (uint8_t)(ctx->bits >> (8u * i));
+    }
+    fixture_sha_transform(ctx, ctx->block);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(ctx->state) / sizeof(ctx->state[0]); i++) {
+        for (size_t j = 0; j < 4; j++) {
+            uint8_t byte = (uint8_t)(ctx->state[i] >> (24u - 8u * j));
+            out[i * 8 + j * 2] = hex[byte >> 4];
+            out[i * 8 + j * 2 + 1] = hex[byte & 0x0f];
+        }
+    }
+    out[64] = '\0';
+}
+
+static void fixture_sha_bytes(const void *data, size_t length, char out[65]) {
+    FixtureSha256 ctx;
+    fixture_sha_init(&ctx);
+    fixture_sha_update(&ctx, (const uint8_t *)data, length);
+    fixture_sha_finish(&ctx, out);
+}
+
+static void fixture_sha_file(const char *path, char out[65]) {
+    FixtureSha256 ctx;
+    fixture_sha_init(&ctx);
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t buffer[4096];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), file)) != 0) {
+        fixture_sha_update(&ctx, buffer, count);
+    }
+    assert(!ferror(file));
+    assert(fclose(file) == 0);
+    fixture_sha_finish(&ctx, out);
 }
 
 static void write_synthetic_mips_elf(const char *path) {
@@ -116,7 +238,12 @@ static void write_runtime_package_fixture(const char *user_root,
                                           const char *executable_relative_path,
                                           const char *input_executable_sha256) {
     char packages[768], package_dir[896], executable[1100], image[1100];
-    char package_json[8192], report_json[4096];
+    char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
+    char aot_components_json[2048], native_components_json[2048];
+    char aot_hash_input[2050], native_hash_input[2050];
+    char aot_digest[65], native_digest[65], modules_digest[65];
+    const char *codegen_options_digest =
+        "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
     snprintf(packages, sizeof(packages), "%s%cpackages", user_root,
              nk_platform_path_separator());
     snprintf(package_dir, sizeof(package_dir), "%s%c%s", packages,
@@ -129,14 +256,48 @@ static void write_runtime_package_fixture(const char *user_root,
     write_file(executable);
     write_file(image);
 
+    fixture_sha_bytes("[]\n", 3, modules_digest);
+    int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
+        "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
+        "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
+        "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
+        "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
+        "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
+        "\"runtime_abi_epoch\":1}",
+        0, codegen_options_digest, 0, input_executable_sha256, 0, modules_digest);
+    assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
+    int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
+        "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
+        "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}",
+        0, 0);
+    assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
+    int aot_hash_length = snprintf(aot_hash_input, sizeof(aot_hash_input), "%s\n", aot_components_json);
+    int native_hash_length = snprintf(native_hash_input, sizeof(native_hash_input), "%s\n", native_components_json);
+    assert(aot_hash_length > 0 && (size_t)aot_hash_length < sizeof(aot_hash_input));
+    assert(native_hash_length > 0 && (size_t)native_hash_length < sizeof(native_hash_input));
+    fixture_sha_bytes(aot_hash_input, (size_t)aot_hash_length, aot_digest);
+    fixture_sha_bytes(native_hash_input, (size_t)native_hash_length, native_digest);
+    int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
+        "{\"schema_version\":1,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
+        "\"native\":{\"digest\":\"%s\",\"components\":%s}}",
+        aot_digest, aot_components_json, native_digest, native_components_json);
+    assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
+    int cache_length = snprintf(cache_json, sizeof(cache_json),
+        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":1,\"key\":%s,"
+        "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
+        "\"current_epoch\":1,\"generated_code_reusable\":true}}",
+        cache_key_json);
+    assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
         "\"title_id\":\"%s\",\"runtime_abi\":{\"name\":\"CpuState\",\"version\":%u},"
+        "\"cache\":%s,"
         "\"input_hashes\":{\"manifest\":{\"sha256\":\"%064d\"},"
         "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
         "\"tools\":{},\"coverage\":{},\"unsupported\":{\"imports\":[],"
         "\"instructions\":[],\"regions\":[]},\"analysis_diagnostics\":[],\"artifacts\":{}}\n",
-        title_id, (unsigned)abi_version, 0, input_executable_sha256);
+        title_id, (unsigned)abi_version, cache_json, 0, input_executable_sha256);
     assert(report_length > 0 && (size_t)report_length < sizeof(report_json));
     char report_path[1100];
     snprintf(report_path, sizeof(report_path), "%s%cbuild-report.json", package_dir,
@@ -144,7 +305,7 @@ static void write_runtime_package_fixture(const char *user_root,
     write_text_file(report_path, report_json);
 
     int package_length = snprintf(package_json, sizeof(package_json),
-        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,"
+        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,\"cache\":%s,"
         "\"title\":{\"id\":\"%s\",\"display_name\":\"Synthetic fixture\","
         "\"kind\":\"retail\",\"manifest_sha256\":\"%064d\","
         "\"protected_digest\":\"%064d\"},"
@@ -157,13 +318,40 @@ static void write_runtime_package_fixture(const char *user_root,
         "\"executable\":{\"path\":\"%s\",\"sha256\":\"%s\","
         "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
         "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
-        title_id, 0, 0, 0, input_executable_sha256, (unsigned)abi_version,
+        cache_json, title_id, 0, 0, 0, input_executable_sha256, (unsigned)abi_version,
         0, executable_relative_path, FIXTURE_SHA256);
     assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
     char package_path[1100];
     snprintf(package_path, sizeof(package_path), "%s%cpackage.json", package_dir,
              nk_platform_path_separator());
     write_text_file(package_path, package_json);
+
+    char package_hash[65], report_hash[65], executable_hash[65], image_hash[65];
+    fixture_sha_file(package_path, package_hash);
+    fixture_sha_file(report_path, report_hash);
+    fixture_sha_file(executable, executable_hash);
+    fixture_sha_file(image, image_hash);
+    char image_relative[256];
+    const char *extension = strrchr(executable_relative_path, '.');
+    size_t stem_length = extension && extension != executable_relative_path
+        ? (size_t)(extension - executable_relative_path) : strlen(executable_relative_path);
+    snprintf(image_relative, sizeof(image_relative), "%.*s_image.bin",
+             (int)stem_length, executable_relative_path);
+    char completion_json[4096];
+    int completion_length = snprintf(completion_json, sizeof(completion_json),
+        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":1,"
+        "\"status\":\"complete\",\"cache_key\":%s,\"artifacts\":["
+        "{\"path\":\"package.json\",\"sha256\":\"%s\"},"
+        "{\"path\":\"build-report.json\",\"sha256\":\"%s\"},"
+        "{\"path\":\"%s\",\"sha256\":\"%s\"},"
+        "{\"path\":\"%s\",\"sha256\":\"%s\"}]}\n",
+        cache_key_json, package_hash, report_hash, executable_relative_path,
+        executable_hash, image_relative, image_hash);
+    assert(completion_length > 0 && (size_t)completion_length < sizeof(completion_json));
+    char completion_path[1100];
+    snprintf(completion_path, sizeof(completion_path), "%s%ccompletion-manifest.json",
+             package_dir, nk_platform_path_separator());
+    write_text_file(completion_path, completion_json);
 }
 
 static void write_experimental_profile_fixture(const char *user_root,
@@ -605,7 +793,9 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 13);
+        assert(player_app_focus_count(stops) == 14);
+        stops->active_view = VIEW_CONTROLLER_SETTINGS;
+        assert(player_app_focus_count(stops) == 21);
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 
@@ -881,6 +1071,7 @@ int main(int argc, char **argv) {
         /* Native v1 package checks bind the profile executable hash, the
            player ABI, and a package-contained executable path. */
         char experimental_package_dir[900], experimental_package_json[1100];
+        char experimental_completion[1100];
         char experimental_report[1100], experimental_exe[1100], experimental_image[1100];
         char experimental_root[900], profile_dir[1000], profile_path[1200];
         snprintf(experimental_root, sizeof(experimental_root), "%s%cpackages%cULUS99998",
@@ -889,6 +1080,9 @@ int main(int argc, char **argv) {
                  experimental_root);
         snprintf(experimental_package_json, sizeof(experimental_package_json), "%s%cpackage.json",
                  experimental_package_dir, nk_platform_path_separator());
+        snprintf(experimental_completion, sizeof(experimental_completion),
+                 "%s%ccompletion-manifest.json", experimental_package_dir,
+                 nk_platform_path_separator());
         snprintf(experimental_report, sizeof(experimental_report), "%s%cbuild-report.json",
                  experimental_package_dir, nk_platform_path_separator());
         snprintf(experimental_exe, sizeof(experimental_exe), "%s%cexperimental-ulus99998.exe",
@@ -908,6 +1102,14 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_OK);
+        remove(experimental_completion);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
+        assert(check && check->status == PREFLIGHT_STALE);
+        assert(strstr(check->message, "#316") != NULL);
+        write_runtime_package_fixture(preflight_root, "ULUS99998",
+                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
@@ -932,6 +1134,7 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
 
         remove(experimental_package_json);
+        remove(experimental_completion);
         remove(experimental_report);
         remove(experimental_exe);
         remove(experimental_image);
