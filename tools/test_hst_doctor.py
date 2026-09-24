@@ -755,5 +755,73 @@ class SimpleFrontEndTests(unittest.TestCase):
 
 
 
+class LongPathDiagnosticTests(unittest.TestCase):
+    def test_query_windows_long_paths_enabled_mock_registry(self) -> None:
+        mock_winreg = mock.MagicMock()
+        mock_winreg.HKEY_LOCAL_MACHINE = 1
+        mock_winreg.KEY_READ = 2
+        mock_key = mock.MagicMock()
+        mock_winreg.OpenKey.return_value.__enter__.return_value = mock_key
+        mock_winreg.QueryValueEx.return_value = (1, 4)
+
+        with mock.patch.dict("sys.modules", {"winreg": mock_winreg}), \
+             mock.patch.object(os, "name", "nt"):
+            self.assertTrue(nk_doctor_checks.query_windows_long_paths_enabled())
+
+        mock_winreg.QueryValueEx.return_value = (0, 4)
+        with mock.patch.dict("sys.modules", {"winreg": mock_winreg}), \
+             mock.patch.object(os, "name", "nt"):
+            self.assertFalse(nk_doctor_checks.query_windows_long_paths_enabled())
+
+        mock_winreg.OpenKey.side_effect = OSError("Access denied")
+        with mock.patch.dict("sys.modules", {"winreg": mock_winreg}), \
+             mock.patch.object(os, "name", "nt"):
+            self.assertFalse(nk_doctor_checks.query_windows_long_paths_enabled())
+
+    def test_long_paths_pass_when_enabled_and_under_260(self) -> None:
+        report = nk_doctor.Report(Path(r"C:\work\repo"), "build")
+        with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=True), \
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
+            nk_doctor_checks.check_long_paths(report, Path(r"C:\work\repo"))
+        results = [r for r in report.results if r.code == "LONG_PATHS"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "PASS")
+        self.assertLessEqual(results[0].metadata.get("total_len", 0), 260)
+
+    def test_long_paths_warn_when_policy_disabled(self) -> None:
+        report = nk_doctor.Report(Path(r"C:\work\repo"), "build")
+        with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
+            nk_doctor_checks.check_long_paths(report, Path(r"C:\work\repo"))
+        results = [r for r in report.results if r.code == "LONG_PATHS"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "WARN")
+        self.assertNotEqual(results[0].status, "FAIL")
+        self.assertIn("LongPathsEnabled", results[0].summary)
+
+    def test_long_paths_warn_when_path_exceeds_260(self) -> None:
+        very_long_root = Path("C:\\" + "a" * 250)
+        report = nk_doctor.Report(very_long_root, "build")
+        with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=True), \
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
+            nk_doctor_checks.check_long_paths(report, very_long_root)
+        results = [r for r in report.results if r.code == "LONG_PATHS"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "WARN")
+        self.assertNotEqual(results[0].status, "FAIL")
+        self.assertIn("exceeds 260", results[0].summary)
+
+    def test_long_paths_advisory_never_fails(self) -> None:
+        very_long_root = Path("C:\\" + "a" * 250)
+        report = nk_doctor.Report(very_long_root, "build")
+        with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
+            nk_doctor_checks.check_long_paths(report, very_long_root)
+        results = [r for r in report.results if r.code == "LONG_PATHS"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "WARN")
+        self.assertNotEqual(results[0].status, "FAIL")
+
+
 if __name__ == "__main__":
     unittest.main()

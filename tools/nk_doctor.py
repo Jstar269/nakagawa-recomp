@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -27,6 +28,7 @@ from nk_doctor_checks import (
     check_agent_identity,
     check_build_products,
     check_build_profile,
+    check_long_paths,
     check_platform,
     check_private_inputs,
     check_repository_contract,
@@ -90,11 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="checks to run",
     )
+    default_msys = os.environ.get("MSYS_PATH")
+    if not default_msys:
+        default_msys = r"C:\msys64\ucrt64\bin"
     parser.add_argument(
         "--msys-path",
         type=Path,
-        default=Path(r"C:\msys64\ucrt64\bin"),
-        help="MSYS2 UCRT64 bin directory",
+        default=Path(default_msys),
+        help="MSYS2 UCRT64 bin directory (default: MSYS_PATH or C:\\msys64\\ucrt64\\bin)",
     )
     parser.add_argument(
         "--vulkan-sdk",
@@ -185,8 +190,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.scope in {"repo", "all"}:
         check_repository_contract(report)
         check_agent_identity(report)
+        check_long_paths(report, root)
     if args.scope in {"build", "run", "all"}:
         check_platform(report)
+    if args.scope == "build":
+        check_long_paths(report, root)
     if args.scope in {"build", "all"}:
         check_toolchain(report, args.msys_path, args.vulkan_sdk, root, sdl3_path=args.sdl3_path)
     if args.scope in {"inputs", "build", "all"}:

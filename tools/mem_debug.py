@@ -34,6 +34,7 @@ Safety contract (issue #180):
 """
 
 import sys
+import ntpath
 import os
 import json
 import shutil
@@ -83,8 +84,6 @@ SUPPORTED_REGIONS = ("ram", "vram", "scratchpad")
 MAX_READ_BYTES = 32 * 1024 * 1024   # 32 MiB read budget
 MAX_WRITE_BYTES = 1024 * 1024       # 1 MiB write budget
 PE_PREFIX_BYTES = 0x1000            # first page of the PE image used for identity
-
-EXPECTED_EXE_REL = os.path.join("build", "hst", "hst.exe")
 
 # Windows process access rights (read-only rights used for discovery)
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -249,7 +248,7 @@ def query_module_base(psapi, h_process):
     return 0
 
 
-def enumerate_process_candidates(expected_name="hst.exe"):
+def enumerate_process_candidates(expected_name=None):
     """Enumerate processes whose executable basename matches, with full image
     paths and main-module base addresses.  Read-only; never requests write or
     suspend access during discovery."""
@@ -280,7 +279,7 @@ def enumerate_process_candidates(expected_name="hst.exe"):
             if not psapi.GetModuleBaseNameA(h, None, ctypes.byref(name_buf), 260):
                 continue
             name = name_buf.value.decode("latin1", errors="replace")
-            if name.lower() != expected_name.lower():
+            if expected_name and name.lower() != expected_name.lower():
                 continue
             full_path = query_full_image_path(kernel32, h)
             # EnumProcessModules needs slightly more rights; retry if limited
@@ -351,13 +350,19 @@ def get_symbol_rvas(exe_path):
         return rvas, "fallback"
 
     nm_candidate = os.environ.get("NM")
+    msys_bin = os.environ.get("MSYS_PATH")
+    if not msys_bin:
+        gcc_bin = shutil.which("gcc")
+        if gcc_bin and "ucrt64" in gcc_bin.lower():
+            msys_bin = os.path.dirname(gcc_bin)
+    default_msys = os.environ.get("MSYS_PATH", r"C:\msys64\ucrt64\bin")
     nm_paths = [
         nm_candidate,
         shutil.which("nm"),
         shutil.which("nm.exe"),
-        os.path.join(os.environ.get("MSYSTEM_PREFIX", ""), "bin", "nm.exe") if os.environ.get("MSYSTEM_PREFIX") else None,
-        "C:\\msys64\\ucrt64\\bin\\nm.exe",
-        "C:\\msys64\\mingw64\\bin\\nm.exe",
+        os.path.join(msys_bin, "nm.exe") if msys_bin else None,
+        os.path.join(msys_bin, "nm") if msys_bin else None,
+        os.path.join(default_msys, "nm.exe"),
         "nm.exe",
         "nm",
     ]
@@ -492,7 +497,7 @@ class MemoryDebugger:
             return None
         return info.get("exe_path") or None
 
-    def __init__(self, simulate=False, mutate=False, pid=None):
+    def __init__(self, simulate=False, mutate=False, pid=None, exe=None):
         self.mutate_enabled = bool(mutate)
         self.is_simulated = bool(simulate)
         self.pid = 0
@@ -502,6 +507,15 @@ class MemoryDebugger:
         self.image_sha256 = None
         self.identity_note = None
 
+        if exe:
+            resolved_exe = exe if os.path.isabs(exe) else os.path.join(find_repo_root(), exe)
+            self.expected_exe = resolved_exe
+            # The attach target is always a Windows process, so split on Windows separators.
+            self.expected_exe_name = ntpath.basename(resolved_exe)
+        else:
+            self.expected_exe = None
+            self.expected_exe_name = None
+
         if self.is_simulated:
             self.mock = load_mock_state()
             self.rvas, self.rva_provenance = DEFAULT_RVAS, "fallback"
@@ -509,15 +523,18 @@ class MemoryDebugger:
             self.is_offline = False
             return
 
-        expected_exe = os.path.join(find_repo_root(), EXPECTED_EXE_REL)
-        candidates = enumerate_process_candidates()
+        if not self.expected_exe:
+            raise ValueError("No target executable specified; pass --exe <path> (e.g. --exe build/<game>/<game>.exe) instead of assuming HST")
+
+        expected_exe = self.expected_exe
+        candidates = enumerate_process_candidates(self.expected_exe_name)
         if pid is not None:
             chosen = next((c for c in candidates if c["pid"] == int(pid)), None)
             if chosen is None:
                 self.proc_info = None
                 self.is_offline = True
                 self.rvas, self.rva_provenance = get_symbol_rvas(expected_exe)
-                self.identity_note = "pid %s not found or not hst.exe" % pid
+                self.identity_note = "pid %s not found or not %s" % (pid, self.expected_exe_name)
                 return
             chosen, reason = chosen, "explicit-pid"
             self.identity_note = ("selected by --pid %s; image path %s"
@@ -571,8 +588,9 @@ class MemoryDebugger:
             # by is_simulated at every call site.
             return True, None
         if self.candidate is None or self.is_offline:
-            return False, ("'%s' requires a resolved, uniquely identified hst.exe "
-                           "process" % action)
+            target_name = getattr(self, "expected_exe_name", None) or "target"
+            return False, ("'%s' requires a resolved, uniquely identified %s "
+                           "process" % (action, target_name))
         if needs_image and not self.image_verified:
             return False, ("'%s' refused: PE image identity is not verified "
                            "(stale or mismatched build)" % action)
@@ -595,12 +613,13 @@ class MemoryDebugger:
 
     def execute_command(self, action, args):
         if self.is_offline and action not in ("status", "trace_exit"):
+            target_name = getattr(self, "expected_exe_name", None) or "target executable"
             return {
                 "success": False,
                 "online": False,
                 "mode": "offline",
-                "error": ("hst.exe is not running (or not uniquely identified); "
-                          "start the runtime before using live debug commands"),
+                "error": ("%s is not running (or not uniquely identified); "
+                          "start the runtime before using live debug commands" % target_name),
             }
         if action == "status":
             return self.get_status()
@@ -1165,6 +1184,7 @@ def main():
     simulate = "--simulate" in argv
     mutate = "--mutate" in argv
     pid = None
+    exe = None
     remaining = []
     skip_next = False
     for i, arg in enumerate(argv):
@@ -1193,17 +1213,34 @@ def main():
                 print(json.dumps({"error": "invalid --pid value: %r" % arg}))
                 sys.exit(1)
             continue
+        if arg == "--exe":
+            if i + 1 < len(argv):
+                exe = argv[i + 1]
+                skip_next = True
+            else:
+                print(json.dumps({"error": "--exe requires a value"}))
+                sys.exit(1)
+            continue
+        if arg.startswith("--exe="):
+            exe = arg.split("=", 1)[1]
+            continue
         remaining.append(arg)
 
     if not remaining:
         print(json.dumps({"error": "Usage: mem_debug.py [--simulate] [--mutate] "
-                                   "[--pid <pid>] <action> [args]"}))
+                                   "[--pid <pid>] [--exe <path>] <action> [args]"}))
         sys.exit(1)
     action = remaining[0]
     args = remaining[1:]
 
+    if not simulate and not exe:
+        print(json.dumps({
+            "error": "No target executable specified; pass --exe <path> (e.g. --exe build/<game>/<game>.exe) instead of assuming HST"
+        }))
+        sys.exit(1)
+
     try:
-        dbg = MemoryDebugger(simulate=simulate, mutate=mutate, pid=pid)
+        dbg = MemoryDebugger(simulate=simulate, mutate=mutate, pid=pid, exe=exe)
         res = dbg.execute_command(action, args)
         print(json.dumps(res, indent=2))
     except Exception as e:
