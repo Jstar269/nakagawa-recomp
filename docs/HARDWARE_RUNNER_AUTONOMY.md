@@ -1,14 +1,18 @@
 # Hardware runner autonomy — architecture and runbook
 
-Status: design + source-owned conformance suite. The state machine, framed
-protocol, recovery ladder, and evidence envelope specified here are exercised
-end-to-end by [`tools/test_hardware_runner_protocol.py`](../tools/test_hardware_runner_protocol.py)
-against a deterministic simulated transport. The PSP-side resident runner and
-the real-transport host adapter are not built yet; see
-[What still requires a human / build order](#9-build-order-and-open-attestation).
+Status: source-owned v2 conformance design and simulator, plus a host campaign
+adapter for the existing scalar-probe route. The adapter starts the configured
+USBHostFS process, drives PSPSH commands, bounds each case, unloads each module,
+and records an evidence envelope. It follows the L0-L4 recovery contract tested
+in [`tools/test_hardware_runner_protocol.py`](../tools/test_hardware_runner_protocol.py).
+Campaigns require the source-owned `transport-write` case first. Its host0
+round-trip passed in simulation but failed in the W1-psplink3 live run; that
+run captured an envelope but accepted none.
+The PSP-side resident v2 runner and dual-path result protocol remain unbuilt;
+see [What still requires a human / build order](#9-build-order-and-open-attestation).
 This document extends, and defers to, the implemented scalar-probe subset
 described in [HARDWARE_ORACLE.md](HARDWARE_ORACLE.md) and
-[fixtures/psp_oracle/README.md](../fixtures/psp_oracle/README.md).
+[`fixtures/psp_oracle/README.md`](../fixtures/psp_oracle/README.md).
 
 ## 1. Goal and current autonomy level
 
@@ -20,15 +24,37 @@ execute approved cases with repeat contracts, capture dual-path evidence,
 classify faults, recover along a bounded ladder, record META, and stop
 rather than fabricate when evidence becomes invalid.
 
-Current autonomy level (honest baseline):
+Current autonomy level, measured in the W1-psplink campaign on 2026-09-23:
 
 | Step | State |
 | --- | --- |
-| Probe build/hash/stage | scripted per-probe (Makefile + fixtures/psp_oracle), manual invocation |
-| Transport qualification | documented manual procedure (standalone PSPLINK_NEW stack, `pluser=1` stdout route); `tools/psp_readiness.py` checks preconditions |
-| Case execution | one PRX load per probe run via `tools/psp_oracle/run_psplink.py`; bounded, but reload cycles wedge after crashes |
-| Result capture | strict line protocol (schema 1) over stdout; no second evidence path yet |
-| Crash/wedge recovery | manual (full standalone relaunch restores operation; USB replug alone does not) |
+| Probe build/hash/stage | The adapter accepts prebuilt source-owned PRXs from a host0 scratch directory; it does not build them. |
+| Transport qualification | Live replies identified PSPLink v3.2.1 and firmware 6.6.1. In W1-psplink3 the first `ver` exited 1, the second passed, and the post-attach verification passed; each attempt is retained in recovery events. |
+| Case execution and unload | `model-profile` `ldstart` returned a UID and left its module loaded. `modstun`, then `modinfo` `Unknown module`, confirmed unload. PSP-B3 `ldstart` returned promptly while its main thread remained parked. |
+| Result capture | `model-profile` and W1-psplink3 `transport-write` produced no schema records or host0 result file. The live envelope ended `HOST0_ROUNDTRIP_FAILED`, was not acceptance-eligible, and did not run the optional smoke case. Raw model code remains `NOT_CAPTURED`. |
+| Recovery | After the W1 reset timed out, `Shared` to attach to `Connected` restored the WSL route without a power cycle. W1-psplink2 saw the device already `Attached` and `ver` passed. In W1-psplink3 the first `ver` exited 1, the retry passed, and the attached-device verification passed; the shell stayed qualified until the transport-write result failed. |
+
+A fresh USBHostFS connection can lose its first shell command: a prior
+USBHostFS log showed `Error, unknown command 00000000` after the first
+`pspsh -e ver` timed out, and a later `ver` succeeded without PSP intervention.
+W1-psplink3 observed the same first-command loss as a `ver` process exit 1,
+followed by a successful retry. Initial shell qualification and qualification
+after each USBHostFS connect or
+re-attach now share a bounded verifier: at most three `ver` attempts, each
+limited to the remaining time or 15 seconds, within a configurable total
+deadline (`--shell-verification-timeout`, default 45 seconds). Every attempt is
+recorded in recovery events. Lost replies and USBHostFS unknown-command output
+are retryable transport events; only exhaustion escalates to
+`PHYSICAL_INTERVENTION_REQUIRED` with manual commands. This routine retries
+shell qualification only; semantic probe results are never retried.
+
+The reset command's timeout alone did not establish its outcome; the subsequent
+`Shared` to attach to `Connected` to `ver` sequence did establish restored
+PSPLink control without a power cycle. The later campaign CLI failure accepted no
+semantic result and was not retried. This measures one soft-reset recovery on
+the attached console. It does not measure a live probe hang or standalone
+PSPLink relaunch. The physical model was not read during this campaign and must
+remain `NOT_CAPTURED` in any envelope for it.
 
 The largest single autonomy blocker is fault containment: today a crashing
 experiment poisons the only control plane. Everything below is organized
@@ -39,7 +65,7 @@ around fixing that.
 ```text
 HOST ORCHESTRATOR (state machine, this doc §4)
    |-- usbhostfs_pc (host0: mirror = staging/results directory)
-   |-- pspsh / transport adapter (real adapter: future work)
+   |-- PSPSH process adapter (`tools/psp_oracle/run_psplink.py`)
    |-- evidence writer (envelopes, §6)
    '-- recovery ladder driver (§5)
           |  qualified command protocol (framed, §3)
@@ -125,15 +151,21 @@ by the reference implementation in the test suite:
 | Level | Action | Bound |
 | --- | --- | --- |
 | L0 | retry one protocol request | 1 retry, short timeout |
-| L1 | restart host usbhostfs_pc/pspsh processes | 1 cycle, then requalify from `WAIT_ATTACH` |
-| L2 | runner soft reset / qualified PSPLink `reset` | allowed only if SHELL_QUALIFY still answers |
-| L3 | standalone PSPLink relaunch (automatable form of the manually proven fix) | only if launch can be driven without physical PSP input; otherwise escalate |
+| L1 | restart owned host usbhostfs_pc process; if it reports `waiting for device`, identify the PSPLink device from `usbipd list`, attach once when `Shared`, wait for `Connected to device`, and verify `pspsh -e ver` | 1 cycle and 1 attach attempt, then requalify from `WAIT_ATTACH` |
+| L2 | qualified PSPLink `reset`, followed by the same dynamic USB re-attach and `ver` check | 1 reset and 1 attach attempt; allowed only if SHELL_QUALIFY still answers |
+| L3 | standalone PSPLink relaunch boundary | not implemented by the scalar adapter; in the works under [issue #352](https://github.com/Jstar269/nakagawa-recomp/issues/352); not measured |
 | L4 | declare `PHYSICAL_INTERVENTION_REQUIRED`, preserve all state, stop | final; looping is not recovery |
 
 Additional hard rules: never load a duplicate PSPLink user module (see
 `0x8002013B` above); never continue collecting evidence after qualification is
 lost; every escalation appends a `RECOVERY_EVENTS` record to the epoch
 envelope. The ladder fails closed: exhaustion of L3 ends in L4, not in more L0s.
+The scalar adapter implements one L0 qualification/cleanup attempt, one L1 host
+USBHostFS restart or transport re-attach, and one qualified L2 `reset` followed
+by transport re-attach. It stops at L4 if recovery does not qualify. The adapter
+never binds or detaches USB devices: an absent or unbound PSPLink device includes
+the exact manual command in the L4 reason, and a failed attach or `ver` check
+stops after the single attempt.
 
 ## 6. Evidence envelope
 
@@ -196,10 +228,14 @@ physical power intervention. The system says so plainly instead of looping.
 1. Conformance suite (landed): `tools/test_hardware_runner_protocol.py`
    implements the reference state machine, codec, fake transport, and every
    mandated fault scenario. Future implementations must pass it unchanged.
-2. Resident runner PRX + real-transport host adapter: new implementation
-   paths; require trusted detailed-ledger records before commit
-   (`PROVENANCE_UNRESOLVED` otherwise), plus maintainer authorization before
-   any persistent plugin/autostart change touches the device.
+2. Resident runner PRX: new implementation path; require a trusted
+   detailed-ledger record before commit (`PROVENANCE_UNRESOLVED` otherwise),
+   plus maintainer authorization before any persistent plugin/autostart change
+   touches the device. The scalar-probe host adapter is implemented in the
+   existing `run_psplink.py` path; the resident framed protocol is still absent.
+   Campaigns use repeated `--campaign-case CASE_ID=PRX_PATH` arguments, put
+   `transport-write` first, and set one bounded `--timeout` shared by each case.
+   An optional `--out` must be inside the host0 scratch directory.
 3. REQ_002 prerequisite: an import/startup fixture that resolves ThreadManForUser
    mutex NIDs, starts clean, emits one marker, asserts nothing — validated on
    host/toolchain first so PSP sessions debug semantics, not linker plumbing.
