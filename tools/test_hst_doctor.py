@@ -781,7 +781,7 @@ class LongPathDiagnosticTests(unittest.TestCase):
     def test_long_paths_pass_when_enabled_and_under_260(self) -> None:
         report = nk_doctor.Report(Path(r"C:\work\repo"), "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=True), \
-             mock.patch.object(os, "name", "nt"):
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
             nk_doctor_checks.check_long_paths(report, Path(r"C:\work\repo"))
         results = [r for r in report.results if r.code == "LONG_PATHS"]
         self.assertEqual(len(results), 1)
@@ -791,7 +791,7 @@ class LongPathDiagnosticTests(unittest.TestCase):
     def test_long_paths_warn_when_policy_disabled(self) -> None:
         report = nk_doctor.Report(Path(r"C:\work\repo"), "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
-             mock.patch.object(os, "name", "nt"):
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
             nk_doctor_checks.check_long_paths(report, Path(r"C:\work\repo"))
         results = [r for r in report.results if r.code == "LONG_PATHS"]
         self.assertEqual(len(results), 1)
@@ -803,7 +803,7 @@ class LongPathDiagnosticTests(unittest.TestCase):
         very_long_root = Path("C:\\" + "a" * 250)
         report = nk_doctor.Report(very_long_root, "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=True), \
-             mock.patch.object(os, "name", "nt"):
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
             nk_doctor_checks.check_long_paths(report, very_long_root)
         results = [r for r in report.results if r.code == "LONG_PATHS"]
         self.assertEqual(len(results), 1)
@@ -815,7 +815,7 @@ class LongPathDiagnosticTests(unittest.TestCase):
         very_long_root = Path("C:\\" + "a" * 250)
         report = nk_doctor.Report(very_long_root, "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
-             mock.patch.object(os, "name", "nt"):
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
             nk_doctor_checks.check_long_paths(report, very_long_root)
         results = [r for r in report.results if r.code == "LONG_PATHS"]
         self.assertEqual(len(results), 1)

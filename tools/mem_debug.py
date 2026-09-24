@@ -34,6 +34,7 @@ Safety contract (issue #180):
 """
 
 import sys
+import ntpath
 import os
 import json
 import shutil
@@ -509,7 +510,8 @@ class MemoryDebugger:
         if exe:
             resolved_exe = exe if os.path.isabs(exe) else os.path.join(find_repo_root(), exe)
             self.expected_exe = resolved_exe
-            self.expected_exe_name = os.path.basename(resolved_exe)
+            # The attach target is always a Windows process, so split on Windows separators.
+            self.expected_exe_name = ntpath.basename(resolved_exe)
         else:
             self.expected_exe = None
             self.expected_exe_name = None
