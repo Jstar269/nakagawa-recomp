@@ -1841,11 +1841,17 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                                  1.0f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
+        bool ctrl_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, y + 8.0f, 220.0f, 36.0f, "CONTROLLER SETTINGS", false, in, ctrl_focused)) {
+            player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
+        }
+        focus++;
+
         /* Close in flow: always visible, never overlapping. Grow the card
          * downward to hold it when the window allows. Only the extension
          * is painted: repainting the whole card here would cover the
          * sections drawn above. */
-        float close_y = y + 8.0f;
+        float close_y = y + 50.0f;
         float want_bottom = close_y + 46.0f + 16.0f;
         if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
             float old_bottom = card_y + card_h;
@@ -1970,12 +1976,17 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                           "No controller connected (keyboard ready). Connect a pad; d-pad moves, A activates, B goes back.",
                           1.0f, COLOR_TEXT_WHITE, 2);
     }
-    /* Haptic feedback claim removed: no haptic state is tracked in this build. */
+    /* Controller Settings button (#357) */
+    bool ctrl_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, col2_x, pad_y + 48.0f, 220.0f, 34.0f, "CONTROLLER SETTINGS", false, in, ctrl_focused)) {
+        player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
+    }
+    focus++;
 
     /* Save path lives under the gamepad block: column one grew a second
      * toggle row, so its old slot now belongs to reduce-motion. */
-    draw_text(ren, col2_x, pad_y + 84.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
-    draw_text_ellipsized(ren, col2_x, pad_y + 108.0f,
+    draw_text(ren, col2_x, pad_y + 92.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
+    draw_text_ellipsized(ren, col2_x, pad_y + 116.0f,
                          app->settings.save_directory[0] ? app->settings.save_directory : "(not configured)",
                          1.1f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_WHITE);
 
@@ -1986,6 +1997,352 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         player_app_set_view(app, VIEW_LIBRARY);
     }
     focus++;
+    (void)focus;
+    render_footer_hints(ren, app);
+}
+
+/* --- View: Controller Settings (#357) --- */
+static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = w - 64.0f;
+    if (card_w < 340.0f) card_w = w > 32.0f ? w - 32.0f : w;
+    if (card_w > 1216.0f) card_w = 1216.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = 60.0f;
+    bool two_col = card_w >= 880.0f;
+    float card_h = two_col ? 540.0f : 860.0f;
+    if (card_y + card_h > h - 40.0f && h > 560.0f) {
+        card_h = h - 40.0f - card_y;
+        if (card_h < 440.0f) card_h = 440.0f;
+    }
+
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+
+    draw_badge(ren, card_x + 32.0f, card_y + 20.0f, "CONTROLLER CONFIGURATION", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 48.0f, "PSP Controller Mapping & Calibration",
+                         1.8f, card_w - 64.0f, COLOR_TEXT_WHITE);
+
+    if (app->settings.controller_connected) {
+        char dev_line[128];
+        snprintf(dev_line, sizeof(dev_line), "Connected: %s",
+                 app->settings.controller_name[0] ? app->settings.controller_name : "Controller");
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 76.0f, dev_line, 0.95f, card_w - 64.0f, COLOR_LIME);
+    } else {
+        draw_text(ren, card_x + 32.0f, card_y + 76.0f,
+                  "No controller connected (keyboard navigation active; defaults shown)",
+                  0.95f, COLOR_TEXT_DIM);
+    }
+
+    float content_y = card_y + 98.0f;
+    if (input_settings_has_conflicts(&app->input_settings)) {
+        const char *conf = input_settings_get_conflict_summary(&app->input_settings);
+        draw_rounded_outline(ren, card_x + 32.0f, content_y, card_w - 64.0f, 24.0f, 4.0f, COLOR_RED);
+        draw_text_ellipsized(ren, card_x + 40.0f, content_y + 5.0f, conf, 0.85f, card_w - 80.0f, COLOR_RED);
+        content_y += 30.0f;
+    } else if (app->input_settings.has_load_diagnostic) {
+        char diag_line[384];
+        snprintf(diag_line, sizeof(diag_line), "Load Diagnostic: %s", app->input_settings.load_diagnostic);
+        draw_text_ellipsized(ren, card_x + 32.0f, content_y + 4.0f, diag_line, 0.85f, card_w - 64.0f, COLOR_AMBER);
+        content_y += 24.0f;
+    } else if (app->input_settings.has_save_diagnostic) {
+        char diag_line[384];
+        snprintf(diag_line, sizeof(diag_line), "Status: %s", app->input_settings.save_diagnostic);
+        draw_text_ellipsized(ren, card_x + 32.0f, content_y + 4.0f, diag_line, 0.85f, card_w - 64.0f, COLOR_TEXT_MUTED);
+        content_y += 24.0f;
+    }
+
+    int focus = 0;
+
+    if (!two_col) {
+        /* Single column layout for narrow windows */
+        float inner_r = card_x + card_w - 32.0f;
+        float y = content_y;
+
+        draw_text(ren, card_x + 32.0f, y, "PSP DIGITAL BUTTONS (CLICK TO REBIND)", 1.0f, COLOR_TEXT_DIM);
+        y += 22.0f;
+
+        for (int i = 0; i < INPUT_CONTROL_DIGITAL_COUNT; i++) {
+            char btn_label[128];
+            bool capturing = (app->input_settings.capturing && app->input_settings.capture_control == i);
+            if (capturing) {
+                int rem_sec = (input_settings_get_capture_remaining_ms(&app->input_settings) + 999) / 1000;
+                snprintf(btn_label, sizeof(btn_label), "%s: PRESS BUTTON... (%ds)",
+                         input_settings_control_name(i), rem_sec);
+            } else {
+                char bind_str[64] = {0};
+                input_settings_format_binding(&app->input_settings, i, bind_str, sizeof(bind_str));
+                snprintf(btn_label, sizeof(btn_label), "%s: %s", input_settings_control_name(i), bind_str);
+            }
+
+            bool focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, card_x + 32.0f, y, inner_r - card_x - 32.0f, 26.0f,
+                                    btn_label, capturing, in, focused)) {
+                if (capturing) {
+                    input_settings_cancel_capture(&app->input_settings);
+                } else {
+                    input_settings_start_capture(&app->input_settings, i);
+                }
+            }
+            focus++;
+            y += 29.0f;
+        }
+
+        /* Deadzone stepper */
+        int dz = app->input_settings.profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner;
+        char dz_str[64];
+        snprintf(dz_str, sizeof(dz_str), "Stick Deadzone: %d (%d%%)", dz, (dz * 100) / 32767);
+        draw_text(ren, card_x + 32.0f, y, dz_str, 0.95f, COLOR_TEXT_DIM);
+        y += 18.0f;
+
+        bool minus_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, y, 40.0f, 28.0f, "-", false, in, minus_focused)) {
+            input_settings_adjust_deadzone(&app->input_settings, -1, -1000);
+        }
+        focus++;
+
+        bool plus_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 80.0f, y, 40.0f, 28.0f, "+", false, in, plus_focused)) {
+            input_settings_adjust_deadzone(&app->input_settings, -1, 1000);
+        }
+        focus++;
+        y += 36.0f;
+
+        /* Trigger threshold stepper */
+        int th = app->input_settings.profile.trigger_threshold;
+        char th_str[64];
+        snprintf(th_str, sizeof(th_str), "Trigger Threshold: %d (%d%%)", th, (th * 100) / 32767);
+        draw_text(ren, card_x + 32.0f, y, th_str, 0.95f, COLOR_TEXT_DIM);
+        y += 18.0f;
+
+        bool trig_minus_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, y, 40.0f, 28.0f, "-", false, in, trig_minus_focused)) {
+            input_settings_adjust_trigger_threshold(&app->input_settings, -1000);
+        }
+        focus++;
+
+        bool trig_plus_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 80.0f, y, 40.0f, 28.0f, "+", false, in, trig_plus_focused)) {
+            input_settings_adjust_trigger_threshold(&app->input_settings, 1000);
+        }
+        focus++;
+        y += 40.0f;
+
+        /* Bottom actions */
+        bool save_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, y, 150.0f, 36.0f, "SAVE PROFILE", true, in, save_focused)) {
+            NkResult sres = input_settings_save(&app->input_settings, NULL);
+            if (sres == NK_OK) {
+                snprintf(app->input_settings.save_diagnostic, sizeof(app->input_settings.save_diagnostic),
+                         "Profile successfully saved to disk");
+                app->input_settings.has_save_diagnostic = true;
+            }
+        }
+        focus++;
+
+        bool reset_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 190.0f, y, 150.0f, 36.0f, "RESET DEFAULTS", false, in, reset_focused)) {
+            input_settings_reset_to_defaults(&app->input_settings);
+        }
+        focus++;
+
+        bool back_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 350.0f, y, 160.0f, 36.0f, "BACK TO SETTINGS", false, in, back_focused)) {
+            if (input_settings_is_capturing(&app->input_settings)) {
+                input_settings_cancel_capture(&app->input_settings);
+            }
+            player_app_set_view(app, VIEW_SETTINGS);
+        }
+        focus++;
+
+        (void)focus;
+        render_footer_hints(ren, app);
+        return;
+    }
+
+    /* Two-column layout */
+    float left_w = (card_w - 88.0f) * 0.58f;
+    float right_x = card_x + 32.0f + left_w + 24.0f;
+    float right_w = card_x + card_w - 32.0f - right_x;
+
+    /* Left column: 14 digital controls arranged in 2 sub-columns of 7 rows */
+    draw_text(ren, card_x + 32.0f, content_y, "PSP DIGITAL BUTTONS (CLICK TO REBIND)", 1.0f, COLOR_TEXT_DIM);
+    float list_y = content_y + 24.0f;
+    float subcol_w = (left_w - 12.0f) * 0.5f;
+
+    for (int i = 0; i < INPUT_CONTROL_DIGITAL_COUNT; i++) {
+        int col = (i < 7) ? 0 : 1;
+        int row = (i < 7) ? i : (i - 7);
+        float bx = (col == 0) ? (card_x + 32.0f) : (card_x + 32.0f + subcol_w + 12.0f);
+        float by = list_y + (float)row * 36.0f;
+
+        char btn_label[96];
+        bool capturing = (app->input_settings.capturing && app->input_settings.capture_control == i);
+        if (capturing) {
+            int rem_sec = (input_settings_get_capture_remaining_ms(&app->input_settings) + 999) / 1000;
+            snprintf(btn_label, sizeof(btn_label), "%s: PRESS... (%ds)",
+                     input_settings_control_name(i), rem_sec);
+        } else {
+            char bind_str[64] = {0};
+            input_settings_format_binding(&app->input_settings, i, bind_str, sizeof(bind_str));
+            snprintf(btn_label, sizeof(btn_label), "%s: %s", input_settings_control_name(i), bind_str);
+        }
+
+        bool focused = (app->focus_index == focus);
+        if (input_settings_is_control_conflicted(&app->input_settings, i)) {
+            draw_rounded_outline(ren, bx - 1.0f, by - 1.0f, subcol_w + 2.0f, 32.0f, 5.0f, COLOR_RED);
+        }
+
+        if (draw_button_focused(ren, bx, by, subcol_w, 30.0f, btn_label, capturing, in, focused)) {
+            if (capturing) {
+                input_settings_cancel_capture(&app->input_settings);
+            } else {
+                input_settings_start_capture(&app->input_settings, i);
+            }
+        }
+        focus++;
+    }
+
+    /* Right column: Deadzone & Sensitivity */
+    float cal_y = content_y;
+    draw_text(ren, right_x, cal_y, "STICK & TRIGGER CALIBRATION", 1.0f, COLOR_TEXT_DIM);
+
+    /* Deadzone Stepper */
+    int dz = app->input_settings.profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner;
+    char dz_str[64];
+    snprintf(dz_str, sizeof(dz_str), "Stick Deadzone: %d (%d%%)", dz, (dz * 100) / 32767);
+    draw_text(ren, right_x, cal_y + 24.0f, dz_str, 0.95f, COLOR_TEXT_WHITE);
+
+    bool minus_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, right_x, cal_y + 44.0f, 44.0f, 30.0f, "-", false, in, minus_focused)) {
+        input_settings_adjust_deadzone(&app->input_settings, -1, -1000);
+    }
+    focus++;
+
+    bool plus_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, right_x + 52.0f, cal_y + 44.0f, 44.0f, 30.0f, "+", false, in, plus_focused)) {
+        input_settings_adjust_deadzone(&app->input_settings, -1, 1000);
+    }
+    focus++;
+
+    /* Trigger Threshold Stepper */
+    int th = app->input_settings.profile.trigger_threshold;
+    char th_str[64];
+    snprintf(th_str, sizeof(th_str), "Trigger Threshold: %d (%d%%)", th, (th * 100) / 32767);
+    draw_text(ren, right_x + 220.0f, cal_y + 24.0f, th_str, 0.95f, COLOR_TEXT_WHITE);
+
+    bool trig_minus_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, right_x + 220.0f, cal_y + 44.0f, 44.0f, 30.0f, "-", false, in, trig_minus_focused)) {
+        input_settings_adjust_trigger_threshold(&app->input_settings, -1000);
+    }
+    focus++;
+
+    bool trig_plus_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, right_x + 272.0f, cal_y + 44.0f, 44.0f, 30.0f, "+", false, in, trig_plus_focused)) {
+        input_settings_adjust_trigger_threshold(&app->input_settings, 1000);
+    }
+    focus++;
+
+    /* Live Monitor & Deadzone Visualizer Box */
+    float mon_y = cal_y + 88.0f;
+    draw_text(ren, right_x, mon_y, "LIVE INPUT & DEADZONE MONITOR", 1.0f, COLOR_TEXT_DIM);
+
+    int16_t rx = app->host_axes_live[NK_HOST_AXIS_LEFTX];
+    int16_t ry = app->host_axes_live[NK_HOST_AXIS_LEFTY];
+    uint8_t psp_x = 128, psp_y = 128;
+    nk_input_profile_eval_analog(&app->input_settings.profile, app->host_axes_live, &psp_x, &psp_y);
+
+    char coord_buf[128];
+    snprintf(coord_buf, sizeof(coord_buf), "Raw: (%6d, %6d)  PSP: (%3u, %3u)", rx, ry, psp_x, psp_y);
+    bool stick_active = (psp_x != 128 || psp_y != 128);
+    draw_text(ren, right_x, mon_y + 22.0f, coord_buf, 0.88f, stick_active ? COLOR_LIME : COLOR_TEXT_MUTED);
+
+    /* Deadzone Box */
+    float box_sz = 100.0f;
+    float box_x = right_x;
+    float box_y = mon_y + 42.0f;
+    float center_x = box_x + box_sz * 0.5f;
+    float center_y = box_y + box_sz * 0.5f;
+
+    draw_rounded_fill(ren, box_x, box_y, box_sz, box_sz, 6.0f, (SDL_Color){ 16, 22, 28, 255 });
+    draw_rounded_outline(ren, box_x, box_y, box_sz, box_sz, 6.0f, COLOR_CARD_BORDER);
+
+    /* Crosshairs */
+    set_draw_color(ren, (SDL_Color){ 50, 60, 72, 255 });
+    SDL_RenderLine(ren, box_x + 6.0f, center_y, box_x + box_sz - 6.0f, center_y);
+    SDL_RenderLine(ren, center_x, box_y + 6.0f, center_x, box_y + box_sz - 6.0f);
+
+    /* Inner deadzone boundary box */
+    float dz_half = (float)dz / 32767.0f * 44.0f;
+    if (dz_half < 2.0f) dz_half = 2.0f;
+    set_draw_color(ren, (SDL_Color){ 70, 130, 180, 200 });
+    SDL_FRect dz_rect = { center_x - dz_half, center_y - dz_half, dz_half * 2.0f, dz_half * 2.0f };
+    SDL_RenderRect(ren, &dz_rect);
+
+    /* Live stick position dot */
+    float dot_x = center_x + (float)rx / 32767.0f * 44.0f;
+    float dot_y = center_y + (float)ry / 32767.0f * 44.0f;
+    SDL_Color dot_col = stick_active ? COLOR_LIME : COLOR_TEXT_WHITE;
+    draw_filled_rect(ren, dot_x - 3.0f, dot_y - 3.0f, 6.0f, 6.0f, dot_col);
+
+    /* Status badge beside visualizer */
+    float stat_x = box_x + box_sz + 16.0f;
+    if (stick_active) {
+        draw_badge(ren, stat_x, box_y + 10.0f, "STICK: ACTIVE", COLOR_LIME);
+    } else {
+        draw_badge(ren, stat_x, box_y + 10.0f, "STICK: DEADZONE", COLOR_TEXT_DIM);
+    }
+
+    char trig_live[64];
+    snprintf(trig_live, sizeof(trig_live), "Triggers: L=%d R=%d",
+             app->host_axes_live[NK_HOST_AXIS_LEFT_TRIGGER],
+             app->host_axes_live[NK_HOST_AXIS_RIGHT_TRIGGER]);
+    draw_text(ren, stat_x, box_y + 40.0f, trig_live, 0.85f, COLOR_TEXT_MUTED);
+
+    /* Pressed buttons summary */
+    char down_buf[128] = "Pressed: ";
+    int down_count = 0;
+    for (int b = 0; b < NK_HOST_BUTTON_COUNT && down_count < 4; b++) {
+        if (app->host_buttons_live[b]) {
+            if (down_count > 0) strncat(down_buf, ", ", sizeof(down_buf) - strlen(down_buf) - 1);
+            strncat(down_buf, nk_host_button_name((NkHostGamepadButton)b), sizeof(down_buf) - strlen(down_buf) - 1);
+            down_count++;
+        }
+    }
+    if (down_count == 0) strncat(down_buf, "(none)", sizeof(down_buf) - strlen(down_buf) - 1);
+    draw_text_ellipsized(ren, stat_x, box_y + 64.0f, down_buf, 0.85f, right_w - box_sz - 24.0f, COLOR_TEXT_MUTED);
+
+    /* Bottom Action Bar */
+    float bottom_y = card_y + card_h - 52.0f;
+
+    bool save_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, card_x + 32.0f, bottom_y, 160.0f, 38.0f, "SAVE PROFILE", true, in, save_focused)) {
+        NkResult sres = input_settings_save(&app->input_settings, NULL);
+        if (sres == NK_OK) {
+            snprintf(app->input_settings.save_diagnostic, sizeof(app->input_settings.save_diagnostic),
+                     "Profile successfully saved to disk");
+            app->input_settings.has_save_diagnostic = true;
+        }
+    }
+    focus++;
+
+    bool reset_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, card_x + 208.0f, bottom_y, 160.0f, 38.0f, "RESET DEFAULTS", false, in, reset_focused)) {
+        input_settings_reset_to_defaults(&app->input_settings);
+    }
+    focus++;
+
+    bool back_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, card_x + 384.0f, bottom_y, 180.0f, 38.0f, "BACK TO SETTINGS", false, in, back_focused)) {
+        if (input_settings_is_capturing(&app->input_settings)) {
+            input_settings_cancel_capture(&app->input_settings);
+        }
+        player_app_set_view(app, VIEW_SETTINGS);
+    }
+    focus++;
+
     (void)focus;
     render_footer_hints(ren, app);
 }
@@ -2510,6 +2867,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_SETTINGS:
             render_settings(renderer, app, input);
+            break;
+        case VIEW_CONTROLLER_SETTINGS:
+            render_controller_settings(renderer, app, input);
             break;
         case VIEW_ERROR:
             render_error(renderer, app, input);
