@@ -99,4 +99,20 @@ int sr_psmf_producer_eof(const SrPsmfProducer *producer);
 void sr_psmf_producer_stats(const SrPsmfProducer *producer,
                             SrPsmfProducerStats *out);
 
+#define SR_PSMF_STREAM_NONE ((uint32_t)-1)
+
+/* Select the stream indices to demux.
+ * video_stream_num: 0-based index of the video stream in the PSMF stream table.
+ * audio_stream_num: 0-based index of the audio stream in the PSMF stream table,
+ *                   or SR_PSMF_STREAM_NONE if no audio is requested.
+ * Returns 1 on success, 0 on failure (e.g. out of range). */
+int sr_psmf_producer_select_streams(SrPsmfProducer *producer,
+                                    uint32_t video_stream_num,
+                                    uint32_t audio_stream_num);
+
+uint32_t sr_psmf_producer_video_streams(const SrPsmfProducer *producer);
+uint32_t sr_psmf_producer_audio_streams(const SrPsmfProducer *producer);
+uint32_t sr_psmf_producer_selected_video_stream(const SrPsmfProducer *producer);
+uint32_t sr_psmf_producer_selected_audio_stream(const SrPsmfProducer *producer);
+
 #endif
