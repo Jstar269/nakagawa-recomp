@@ -40,7 +40,9 @@ Therefore zero divergence proves "emitter and interpreter agree", NOT "the
 implementation matches PSP hardware".  See tools/vfpu_coverage_report.py.
 """
 
+import hashlib
 import sys
+from pathlib import Path
 
 import build_profile
 from analyze import Elf, exec_ranges, resolve_extra_spans
@@ -48,6 +50,24 @@ import codegen
 
 
 VFPU_COMPUTE_OPS = {0x18, 0x19, 0x1B, 0x34, 0x37, 0x3C}  # 0x37 = vpfx (STATE) + viim/vfim
+
+
+def synthetic_marker(cases_path: str | Path) -> str:
+    digest = hashlib.sha256(Path(cases_path).read_bytes()).hexdigest()
+    return f"nakagawa-vfpu-synthetic-v1 sha256={digest}\n"
+
+
+def write_synthetic_marker(cases_path: str | Path) -> None:
+    marker_path = Path(f"{cases_path}.synthetic")
+    marker_path.write_text(synthetic_marker(cases_path), encoding="ascii", newline="\n")
+
+
+def require_synthetic_cases(cases_path: str | Path) -> bool:
+    marker_path = Path(f"{cases_path}.synthetic")
+    try:
+        return marker_path.read_text(encoding="ascii") == synthetic_marker(cases_path)
+    except (OSError, UnicodeError):
+        return False
 
 
 def _check_no_interp_call(body: str) -> bool:
@@ -147,6 +167,15 @@ def main(argv: list[str]) -> int:
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
 
+    if "--require-synthetic" in opts:
+        if synthetic or len(args) != 1:
+            sys.stderr.write("usage: vfpu_fuzz_gen.py --require-synthetic <out.h>\n")
+            return 2
+        if not require_synthetic_cases(args[0]):
+            sys.stderr.write("vfpu_fuzz_gen: missing or stale synthetic case marker\n")
+            return 2
+        return 0
+
     if synthetic:
         # PUBLIC SYNTHETIC MODE
         if len(args) < 1:
@@ -243,6 +272,10 @@ def main(argv: list[str]) -> int:
         # Do not abort; just exclude the cases and report.
 
     write_header(out_path, cases)
+    if synthetic:
+        write_synthetic_marker(out_path)
+    else:
+        Path(f"{out_path}.synthetic").unlink(missing_ok=True)
     sys.stderr.write(
         f"vfpu_fuzz_gen [{mode_label}]: {len(cases)} cases "
         f"({n_unsupported} skipped-Unsupported, {n_self_compare} excluded-self-compare)\n"

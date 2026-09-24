@@ -102,9 +102,12 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         int imm = w & 0xFF;
         uint8_t vi_idx[1];
         if (sub != 3 && sub != 7) return SR_VFPU_OTHER;
+        /* mfv/mfvc into $zero has no architectural effect: MIPS discards every write to r0,
+         * whatever register is read. Compilers emit `mfvc $zero, 255` (0x486000ff) as a VFPU
+         * pipeline-sync idiom, so it must complete as a no-op rather than fail closed (#326). */
+        if (sub == 3 && rt == 0) return SR_VFPU_COMPUTE;
         if (imm >= 144) return SR_VFPU_OTHER;
         if (sub == 3) {           /* mfv / mfvc: VFPU -> GPR */
-            if (rt == 0) return SR_VFPU_COMPUTE;
             if (imm < 128) {
                 vreg_idx(imm, 1, vi_idx);
                 s->r[rt] = s->vi[vi_idx[0]];
@@ -296,6 +299,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         }
         if (s3 == 6 || s3 == 7) {  /* vcmovt / vcmovf */
             int tf = s3 & 1, imm3 = (w >> 16) & 7;
+            if (imm3 == 7) return SR_VFPU_OTHER;
             float sv[4], d[4];
             vreg_idx(vs, n, si); vreg_idx(vd, n, di);
             sr_vread(sv, s, si, n, s->vfpuCtrl[0]);
@@ -304,7 +308,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             if (imm3 < 6) {
                 if ((int)((cc >> imm3) & 1) == !tf)
                     for (int i = 0; i < n; i++) d[i] = sv[i];
-            } else if (imm3 == 6) {
+            } else {
                 for (int i = 0; i < n; i++)
                     if ((int)((cc >> i) & 1) == !tf) d[i] = sv[i];
             }
@@ -326,6 +330,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         }
         if (sub21 == 21) {  /* vcmov: conditional move on the VFPU CC register */
             int tf = (w >> 19) & 1, imm3 = (w >> 16) & 7;
+            if (imm3 == 7) return SR_VFPU_OTHER;
             float sv[4], d[4];
             vreg_idx(vs, n, si); vreg_idx(vd, n, di);
             sr_vread(sv, s, si, n, s->vfpuCtrl[0]);
@@ -334,7 +339,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             if (imm3 < 6) {
                 if ((int)((cc >> imm3) & 1) == !tf)
                     for (int i = 0; i < n; i++) d[i] = sv[i];
-            } else if (imm3 == 6) {
+            } else {
                 for (int i = 0; i < n; i++)
                     if ((int)((cc >> i) & 1) == !tf) d[i] = sv[i];
             }

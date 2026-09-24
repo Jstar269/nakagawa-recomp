@@ -604,11 +604,54 @@ static int check_vf2i_conversions(void) {
     return 0;
 }
 
+static int check_reserved_cmov_forms(void) {
+    CpuState s;
+    const uint32_t words[] = {
+        (0x1bu << 26) | (6u << 23) | (7u << 16),
+        (0x1bu << 26) | (7u << 23) | (7u << 16),
+        (0x34u << 26) | (21u << 21) | (7u << 16),
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+        setup_state(&s);
+        const CpuState before = s;
+        int kind = sr_vfpu_interp(&s, words[i]);
+        if (kind != SR_VFPU_OTHER) {
+            fprintf(stderr, "reserved vcmov word=0x%08x sub=%u imm=%u kind=%d\n",
+                    words[i], (words[i] >> 23) & 7, (words[i] >> 16) & 7, kind);
+        }
+        CHECK(kind == SR_VFPU_OTHER,
+              "reserved vcmov imm3 fails closed");
+        CHECK(memcmp(&s, &before, sizeof(s)) == 0,
+              "reserved vcmov imm3 leaves state unchanged");
+    }
+    return bad;
+}
+
+static int check_mfvc_zero_is_noop(void) {
+    /* mfv/mfvc into $zero discards the value (MIPS r0), whatever register is read, including
+     * the out-of-range control number 255 of the `mfvc $zero, 255` sync idiom (0x486000ff).
+     * A real GPR destination with an out-of-range control register still fails closed. */
+    CpuState s;
+    int bad = 0;
+    setup_state(&s);
+    const CpuState before = s;
+    int kind = sr_vfpu_interp(&s, 0x486000ffu);
+    CHECK(kind == SR_VFPU_COMPUTE, "mfvc $zero, 255 completes as a no-op");
+    CHECK(memcmp(&s, &before, sizeof(s)) == 0, "mfvc $zero, 255 leaves state unchanged");
+    setup_state(&s);
+    kind = sr_vfpu_interp(&s, 0x486200ffu);  /* mfvc $v0, 255 */
+    CHECK(kind == SR_VFPU_OTHER, "mfvc to a real GPR from control register 255 fails closed");
+    return bad;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_cop2_control_transfers();
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
+    bad |= check_reserved_cmov_forms();
+    bad |= check_mfvc_zero_is_noop();
     bad |= check_vrot_overlap();
     bad |= check_vhdp_vmscl_overlap();
     bad |= check_overlap_diff();
