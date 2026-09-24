@@ -165,7 +165,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "695618f3d5b3aabb6702550431990c01e8cc48ffa6460452df9665d65607ad07"
+      "sha256": "03c6fa0b638d242817ebf23833e69201568db74c2cdd53cb25708db3f9f3aefc"
     },
     {
       "path": ".gitignore",
@@ -1009,7 +1009,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8e938e0db9e1e948e9db0bda907a86904dbc467d231702ce75ddeab449ea0bf4"
+      "sha256": "cb8c04614213f903fb8f4ca74795283f2a1b9be864b4f8f2f5a8f0d611ba8a3e"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -7432,7 +7432,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "621466ae083ce68bea7397bc43889dc6b59bc70661580e370295494d9bf817d6"
+      "sha256": "06c70bdec2a802799046f5e391bf935c4214d4d620e6f9c3747bc4b5fb865f18"
     },
     {
       "path": "tools/prxload.py",
@@ -8837,7 +8837,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4d5a365e7e6d4a515654b107c0f0f41c7d2b1fb592c97fefd433833e721acbd3"
+      "sha256": "cc6a27eb3e6e13e37a22e746799243c2c9629fa30522fe5a7259dab41a828aef"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
