@@ -276,7 +276,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f04dbab6db26895acfd72ffec82ce2e12f6a43ddab7ac811cdf7e2501f117dd7"
+      "sha256": "fd916c64457d7ce6e37a8aa9c8f2fda5247101572aecb8dbb13bb0cbdfcfa82d"
     },
     {
       "path": "NOTICE.md",
@@ -426,7 +426,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "cc2063a6eb2959e3e3c2574735a3e0999df9dd0e15e1dc82ee2feb3c4fbfa996"
+      "sha256": "8fb51f1dc4a25358a36e80a4c140fa7e9b3355f148b320d2c9fb268052185e3b"
     },
     {
       "path": "assets/release_manifest.json",
@@ -898,18 +898,6 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "1a97c1693bb6176e430eee23629e44d23f0e980a49bb2818ab45451c06e9c49f"
-    },
-    {
-      "path": "docs/PARSER_SAFETY_INVENTORY.json",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "parser-safety-inventory-319",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "d0d5f391dc09e9d010bcd0eeacae2faf94953c00e86a6d7f4b4d1bc445dc0d71"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -5944,7 +5932,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5898d215fa351081b2fabd3bf9b4fc4221cf59e8fd68b13c635d3ce8ca36781"
+      "sha256": "a7317b9560d80c6a58fe021e8f90922fac7f38c3af19a3a3cf9a9a3d3817dc83"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6159,7 +6147,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8b851f05fc880bf8c5864f255b2811ee6ca92acb724130684975ba401c2621e3"
+      "sha256": "4ece90821497a13d0991e4bfe30874534178cf1af78217ffa19f2a27156a4c65"
     },
     {
       "path": "src/rt/prx_loader.h",
@@ -6183,7 +6171,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "89ac8a37f0af69f4b3bb0360d7ea0be8e35fcf4b7bf6af33bc1810f73ffdf1dc"
+      "sha256": "ae7fa364512d5b1e625b670df4e22821cd82128d8b63fb0e268a22285f90137b"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -6195,7 +6183,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e2a4c6bbfbb95d8c2cf03a7280ca4f64eaee76cc2a6f64717035cdc2aac69e7"
+      "sha256": "eef1eb12da5f918dff449ef00f69e4857dcb53b4de58ec0f9ed550dfb076b249"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -6219,7 +6207,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25b857c3c6848f96d8e7199a0b2f86c0f852a6ac55245c1d83064e57a58c7d25"
+      "sha256": "c0b5aeb6641df7be284f4d9adf0fe6cf424a700542e06e4192866922b07a8037"
     },
     {
       "path": "src/rt/recomp.c",
@@ -6292,7 +6280,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4d3a8dc7582c126f00b3ebfa9e0b5d7f2eb6889d43ed7a2da7654e5deb27bbc0"
+      "sha256": "21d8a41bca136a72511c749e15b18d049e53885260bdd0502b23bc1b71e46ae6"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -6304,7 +6292,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8cc564eb810d70770fabde29072e6b7a0a458baec4e085e2dd7f835c904608ba"
+      "sha256": "f21eec2b39d41e13bb1516e83f5ecd065ba65ec987b11660a8eda4a21ab83249"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -6685,7 +6673,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fe1b54f19f980c2183a10af77e2628e80cf00aa769e6c42d70843148ff6dac77"
+      "sha256": "8a0717f99a7b048fbd50f22a0d1f09802103986f8ef827185ef39d6cfb483642"
     },
     {
       "path": "tests/native/test_launch_resolution.c",
