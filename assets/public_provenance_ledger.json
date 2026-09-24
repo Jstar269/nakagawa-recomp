@@ -339,7 +339,7 @@
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "2a72b3d563b8e080dd2be9a963f44c8396ca615421833d3cffb6d126101c1c82"
@@ -352,7 +352,7 @@
         "record_id": "upstream-sal063-notice",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "98454ee97dec8ccf25f93766b42cabf40d29517f28db11c8c3ec66b65d1b9825"
@@ -365,7 +365,7 @@
         "record_id": "dependency-shadcn-dashboard",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f"
@@ -539,7 +539,7 @@
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5fbf4f3f25453fe7f3a6090688a624eb2d6d2c89316fc3b8b7d2fcafd2b6762a"
@@ -552,7 +552,7 @@
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1806b02a3802dd41347d32ad759073407d37e4a4d7b1196f50307c8825cd28b8"
@@ -565,7 +565,7 @@
         "record_id": "dependency-pspsdk-notice",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "8409d03f2c148cef29ba2041081068bbc17da217a09591c094a501716548d6c4"
@@ -2672,7 +2672,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a76213c5f62be9c748c2bd6b40c0a5b06a7e9109a12336563dea316c00c8e480"
@@ -2685,7 +2685,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "19a88d306e9728cc570f1bfa467679726817db8bebbe8fed46eed561abf088c5"
@@ -2698,7 +2698,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "12afd0b9a7eef861e6383b55864be58c2653b346b53cbc393a89ee4e0b70d05c"
@@ -2711,7 +2711,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6940872bf122271a604890d88f45e06f05bbe00ef69c6ef358fa37b3b87bacb6"
@@ -2724,7 +2724,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b970adf18bb9f8e445ac10788df19a6110f7125de912ac21f6a033bb3ecd4872"
@@ -2737,7 +2737,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "567e5e4f4203adba35501bf064e415c25f93b8f82a5cd8437ebfc7795f5ce007"
@@ -2750,7 +2750,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "fdcbec3ca95192058a6dc346d19ec46784de106269fab47094b6b48bd2cb99a5"
@@ -2763,7 +2763,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "cfd6aeb90a34ca42f4fffaeb0861fca27db4e09b752e75d609c7ff1e99c0019c"
@@ -2776,7 +2776,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a54d55442bb523e095e09ae98e447ef0069c60a98b33d56aa0933f4662accfc3"
@@ -2789,7 +2789,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6718e4810940d758ae5b6fd8e4a99ae7070e4b13aa85dde6e5fa80b0c0311cc7"
@@ -2802,7 +2802,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ab8fcea97cd41c01d5bd86864a474d383d1226897daa06ee5b577d288d7133c3"
@@ -2815,7 +2815,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f0fd3c1dd20a3c4948a8e0fa3600442dd0e764ef7493e3f517a5e5173d2e7422"
@@ -2828,7 +2828,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a2514d0c0834f60aabd31819e50729fa46c7e15a8d9be8daf54fb126eaf3f832"
@@ -2841,7 +2841,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b1254cb1644373db9c9b11a8cd4f4a71eba4b2976968c4e3fd327a53d171ab35"
@@ -2854,7 +2854,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "2d306d6af1425766af06a3b1bf775e4d85b2f3659ec247aa154abe4e779fa9f1"
@@ -2867,7 +2867,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "91b84e07fda8c7b544d908aa2192f312dc31611aed4db779e9fade3853f06ce3"
@@ -2880,7 +2880,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "56ffdf61207a9c48430aa7e8c72158dc4cfdab0b50a3b7539740aceb1bdf9abd"
@@ -2917,7 +2917,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4fc1aeccfc4260ad4738690b67f1bafc4fae12e8b35459eb41c9ab05964feaac"
@@ -2942,7 +2942,7 @@
         "record_id": "shadcn-ui-dashboard-primitives",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "MIT",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f9ee2956c278ca95d49675bbc9a630ef19d76c7ea876c765eae58ad218c55779"
@@ -4059,7 +4059,7 @@
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "3ec6b3bedc5978b2e0f8785a3448b9c5f5d645badf48456f0889b497ca3b0693"
@@ -4072,7 +4072,7 @@
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5cf1274e440bc8f6eb5573fa8527c380f235b61be82c1e0aee37ce0dbe19cab3"
@@ -4085,7 +4085,7 @@
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "67652f12dc748d984309444dfd938c4ab3e59ca66a9ae67f4c63a0431f217ac3"
@@ -4098,7 +4098,7 @@
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "72d5316029a6b3de4dc435973d3c0c0a5e081721cdedbd6999818e2d76d2dee7"
@@ -4111,7 +4111,7 @@
         "record_id": "reference-interpreter",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f47d423f9e65b190c68c2fdc87f4b44bad8df47d802f5bf77c187b2dcbb47760"
@@ -4148,7 +4148,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
@@ -4161,7 +4161,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "072e5d11fbb60a1c7d5929f171d6b35cd4836cb87ab3b20c5d1d966ad3b84186"
@@ -4174,7 +4174,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4a450999df43f19c8b9e897f6b19f199374895b0d2961d180d611f30452c2198"
@@ -4187,7 +4187,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0b6bf8175f4cf050ed0508768c05a252cb0ef3c5d67965a2f01e41eb41206cbe"
@@ -4200,7 +4200,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4d77692706a0427028ca926528315166d03e16a28b96b14a278dfdfb078a7d95"
@@ -4213,7 +4213,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "92a1c929473bccda38454d3c145f679c82ee1ac7ee010841c0a88a54469c850c"
@@ -4226,7 +4226,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1bebd1ca1df67c0530736cde3c375a0654a817ed74d5078a5d79f25ece7a65c5"
@@ -4239,7 +4239,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9cedbfb13727c7b6050408aaecb7f04aa7d28ef41cfb29d7e506bbc3ad6fc0dd"
@@ -4252,7 +4252,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4d4b01fe20383ae4339809f5a68d43e7f3278706ad705e80e6e405545cad4045"
@@ -4265,7 +4265,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "28575294fcc484756897785c0c17c149aa1166c079cf1aef4dddf17f7211b5ee"
@@ -4278,7 +4278,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "96f361aec8d900c6b337c36c2f857e0e6a07a5924b015942076af09430cd5186"
@@ -4291,7 +4291,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6d989bddcc7e167867cc80999aff6ee065c98c758646a16b915de0d511546982"
@@ -4304,7 +4304,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a0918d3d682f40bd65bbdc60ad0cdca08675a0067cd3e92581342b045fb0cc78"
@@ -4317,7 +4317,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e238284823fa0a29c5ef00fca47ce36cf6148bbae0a971d24fe29583e2bba3c2"
@@ -4330,7 +4330,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f99d9cea5def9f332b6db9e7c5e16fa2ae05925a6ab4e8ee80d1093a5dd32545"
@@ -4343,7 +4343,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ff0673b9b6e3c0e732bedf1c86ac636fc2d99235f3f32251cf357fe6f3fc3622"
@@ -4356,7 +4356,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f007c0b9bbcf1596024709208fec04e57c9b7a01f39b31905733e7e4929d037e"
@@ -4369,7 +4369,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ee94cc8ddaa1de264bcefc355d7274ddf424008a32bcb001c2404fc08936d747"
@@ -4382,7 +4382,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "3a0b71ba81a2465914eeb0e91fca2abec6e780247ca16461c4ab5d12c38651de"
@@ -4395,7 +4395,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9816802db26b5ce796ef0a457ea447daf8a2e1672292d9c9bb36292413955d70"
@@ -4408,7 +4408,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "40e8b88aa3a1c2a7190b43acafee1ab79b5c5e62db365f8d0725730c33999229"
@@ -4421,7 +4421,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e3c5067c886a3a8bcabb0a1e0a2289dbb413644fe5e0de0a6cd85bd4741a927f"
@@ -4434,7 +4434,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "eb95b312e978f88daa79b56759db430166e07b1e58797d8abfb385cc67f2bfc9"
@@ -4447,7 +4447,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "576fb9c5d57651010acfe43c4fd4d2ae88fc4ebde8b755d0b37391ca0332c047"
@@ -4460,7 +4460,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6a74cda2e33b3dbbb34df8ed6b20866710d8a821ef9a70529c8b15c5e5ff5c85"
@@ -4473,7 +4473,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ffbc9d04c45b9c553e41f079691f3726a5715c25a7245608f12d4652343a078c"
@@ -4486,7 +4486,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b24808cee11711da6c119c43bc71b03d3458d1d07be238128d264a5f244c18ab"
@@ -4499,7 +4499,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "fde23a083e05fc1bef1a5b6927042f09bef34598b210beae7f655fe14296941d"
@@ -4512,7 +4512,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b486c555871a4d098500ed0f389dff5f5cb07c17df8c70c8c155b5bd3f15f5f9"
@@ -4525,7 +4525,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a2defd94fb60f2c6b838e51219afedf6a0991f393fccae6dd9d205a60b5c78de"
@@ -4538,7 +4538,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "59da10d0543d7e4a4a11cccfc592335e24c1a94774cbedbd74968e6e1395cf40"
@@ -4551,7 +4551,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "94e1e4cd2472cd13a6d636da6f63650535d479fb7901267ecce75b57b5c0f754"
@@ -4564,7 +4564,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5579591da44aa6d523ae4211d157abb503075ea818e49a8dc4e31c5933f79a58"
@@ -4577,7 +4577,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a067aceabf8c8998393bbd7ab3c3949e041948c6e9672dc22295b975a177c634"
@@ -4590,7 +4590,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "13784fedd0c3407eccdd8816bda672373865d7020b1a9a858000eabf9b3e3564"
@@ -4603,7 +4603,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "fe65a0d0b038e219078177d02f61d8e835a8fb9ccc758e2cac9b3d09a565cc32"
@@ -4616,7 +4616,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7d6432122fcb3a261f037a4323738301a5a6b50ebe80940749a9c9704a56bc3c"
@@ -4629,7 +4629,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f59ee84455dc0b37d61ebb225123f5311cd5fd1161a62f120aab9c31d2b64c0d"
@@ -4642,7 +4642,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9a229b2ef3c930961062a40807c6c689e250128a32dcb569c29ddc8fa5be002a"
@@ -4655,7 +4655,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b6374f30957bd34726b9f609ccc95b892637dc17561d28e00de0c51e95a85918"
@@ -4668,7 +4668,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d94e00c37b220c230b23322a9e1fe24d092eda6ef2353953009727652dd1ee51"
@@ -4681,7 +4681,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "cd530a990c8949e867f05e08e4de07c2df170d435707a73679fe5fe53bb3389e"
@@ -4694,7 +4694,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1ad28eb6c1b831a2d0752fea83957ac66aea96c7ba5c8c707a773ab150cf5670"
@@ -4707,7 +4707,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9d69f6dc6d186dd124228398cb7dd7facb4aa2856c6b4e6cdb9fbdd1121510d1"
@@ -4720,7 +4720,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "14c8372ee5347436f753eab76f25578e44f0631ee038ecac9c587700120ac9c2"
@@ -4733,7 +4733,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "905900f0d1f87ed265d2ff3db42fd9083212cd936f8d15bd384a2c4a03e46957"
@@ -4746,7 +4746,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "61f5c70a02b95624756cc191c0c9d1c232219d37c051b4f33d662dfd33233958"
@@ -4759,7 +4759,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f1b517fa28db3776f87779ba25ff0080b4f2475505f2d12fb17e05d9626acbba"
@@ -4772,7 +4772,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a2de7f9915057670e0e9a48326107072d0ded1e3c7d41f29103ea06f9d0f1274"
@@ -4785,7 +4785,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "825d10534b8851fa86761b28b06bec0a854c264c23cbcc144f4086ce5992781c"
@@ -4798,7 +4798,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7fd8514cbe4b6ef025b0f5cc3b752e2c3940e22f4945cf6e6372653b6e3d2bca"
@@ -4811,7 +4811,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b3aa3486aa11588581ceaf7d3f88708f85aeb7a1c621b5a832acc86e37fb0e2c"
@@ -4824,7 +4824,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7e965f7aa29f393243b18df96a2031ea7f34e2f397d6326e15e31dc3cf29c076"
@@ -4837,7 +4837,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "2627c3903b04c29ade0d9d015edced178cb05e22e04b38aed6fc74aa58229d57"
@@ -4850,7 +4850,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f31a7c033140ed88d4736242162e22c9065ce9bb7a078c3351bb5ba9f9868fd7"
@@ -4863,7 +4863,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "8b533441dbd78070ac2441ec965315c5328386c4716982c554353a8e56e4df8d"
@@ -4876,7 +4876,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1e7908e98aab981c801d6b016a1417d505c998ec8e91a8e1bace6b44a8813c85"
@@ -4889,7 +4889,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7021f8d31b74233859d159ef8108ebe19d2e5e30c2025a728f23009e3233cc9e"
@@ -4902,7 +4902,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "59187ec66a696b1bab6b2a887ea484d116c9a3ac2e1ec341e3ec97f31ee9eaf0"
@@ -4915,7 +4915,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "a39e6a9b5c3169f712e0e70ebbf096ca22e78f332a62948ee1d1e0af9c2d6a91"
@@ -4964,7 +4964,7 @@
         "record_id": "atrac3p-decoder-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4396573bc42b3bc151fb391ed09fec7b81b86e7e5e0e1221811fd3f1c31f1a99"
@@ -5145,7 +5145,7 @@
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "292c506aeb55335d1654efbef3e287b5f6cdcf38e87547e02ea738e9708bea0d"
@@ -5254,7 +5254,7 @@
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "30e13d52de60e3aa34a997909b9d805e04efda0406991706da1927a230de1e33"
@@ -5267,7 +5267,7 @@
         "record_id": "ge-software-rasterizer",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b764c7035ac7267b61bb2a1184963950a60c696874400f5a36abd3c9f71b7643"
@@ -5328,7 +5328,7 @@
         "record_id": "ge-software-rasterizer",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d5215129e2927a3ab943cf3420cf51aedf85750be260e961fb808d38346f8ca2"
@@ -5365,7 +5365,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4d61af190c37770a7ed7a31c21bc78b4bec7def000dcaee9eeacd318c1a52abf"
@@ -5378,7 +5378,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "60da49721642b2611d0740a2d290f261c223b9fe80553d759fa4ee6affe8f33b"
@@ -5391,7 +5391,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e2073c6332aebca7781da5fcda99c919df19c10753acb84b0ca8e6c84739b5b4"
@@ -5404,7 +5404,7 @@
         "record_id": "ge-shader-embeds",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e7239e8df4b56945064a4c977c339d64caf62d96aea133b3b7e07e8d75802396"
@@ -5417,7 +5417,7 @@
         "record_id": "ge-shader-embeds",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0cb658a5ba2350ca607538700debaf6c728719dfd6ff1b36a3518e49d9fc679c"
@@ -5430,7 +5430,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "68db1214ce5be80dfe680b355db2597c38c4337eafc5de2263e5099e26a0c40c"
@@ -5443,7 +5443,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ad3f53d287e30d18fafef238809dbec39aabc52e38239b6be173dd2e12d67481"
@@ -5456,7 +5456,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "52c32709170185af962ed1cab30d8a50f69b76d1540389dfb276f064a9c7ce10"
@@ -5469,7 +5469,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1b19e8dd6dc5092c514eaf2261b1cd5c1cd8482994cd43ccb4f4e1282db7fed3"
@@ -5482,7 +5482,7 @@
         "record_id": "ge-vulkan-backend",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "98fdb5a8442ca81da0cf736e0054329ac6e6f74a57faf15e3358f6efa1594d04"
@@ -5555,7 +5555,7 @@
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5e8dbc4d2023356bb846b5299fceff6fec016d9fef0eac747c5282bdb1d3ad42"
@@ -5568,7 +5568,7 @@
         "record_id": "media-decode-mediafoundation",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "ffbdfab69a6091bb4da43643a26f428fc2432658d4c3a56eba8725fc1c53789d"
@@ -5605,7 +5605,7 @@
         "record_id": "hle-core",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "24d98b3346cc622facea8fa18764be3f2b2131563452d980a28ba54a207b0516"
@@ -5618,7 +5618,7 @@
         "record_id": "hle-power",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "890b70bf8138993231e6019fa0ebf0f35d1f7e8743fc1875b813cebd0484dc2f"
@@ -5631,7 +5631,7 @@
         "record_id": "hle-power",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "40e3892a1aec5c5cfa88778a1201132039fdd46bb66cb6f4f456b0a2762eddad"
@@ -5668,7 +5668,7 @@
         "record_id": "iso-vfs-header",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "1d704fdbd90382677ad2300c4d744f2f233752d1648f70acc78a98a808bb8df0"
@@ -5705,7 +5705,7 @@
         "record_id": "mpeg-psmf",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f11683efdeeb712d148a5ff8bca5122da4bca8ece45f8e54fa5939fbb0f0c133"
@@ -5754,7 +5754,7 @@
         "record_id": "host-shell-inherited",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "8a47e7ee600386f7a234b9685df33b9f35ba7769f67bcb755b90648a9da8de7d"
@@ -5923,7 +5923,7 @@
         "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d158d715efffafa1b7485febf6b89a019037291904c60e58c7984262cc3e3e76"
@@ -5936,7 +5936,7 @@
         "record_id": "cpu-core-runtime",
         "evidence_tier": "H",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0852c9245d466ba7ca8852dfe64da89f2e0f52caac5eff29c95b60026b53fcf9"
@@ -5949,7 +5949,7 @@
         "record_id": "savedata",
         "evidence_tier": "N",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b1ef804f2bdadcea66d97ba97325451b9b75aa45a43d56e84a88a636b8acb4c1"
@@ -5962,7 +5962,7 @@
         "record_id": "scheduler",
         "evidence_tier": "H",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "4a3d4b76c027b98903209f8edaf15cd5452b6ead29b85d2050935d3da2a6d993"
@@ -6155,7 +6155,7 @@
         "record_id": "vfpu-differential-fuzz",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9dd9c221703165e2f54a095dc0777bb476cd0444ca0f69376bc20bb6dac9c823"
@@ -6168,7 +6168,7 @@
         "record_id": "vfpu-interpreter",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "9d3ecb4cd58c73d5b6aa1b1d5c777b8a25b97d8759418eaea039f20745f16668"
@@ -6499,7 +6499,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b98206bf70b82aec73ab22a30917e8aeaf574248b1a9d16369a7cc9ee0df5227"
@@ -6632,7 +6632,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "61587467d9e002de6496b21a8b29a4a74c6ddfaba294e4a9a3427e9e75045dd2"
@@ -6645,7 +6645,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0d4fc01a95dd11d5573e594df72f9ce0c0d8e8ac9e5bd187af02171b2e60ad2f"
@@ -6766,7 +6766,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "52d7c0e21ce7d868a5311653ef8817d118c8bf793c9d1bde41f58cfdbff1a675"
@@ -6827,7 +6827,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "0aac5024f50e5d2fc2ad3145196f07c6be324cd40bbc669f5f196321453c053c"
@@ -7041,7 +7041,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "01583d1053aee14a272543dcedce70190408a2ff8cf2e2d41402c10da2797ebf"
@@ -7078,7 +7078,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "bb0e299eb973a73503c1233a1cd606860bc3582875eeb78231229863cf0905a6"
@@ -7139,7 +7139,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "d9f18a84c5243a1d7e2c35732561502713342246a6c856b7c7d6704846c3074c"
@@ -7404,7 +7404,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "69dbe72c2673ca605390acc99fca1b066313cb6d43f96de63b51e72caf5e5c52"
@@ -7417,7 +7417,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "b3fc973f6f0101cdefff02960625bc917d24954767964c4268e2df9027f47369"
@@ -7444,7 +7444,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f43309bbc7236f4e9c7dc280c993b6c2bf14dd45fcb04082af6beedc7de93bf7"
+      "sha256": "31451d9dfc6964eb48acdf13081b4fbecda59ac850b0eb50be3dc6966f3cb259"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -7456,7 +7456,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4251d581ceb409d5c091992938cf09fc3014cb6f7178512a6a5bfe12593f8273"
+      "sha256": "47b3188b632cb63e25bfc205deb9aa1db1a55025dbbc12fdfc0c00c5667b05b9"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -7478,7 +7478,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "55d9a31f1ddf08bd35949032bd6ba82f52161b31b6a7de9253322c8eab089769"
@@ -8885,7 +8885,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "cc6a27eb3e6e13e37a22e746799243c2c9629fa30522fe5a7259dab41a828aef"
+      "sha256": "90293248bcbb34c49849997ca04e226ab000c34746267a188d2be16c39cd0d0d"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -9582,7 +9582,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "f1c68d740e80626649cc3bf92b7336811d4dd0833a5f1e440756ddfe0b28e9d8"
@@ -9667,7 +9667,7 @@
         "record_id": "recompiler-pipeline-inherited",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "see NOTICE.md",
+        "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "7b970037821255cdc5dc715bf30d57f04c9d280b6804d7151686b50a160623d0"
