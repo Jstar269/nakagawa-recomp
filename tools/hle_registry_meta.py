@@ -20,7 +20,9 @@ Classification model (per registered NID):
   controlled_unsupported -- a dedicated handler that deliberately refuses the
                             operation with the API's own documented error
                             (e.g. the PSMF getters returning PSMF_ERR_NO_DATA
-                            until the real demux is connected). Unsupported, but honest.
+                            until the real demux is connected). Static refusals
+                            registered with an explicit PSP error code are also
+                            controlled_unsupported. Unsupported, but honest.
   dedicated              -- a handler written for this API. NOT a claim of
                             completeness; see HANDLER_STATUS.
 
@@ -55,6 +57,9 @@ HANDLER_STATUSES = {
 # handler name -> status. Every handler named here must exist in hle.c's
 # extracted registrations (tools/test_hle_manifest.py enforces it).
 HANDLER_STATUS = {
+    # This marker handler is intercepted by sr_syscall; each registration
+    # carries its PSP-visible refusal code in sr_hle_register_unsupported.
+    "h_ControlledUnsupported": "controlled_unsupported",
     # Stores g_sdk_version for SDK-dependent paths; the retained-state
     # contract for the variants routed to it is implemented.
     "h_SetCompiledSdkVersion": "complete",
@@ -91,6 +96,13 @@ HANDLER_STATUS = {
     # invalid truncated tail are not established by the available evidence.
     "h_DmacMemcpy": "partial",
     "h_DmacTryMemcpy": "partial",
+    # This returns no error while the virtual ISO-backed UMD model reports its
+    # always-ready PRESENT|READY|READABLE state. Other drive-error states remain
+    # outside the modeled contract.
+    "h_UmdGetErrorStat": "compatibility",
+    # Common Memory Stick devctls have explicit outputs; unsupported devices or
+    # command pairs remain visible per pair and are summarized under issue #281.
+    "h_IoDevctl": "partial",
 }
 
 # Alias-consistency rules: every static registration whose *registered name*

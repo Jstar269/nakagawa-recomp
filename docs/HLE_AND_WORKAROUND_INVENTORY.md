@@ -21,20 +21,19 @@ For every existing or proposed HLE routine, developers and agents must answer:
 
 ## 2. Quantitative Census of the Current Codebase
 
-Import and hook totals below were re-checked at `8e58c6b`
-(`tools/import_audit_gate.py` reports 380 registrations); the hook-table,
-title-configuration, and walker line references were verified against the same
-revision.
+Import counts below come from the generated HLE manifest on this worktree. The
+hook-table, title-configuration, and walker line references remain the census
+recorded at `8e58c6b`.
 Run `tools/test_compat_manifest.py` for the current compatibility inventory gate:
 
 ```text
 ================================================================================
 NAKAGAWA SUBSYSTEM CENSUS
 ================================================================================
-Import Registrations Audited (import_audit_gate):   380 NIDs
-  - Dedicated Implementations:                     314 NIDs (Tier 3 Generic HLE)
-  - Fake Success Stubs:                             59 NIDs (Tier 5 Workaround)
-  - Controlled Unsupported:                          7 NIDs (Fail-closed)
+Import Registrations Audited (generated HLE manifest): 404 NIDs
+  - Dedicated Implementations:                       383 NIDs (Tier 3 Generic HLE)
+  - Fake Success Exceptions:                            3 NIDs (named compatibility routes)
+  - Controlled Unsupported:                           18 NIDs (Fail-closed)
 
 Dispatch Hooks & Walkers (src/rt/recomp.c):
   - Exact-Match Dispatch Hooks:                      8 sites (Tier 5, diagnostic only)
@@ -168,27 +167,22 @@ reproduced here.
 
 ---
 
-### 3.3 The 59 Fake-Success Stubs (Tier 5)
+### 3.3 Remaining Fake-Success Registrations and #281 Dispositions
 
-`tools/import_audit_baseline.json` registers 59 NIDs with `classification: "fake_success"`. These return `0` without implementing the documented Sony PSP kernel semantics. Fifty-one route to the generic `h_ok` handler; eight are dedicated handlers whose bodies do nothing but `(void)s` / diagnostic logging / `return 0`, detected mechanically by `tools/hle_manifest.py` (no hand-listed names): `sceKernelFreeFpl` (`0xf6414a71`, `h_FreeFpl`), `sceGeDrawSync` (`0xb287bd61`, `h_GeDrawSync`), `sceUtilityOskUpdate` (`0x4b85c861`, `h_OskUpdate`), `sceAudioGetChannelRestLength` (`0xb011922f`, `h_AudioRestLen`), `sceIoDevctl` (`0x54f5fb11`, `h_IoDevctl`), `sceKernelStartModule` (`0x50f0c1ec`, `h_StartModule`), `sceKernelStopModule` (`0xd1ff982a`, `h_StopModule_Trace`), `sceKernelUnloadModule` (`0x2e0911aa`, `h_UnloadModule_Trace`):
+The current generated manifest contains 404 registrations. Its original 18 fake-success registrations are now classified as 13 controlled refusals, one bounded UMD compatibility implementation, one partial `sceIoDevctl` implementation, and three named compatibility exceptions. Static refusal entries carry a literal PSP-visible error in `sr_hle_register_unsupported`; `sr_syscall` logs each function/NID once and emits one summary line per called function at process exit. These APIs are marked “in the works” under issue #281. Unregistered NIDs still use the fatal unknown-import path.
 
-| NID | Function Name | Library | Risk to Fidelity | Remediation Path |
-| :--- | :--- | :--- | :--- | :--- |
-| `0x090ccb3f` | `sceKernelPowerTick` | `ThreadManForUser` | Low | Update internal tick counter; non-blocking |
-| `0x0c116e1b` | `sceAtracLowLevelDecode` | `sceAtrac3plus` | **High** | Audio stream drops/stutters; implement ATRAC3+ decoder |
-| `0x0cae832b` | `sceRegCloseCategory` | `sceReg` | Medium | Return proper handle state in registry |
-| `0x132f1eca` | `sceAtracReinit` | `sceAtrac3plus` | **High** | Audio state inconsistency; implement genuine context reset |
-| `0x13407f13` | `sceMpegRingbufferDestruct` | `sceMpeg` | Medium | Ring buffer memory leak; implement buffer free |
-| `0x1575d64b` | `sceAtracLowLevelInitDecoder` | `sceAtrac3plus` | **High** | Codec uninitialized; implement decoder context |
-| `0x1579a159` | `sceUtilityLoadNetModule` | `sceUtility` | Low | Return `SCE_ERROR_NOT_SUPPORTED` or dummy handle |
-| `0x1d8a762e` | `sceRegOpenCategory` | `sceReg` | Medium | Return valid virtual category handle |
-| `0x1f4011e6` | `sceCtrlSetSamplingMode` | `sceCtrl` | Low | Store sampling mode in controller state |
-| `0x20628e6f` | `sceUmdGetErrorStat` | `sceUmdUser` | Medium | Return genuine UMD drive status (0 = ready) |
-| `0x231fc6b7` | `_sceAtracGetContextAddress` | `sceAtrac3plus` | **High** | Guest memory corruption if unmapped context returned |
-| `0x28a8e98a` | `sceRegGetKeyValue` | `sceReg` | Medium | Return default system values (language, nickname) |
-| `0x2dd3e298` | `sceAtracGetBufferInfoForResetting` | `sceAtrac3plus` | **High** | Audio buffer mismatch |
-| `0x31668baa` | `sceAtracGetChannel` | `sceAtrac3plus` | Medium | Return active stereo channel count |
-| `0x36aa6e91` | `sceImposeSetLanguageMode` | `sceImpose` | Low | Set display language in impose state |
+| API family | Registration(s) | Disposition |
+| :--- | :--- | :--- |
+| `sceAtrac3plus` | `sceAtracLowLevelDecode` (`0x0c116e1b`), `sceAtracLowLevelInitDecoder` (`0x1575d64b`), and `sceAtracStartEntry` (`0xd1f59fdb`) | Controlled refusal: `0x80630004` (`ATRAC_ERROR_INVALID_CODECTYPE`). |
+| `sceAtrac3plus` | `_sceAtracGetContextAddress` (`0x231fc6b7`) | Controlled refusal: `0x80630003` (`ATRAC_ERROR_NO_ATRACID`). |
+| `sceReg` | `sceRegCloseCategory` (`0x0cae832b`), `sceRegOpenCategory` (`0x1d8a762e`), `sceRegGetKeyValue` (`0x28a8e98a`), `sceRegOpenRegistry` (`0x92e41280`), `sceRegGetKeyInfo` (`0xd4475aa8`), and `sceRegCloseRegistry` (`0xfa8a5739`) | Controlled refusal: `0x80010086` (function not supported). The registry object model remains unimplemented. |
+| `sceUtility` | `sceUtilityLoadNetModule` (`0x1579a159`) and `sceUtilityUnloadNetModule` (`0x64d50c56`) | Controlled refusal: `0x80110001` (`SCE_ERROR_UTILITY_INVALID_STATUS`). |
+| `sceUmdUser` | `sceUmdCancelWaitDriveStat` (`0x6af9b50a`) | Controlled refusal: `0x80010086` (function not supported). Drive-wait cancellation is not modeled. |
+| `sceUmdUser` | `sceUmdGetErrorStat` (`0x20628e6f`) | Compatibility implementation: returns no error while the virtual ISO drive reports its modeled PRESENT/READY/READABLE state; other drive-error states are not modeled (#281). |
+| `IoFileMgrForUser` | `sceIoDevctl` (`0x54f5fb11`) | Partial Memory Stick support for `ms0:` and `fatms0:`: capacity/free-cluster geometry comes from the ordinary-I/O `SR_FSDIR` root (default `fs`); inserted and ready queries write 1 and 4; insert/eject callback commands store or clear a UID but never dispatch callbacks. Other device/command pairs return `0x80010086`, log once per pair, and appear in the #281 exit summary. The callback event model is in the works (#281), and ordinary I/O still uses a separate flat root from savedata's `memstick/` tree (#334). |
+| `sceAtrac3plus` | `sceAtracGetOutputChannel` (`0xb3b5d042`) | Compatibility exception: existing acceptance is retained while output-channel mapping is tracked by #286. |
+| `sceKernelVolatileMemUnlock` | `sceKernelVolatileMemUnlock` (`0xa569e425`) | Compatibility exception: the documented asset-loading route uses this call around the shared volatile-memory scratch buffer; its lock ownership semantics remain unmodeled (#281). |
+| `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Compatibility exception: the current route collects text and advances the OSK state from `sceUtilityOskGetStatus`; update keeps its no-op success while that dialog contract is unfinished (#281). |
 
 ---
 
