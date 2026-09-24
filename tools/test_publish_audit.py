@@ -1918,5 +1918,20 @@ class TestPrivateRootDetection(unittest.TestCase):
         self.assertEqual(stray_audits, [], f"Found non-canonical policy engine(s) under workspace root: {stray_audits}")
 
 
+class GeneratedEmbeddingSpdxTests(unittest.TestCase):
+    def test_exempt_embeddings_match_the_shader_contract_and_their_sources_carry_lineage(self) -> None:
+        import shader_embed
+        gpu = Path(publish_audit.ROOT) / "src" / "rt" / "gpu_sdl3vk"
+        contract = {
+            (gpu / embedded).relative_to(publish_audit.ROOT).as_posix():
+                (gpu / source).relative_to(publish_audit.ROOT).as_posix()
+            for _stage, source, embedded in shader_embed.SHADERS
+        }
+        self.assertEqual(publish_audit.SPDX_GENERATED_EMBEDDING_SOURCES, contract)
+        for source in contract.values():
+            head = (Path(publish_audit.ROOT) / source).read_text(encoding="utf-8").splitlines()[:8]
+            self.assertTrue(any("SPDX-License-Identifier:" in line for line in head), source)
+
+
 if __name__ == "__main__":
     unittest.main()
