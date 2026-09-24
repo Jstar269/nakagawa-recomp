@@ -263,8 +263,11 @@ def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", case_id):
         raise ValueError("campaign case id must be a simple path component")
+<<<<<<< HEAD
     if re.fullmatch(r"dmac-size-matrix-size-0x[0-9a-f]{8}", case_id):
         return host0_root / "dmac_size_matrix_cell_log.txt"
+=======
+>>>>>>> origin/main
     stem = case_id.replace("-", "_")
     if stem.startswith("dma_"):
         stem = "dmac_" + stem[4:]
@@ -276,9 +279,12 @@ def _parse_campaign_records(text: str, case_id: str):
 
     if case_id in {"dma-size-matrix", "dmac-size-matrix"}:
         return validate_dmac_size_matrix(text)
+<<<<<<< HEAD
     match = re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id)
     if match:
         return validate_dmac_size_matrix_size(text, int(match.group(1), 16))
+=======
+>>>>>>> origin/main
     return parse_output(text)
 
 

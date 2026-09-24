@@ -47,7 +47,10 @@ from psp_oracle.run_psplink import (
     CampaignCase,
     PsplinkCampaignRunner,
     _campaign_host0_log_path,
+<<<<<<< HEAD
     _parse_campaign_records,
+=======
+>>>>>>> origin/main
     _parse_usbipd_psplink_devices,
     _verify_psplink_shell,
     PsplinkProcessTransport,
@@ -849,6 +852,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             _campaign_host0_log_path(root, "dma-invalid-tail-memcpy-dst").name,
             "dmac_invalid_tail_memcpy_dst_log.txt",
         )
+<<<<<<< HEAD
         self.assertEqual(
             _campaign_host0_log_path(
                 root, "dmac-size-matrix-size-0x0000bfff"
@@ -879,6 +883,8 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(len(parsed.results), 2)
         with self.assertRaises(ValueError):
             _parse_campaign_records(metadata + records[0], case_id)
+=======
+>>>>>>> origin/main
 
     def test_18_real_adapter_bounds_timeouts_and_keeps_partial_output_nonsemantic(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"

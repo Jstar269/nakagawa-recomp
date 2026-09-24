@@ -499,7 +499,11 @@ def _validate_dmac_size_matrix_sizes(
             raise ProtocolError(f"unexpected or duplicate DMAC matrix case {record.case_id!r}")
         observed.add(key)
         values = dict(record.values)
+<<<<<<< HEAD
         required = {f"out{i}" for i in range(19)}
+=======
+        required = {f"out{i}" for i in range(10)}
+>>>>>>> origin/main
         if not required <= values.keys():
             raise ProtocolError(f"DMAC matrix case {record.case_id!r} is missing scalar fields")
         numbers = {key: int(value, 0) for key, value in values.items() if key.startswith("out")}
@@ -521,11 +525,14 @@ def _validate_dmac_size_matrix_sizes(
             "failed trials": (numbers["out7"], 0),
             "source-guard mutation": (numbers["out8"], 0),
             "post-request guard mutation": (numbers["out9"], 0),
+<<<<<<< HEAD
             "pre-request guard mutation": (numbers["out10"], 0),
             "transfer alignment": (numbers["out11"], DMAC_SIZE_MATRIX_ALIGNMENT),
             "allocation size": (numbers["out12"], allocation_bytes),
             "partition owner": (numbers["out13"], DMAC_SIZE_MATRIX_PARTITION),
             "redzone size": (numbers["out14"], DMAC_SIZE_MATRIX_REDZONE),
+=======
+>>>>>>> origin/main
         }
         if record.status != "PASS":
             raise ProtocolError(f"DMAC matrix case {record.case_id!r} is {record.status}")
