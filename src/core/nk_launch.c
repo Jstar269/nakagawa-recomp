@@ -678,14 +678,25 @@ bool nk_launch_runtime_package_available(const char *root, const char *title_id)
     const char *effective_root = (root && *root) ? root : ".";
     const NkTitleEntry *entry =
         (title_id && *title_id) ? nk_title_catalog_find_by_id(title_id) : NULL;
-    char executable[NK_MAX_PATH], image[NK_MAX_PATH];
-    if (!entry ||
-        !find_candidate_executable(effective_root, entry->game_name, entry->id,
-                                   executable, sizeof(executable))) {
-        return false;
-    }
-    return find_candidate_image(effective_root, executable, entry->game_name,
-                                entry->id, image, sizeof(image));
+    if (!entry || !entry->id || !*entry->id ||
+        !entry->primary_disc_id || !*entry->primary_disc_id) return false;
+    NkGameEntry game;
+    memset(&game, 0, sizeof(game));
+    snprintf(game.disc_id, sizeof(game.disc_id), "%s", entry->primary_disc_id);
+    snprintf(game.title_id, sizeof(game.title_id), "%s", entry->id);
+    return nk_launch_validate_runtime_package(
+        effective_root, &game, NULL, NULL, 0
+    ) == NK_RUNTIME_PACKAGE_OK;
+}
+
+static bool launch_package_directory_exists(const char *root, const char *disc_id) {
+    if (!root || !disc_id || !*disc_id) return false;
+    char relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_root[NK_MAX_PATH * 2];
+    snprintf(relative, sizeof(relative), "packages%c%s",
+             nk_platform_path_separator(), disc_id);
+    return launch_join_path(root, relative, package_root, sizeof(package_root)) &&
+           nk_platform_dir_exists(package_root);
 }
 
 NkRuntimePackageStatus nk_launch_validate_runtime_package(
@@ -755,6 +766,12 @@ NkResult nk_launch_prepare_session(
                  package_info.executable_path);
         snprintf(session->image_path, sizeof(session->image_path), "%s",
                  package_info.image_path);
+    } else if (launch_package_directory_exists(root, game->disc_id)) {
+        snprintf(session->last_error, sizeof(session->last_error), "%s",
+                 package_error[0] ? package_error :
+                 "Runtime package cache entry is incomplete; rebuild is required (#316).");
+        return package_status == NK_RUNTIME_PACKAGE_MISSING
+            ? NK_ERROR_FILE_NOT_FOUND : NK_ERROR_UNSUPPORTED_TITLE;
     } else if (game->is_experimental) {
         snprintf(session->last_error, sizeof(session->last_error), "%s",
                  package_error[0] ? package_error : "Experimental runtime package is not valid.");
