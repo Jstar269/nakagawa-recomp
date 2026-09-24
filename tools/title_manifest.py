@@ -32,6 +32,10 @@ BUILD_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DISC_ID_RE = re.compile(r"^[A-Z]{4}[0-9]{5}$")
 FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# A disc image is only handed to the runtime (PSP_ISO), never to Make, so its file name may
+# carry the spaces, brackets and non-ASCII characters of ordinary dump names. Characters
+# Windows forbids in file names, and control characters, stay rejected.
+DISC_PATH_COMPONENT_RE = re.compile(r'^[^<>:"/\\|?*\x00-\x1f\x7f]+$')
 DEVICE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,15}:$")
 WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -237,6 +241,25 @@ def portable_path(value: Any, path: str) -> str:
         if not PATH_COMPONENT_RE.fullmatch(part) or part.endswith((".", " ")):
             fail(path, f"invalid or non-portable path component: {part!r}")
         if part.split(".", 1)[0].upper() in WINDOWS_RESERVED:
+            fail(path, f"reserved Windows path component: {part!r}")
+    return "/".join(parts)
+
+
+def disc_image_path(value: Any, path: str) -> str:
+    """Validate a relative disc-image path whose file names may contain spaces and Unicode."""
+    value = text(value, path, 240)
+    if len(value.encode("utf-8")) > 240:
+        fail(path, "UTF-8 representation exceeds 240 bytes")
+    if value.startswith(("/", "\\")) or "\\" in value or ":" in value:
+        fail(path, "must be a portable relative POSIX-style path")
+    parts = value.split("/")
+    for part in parts:
+        if part in ("", ".", ".."):
+            fail(path, "must not contain empty, '.' or '..' components")
+        if (not DISC_PATH_COMPONENT_RE.fullmatch(part) or part.endswith((".", " "))
+                or part.startswith(" ")):
+            fail(path, f"invalid or non-portable path component: {part!r}")
+        if part.split(".", 1)[0].strip().upper() in WINDOWS_RESERVED:
             fail(path, f"reserved Windows path component: {part!r}")
     return "/".join(parts)
 
@@ -944,13 +967,13 @@ def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
 
 
 def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
-    # module_dir/psp_header/disc_image are optional input-location declarations
+    # executable/module_dir/psp_header/disc_image are optional input-location declarations
     # (issue #196 Phase 4): a manifest DECLARES where its private inputs live so
     # generic manager paths never assume a layout. data_root/memory_stick_root/
     # device_prefixes remain the required runtime-filesystem contract.
     value = obj(value, path, {
         "data_root", "memory_stick_root", "device_prefixes",
-        "module_dir", "psp_header", "disc_image",
+        "executable", "module_dir", "psp_header", "disc_image",
     })
     require(value, path, "data_root", "memory_stick_root", "device_prefixes")
     prefixes: set[str] = set()
@@ -967,9 +990,12 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
         "memory_stick_root": portable_path(value["memory_stick_root"], f"{path}.memory_stick_root"),
         "device_prefixes": sorted(prefixes),
     }
-    for optional_key in ("module_dir", "psp_header", "disc_image"):
+    # Paths the manager hands to Make keep the strict Make-safe component rule.
+    for optional_key in ("executable", "module_dir", "psp_header"):
         if optional_key in value:
             result[optional_key] = portable_path(value[optional_key], f"{path}.{optional_key}")
+    if "disc_image" in value:
+        result["disc_image"] = disc_image_path(value["disc_image"], f"{path}.disc_image")
     return result
 
 
