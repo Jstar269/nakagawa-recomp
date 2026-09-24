@@ -24,6 +24,7 @@
 #include "perf.h"
 #include "title_config.h"   /* optional, validated title bindings (roles + counter words) */
 #include "nested_frames.h"  /* reserved region for nested host->guest call frames */
+#include "flight_recorder.h"
 
 /* Test-only scheduler liveness instrumentation (#290). Declared here, not in recomp.h, so the
  * CPU-state ABI header (and every title's generated-code build profile) stays unchanged. */
@@ -526,6 +527,7 @@ static void stack_range_release(uint32_t base, uint32_t size) {
  *   - virtual-time and pacing state (populated lazily on first vblank);
  *   - sr_sched_on (set here, never reset after init). */
 void sched_init(CpuState *cpu) {
+    sr_flight_init();
     s_cpu = cpu;
     if (cpu->r[28] != 0u) s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
     s_sched_coro = sr_coro_main();
@@ -2028,6 +2030,7 @@ static void sched_promote_expired_waits(void) {
             s_tcb[i].wake != SCHED_WAIT_FOREVER &&
             s_vtime_us >= s_tcb[i].wake) {
             s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_WAKE, s_tcb[i].uid, s_tcb[i].uid, s_tcb[i].wait_obj, 1u);
 #ifdef SR_SCHED_LIVENESS_TEST
             sched_liveness_record_wake(s_tcb[i].wait_obj, 1u);
 #endif
@@ -2067,6 +2070,8 @@ static int pick_next(void) {
 #ifdef SR_SCHED_LIVENESS_TEST
         SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PICK, -1, 0u);
 #endif
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK,
+                                s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u, 0u, 0u, 0u);
         return -1;
     }
     int start = (s_last_pick >= 0) ? (s_last_pick + 1) % s_ntcb : 0;
@@ -2075,6 +2080,9 @@ static int pick_next(void) {
         if (s_tcb[i].state == TH_READY && s_tcb[i].priority == best_pri) {
             s_last_pick = i;
             SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PICK, i, 0u);
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK,
+                                    s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u,
+                                    s_tcb[i].uid, 0u, 0u);
             return i;
         }
     }
@@ -2942,6 +2950,7 @@ void sched_delay_current(uint32_t usec) {
         fprintf(stderr, "BIG DELAY uid=0x%x entry=0x%08x usec=%u (%.1fs)\n", t->uid, t->entry, usec, usec / 1e6);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, 0u);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, 0u, 0u);
     t->state = TH_WAIT_DELAY;
     /* Real microseconds of virtual time; any positive delay yields at least once. */
     t->wake = wake;
@@ -2954,6 +2963,7 @@ void sched_block_on(uint32_t obj) {
     if (getenv("SR_BLOCKLOG")) fprintf(stderr, "BLOCK: uid 0x%x on obj 0x%x (pc=0x%x ra=0x%x)\n", t->uid, obj, s_cpu->pc, s_cpu->r[31]);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -2972,6 +2982,7 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     uint64_t deadline = scheduler_deadline_after(usec ? usec : 1u);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -3040,6 +3051,9 @@ void sched_wake(uint32_t obj) {
     for (int i = 0; i < s_ntcb; i++)
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj) {
             s_tcb[i].state = TH_READY;
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_WAKE,
+                                    s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u,
+                                    s_tcb[i].uid, obj, 1u);
 #ifdef SR_SCHED_LIVENESS_TEST
             readied++;
 #endif
