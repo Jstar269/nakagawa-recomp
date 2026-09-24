@@ -942,7 +942,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a0f000a69e4b18e4b2c507badca166c1a07f1ec91753add8283e37bf695b8b1c"
+      "sha256": "91c49f63ffba0f04933bf723f2b40a3666fd83c64541e9e2498d36b704aa7c5e"
     },
     {
       "path": "docs/PORTING.md",
@@ -5977,7 +5977,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "c497a1e93a48477468d983df39041af6b48440a6def30f838c83d4d5e687268b"
+      "sha256": "ffbdfab69a6091bb4da43643a26f428fc2432658d4c3a56eba8725fc1c53789d"
     },
     {
       "path": "src/rt/h264_null.c",
@@ -5989,7 +5989,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "802510dfa944abce520743dcb4e44c23b9c50ac4802b5b29897b1bda1bfedb4e"
+      "sha256": "512de2d5756f8b793b7843e4ede2f1ee4eda326ea1546c5f4f25afdfbad00e52"
     },
     {
       "path": "src/rt/heap_selftest.c",
@@ -6026,7 +6026,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "4b84188dd822486979355a68e3ae7b88708fd4e7fe0aa7c15ea9272510e32d34"
+      "sha256": "31f722fe81e61e0610407d7f2ed8686dfcd5275f350414e89df2d7cf3e9572e5"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6156,7 +6156,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see record"
       },
-      "sha256": "9c9e81a5f3441c7999cf1902b5f4a4fd2e05ad8d14aeaa3859a39e710e4d81b0"
+      "sha256": "f11683efdeeb712d148a5ff8bca5122da4bca8ece45f8e54fa5939fbb0f0c133"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -6327,7 +6327,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "271a59f19db2885ad275234efff81b997c509fa8b26fc66185ed5d3a6ad46f43"
+      "sha256": "2ee0af1ad62b0e16440b28591dd6343f70fe3c8ce6c296caf116c7d0c7c2a83c"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -6520,7 +6520,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8818d9de9267c6431f076632b7db81aade8d372f80616c4533de3a0b91e7f117"
+      "sha256": "17259e8bdf64c899ecf20091ceb709e3ef52ecaf97b571e7700fa893255c5b85"
     },
     {
       "path": "src/rt/stale_code.c",
@@ -8906,7 +8906,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4911c88c0fcf5458501e9cdfdfe132380eba85e0a7f71b491a7ad88c498c1c33"
+      "sha256": "9987ddf08607c17f47661af92f558205a191a4211279aa0fdbc7c8d3e0e36bae"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
