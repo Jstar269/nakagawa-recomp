@@ -1082,7 +1082,8 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
 
     double fps = 0.0, frame_ms = 0.0, vblank_hz = 0.0;
     sr_perf_get_hud_metrics(&fps, &frame_ms, &vblank_hz);
-    int audio_active = s_audio_active_cb ? s_audio_active_cb() : 0;
+    /* -1: no backend query registered, so the status is unknown. */
+    int audio_active = s_audio_active_cb ? (s_audio_active_cb() ? 1 : 0) : -1;
 
     SDL_SetRenderDrawColor(s_hud_ren, 20, 24, 32, 230);
     SDL_FRect bg = { 0, 0, (float)HUD_W, (float)HUD_H };
@@ -1098,12 +1099,13 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
     snprintf(line, sizeof(line), "VBlank:  %.1f Hz", vblank_hz);
     SDL_RenderDebugText(s_hud_ren, 12, 30, line);
 
-    if (audio_active) {
+    if (audio_active > 0) {
         SDL_SetRenderDrawColor(s_hud_ren, 80, 240, 120, 255);
     } else {
         SDL_SetRenderDrawColor(s_hud_ren, 200, 200, 200, 255);
     }
-    snprintf(line, sizeof(line), "Audio:   %s", audio_active ? "Active" : "Inactive");
+    snprintf(line, sizeof(line), "Audio:   %s",
+             audio_active > 0 ? "Active" : (audio_active == 0 ? "Inactive" : "Unknown"));
     SDL_RenderDebugText(s_hud_ren, 12, 50, line);
 
     SDL_RenderPresent(s_hud_ren);
@@ -1130,6 +1132,10 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
     bic.imageExtent.height = HUD_H;
     bic.imageExtent.depth = 1;
 
+    /* The frame blit just wrote this region; order the overlay write after it. */
+    barrier(cmd, dst_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     vkCmdCopyBufferToImage(cmd, f->hud_staging, dst_img,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
 }

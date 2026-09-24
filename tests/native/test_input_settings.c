@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* setenv/unsetenv are POSIX: without this, -std=c99 on glibc leaves them undeclared. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
