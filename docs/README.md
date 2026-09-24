@@ -93,6 +93,9 @@ with explicit target and unbuilt boundaries.
   scheduler it describes replacing is still the shipped code.
 - [`cleanroom/PRX_LOADER_SPEC.md`](cleanroom/PRX_LOADER_SPEC.md) specifies the
   runtime PSP module (PRX) loader for clean-room rewrite unit G3.
+- [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
+  PGF reader for clean-room rewrite unit G4. A spec only — reader support is
+  still in the works (#349).
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
@@ -151,6 +154,7 @@ in this slice; classification comes first, directory moves separately.
 | `INDEPENDENCE_CAMPAIGN.md` | DRAFT | Independence route plan; read for intent, never cite as built state |
 | `cleanroom/SCHED_SPEC.md` | DRAFT | Scheduler clean-room behaviour spec; read for intent, never cite as shipped behaviour |
 | `cleanroom/PRX_LOADER_SPEC.md` | DRAFT | Runtime PRX loader clean-room behaviour spec (G3); read for intent, never cite as shipped behaviour |
+| `cleanroom/PGF_SPEC.md` | DRAFT | Runtime PGF reader clean-room behaviour spec (G4); read for intent, never cite as shipped behaviour |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
 | `provenance/FONT_ORIGINS.md` | CURRENT | PGF replacement-font origin evidence and route decision |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
