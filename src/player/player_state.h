@@ -101,6 +101,8 @@ typedef enum {
 typedef enum {
     PREFLIGHT_OK = 0,
     PREFLIGHT_MISSING,
+    PREFLIGHT_INCOMPATIBLE,
+    PREFLIGHT_STALE,
     PREFLIGHT_UNSUPPORTED,
     PREFLIGHT_IN_PROGRESS
 } PlayerPreflightStatus;
@@ -108,7 +110,7 @@ typedef enum {
 typedef struct {
     char code[32];
     PlayerPreflightStatus status;
-    char message[256];
+    char message[2048];
     unsigned int issue_numbers[2];
     size_t issue_count;
 } PlayerPreflightCheck;
@@ -190,6 +192,13 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
 void player_app_set_runtime_root(PlayerApp *app, const char *root);
+NkRuntimePackageStatus player_app_validate_runtime_package(
+    const PlayerApp *app,
+    const GameRecord *game,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+);
 
 /* Settings mutations. All values are validated and clamped; invalid inputs
  * are ignored so a stray click or keypress can never corrupt launch config.

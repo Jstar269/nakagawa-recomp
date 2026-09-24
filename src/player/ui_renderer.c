@@ -1247,6 +1247,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     float btn_y = hero_y + hero_h - 62.0f;
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
+    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+        app, game, NULL, NULL, 0);
+    bool package_ready = package_status == NK_RUNTIME_PACKAGE_OK;
     if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);
@@ -1254,23 +1257,21 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             player_app_stop_game(app);
         }
         focus++;
-    } else if (game->is_experimental &&
-               nk_launch_runtime_package_available(
-                   app->runtime_root[0] ? app->runtime_root : NULL,
-                   game->title_id)) {
+    } else if (package_ready) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "PLAY NOW", true, in, primary_focused)) {
             player_app_launch_game(app, app->selected_game_index);
         }
         focus++;
-    } else if (!game->is_experimental && game->is_prepared) {
-        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f, "PLAY NOW", true, in, primary_focused)) {
-            player_app_launch_game(app, app->selected_game_index);
-        }
-        focus++;
-    } else if (game->is_experimental) {
+    } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "RUNTIME MISSING (#296/#297)");
+                         "PACKAGE STALE - REBUILD (#297)");
+    } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
+        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                         "PACKAGE INCOMPATIBLE (#297)");
+    } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
+        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                         "PACKAGE MISSING (#296/#297)");
     } else if (game->assets_staged) {
         /* Disc extraction is useful progress, but it is not a runnable
          * recompiled title. Keep this state visible without exposing a
@@ -1563,6 +1564,8 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
         switch (check->status) {
             case PREFLIGHT_OK: status_text = "OK"; status_color = COLOR_EMERALD; break;
             case PREFLIGHT_MISSING: status_text = "MISSING"; status_color = COLOR_AMBER; break;
+            case PREFLIGHT_INCOMPATIBLE: status_text = "INCOMPATIBLE"; status_color = COLOR_RED; break;
+            case PREFLIGHT_STALE: status_text = "STALE"; status_color = COLOR_AMBER; break;
             case PREFLIGHT_UNSUPPORTED: status_text = "UNSUPPORTED"; status_color = COLOR_RED; break;
             case PREFLIGHT_IN_PROGRESS: status_text = "IN PROGRESS"; status_color = COLOR_AMBER; break;
         }
@@ -2209,6 +2212,14 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                             break;
                         case PREFLIGHT_MISSING:
                             status_text = "MISSING";
+                            status_color = COLOR_AMBER;
+                            break;
+                        case PREFLIGHT_INCOMPATIBLE:
+                            status_text = "INCOMPATIBLE";
+                            status_color = COLOR_RED;
+                            break;
+                        case PREFLIGHT_STALE:
+                            status_text = "STALE";
                             status_color = COLOR_AMBER;
                             break;
                         case PREFLIGHT_UNSUPPORTED:
