@@ -1302,7 +1302,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "bc1582042e4919f233a660f69f55fb81d7a145d9a7a04e5b5407ca19bc817b84"
+      "sha256": "601e32ba7e09b2a56862ceb48c8511adddd3f21c7df5c5d9c59e32a874259605"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1311,7 +1311,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b52705a0b37546b9401ddd0730328f31f810441b9233e70fd09debf949c9103b"
+      "sha256": "5a0838369c85848d93e80623f40c8b98bf2a6fa35371cc447d8e0384f9378cef"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -1329,7 +1329,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8e19a379ba51b8ff63aa3b41d5c6352df58f5a5ca90440512e4701a079ebf327"
+      "sha256": "8072ae119ebe5f3d812f0e720427f95b53aaf0776cd67ed202f8dcf2bcb71152"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -7859,7 +7859,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5e789d1b68ddbf4a935cc0feb8c689788c5013fa9181554fd9fe7a54e3bc3f7d"
+      "sha256": "dd1e342266f0b0e91cc9f3ad91b3cd5fb2f1c1002206f5f58c0b6f4cbb85908e"
     },
     {
       "path": "tools/psp_oracle/run_nakagawa.py",
@@ -7895,7 +7895,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13ee23d483c76bff18ea5a207aaac79687bfe807a9f841293b7b513cfc689e3b"
+      "sha256": "067f3ce16d316af842b5d625e438b6efeb368fd775e5eef1c4afd2d7bbf8c21d"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -8624,7 +8624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0a1f7dcadf1fef722d0f632072c36cb46eaf5ffaeeed6be995a28e3053821ddb"
+      "sha256": "da5c7508d44f1140422109212ed698052b811f1193222f7cbf14218b620ef1f6"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -9113,7 +9113,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a0f1ae6b7fba10323e4ac6bfe1d9c5f67cc4bb3b5bf7d1af069d78677ab7b6eb"
+      "sha256": "eacff1ca29db791909999a1b48a9798f0352b55fe441cc75a0830bb72240aca9"
     },
     {
       "path": "tools/test_psp_parsers.py",
