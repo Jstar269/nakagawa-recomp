@@ -510,6 +510,23 @@ def print_progress(event: ProgressEvent) -> None:
     sys.stdout.flush()
 
 
+def cmd_fonts_import(args: argparse.Namespace) -> int:
+    try:
+        from nk_core.fonts import FontImportError, FontValidationError, import_fonts
+
+        user_data_root = args.user_data_root
+        result = import_fonts(args.folder, user_data_root=user_data_root)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            names = ", ".join(sorted(result["files"].keys()))
+            print(f"Successfully imported {result['imported_count']} font(s) into {result['cache_dir']}: {names}")
+        return 0
+    except (FontValidationError, FontImportError, OSError, ValueError) as exc:
+        sys.stderr.write(f"Font import error: {exc}\n")
+        return 1
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     try:
         meta = inspect_iso(args.iso)
@@ -585,6 +602,15 @@ def cmd_launch(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Nakagawa Recomp Headless CLI")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    p_fonts = subparsers.add_parser("fonts", help="Manage PSP firmware system fonts")
+    fonts_subparsers = p_fonts.add_subparsers(dest="fonts_subcommand", required=True)
+    p_fonts_import = fonts_subparsers.add_parser("import", help="Import dumped PSP firmware PGF fonts")
+    p_fonts_import.add_argument("folder", type=Path, help="Folder containing dumped PSP firmware PGF fonts")
+    p_fonts_import.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_fonts_import.add_argument("--root", type=Path, dest="user_data_root", help=argparse.SUPPRESS)
+    p_fonts_import.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_fonts_import.set_defaults(func=cmd_fonts_import)
 
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")

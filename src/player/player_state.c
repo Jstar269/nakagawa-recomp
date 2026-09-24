@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "player_state.h"
+#include "nk_font.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -971,19 +972,22 @@ void player_app_build_compatibility_preflight(
             status == PREFLIGHT_OK ? 0 : 2);
     }
 
-    char font_path[NK_MAX_PATH * 2];
-    int written = snprintf(font_path, sizeof(font_path), "%s%cfont%cjpn0.pgf",
-                           runtime_root, nk_platform_path_separator(),
-                           nk_platform_path_separator());
-    if (written > 0 && (size_t)written < sizeof(font_path) &&
-        nk_platform_file_exists(font_path)) {
+    static const unsigned int font_issues[] = { 300 };
+    char font_message[512] = "";
+    NkFontStatus font_status = nk_font_check_cache(runtime_root, runtime_root,
+                                                   font_message, sizeof(font_message));
+    if (font_status == NK_FONT_STATUS_OK) {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_OK,
-                             "User-supplied PSP system font jpn0.pgf is available.", NULL, 0);
+                             font_message[0] ? font_message : "User-supplied PSP system font jpn0.pgf is available.",
+                             NULL, 0);
+    } else if (font_status == NK_FONT_STATUS_INVALID) {
+        player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_INVALID,
+                             font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder> (#300).",
+                             font_issues, 1);
     } else {
-        static const unsigned int issues[] = { 300 };
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_MISSING,
-                             "PSP font jpn0.pgf missing; provisioning is in the works (#300).",
-                             issues, 1);
+                             font_message[0] ? font_message : "PSP font jpn0.pgf missing; run fonts import <folder> (#300).",
+                             font_issues, 1);
     }
 
     /* The public runtime drives the default device through SDL3 (#301). Whether a
