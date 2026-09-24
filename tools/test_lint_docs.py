@@ -254,28 +254,34 @@ class RetiredIssueDenylistExpiry(unittest.TestCase):
             "a denylisted number is at or below the public numbering frontier",
         )
 
+    ANCHOR = "RETIRED_PRIVATE_ISSUE_NUMBERS: tuple[int, ...] = ()"
+
+    def _load_with_denylist(self, numbers: str) -> dict:
+        source = (ROOT / "tools" / "lint_docs.py").read_text(encoding="utf-8")
+        mutated = source.replace(
+            self.ANCHOR, f"RETIRED_PRIVATE_ISSUE_NUMBERS: tuple[int, ...] = ({numbers},)", 1)
+        self.assertNotEqual(mutated, source, "mutation anchor not found")
+        namespace = {"__file__": str(ROOT / "tools" / "lint_docs.py"), "__name__": "x"}
+        exec(compile(mutated, "lint_docs", "exec"), namespace)  # noqa: S102
+        return namespace
+
     def test_the_frontier_guard_is_load_bearing(self) -> None:
         """MUTATION: reintroduce a reallocated number and the module must refuse to
         load, rather than silently flagging a live public issue."""
-        source = (ROOT / "tools" / "lint_docs.py").read_text(encoding="utf-8")
-        first = lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS[0]
-        mutated = source.replace(
-            f"RETIRED_PRIVATE_ISSUE_NUMBERS = (\n    {first},",
-            "RETIRED_PRIVATE_ISSUE_NUMBERS = (\n"
-            f"    {lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}, {first},",
-            1,
-        )
-        self.assertNotEqual(mutated, source, "mutation anchor not found")
-        namespace = {"__file__": str(ROOT / "tools" / "lint_docs.py"), "__name__": "x"}
         with self.assertRaises(ValueError) as caught:
-            exec(compile(mutated, "lint_docs", "exec"), namespace)  # noqa: S102
+            self._load_with_denylist(str(lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER))
         self.assertIn("reallocated", str(caught.exception))
 
-    def test_the_denylist_still_catches_a_genuinely_dead_number(self) -> None:
-        """Vacuity guard: the expiry rule must not have emptied the denylist."""
-        self.assertTrue(lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS)
-        dead = lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS[-1]
-        url = f"see github.com/Jstar269/nakagawa-recomp/issues/{dead} for context"
-        self.assertTrue(lint_docs.RETIRED_PRIVATE_ISSUE_URLS.search(url))
-        live = f"see github.com/Jstar269/nakagawa-recomp/issues/{lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}"
-        self.assertIsNone(lint_docs.RETIRED_PRIVATE_ISSUE_URLS.search(live))
+    def test_a_denylisted_number_is_caught_and_a_live_one_is_not(self) -> None:
+        """Every private-era number has been reallocated, so the live denylist is empty.
+        The mechanism must still flag a number above the frontier and nothing else."""
+        dead = lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER + 1000
+        pattern = self._load_with_denylist(str(dead))["RETIRED_PRIVATE_ISSUE_URLS"]
+        self.assertTrue(pattern.search(f"see github.com/Jstar269/nakagawa-recomp/issues/{dead} x"))
+        live = f"github.com/Jstar269/nakagawa-recomp/issues/{lint_docs.PUBLIC_ISSUE_NUMBER_FRONTIER}"
+        self.assertIsNone(pattern.search(live))
+
+    def test_an_empty_denylist_matches_no_issue_url(self) -> None:
+        self.assertEqual(lint_docs.RETIRED_PRIVATE_ISSUE_NUMBERS, ())
+        self.assertIsNone(lint_docs.RETIRED_PRIVATE_ISSUE_URLS.search(
+            "https://github.com/Jstar269/nakagawa-recomp/issues/301"))

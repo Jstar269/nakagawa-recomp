@@ -284,12 +284,9 @@ def analyzer_span_from_env(environ=None):
     (`exec_ranges`, `analyze`) never consult the environment, so an inherited value
     cannot leak into a rebased extra guest module analyzed in the same process.
 
-    GENERIC: TITLE_EXTRA_SPANS is the sole authority. HST_EXTRA_SPANS is a legacy
-    alias that lives ONLY at the HST compatibility boundary (Makefile
-    GAME_NAME=hst origin translation, PowerShell Push-HstAnalyzerEnvironment) which
-    synthesizes TITLE_EXTRA_SPANS before invoking generic logic. The generic analyzer
-    never consults HST_EXTRA_SPANS, so a stale HST value cannot affect a generic
-    build whether TITLE is absent or explicitly empty.
+    TITLE_EXTRA_SPANS is the sole authority. Retired environment aliases are ignored,
+    so stale process state cannot affect a generic build whether TITLE is absent or
+    explicitly empty.
     """
     if environ is None:
         environ = os.environ

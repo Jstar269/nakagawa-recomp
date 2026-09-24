@@ -2,11 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Shared data structures and bounded file-format validators for nk_doctor.
-
-Canonical successor to hst_doctor_core.py (which is now a deprecated forwarding
-wrapper that re-exports from this module).
-"""
+"""Shared data structures and bounded file-format validators for nk_doctor."""
 
 from __future__ import annotations
 

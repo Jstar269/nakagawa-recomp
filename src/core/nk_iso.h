@@ -56,6 +56,35 @@ const char *nk_iso_reader_volume_id(const NkIsoReader *reader);
 uint64_t nk_iso_reader_file_size(const NkIsoReader *reader);
 
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
+typedef enum {
+    NK_ISO_EXEC_UNKNOWN = 0,
+    NK_ISO_EXEC_MIPS_ELF32,
+    NK_ISO_EXEC_PSP_ENCRYPTED,
+    NK_ISO_EXEC_SCE_WRAPPER,
+    NK_ISO_EXEC_EMPTY_OR_ZERO,
+    NK_ISO_EXEC_PBP
+} NkIsoExecutableKind;
+
+typedef enum {
+    NK_ISO_EXEC_SELECTION_NONE = 0,
+    NK_ISO_EXEC_SELECTION_EBOOT,
+    NK_ISO_EXEC_SELECTION_BOOT
+} NkIsoExecutableSelection;
+
+typedef struct {
+    NkIsoExecutableKind kind;
+    uint32_t size_bytes;
+    bool present;
+} NkIsoExecutableCandidate;
+
+typedef struct {
+    NkIsoExecutableCandidate eboot;
+    NkIsoExecutableCandidate boot;
+    NkIsoExecutableSelection selected;
+    char selected_path[16];
+    bool boot_fallback;
+} NkIsoExecutableReport;
+
 typedef struct {
     char disc_id[NK_MAX_DISC_ID_LEN];
     char title_name[NK_MAX_TITLE_LEN];
@@ -63,6 +92,8 @@ typedef struct {
     char volume_id[33];
     int64_t file_size_bytes;
     bool is_supported;
+    bool param_sfo_parsed;
+    NkIsoExecutableReport executables;
     const NkTitleEntry *matched_title;
     NkGameSupportStatus status;
     char error_message[256];
@@ -73,6 +104,17 @@ typedef struct {
  * and matches against the generated native title catalog.
  */
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta);
+
+/* Parse an in-memory PARAM.SFO buffer and extract metadata.
+ * Returns true if valid, false if malformed or duplicate conflict.
+ */
+bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta);
+
+/* Classify PSP_GAME/SYSDIR/EBOOT.BIN and BOOT.BIN using bounded reads from
+ * the ISO. A validated plaintext MIPS ELF32 is selected for analysis; BOOT.BIN
+ * is selected only when EBOOT.BIN is encrypted and BOOT.BIN is plaintext ELF. */
+NkResult nk_iso_classify_executables(const char *iso_path,
+                                     NkIsoExecutableReport *out_report);
 
 /* Extract a file from an ISO9660 disc image to the host filesystem.
  * disc_rel_path: path inside ISO (e.g. "PSP_GAME/PARAM.SFO" or "PSP_GAME/ICON0.PNG")

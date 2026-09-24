@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
-#requires -Version 7.6
+#requires -Version 7.4
 
 <#
     Strict PowerShell adapter for the versioned title_codegen_plan.py manager plan.
@@ -18,8 +18,8 @@
         - extra_executable_spans (one optional span, rendered for analyzer)
         - required/optional guest modules, private_binding_requirements
         - run_entry (portable guest address, validated as 0 or 0x........)
-        - environment projections GAME_BASE/GAME_ENTRY/TITLE_EXTRA_SPANS (and legacy
-          HST_EXTRA_SPANS alias) and make projections (game_name, base, entry,
+        - environment projections GAME_BASE/GAME_ENTRY/TITLE_EXTRA_SPANS and make
+          projections (game_name, base, entry,
           codegen_profile_arg, build_dir, funcs_per_chunk)
         All generic validation (Assert-TitleManagerPlan, Assert-TitlePlanDerivation)
         is title-neutral and host-portable: no UCUS98701, no HST addresses, no .exe
@@ -170,21 +170,9 @@ function Assert-TitleManagerPlan {
     foreach ($field in @('game_elf', 'module_dir', 'psp_header')) { [void](Assert-TitlePlanBoolean $bindings.$field "`$.private_binding_requirements.$field") }
 
     # GENERIC: environment projections are title-neutral (GAME_BASE/GAME_ENTRY + extra spans).
-    # TITLE_EXTRA_SPANS is the host-portable generic key. HST_EXTRA_SPANS is the historic
-    # legacy alias that lives ONLY in the explicit HST compatibility layer (Makefile
-    # GAME_NAME=hst block and Get-HstManifestMakeArgs); generic plans emit only
-    # TITLE_EXTRA_SPANS, and the HST adapter synthesizes the legacy key for legacy Make
-    # consumers. Presence of HST_EXTRA_SPANS in a generic plan is allowed for backward
-    # compat but must agree with TITLE_EXTRA_SPANS.
-    $envAllowed = @('GAME_BASE', 'GAME_ENTRY', 'TITLE_EXTRA_SPANS', 'HST_EXTRA_SPANS')
+    $envAllowed = @('GAME_BASE', 'GAME_ENTRY', 'TITLE_EXTRA_SPANS')
     $environment = Assert-TitlePlanObject $Plan.environment '$.environment' $envAllowed @('GAME_BASE', 'GAME_ENTRY', 'TITLE_EXTRA_SPANS')
     foreach ($field in @('GAME_BASE', 'GAME_ENTRY', 'TITLE_EXTRA_SPANS')) { Assert-TitlePlanString $environment.$field "`$.environment.$field" -AllowEmpty | Out-Null }
-    if ($environment.PSObject.Properties.Name -contains 'HST_EXTRA_SPANS') {
-        Assert-TitlePlanString $environment.HST_EXTRA_SPANS '$.environment.HST_EXTRA_SPANS' -AllowEmpty | Out-Null
-        if ($environment.HST_EXTRA_SPANS -ne $environment.TITLE_EXTRA_SPANS) {
-            throw 'plan environment TITLE_EXTRA_SPANS must agree with HST_EXTRA_SPANS'
-        }
-    }
 
     $make = Assert-TitlePlanObject $Plan.make '$.make' @('game_name', 'game_base', 'game_entry', 'codegen_profile_arg', 'build_dir', 'funcs_per_chunk') @('game_name', 'game_base', 'game_entry', 'codegen_profile_arg', 'build_dir', 'funcs_per_chunk')
     foreach ($field in @('game_name', 'game_base', 'game_entry', 'codegen_profile_arg', 'build_dir')) { Assert-TitlePlanString $make.$field "`$.make.$field" -AllowEmpty | Out-Null }
@@ -226,8 +214,7 @@ function Assert-TitlePlanDerivation {
     }
     # The analyzer span is the manifest's extra executable span, rendered for the
     # analyzer seam. Zero spans means the empty string -- never an inherited default.
-    # The generic key is TITLE_EXTRA_SPANS; HST_EXTRA_SPANS is checked only when
-    # present (HST compatibility).
+    # TITLE_EXTRA_SPANS is the sole analyzer span projection.
     $spans = @($Plan.extra_executable_spans)
     $expectedSpanText = ''
     if ($spans.Count -eq 1) {
@@ -237,14 +224,6 @@ function Assert-TitlePlanDerivation {
     }
     if ($Plan.environment.TITLE_EXTRA_SPANS -ne $expectedSpanText) {
         throw 'plan analyzer span environment does not match the plan extra executable spans'
-    }
-    if ($Plan.environment.PSObject.Properties.Name -contains 'HST_EXTRA_SPANS') {
-        if ($Plan.environment.HST_EXTRA_SPANS -ne $expectedSpanText) {
-            throw 'plan analyzer span environment does not match the plan extra executable spans (HST_EXTRA_SPANS)'
-        }
-        if ($Plan.environment.HST_EXTRA_SPANS -ne $Plan.environment.TITLE_EXTRA_SPANS) {
-            throw 'plan environment TITLE_EXTRA_SPANS must agree with HST_EXTRA_SPANS'
-        }
     }
     return $Plan
 }
@@ -381,6 +360,8 @@ function Get-HstManifestMakeArgs {
         "GAME_EXTRA_ELFS=`"$extra`"",
         "GAME_PSP_HEADER=$pspHeader",
         "FUNCS_PER_CHUNK=$($Plan.make.funcs_per_chunk)",
+        "RUNTIME_OPT=-O2",
+        "RECOMP_OPT=-O1",
         # The same validated manifest also supplies the compiled runtime's title
         # bindings. Without it the runtime objects build generically, so this is the
         # only path by which a title's addresses reach src/rt.
@@ -389,16 +370,12 @@ function Get-HstManifestMakeArgs {
     # RunEntry travels with the Make args because it comes from the same validated
     # plan: it is the guest address a run of THIS title starts at, so the manager
     # never needs a copy of it.
-    # HST compatibility: synthesize the legacy HST_EXTRA_SPANS alias from the generic
-    # TITLE_EXTRA_SPANS so legacy Make (which still reads HST_EXTRA_SPANS) and the
-    # analyzer get the same value. Generic plans emit only TITLE_EXTRA_SPANS.
-    $envForHst = [pscustomobject]@{
+    $environment = [pscustomobject]@{
         GAME_BASE = $Plan.environment.GAME_BASE
         GAME_ENTRY = $Plan.environment.GAME_ENTRY
         TITLE_EXTRA_SPANS = $Plan.environment.TITLE_EXTRA_SPANS
-        HST_EXTRA_SPANS = $Plan.environment.TITLE_EXTRA_SPANS
     }
-    return [pscustomobject]@{ MakeArgs = $args; Environment = $envForHst; RunEntry = $Plan.run_entry }
+    return [pscustomobject]@{ MakeArgs = $args; Environment = $environment; RunEntry = $Plan.run_entry }
 }
 
 function Push-TitleAnalyzerEnvironment {
@@ -408,18 +385,11 @@ function Push-TitleAnalyzerEnvironment {
         string, while setting to $null or using Remove-Item removes them. For title
         analyzer scoping, empty and absent span values both normalize to removal
         (Remove-Item) so child processes see an unset variable.
-
-        GENERIC: scopes only TITLE_EXTRA_SPANS. HST-specific callers that still need
-        the legacy HST_EXTRA_SPANS must use Push-HstAnalyzerEnvironment, which scopes
-        both variables together. Generic titles never set HST_EXTRA_SPANS.
     #>
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
     $state = [pscustomobject]@{
         TitleExisted = [bool](Test-Path -LiteralPath 'Env:TITLE_EXTRA_SPANS')
         TitleValue   = $env:TITLE_EXTRA_SPANS
-        # Backward compat for callers that accessed .Existed/.Value
-        Existed = [bool](Test-Path -LiteralPath 'Env:TITLE_EXTRA_SPANS')
-        Value   = $env:TITLE_EXTRA_SPANS
     }
     if ([string]::IsNullOrEmpty($Value)) {
         Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
@@ -432,58 +402,8 @@ function Push-TitleAnalyzerEnvironment {
 function Pop-TitleAnalyzerEnvironment {
     <# Restore the caller's exact prior TITLE_EXTRA_SPANS, or remove if it was absent/empty. #>
     param([Parameter(Mandatory = $true)][object]$State)
-    $titleExisted = if ($State.PSObject.Properties.Name -contains 'TitleExisted') { $State.TitleExisted } elseif ($State.PSObject.Properties.Name -contains 'Existed') { $State.Existed } else { $false }
-    $titleValue   = if ($State.PSObject.Properties.Name -contains 'TitleValue')   { $State.TitleValue }   elseif ($State.PSObject.Properties.Name -contains 'Value')   { $State.Value }   else { $null }
-    # Restore non-empty value; normalize empty or absent prior state to removal via Remove-Item.
-    if ($titleExisted -and -not [string]::IsNullOrEmpty($titleValue)) {
-        $env:TITLE_EXTRA_SPANS = $titleValue
-    } elseif ($titleExisted -and [string]::IsNullOrEmpty($titleValue)) {
-        # Previously existed but value was empty. Ensure removed for clean unsetting.
-        Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
-    } else {
-        Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Push-HstAnalyzerEnvironment {
-    <#
-        HST COMPATIBILITY: Apply the HST analyzer span and return prior state for both
-        variables. This is the ONLY generic-title-path-adjacent code that touches
-        HST_EXTRA_SPANS; generic helpers never set it. HST builds set both variables
-        to the same value so legacy Make (HST_EXTRA_SPANS) and future analyzer
-        (TITLE_EXTRA_SPANS) see the same span.
-    #>
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-    $state = [pscustomobject]@{
-        HstExisted   = [bool](Test-Path -LiteralPath 'Env:HST_EXTRA_SPANS')
-        HstValue     = $env:HST_EXTRA_SPANS
-        TitleExisted = [bool](Test-Path -LiteralPath 'Env:TITLE_EXTRA_SPANS')
-        TitleValue   = $env:TITLE_EXTRA_SPANS
-        Existed = [bool](Test-Path -LiteralPath 'Env:HST_EXTRA_SPANS')
-        Value   = $env:HST_EXTRA_SPANS
-    }
-    if ([string]::IsNullOrEmpty($Value)) {
-        Remove-Item -LiteralPath 'Env:HST_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath 'Env:TITLE_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
-    } else {
-        $env:HST_EXTRA_SPANS = $Value
-        $env:TITLE_EXTRA_SPANS = $Value
-    }
-    return $state
-}
-
-function Pop-HstAnalyzerEnvironment {
-    <# Restore both HST and generic span variables. #>
-    param([Parameter(Mandatory = $true)][object]$State)
-    $hstExisted = if ($State.PSObject.Properties.Name -contains 'HstExisted') { $State.HstExisted } elseif ($State.PSObject.Properties.Name -contains 'Existed') { $State.Existed } else { $false }
-    $hstValue   = if ($State.PSObject.Properties.Name -contains 'HstValue')   { $State.HstValue }   elseif ($State.PSObject.Properties.Name -contains 'Value')   { $State.Value }   else { $null }
-    $titleExisted = if ($State.PSObject.Properties.Name -contains 'TitleExisted') { $State.TitleExisted } else { $hstExisted }
-    $titleValue   = if ($State.PSObject.Properties.Name -contains 'TitleValue')   { $State.TitleValue }   else { $hstValue }
-    if ($hstExisted -and -not [string]::IsNullOrEmpty($hstValue)) {
-        $env:HST_EXTRA_SPANS = $hstValue
-    } else {
-        Remove-Item -LiteralPath 'Env:HST_EXTRA_SPANS' -Force -ErrorAction SilentlyContinue
-    }
+    $titleExisted = [bool]$State.TitleExisted
+    $titleValue = [string]$State.TitleValue
     if ($titleExisted -and -not [string]::IsNullOrEmpty($titleValue)) {
         $env:TITLE_EXTRA_SPANS = $titleValue
     } else {
@@ -514,7 +434,7 @@ function Invoke-TitleManagerPlan {
         "--psp-header=$PspHeader",
         "--funcs-per-chunk=$FuncsPerChunk"
     )
-    $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("hst-title-plan-" + [guid]::NewGuid().ToString('N') + '.err')
+    $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("nk-title-plan-" + [guid]::NewGuid().ToString('N') + '.err')
     try {
         $output = @(& $PythonCommand @plannerArgs 2> $stderrPath)
         $exitCode = [int]$LASTEXITCODE

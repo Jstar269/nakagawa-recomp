@@ -2,11 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Workspace, toolchain, input, runtime, and repository checks for nk_doctor.
-
-Canonical successor to hst_doctor_checks.py (which is now a deprecated forwarding
-wrapper that re-exports from this module).
-"""
+"""Workspace, toolchain, input, runtime, and repository checks for nk_doctor."""
 
 from __future__ import annotations
 
@@ -37,6 +33,20 @@ from nk_doctor_core import (
 )
 from shader_embed import verify as verify_shader_provenance
 from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk
+
+
+# Proven minimum PowerShell floor (issue #337). A static AST inventory of every
+# tracked .ps1 shows no language or cmdlet feature newer than the automatic
+# $IsWindows variable (PowerShell 6.0): no ternary, null-coalescing/null-
+# conditional, pipeline-chain, -Parallel, -AsHashtable, Join-Path
+# -AdditionalChildPath, Test-Json, Get-Error, clean-block, or -ProgressAction
+# usage exists. 7.4 is the oldest release line Microsoft still supports (LTS,
+# end of support 2026-11-10), and 337's non-goals exclude EOL lines and Windows
+# PowerShell 5.1, so the enforced floor is 7.4 rather than the static 6.0
+# maximum. Static evidence only: the scripts have not been executed on 7.4; the
+# multi-version runtime matrix remains open in #337.
+MINIMUM_POWERSHELL: tuple[int, int] = (7, 4)
+MINIMUM_POWERSHELL_TEXT = ".".join(str(part) for part in MINIMUM_POWERSHELL)
 
 
 def _probe_powershell() -> tuple[Path | None, str | None, str | None, str | None]:
@@ -74,7 +84,7 @@ def check_powershell(report: Report) -> None:
     if error:
         report.fail(
             "POWERSHELL_VERSION",
-            "PowerShell 7.6+ (`pwsh`) is required",
+            f"PowerShell {MINIMUM_POWERSHELL_TEXT}+ (`pwsh`) is required",
             path=executable,
             detail=error,
             remediation="Install the current PowerShell 7 LTS line and ensure `pwsh` is on PATH.",
@@ -88,11 +98,11 @@ def check_powershell(report: Report) -> None:
     metadata = {"edition": edition, "version": version_text}
     # The contract is a minimum supported PowerShell release, not a hard
     # maximum on the major version. Future Core releases remain compatible
-    # unless their version is below the 7.6 floor.
-    if edition != "Core" or (major, minor) < (7, 6):
+    # unless their version is below the proven floor (see MINIMUM_POWERSHELL).
+    if edition != "Core" or (major, minor) < MINIMUM_POWERSHELL:
         report.fail(
             "POWERSHELL_VERSION",
-            "PowerShell 7.6+ (`pwsh`) is required",
+            f"PowerShell {MINIMUM_POWERSHELL_TEXT}+ (`pwsh`) is required",
             path=executable,
             detail=f"detected {edition or 'unknown'} {version_text or 'unknown'}",
             remediation="Install the current PowerShell 7 LTS line and invoke scripts with `pwsh`.",
@@ -101,7 +111,7 @@ def check_powershell(report: Report) -> None:
     else:
         report.pass_(
             "POWERSHELL_VERSION",
-            "PowerShell 7.6+ is available",
+            f"PowerShell {MINIMUM_POWERSHELL_TEXT}+ is available",
             path=executable,
             detail=f"{edition} {version_text}",
             metadata=metadata,
@@ -213,7 +223,448 @@ def check_shader_provenance(report: Report, root: Path, vulkan_sdk: Path | None)
         )
 
 
-def check_toolchain(report: Report, msys_path: Path, vulkan_sdk: Path | None, root: Path | None = None) -> None:
+class Sdl3ProviderError(RuntimeError):
+    """Raised when SDL3 discovery fails or encounters an invalid/mixed provider."""
+
+
+@dataclass
+class Sdl3Provider:
+    provider: str
+    root_dir: Path
+    include_dir: Path
+    import_lib: Path
+    runtime_dll: Path | None
+    version: str
+    arch: str
+    is_supported: bool
+
+
+def extract_sdl3_version(include_dir: Path) -> str | None:
+    """Parse SDL3 version from SDL_version.h."""
+    candidates = (
+        include_dir / "SDL3" / "SDL_version.h",
+        include_dir / "SDL_version.h",
+    )
+    for version_h in candidates:
+        if version_h.is_file():
+            try:
+                content = version_h.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            major = re.search(r"#define\s+SDL_MAJOR_VERSION\s+(\d+)", content)
+            minor = re.search(r"#define\s+SDL_MINOR_VERSION\s+(\d+)", content)
+            micro = re.search(r"#define\s+SDL_MICRO_VERSION\s+(\d+)", content)
+            if major and minor and micro:
+                return f"{major.group(1)}.{minor.group(1)}.{micro.group(1)}"
+    return None
+
+
+def discover_sdl3_provider(
+    explicit: Path | str | None = None,
+    *,
+    msys_path: Path | str | None = None,
+    vulkan_sdk: Path | str | None = None,
+    environment: str | None = None,
+) -> Sdl3Provider:
+    """Discover and validate the SDL3 dependency provider.
+
+    Precedence order:
+    1. Explicit path (via argument or SDL3_DIR/SDL3_PATH environment variable).
+    2. Documented platform provider:
+       - Windows: MSYS2 UCRT64 toolchain prefix (mingw-w64-ucrt-x86_64-sdl3).
+       - Linux: pkg-config or system /usr prefix.
+
+    Incidental SDL3 copies (such as those shipped in Vulkan SDK) are detected
+    and rejected when the documented provider is absent.
+    """
+    explicit_val = str(explicit).strip() if explicit is not None else ""
+    if not explicit_val:
+        env_val = os.environ.get("SDL3_DIR") or os.environ.get("SDL3_PATH") if environment is None else environment
+        explicit_val = str(env_val).strip() if env_val else ""
+
+    if explicit_val:
+        cand = Path(explicit_val).resolve()
+        if not cand.is_dir():
+            raise Sdl3ProviderError(
+                f"Explicit SDL3 directory does not exist: {explicit_val}. "
+                "Install with: pacman -S mingw-w64-ucrt-x86_64-sdl3 (or sudo apt install libsdl3-dev on Linux)."
+            )
+        inc_dirs = [cand / "include", cand / "Include", cand]
+        found_inc = None
+        for idir in inc_dirs:
+            if (idir / "SDL3" / "SDL.h").is_file() or (idir / "SDL.h").is_file():
+                found_inc = idir
+                break
+        if not found_inc:
+            raise Sdl3ProviderError(
+                f"Explicit SDL3 path is missing headers: {explicit_val}. "
+                "Expected SDL3/SDL.h under include/ or root. "
+                "Install with: pacman -S mingw-w64-ucrt-x86_64-sdl3 (or sudo apt install libsdl3-dev on Linux)."
+            )
+
+        lib_dirs = [cand / "lib", cand / "Lib", cand / "lib" / "x64", cand / "Lib" / "x64", cand]
+        lib_names = ("libSDL3.dll.a", "libSDL3.a", "SDL3.lib", "libSDL3.so")
+        found_lib = None
+        for ldir in lib_dirs:
+            for lname in lib_names:
+                p = ldir / lname
+                if p.is_file():
+                    found_lib = p
+                    break
+            if found_lib:
+                break
+        if not found_lib:
+            raise Sdl3ProviderError(
+                f"Explicit SDL3 path is missing import library: {explicit_val}. "
+                "Expected libSDL3.dll.a, libSDL3.a, or SDL3.lib under lib/ or root. "
+                "Install with: pacman -S mingw-w64-ucrt-x86_64-sdl3 (or sudo apt install libsdl3-dev on Linux)."
+            )
+
+        dll_dirs = [cand / "bin", cand / "Bin", cand / "lib", cand / "lib" / "x64", cand]
+        found_dll = None
+        for ddir in dll_dirs:
+            p = ddir / "SDL3.dll"
+            if p.is_file():
+                found_dll = p
+                break
+
+        version = extract_sdl3_version(found_inc) or "unknown"
+        arch = "unknown"
+        if found_dll:
+            ok, pe_info = _validate_pe_x64(found_dll)
+            if ok:
+                arch = "x86_64"
+            else:
+                arch = pe_info
+
+        prov_name = "explicit"
+        if "ucrt64" in str(cand).lower() or (cand / "lib" / "libSDL3.dll.a").is_file():
+            prov_name = "msys2_ucrt64"
+        elif "vulkan" in str(cand).lower():
+            prov_name = "vulkan_sdk_explicit"
+
+        return Sdl3Provider(
+            provider=prov_name,
+            root_dir=cand,
+            include_dir=found_inc,
+            import_lib=found_lib,
+            runtime_dll=found_dll,
+            version=version,
+            arch=arch,
+            is_supported=True,
+        )
+
+    is_windows = (platform.system() == "Windows") or (os.name == "nt")
+    if is_windows:
+        if msys_path is not None:
+            resolved_msys = Path(msys_path).resolve()
+        else:
+            gcc_path = shutil.which("gcc")
+            if gcc_path and "ucrt64" in str(gcc_path).lower():
+                resolved_msys = Path(gcc_path).resolve().parent
+            else:
+                resolved_msys = Path(r"C:\msys64\ucrt64\bin")
+
+        msys_root = resolved_msys.parent if resolved_msys.name.lower() == "bin" else resolved_msys
+        msys_bin = msys_root / "bin"
+        msys_inc = msys_root / "include"
+        msys_lib = msys_root / "lib"
+
+        has_headers = (msys_inc / "SDL3" / "SDL.h").is_file()
+        import_lib_candidates = (
+            msys_lib / "libSDL3.dll.a",
+            msys_lib / "libSDL3.a",
+        )
+        found_import_lib = next((p for p in import_lib_candidates if p.is_file()), None)
+        runtime_dll = msys_bin / "SDL3.dll"
+        has_dll = runtime_dll.is_file()
+
+        vulkan_incidental = False
+        vk_path = None
+        if vulkan_sdk:
+            vk_path = Path(vulkan_sdk).resolve()
+        else:
+            try:
+                vk_path = discover_vulkan_sdk()
+            except (VulkanSdkError, RuntimeError):
+                vk_path = None
+
+        if vk_path and vk_path.is_dir():
+            vk_candidates = (
+                vk_path / "Lib" / "SDL3.lib",
+                vk_path / "lib" / "SDL3.lib",
+                vk_path / "Include" / "SDL3",
+                vk_path / "include" / "SDL3",
+            )
+            vulkan_incidental = any(p.exists() for p in vk_candidates)
+
+        if not (has_headers and found_import_lib and has_dll):
+            missing = []
+            if not has_headers:
+                missing.append("headers (include/SDL3/SDL.h)")
+            if not found_import_lib:
+                missing.append("import library (lib/libSDL3.dll.a)")
+            if not has_dll:
+                missing.append("runtime DLL (bin/SDL3.dll)")
+            missing_desc = ", ".join(missing)
+
+            incidental_note = ""
+            if vulkan_incidental:
+                incidental_note = (
+                    f" (an incidental copy exists in Vulkan SDK at {vk_path}, "
+                    "but Vulkan SDK is not a supported SDL3 provider)"
+                )
+
+            raise Sdl3ProviderError(
+                f"SDL3 dependency is missing from the supported MSYS2 UCRT64 toolchain{incidental_note}: "
+                f"missing {missing_desc} in {msys_root}. "
+                "Install with: pacman -S mingw-w64-ucrt-x86_64-sdl3"
+            )
+
+        ok_pe, pe_detail = _validate_pe_x64(runtime_dll)
+        if not ok_pe:
+            raise Sdl3ProviderError(
+                f"Resolved SDL3.dll in {runtime_dll} is not a valid x86-64 PE: {pe_detail}"
+            )
+
+        version = extract_sdl3_version(msys_inc) or "unknown"
+        return Sdl3Provider(
+            provider="msys2_ucrt64",
+            root_dir=msys_root,
+            include_dir=msys_inc,
+            import_lib=found_import_lib,
+            runtime_dll=runtime_dll,
+            version=version,
+            arch="x86_64",
+            is_supported=True,
+        )
+
+    pkg_config = shutil.which("pkg-config")
+    if pkg_config:
+        try:
+            res = subprocess.run(
+                [pkg_config, "--cflags", "--libs", "sdl3"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                mod_ver = subprocess.run(
+                    [pkg_config, "--modversion", "sdl3"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5,
+                ).stdout.strip()
+                prefix = subprocess.run(
+                    [pkg_config, "--variable=prefix", "sdl3"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5,
+                ).stdout.strip()
+                inc_dir = subprocess.run(
+                    [pkg_config, "--variable=includedir", "sdl3"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5,
+                ).stdout.strip()
+                lib_dir = subprocess.run(
+                    [pkg_config, "--variable=libdir", "sdl3"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5,
+                ).stdout.strip()
+                root_path = Path(prefix) if prefix else Path("/usr")
+                include_path = Path(inc_dir) if inc_dir else root_path / "include"
+                import_lib = Path(lib_dir) / "libSDL3.so" if lib_dir else root_path / "lib" / "libSDL3.so"
+                return Sdl3Provider(
+                    provider="pkg_config",
+                    root_dir=root_path,
+                    include_dir=include_path,
+                    import_lib=import_lib,
+                    runtime_dll=None,
+                    version=mod_ver or "unknown",
+                    arch=platform.machine() or "x86_64",
+                    is_supported=True,
+                )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    sys_includes = (Path("/usr/include"), Path("/usr/local/include"))
+    found_sys_inc = next((p for p in sys_includes if (p / "SDL3" / "SDL.h").is_file()), None)
+    sys_libs = (
+        Path("/usr/lib/x86_64-linux-gnu/libSDL3.so"),
+        Path("/usr/lib64/libSDL3.so"),
+        Path("/usr/lib/libSDL3.so"),
+        Path("/usr/local/lib/libSDL3.so"),
+    )
+    found_sys_lib = next((p for p in sys_libs if p.is_file()), None)
+    if found_sys_inc and found_sys_lib:
+        version = extract_sdl3_version(found_sys_inc) or "unknown"
+        return Sdl3Provider(
+            provider="system",
+            root_dir=found_sys_inc.parent,
+            include_dir=found_sys_inc,
+            import_lib=found_sys_lib,
+            runtime_dll=None,
+            version=version,
+            arch=platform.machine() or "x86_64",
+            is_supported=True,
+        )
+
+    raise Sdl3ProviderError(
+        "SDL3 dependency is missing. Install with: sudo apt install libsdl3-dev (or distribution equivalent)."
+    )
+
+
+_DEFAULT_SYSTEM_INCLUDE_DIRS = frozenset(("/usr/include", "/usr/local/include"))
+
+
+def _make_escape(value: str) -> str:
+    return value.replace("$", "$$").replace("#", "\\#").replace("\n", " ")
+
+
+def _pkg_config_flags(flag: str) -> str:
+    pkg_config = shutil.which("pkg-config")
+    if not pkg_config:
+        return ""
+    try:
+        res = subprocess.run([pkg_config, flag, "sdl3"], capture_output=True,
+                             text=True, check=False, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def sdl3_make_fragment(explicit: str | None = None, compiler: str | None = None) -> str:
+    """Every SDL3 Make variable from one discovery pass.
+
+    The Makefile evaluates this once per parse; separate queries cost one
+    interpreter start each. System default include/library directories are
+    never emitted as -I/-L: forcing -I/usr/include reorders GCC's own header
+    search and breaks #include_next in the C++ reference build.
+    """
+    exp = explicit if explicit and explicit.strip() else None
+    values = {"SDL3_DIR": "", "SDL3_ERROR": "", "SDL3_PROVIDER": "none",
+              "SDL3_VERSION": "none", "SDL3_DLL": "",
+              "SDL3_INC_FLAGS": "", "SDL3_LDFLAGS": ""}
+    try:
+        p = discover_sdl3_provider(explicit=exp)
+    except Sdl3ProviderError as exc:
+        values["SDL3_ERROR"] = str(exc)
+    else:
+        values["SDL3_DIR"] = p.root_dir.as_posix()
+        values["SDL3_PROVIDER"] = p.provider
+        values["SDL3_VERSION"] = p.version
+        values["SDL3_DLL"] = p.runtime_dll.as_posix() if p.runtime_dll else ""
+        mismatch = _compiler_toolchain_mismatch(p, compiler)
+        if mismatch:
+            # Adding this provider's -I/-L to a different MinGW links its C runtime
+            # against the wrong one. Stop the SDL3-linking targets with the remedy.
+            values["SDL3_ERROR"] = mismatch
+        elif p.provider == "pkg_config":
+            values["SDL3_INC_FLAGS"] = _pkg_config_flags("--cflags")
+            values["SDL3_LDFLAGS"] = " ".join(
+                f for f in _pkg_config_flags("--libs-only-L").split())
+        else:
+            inc = p.include_dir.as_posix()
+            lib = p.import_lib.parent.as_posix()
+            if inc not in _DEFAULT_SYSTEM_INCLUDE_DIRS:
+                values["SDL3_INC_FLAGS"] = f"-I{inc}"
+            if not lib.startswith(("/usr/lib", "/lib")):
+                values["SDL3_LDFLAGS"] = f"-L{lib}"
+    return "".join(f"{k} := {_make_escape(v)}\n" for k, v in values.items())
+
+
+def _compiler_toolchain_mismatch(provider: "Sdl3Provider", compiler: str | None) -> str:
+    """Name a compiler that does not belong to the MSYS2 UCRT64 SDL3 provider.
+
+    Only the MSYS2 provider is tied to one toolchain; other providers are left alone.
+    """
+    if provider.provider != "msys2_ucrt64" or not compiler:
+        return ""
+    resolved = shutil.which(compiler)
+    if not resolved:
+        return ""
+    toolchain_bin = (provider.root_dir / "bin").resolve()
+    try:
+        in_toolchain = Path(resolved).resolve().parent == toolchain_bin
+    except OSError:
+        in_toolchain = False
+    if in_toolchain:
+        return ""
+    return (
+        f"SDL3 dependency is missing from the compiler's toolchain: {compiler} resolves to "
+        f"{Path(resolved).as_posix()}, not the MSYS2 UCRT64 toolchain that provides SDL3 at "
+        f"{provider.root_dir.as_posix()}. Put {toolchain_bin.as_posix()} first on PATH "
+        "(see docs/SETUP.md)."
+    )
+
+
+def write_sdl3_make_fragment(path: str, explicit: str | None = None,
+                             compiler: str | None = None) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    text = sdl3_make_fragment(explicit, compiler)
+    if not out.is_file() or out.read_text(encoding="utf-8") != text:
+        out.write_text(text, encoding="utf-8")
+
+
+def query_sdl3_make(explicit: str | None = None) -> str:
+    """Helper for Makefile to discover SDL3 root directory in a single call."""
+    exp = explicit if explicit and explicit.strip() else None
+    try:
+        provider = discover_sdl3_provider(explicit=exp)
+        return provider.root_dir.as_posix()
+    except Sdl3ProviderError:
+        return ""
+
+
+def query_sdl3_error(explicit: str | None = None) -> str:
+    """Helper for Makefile to query actionable SDL3 failure message."""
+    exp = explicit if explicit and explicit.strip() else None
+    try:
+        discover_sdl3_provider(explicit=exp)
+        return ""
+    except Sdl3ProviderError as exc:
+        return str(exc)
+
+
+def query_sdl3_info(var: str, explicit: str | None = None) -> str:
+    """Query a specific attribute of the resolved SDL3 provider."""
+    exp = explicit if explicit and explicit.strip() else None
+    try:
+        p = discover_sdl3_provider(explicit=exp)
+        if var == "inc":
+            return p.include_dir.as_posix()
+        elif var == "lib_dir":
+            return p.import_lib.parent.as_posix()
+        elif var == "lib":
+            return p.import_lib.as_posix()
+        elif var == "dll":
+            return p.runtime_dll.as_posix() if p.runtime_dll else ""
+        elif var == "version":
+            return p.version
+        elif var == "provider":
+            return p.provider
+        elif var == "arch":
+            return p.arch
+        return ""
+    except Sdl3ProviderError:
+        return ""
+
+
+def check_toolchain(
+    report: Report,
+    msys_path: Path,
+    vulkan_sdk: Path | None,
+    root: Path | None = None,
+    sdl3_path: Path | None = None,
+) -> None:
     root = root or report.root
     if "ucrt64" in str(msys_path).lower():
         report.pass_("MSYS2_UCRT64", "MSYS2 UCRT64 toolchain path selected", path=msys_path)
@@ -268,18 +719,50 @@ def check_toolchain(report: Report, msys_path: Path, vulkan_sdk: Path | None, ro
                 remediation="Confirm that this is the MSYS2 UCRT64 toolchain, not MSVCRT/MinGW32 or another installation.",
             )
 
-    sdl_import_candidates = (
-        msys_path.parent / "lib" / "libSDL3.dll.a",
-        msys_path.parent / "lib" / "libSDL3.a",
-    )
-    sdl_import = next((path for path in sdl_import_candidates if path.is_file()), None)
-    if sdl_import:
-        report.pass_("SDL3_IMPORT", "SDL3 import library is available", path=sdl_import)
-    else:
+    try:
+        sdl_provider = discover_sdl3_provider(
+            explicit=sdl3_path,
+            msys_path=msys_path,
+            vulkan_sdk=vulkan_sdk,
+        )
+    except Sdl3ProviderError as exc:
+        report.fail(
+            "SDL3_PROVIDER",
+            "No usable SDL3 provider discovered",
+            detail=str(exc),
+            remediation="Install mingw-w64-ucrt-x86_64-sdl3 in MSYS2 UCRT64, or pass --sdl3-path with a complete SDL3 distribution.",
+        )
         report.fail(
             "SDL3_IMPORT",
-            "SDL3 import library was not found in the UCRT64 prefix",
+            "SDL3 import library was not found in the supported provider",
+            detail=str(exc),
             remediation="Install mingw-w64-ucrt-x86_64-sdl3 in MSYS2 UCRT64.",
+        )
+        sdl_provider = None
+    else:
+        report.pass_(
+            "SDL3_PROVIDER",
+            f"Supported SDL3 provider selected ({sdl_provider.provider})",
+            path=sdl_provider.root_dir,
+            metadata={
+                "provider": sdl_provider.provider,
+                "version": sdl_provider.version,
+                "arch": sdl_provider.arch,
+                "include_dir": str(sdl_provider.include_dir),
+                "import_lib": str(sdl_provider.import_lib),
+                "runtime_dll": str(sdl_provider.runtime_dll) if sdl_provider.runtime_dll else None,
+            },
+        )
+        report.pass_(
+            "SDL3_HEADERS",
+            f"SDL3 headers are available (version {sdl_provider.version})",
+            path=sdl_provider.include_dir,
+        )
+        report.pass_(
+            "SDL3_IMPORT",
+            "SDL3 import library is available",
+            path=sdl_provider.import_lib,
+            detail=f"{sdl_provider.import_lib.name} ({sdl_provider.provider})",
         )
 
     try:
@@ -330,6 +813,21 @@ def check_toolchain(report: Report, msys_path: Path, vulkan_sdk: Path | None, ro
 
     check_shader_provenance(report, root, vulkan_sdk)
 
+    if vulkan_sdk:
+        vk_path = Path(vulkan_sdk).resolve()
+        vk_sdl = [
+            vk_path / "Lib" / "SDL3.lib",
+            vk_path / "lib" / "SDL3.lib",
+            vk_path / "Include" / "SDL3",
+            vk_path / "include" / "SDL3",
+        ]
+        if any(p.exists() for p in vk_sdl):
+            report.info(
+                "SDL3_INCIDENTAL_VULKAN",
+                "Vulkan SDK contains incidental SDL3 files; build explicitly isolates documented MSYS2 provider",
+                path=vk_path,
+            )
+
 
 def _check_elf_file(report: Report, code: str, path: Path, description: str) -> dict[str, int] | None:
     if not path.is_file():
@@ -348,29 +846,6 @@ def _check_elf_file(report: Report, code: str, path: Path, description: str) -> 
     assert metadata is not None
     report.pass_(code, f"Validated {description}", path=path, metadata=metadata)
     return metadata
-
-
-def discover_iso(root: Path) -> tuple[Path | None, list[Path]]:
-    legacy = root / "game.iso"
-    candidates: list[Path] = []
-    if legacy.is_file():
-        candidates.append(legacy)
-    iso_dir = root / "place_game_here" / "ISO"
-    if iso_dir.is_dir():
-        candidates.extend(sorted(path for path in iso_dir.iterdir() if path.is_file() and path.suffix.lower() == ".iso"))
-    unique: list[Path] = []
-    seen: set[Path] = set()
-    for path in candidates:
-        try:
-            key = path.resolve()
-        except OSError:
-            key = path.absolute()
-        if key not in seen:
-            seen.add(key)
-            unique.append(path)
-    if len(unique) == 1:
-        return unique[0], unique
-    return None, unique
 
 
 def _resolve_disc_id(manifest: Path | str | dict[str, object] | None) -> str | None:
@@ -399,8 +874,7 @@ def _resolve_disc_id(manifest: Path | str | dict[str, object] | None) -> str | N
 class TitleDiagnosticContext:
     """Manifest-derived paths and requirements used by the workspace doctor.
 
-    The manager plan is the authority for which title is being built.  The
-    doctor cannot safely infer that title from an HST-shaped directory, so the
+    The manager plan is the authority for which title is being built. The
     caller supplies this small, path-only projection of the selected manifest.
     No private bytes are loaded while constructing it.
     """
@@ -418,7 +892,6 @@ class TitleDiagnosticContext:
     requires_psp_header: bool
     requires_iso: bool
     requires_assets: bool
-    allow_legacy_layout: bool
 
 
 _BUILD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.IGNORECASE)
@@ -468,47 +941,14 @@ def _safe_game_name(data: dict[str, object], override: str | None) -> str:
     return "recomp"
 
 
-def _legacy_title_diagnostic_context(root: Path) -> TitleDiagnosticContext:
-    """Return the pre-Phase-3 HST layout for direct legacy callers."""
-    return TitleDiagnosticContext(
-        kind="retail",
-        game_name="hst",
-        game_elf_candidates=(
-            root / "place_game_here" / "EBOOT.elf",
-            root / "eboot.elf",
-        ),
-        module_dir=root / "place_game_here" / "EXTRACTED" / "decrypted",
-        psp_header_path=root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN",
-        data_root=root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted",
-        disc_image=None,
-        required_modules=("libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx"),
-        requires_game_elf=True,
-        requires_module_dir=True,
-        requires_psp_header=True,
-        requires_iso=True,
-        requires_assets=True,
-        allow_legacy_layout=True,
-    )
-
-
 def title_diagnostic_context(
     root: Path,
     manifest: Path | str | dict[str, object] | None = None,
     *,
     game_name: str | None = None,
-    legacy_default: bool = False,
 ) -> TitleDiagnosticContext:
-    """Project a selected manifest into the paths the doctor must inspect.
-
-    ``legacy_default`` is used only by the deprecated HST entry point and by
-    the direct legacy helper API.  The canonical ``nk_doctor`` entry point
-    supplies the public synthetic manifest when no title was selected, so it
-    never silently falls back to HST paths.
-    """
+    """Project a selected manifest into the paths the doctor must inspect."""
     data = _manifest_mapping(root, manifest)
-    if data is None and manifest is None and legacy_default:
-        return _legacy_title_diagnostic_context(root)
-
     if data is None:
         data = {}
     raw_kind = data.get("kind")
@@ -521,38 +961,25 @@ def title_diagnostic_context(
     declared_module_dir = _safe_manifest_path(root, filesystem.get("module_dir"))
     declared_psp_header = _safe_manifest_path(root, filesystem.get("psp_header"))
     declared_disc_image = _safe_manifest_path(root, filesystem.get("disc_image"))
-    allow_legacy = kind == "retail"
 
     data_root = declared_data_root
-    if data_root is None and allow_legacy:
-        data_root = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted"
     module_dir = declared_module_dir
-    if module_dir is None and allow_legacy:
-        module_dir = root / "place_game_here" / "EXTRACTED" / "decrypted"
     psp_header = declared_psp_header
-    if psp_header is None and allow_legacy:
-        psp_header = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN"
 
     executable = data.get("executable")
     executable = executable if isinstance(executable, dict) else {}
-    if allow_legacy:
-        elf_candidates = (
-            root / "place_game_here" / "EBOOT.elf",
+    candidates: list[Path] = []
+    declared_executable = _safe_manifest_path(root, executable.get("path"))
+    if declared_executable is not None:
+        candidates.append(declared_executable)
+    candidates.extend(
+        (
+            root / "build" / "fixtures" / f"{effective_name}.elf",
+            root / "fixtures" / f"{effective_name}.elf",
             root / "eboot.elf",
         )
-    else:
-        candidates: list[Path] = []
-        declared_executable = _safe_manifest_path(root, executable.get("path"))
-        if declared_executable is not None:
-            candidates.append(declared_executable)
-        candidates.extend(
-            (
-                root / "build" / "fixtures" / f"{effective_name}.elf",
-                root / "fixtures" / f"{effective_name}.elf",
-                root / "eboot.elf",
-            )
-        )
-        elf_candidates = tuple(candidates)
+    )
+    elf_candidates = tuple(candidates)
 
     required_modules: list[str] = []
     requires_module_dir = False
@@ -567,18 +994,9 @@ def title_diagnostic_context(
                 name = module.get("name")
                 if module.get("required") is True and isinstance(name, str) and _MODULE_NAME_RE.fullmatch(name):
                     required_modules.append(name)
-    if allow_legacy and legacy_default and not required_modules:
-        # A direct legacy call may provide the old minimal manifest used by
-        # compatibility tests.  The real HST manifest carries its own module
-        # declarations; this fallback preserves the old wrapper contract only.
-        requires_module_dir = True
-        required_modules = ["libfont.prx", "scePsmf_library.prx", "scePsmfP_library.prx"]
-
     requires_psp_header = executable.get("bss_metadata_source") == "psp-header"
-    if allow_legacy and legacy_default and "bss_metadata_source" not in executable:
-        requires_psp_header = True
     requires_iso = kind == "retail" or declared_disc_image is not None
-    requires_assets = data_root is not None
+    requires_assets = kind == "retail" or data_root is not None
     return TitleDiagnosticContext(
         kind=kind,
         game_name=effective_name,
@@ -593,7 +1011,6 @@ def title_diagnostic_context(
         requires_psp_header=requires_psp_header,
         requires_iso=requires_iso,
         requires_assets=requires_assets,
-        allow_legacy_layout=allow_legacy,
     )
 
 
@@ -607,22 +1024,13 @@ def check_private_inputs(
     title_context: TitleDiagnosticContext | None = None,
 ) -> None:
     root = report.root
-    context_was_supplied = title_context is not None
-    context = title_context or title_diagnostic_context(
-        root,
-        title_manifest,
-        legacy_default=True,
-    )
+    context = title_context or title_diagnostic_context(root, title_manifest)
     if expected_disc_id is None and title_manifest is not None:
         expected_disc_id = _resolve_disc_id(title_manifest)
     if expected_disc_id is None and os.environ.get("TITLE_MANIFEST"):
         env_manifest = Path(os.environ["TITLE_MANIFEST"])
         if env_manifest.is_file():
             expected_disc_id = _resolve_disc_id(env_manifest)
-    if expected_disc_id is None and context.allow_legacy_layout:
-        local_hst = root / "assets" / "titles" / "hst-ucus98701.json"
-        if local_hst.is_file():
-            expected_disc_id = _resolve_disc_id(local_hst)
 
     elf_meta: dict[str, int] | None = None
     if context.requires_game_elf:
@@ -668,18 +1076,13 @@ def check_private_inputs(
     if context.requires_module_dir:
         module_dir = context.module_dir or (root / "modules")
         if not module_dir.is_dir():
-            if context.allow_legacy_layout and context.required_modules:
-                # Keep the legacy report's per-module diagnostics stable while
-                # using the same derived directory for the actual checks.
-                for name in context.required_modules:
-                    _check_elf_file(
-                        report,
-                        f"INPUT_PRX_{name.upper().replace('.', '_')}",
-                        module_dir / name,
-                        f"decrypted {name}",
-                    )
-            else:
-                report.fail("INPUT_MODULE_DIR", "Missing declared title module directory", path=module_dir)
+            for name in context.required_modules:
+                _check_elf_file(
+                    report,
+                    f"INPUT_PRX_{name.upper().replace('.', '_')}",
+                    module_dir / name,
+                    f"decrypted {name}",
+                )
         else:
             for name in context.required_modules:
                 _check_elf_file(
@@ -690,31 +1093,18 @@ def check_private_inputs(
                 )
 
     if need_iso and context.requires_iso:
-        if context.disc_image is not None:
-            selected = context.disc_image if context.disc_image.is_file() else None
-            candidates = [context.disc_image] if selected is not None else []
-        elif context.allow_legacy_layout:
-            selected, candidates = discover_iso(root)
-        else:
-            selected, candidates = None, []
-        if not candidates:
-            remediation = (
-                f"Place exactly one lawfully obtained {expected_disc_id} ISO in place_game_here/ISO/."
-                if expected_disc_id
-                else "Place exactly one lawfully obtained game ISO in place_game_here/ISO/."
-            )
+        selected = context.disc_image
+        if selected is None:
             report.fail(
                 "INPUT_ISO",
-                "No game ISO was found",
-                path=root / "place_game_here" / "ISO",
-                remediation=remediation,
+                "The selected title manifest does not declare filesystem.disc_image",
+                remediation="Declare the lawful local ISO path in the title manifest.",
             )
-        elif selected is None:
+        elif not selected.is_file():
             report.fail(
                 "INPUT_ISO",
-                "Multiple game ISO candidates were found; selection would be ambiguous",
-                detail=", ".join(str(path) for path in candidates),
-                remediation="Keep exactly one ISO in place_game_here/ISO/ and remove the legacy game.iso fallback.",
+                "The title manifest's declared game ISO was not found",
+                path=selected,
             )
         else:
             metadata, error = _validate_iso(selected)
@@ -737,10 +1127,10 @@ def check_private_inputs(
                         "INPUT_DISC_ID",
                         "No title manifest with disc ID supplied; skipping disc ID confirmation",
                         path=selected,
-                )
+                    )
 
     if need_assets and context.requires_assets:
-        sr_dataroot = None if context_was_supplied and context.data_root is not None else os.environ.get("SR_DATAROOT")
+        sr_dataroot = os.environ.get("SR_DATAROOT")
         if sr_dataroot:
             data_path = Path(sr_dataroot)
             if not data_path.is_absolute():
@@ -773,8 +1163,12 @@ def check_private_inputs(
         else:
             data_root = context.data_root
             if data_root is None:
-                data_root = root / "place_game_here" / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "xbdata_extracted"
-            if not data_root.is_dir():
+                report.fail(
+                    "INPUT_XB_DATA",
+                    "The selected title manifest does not declare filesystem.data_root",
+                    remediation="Declare the extracted asset directory in the title manifest.",
+                )
+            elif not data_root.is_dir():
                 report.fail(
                     "INPUT_XB_DATA",
                     "Missing extracted XB asset tree",
@@ -861,7 +1255,7 @@ def check_save_root(report: Report, root: Path) -> None:
         )
 
 
-def check_build_profile(report: Report, root: Path, game_name: str = "hst") -> None:
+def check_build_profile(report: Report, root: Path, game_name: str = "recomp") -> None:
     profile_file = root / "build" / game_name / "runtime_profile.json"
     if profile_file.is_file():
         try:
@@ -935,13 +1329,22 @@ def check_vfpu_assets(report: Report) -> None:
         report.warn("VFPU_EXTRA", "Unexpected .dat files are present in assets/vfpu", detail=", ".join(extras))
 
 
-def check_runtime_dependencies(report: Report, msys_path: Path, game_name: str = "hst") -> None:
+def check_runtime_dependencies(report: Report, msys_path: Path, game_name: str = "recomp") -> None:
     root = report.root
-    candidates = (
+    sdl_dll = None
+    try:
+        provider = discover_sdl3_provider(msys_path=msys_path)
+        sdl_dll = provider.runtime_dll
+    except Sdl3ProviderError:
+        pass
+
+    candidates = [
         root / "build" / game_name / "SDL3.dll",
         root / "SDL3.dll",
-        msys_path / "SDL3.dll",
-    )
+    ]
+    if sdl_dll and sdl_dll.is_file() and sdl_dll not in candidates:
+        candidates.append(sdl_dll)
+    candidates.append(msys_path / "SDL3.dll")
     sdl = next((path for path in candidates if path.is_file()), None)
     if sdl is None:
         report.fail(
@@ -979,7 +1382,7 @@ def check_runtime_dependencies(report: Report, msys_path: Path, game_name: str =
             report.fail("RUNTIME_VULKAN", "Resolved Vulkan loader is not a valid x86-64 DLL", path=vulkan, detail=detail)
 
 
-def check_build_products(report: Report, game_name: str = "hst") -> None:
+def check_build_products(report: Report, game_name: str = "recomp") -> None:
     build = report.root / "build" / game_name
     exe = build / f"{game_name}.exe"
     image = build / f"{game_name}_image.bin"

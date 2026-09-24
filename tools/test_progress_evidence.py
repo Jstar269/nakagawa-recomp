@@ -175,8 +175,8 @@ class Ps1ParseEvidenceTests(EvidenceBase):
         saved = pt._find_powershell
         pt._find_powershell = lambda: None  # type: ignore[assignment]
         try:
-            fake = self.build / "hst_manager.ps1"
-            fake.write_text("function Invoke-HstBuild { }\n", encoding="utf-8")
+            fake = self.build / "nk_manager.ps1"
+            fake.write_text("function Invoke-NkBuild { }\n", encoding="utf-8")
             self.assertEqual(pt._check_ps1_parse(fake), "pending")
         finally:
             pt._find_powershell = saved  # type: ignore[assignment]

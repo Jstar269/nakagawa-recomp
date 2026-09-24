@@ -178,9 +178,8 @@ class CiPathAdversarialTests(unittest.TestCase):
         "cmake/toolchain.cmake",
         "assets/vfpu/tables.bin",
         "assets/shaders/blit.frag",
-        "hst_manager.ps1",
+        "nk.ps1",
         "nk_manager.ps1",
-        "hst.ps1",
         "tools/title_codegen_plan.py",
         "tools/title_manifest.py",
         "tools/test_title_manifest.py",
@@ -191,7 +190,6 @@ class CiPathAdversarialTests(unittest.TestCase):
         "tools/imports.py",
         "tools/gen_microtest.py",
         "tools/verify_gates.py",
-        "tools/hst_doctor.py",
         "tools/nk_doctor.py",
         "tools/nk_doctor_checks.py",
         "tools/nk_doctor_core.py",
@@ -522,7 +520,7 @@ class PublicSurfaceRoutingRegressionTests(unittest.TestCase):
     def test_representative_published_classes_are_all_recognised_as_public(self) -> None:
         for path in (
             "interface/package-lock.json",           # reviewed_configuration lockfile
-            "tools/hst_doctor_checks.py",            # implementation
+            "tools/nk_doctor_checks.py",            # implementation
             "docs/DEBUGGING.md",                     # documentation
             "interface/package.json",                # configuration
             "tools/test_hst_doctor.py",              # synthetic fixture

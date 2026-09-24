@@ -354,7 +354,7 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         self.assertEqual(cls, "unresolved")
 
     def test_unrecorded_root_script_is_unresolved(self) -> None:
-        cls, _ = provenance_ledger._class_for("hst.ps1", None)
+        cls, _ = provenance_ledger._class_for("nk.ps1", None)
         self.assertEqual(cls, "unresolved")
 
     def test_interface_implementation_is_not_wholesale_configuration(self) -> None:
@@ -412,7 +412,7 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         self.assertEqual(evidence["record_id"], "PROV-UPSTREAM")
 
     def test_is_implementation_path(self) -> None:
-        for impl in ("src/rt/x.c", "tools/x.py", "hst.ps1", "copy_build_assets.ps1",
+        for impl in ("src/rt/x.c", "tools/x.py", "nk.ps1", "copy_build_assets.ps1",
                      "interface/src/lib/x.ts", "interface/scripts/prepare-standalone.mjs"):
             with self.subTest(impl=impl):
                 self.assertTrue(provenance_ledger.is_implementation_path(impl), impl)

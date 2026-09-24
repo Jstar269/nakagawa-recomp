@@ -22,7 +22,9 @@ real repository content is used or copied.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -2353,6 +2355,42 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         )
         entry = next(item for item in generated["entries"] if item["path"] == "src/rt/core.c")
         self.assertEqual(entry["sha256"], _sha(changed))
+
+    def test_unbacked_frozen_ephemeral_debt_renders_fail_without_traceback(self) -> None:
+        authority = json.loads(json.dumps(AUTHORITY_RECORDS))
+        core_record = next(record for record in authority["records"] if record["id"] == "core-runtime")
+        core_record["paths"] = ["src/rt/other.c"]
+        self.write_trusted(authority)
+        verdict_path = self.outside / "verdict.json"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = verifier.main([
+                "--repo", str(self.repo.root),
+                "--candidate", self.base,
+                "--base", self.base,
+                "--trusted-ledger", str(self.trusted_ledger),
+                "--trusted-baseline", str(self.baseline()),
+                "--ephemeral",
+                "--output-dir", str(self.outside / "cli-output"),
+                "--json", str(verdict_path),
+                "--show-debt",
+            ])
+
+        report = stdout.getvalue()
+        self.assertEqual(status, 1)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("FAIL  TRUSTED_RECORD_UNRESOLVED: src/rt/core.c:", report)
+        self.assertIn("[none] src/rt/core.c: public claim differs; private record details withheld", report)
+        self.assertIn("verdict: FAIL (1 fatal finding(s))", report)
+        self.assertNotIn("Traceback", report)
+        self.assertNotIn("Private/Upstream/Path.cpp", report)
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        self.assertEqual(verdict["verdict"], "fail")
+        core_debt = next(item for item in verdict["grandfathered_debt"] if item["path"] == "src/rt/core.c")
+        self.assertEqual(core_debt["backing"], "none")
+        self.assertNotIn("Private/Upstream/Path.cpp", verdict_path.read_text(encoding="utf-8"))
 
     def test_plain_baseline_must_be_the_exact_trusted_base_blob(self) -> None:
         wrong = self.outside / "wrong-baseline.json"

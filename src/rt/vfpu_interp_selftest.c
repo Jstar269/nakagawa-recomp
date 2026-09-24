@@ -27,7 +27,7 @@
 //
 // The final check count is printed by the executable. No game inputs or private
 // data required. Run via `make vfpu-interp-selftest` (also wired into
-// hst_manager.ps1 -Action Verify and the Linux native CI gate, where the
+// nk_manager.ps1 -Action Verify and the Linux native CI gate, where the
 // ASan/UBSan build runs as the uninitialized-read/overflow gate).
 
 #define _CRT_SECURE_NO_WARNINGS

@@ -1,9 +1,11 @@
 # Title-driven code-generation plan
 
-`tools/title_codegen_plan.py` is a read-only bridge between the public title
-manifest and the existing `prxload.py`, `codegen.py`, and `imports.py` command
-lines. It prints deterministic JSON; it does not execute commands, inspect private
-inputs, or modify the manifest.
+`tools/title_codegen_plan.py` defaults to a read-only bridge between the public
+title manifest and the existing `prxload.py`, `codegen.py`, and `imports.py`
+command lines. Plan mode prints deterministic JSON and does not execute commands
+or modify the manifest. The explicit `--package` action runs the existing
+two-phase Make build and writes a local `package.json` plus `build-report.json`;
+it keeps executable, module, and PSP-header paths as CLI bindings.
 
 With `--manager-plan`, the same validated configuration produces a bounded,
 versioned manager/build contract. `nk_manager.ps1` consumes that contract from
@@ -28,7 +30,7 @@ adapts that plan to a process invocation and re-derives nothing of its own: it
 checks that each build-facing projection (`make.*`, `environment.*`) follows from
 the plan's own semantic fields, then pins the selected title `nk_manager.ps1`
 orchestrates. Make consumes explicit values and contributes no title-specific
-default beyond the direct-build HST bindings at the top of the `Makefile`.
+defaults.
 A manifest-less direct Make invocation bypasses the planner and its protected
 digest entirely; it is an explicit non-canonical escape hatch, not a second
 title contract. The planner default is the single authority for the chunk-size
@@ -52,9 +54,9 @@ executable nor generated retail C to exist. See
 
 Executable spans follow the same rule. `analyze.py` has no built-in span: an extra
 executable span is title configuration and reaches the analyzer only as an explicit
-argument. The environment variable `HST_EXTRA_SPANS` is read at CLI entry points
-only, and only for the primary image, so a rebased extra guest module can never
-inherit another module's span. Make passes the span as `--extra-span=LO,HI` rather
+argument. `TITLE_EXTRA_SPANS` is read at CLI entry points only, and only for the
+primary image, so a rebased extra guest module can never inherit another module's
+span. Make passes the span as `--extra-span=LO,HI` rather
 than a recipe environment prefix, which keeps the binding working when Make falls
 back to `cmd.exe`. If both an option and an environment value are present and they
 disagree, the run fails closed.
@@ -92,6 +94,11 @@ python tools/title_codegen_plan.py assets/titles/hst-ucus98701.json `
 The resulting plan reproduces the current HST base, entry, PSP-header policy,
 module names and load addresses, analyzer span, and codegen profile. Paths are
 normalized for deterministic output but are not resolved or checked for existence.
+
+The package action uses that same plan and builds into a dedicated untracked
+directory. See [Runtime Packaging Architecture](RUNTIME_PACKAGING_ARCHITECTURE.md)
+for its command, package schema, compiler report, and fail-closed semantic-boundary
+records.
 
 Manifests may declare `codegen_profile` (`hst` or `none`); when present it is
 authoritative and an optional `--profile` must match it. A manifest without that

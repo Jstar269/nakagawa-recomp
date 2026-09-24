@@ -596,7 +596,7 @@ jobs:
       - name: Build and run full production pipeline smoke
         if: matrix.part == 'main'
         shell: msys2 {0}
-        # The ordinary compile target invokes the repository's PowerShell 7.6
+        # The ordinary compile target invokes the repository's PowerShell 7.4
         # asset-copy script after linking. Keep the broader Windows PATH scoped
         # to this step so MSYS2 can resolve the runner's `pwsh` without changing
         # tool selection in the other UCRT64 compile gates.

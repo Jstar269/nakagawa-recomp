@@ -84,6 +84,10 @@ typedef struct {
  * drift from the eventual launch path. */
 bool nk_launch_runtime_available(const char *root, const char *title_id);
 
+/* True only when the selected title's identity-matched runtime executable and
+ * generated image are both available under `root`. */
+bool nk_launch_runtime_package_available(const char *root, const char *title_id);
+
 /* Validate a promoted staging EBOOT.BIN against the selected title manifest.
  * Plain ELF32/MIPS files receive full program-header, load-range, entry, and
  * BSS checks. A PSP ~PSP container is recognized as a bounded encrypted/source

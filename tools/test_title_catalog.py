@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import title_catalog_codegen
+import test_public_title_isolation
 from nk_core.title_registry import TitleRegistry
 
 
@@ -70,7 +71,9 @@ class SyntheticDiscIdTests(unittest.TestCase):
         import json
         from nk_core import synthetic_disc_ids
 
-        for manifest in sorted((ROOT / "assets" / "titles").glob("*.json")):
+        # Tracked set, not the directory: an ignored private lookalike must
+        # not enter the synthetic-disc-id sweep (#335).
+        for manifest in test_public_title_isolation.tracked_titles():
             data = json.loads(manifest.read_text(encoding="utf-8"))
             if data.get("kind") != "synthetic":
                 continue
@@ -104,7 +107,6 @@ class TitleCatalogTests(unittest.TestCase):
         # decided per tracked PATH and a copy in /tmp has no policy identity of
         # its own to be judged by. So drift is exercised where it actually
         # happens: against the tracked manifests, restored afterwards.
-        titles_dir = ROOT / "assets" / "titles"
         temp_gen = self.temp_dir / "generated"
 
         def run_codegen(*extra: str) -> subprocess.CompletedProcess:
@@ -134,7 +136,10 @@ class TitleCatalogTests(unittest.TestCase):
         # stale.  The second is the regression this test exists for, so the
         # mutation stays and the module is listed in
         # discovery_contract._SERIAL_ONLY.
-        manifest_to_modify = sorted(titles_dir.glob("*.json"))[0]
+        # Mutating a tracked manifest verifies the real drift path; picking
+        # [0] of an ambient glob could rewrite a developer's *private*
+        # manifest instead (it is not even restored afterwards) (#335).
+        manifest_to_modify = test_public_title_isolation.tracked_titles()[0]
         original_bytes = manifest_to_modify.read_bytes()
         try:
             data = json.loads(original_bytes.decode("utf-8"))

@@ -15,21 +15,61 @@ Verifies:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-import policy_sync
 import publication_policy
 import title_catalog_codegen
 import title_manifest
 from nk_core.title_registry import TitleRegistry
+
+
+def tracked_paths(*filters: str) -> set[str]:
+    """The repository's tracked file set, identical in any checkout state."""
+    cmd = ["git", "ls-files", "--", *filters] if filters else ["git", "ls-files"]
+    out = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, check=True)
+    return {line.replace("\\", "/") for line in out.stdout.splitlines() if line.strip()}
+
+
+def tracked_titles() -> list[Path]:
+    """Tracked title manifests only -- the hermetic enumeration for public tests.
+
+    Untracked or ignored files in assets/titles/ (private development
+    manifests) are invisible to this listing, so a test consuming it cannot
+    change behavior when a developer's private inputs exist on disk.
+    """
+    names = sorted(tracked_paths("assets/titles/*.json"))
+    return [ROOT / "assets" / "titles" / name.split("/")[-1] for name in names]
+
+
+def is_tracked(rel_posix: str) -> bool:
+    """True when the exact path currently has tracked bytes in the index."""
+    return rel_posix in tracked_paths(rel_posix)
+
+
+PRIVATE_TITLE_TESTS_ENV = "NK_PRIVATE_TITLE_TESTS"
+
+
+def private_title_tests_enabled(rel_posix: str) -> bool:
+    """Whether a private-input acceptance test may run against ``rel_posix``.
+
+    It runs where the path has tracked bytes (the private authority checkout),
+    or where the developer explicitly opts in with NK_PRIVATE_TITLE_TESTS=1 and
+    the ignored local file exists. Mere presence of an ignored file never opens
+    the gate, so the default public result is identical in any checkout (#335).
+    """
+    if is_tracked(rel_posix):
+        return True
+    return os.environ.get(PRIVATE_TITLE_TESTS_ENV) == "1" and (ROOT / rel_posix).is_file()
 
 
 class PublicTitleIsolationTests(unittest.TestCase):
@@ -47,15 +87,11 @@ class PublicTitleIsolationTests(unittest.TestCase):
         actually run the title, and that exclusion is exactly what keeps it out
         of the public tree.
         """
-        json_files = [
-            Path(rel)
-            for rel in policy_sync.tracked_paths(ROOT)
-            if rel.startswith("assets/titles/") and rel.endswith(".json")
-        ]
+        json_files = tracked_titles()
         self.assertGreater(len(json_files), 0, "Expected at least one public title manifest")
 
         for mf in json_files:
-            rel = mf.as_posix()
+            rel = mf.relative_to(ROOT).as_posix()
             res = self.policy.resolve(rel)
             self.assertEqual(
                 res.disposition,
@@ -357,6 +393,305 @@ class PublicTitleIsolationTests(unittest.TestCase):
         finally:
             if f_path.is_file():
                 f_path.unlink()
+
+
+PRIVATE_LOOKALIKE_NAME = "hst-ucus98701.json"
+PRIVATE_LOOKALIKE_REL = f"assets/titles/{PRIVATE_LOOKALIKE_NAME}"
+
+SYNTHETIC_LOOKALIKE = {
+    "schema_version": 1,
+    "id": "hst-ucus98701",
+    "display_name": "Synthetic ignored lookalike (hermetic-suite regression)",
+    "kind": "retail",
+    "disc": {"id": "TEST00000", "region": "TEST", "revision_policy": "exact-disc-id"},
+    "executable": {"base": 0, "entry": 0, "bss_metadata_source": "none", "extra_executable_spans": []},
+    "modules": [],
+    "filesystem": {
+        "data_root": "synthetic/none",
+        "memory_stick_root": "build/synthetic/memstick",
+        "device_prefixes": ["host0:", "ms0:"],
+    },
+    "hle_profile": "synthetic-minimal",
+    "codegen_profile": "none",
+    "feature_requirements": ["allegrex-core"],
+    "verification_profile": "synthetic-public",
+}
+
+
+def staged_index_audit(rel_path: str, blob_bytes: bytes) -> subprocess.CompletedProcess:
+    """Run the real publication audit with `rel_path` staged in a temp index.
+
+    The blob is written to a temp file and injected with ``git hash-object``
+    plus ``update-index --cacheinfo`` under ``GIT_INDEX_FILE``, so neither the
+    developer's worktree nor their real index is read or modified. The audit
+    then sees exactly what it would see if this material had been staged for
+    a candidate.
+    """
+    with tempfile.TemporaryDirectory(prefix="hermetic-stage-") as tmp:
+        tmp_path = Path(tmp)
+        blob_file = tmp_path / "blob"
+        blob_file.write_bytes(blob_bytes)
+        index_file = tmp_path / "index"
+        env = {**os.environ, "GIT_INDEX_FILE": str(index_file)}
+        subprocess.run(["git", "read-tree", "HEAD"], cwd=str(ROOT), env=env, check=True)
+        sha = subprocess.run(
+            ["git", "hash-object", "-w", str(blob_file)],
+            cwd=str(ROOT), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo", f"100644,{sha},{rel_path}"],
+            cwd=str(ROOT), env=env, check=True,
+        )
+        return subprocess.run(
+            [sys.executable, "tools/publish_audit.py", "--public-scope",
+             "--provenance-self-consistency"],
+            cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=600,
+        )
+
+
+class TrackedSetHelperTests(unittest.TestCase):
+    """The canonical enumeration must be ambient-state independent."""
+
+    def test_tracked_titles_is_deterministic_and_ignores_untracked(self):
+        names = [p.name for p in tracked_titles()]
+        self.assertEqual(names, sorted(set(names)))
+        self.assertEqual(
+            names,
+            sorted(p.split("/")[-1] for p in tracked_paths("assets/titles/*.json")),
+        )
+        self.assertNotIn(PRIVATE_LOOKALIKE_NAME, names)
+        self.assertGreater(len(names), 0, "public tree must keep at least one manifest")
+
+    def test_is_tracked_gates_private_fixture_explicitly(self):
+        self.assertFalse(is_tracked(PRIVATE_LOOKALIKE_REL))
+        self.assertTrue(is_tracked("assets/titles/synthetic.json"))
+        self.assertFalse(is_tracked("assets/titles/does-not-exist.json"))
+
+    def test_private_title_tests_open_only_on_tracking_or_explicit_opt_in(self):
+        from unittest import mock
+        present = ROOT / "tools" / "test_public_title_isolation.py"
+        rel = present.relative_to(ROOT).as_posix()
+        with mock.patch(__name__ + ".is_tracked", return_value=False):
+            with mock.patch.dict(os.environ, {PRIVATE_TITLE_TESTS_ENV: ""}):
+                self.assertFalse(private_title_tests_enabled(rel))
+            with mock.patch.dict(os.environ, {PRIVATE_TITLE_TESTS_ENV: "1"}):
+                self.assertTrue(private_title_tests_enabled(rel))
+                self.assertFalse(private_title_tests_enabled("assets/titles/does-not-exist.json"))
+        with mock.patch(__name__ + ".is_tracked", return_value=True):
+            with mock.patch.dict(os.environ, {PRIVATE_TITLE_TESTS_ENV: ""}):
+                self.assertTrue(private_title_tests_enabled(rel))
+
+
+class CollectorHermeticityTests(unittest.TestCase):
+    """Policy-keyed collection equals the tracked set in any checkout state."""
+
+    def test_collector_output_equals_tracked_set(self):
+        manifests, titles = title_catalog_codegen.collect_public_manifests(ROOT / "assets" / "titles")
+        collected = sorted(p.name for p in manifests)
+        tracked = sorted(p.name for p in tracked_titles())
+        self.assertEqual(collected, tracked)
+        self.assertNotIn(PRIVATE_LOOKALIKE_NAME, collected)
+        ids = [t["id"] for t in titles]
+        self.assertEqual(ids, sorted(set(ids)), "collector output must be deterministic")
+
+    def test_registry_policy_filter_ignores_lookalike(self):
+        registry = TitleRegistry(include_defaults=False)
+        registry.load_from_directory(ROOT / "assets" / "titles")
+        ids = {p.id for p in registry.all_profiles()}
+        self.assertNotIn("hst-ucus98701", ids)
+        manifest_count = len(list((ROOT / "assets" / "titles").glob("*.json")))
+        self.assertLessEqual(len(ids), manifest_count)
+
+    def test_ambient_glob_sensitivity_mechanism(self):
+        with tempfile.TemporaryDirectory(prefix="hermetic-glob-") as tmp:
+            titles = Path(tmp) / "assets" / "titles"
+            titles.mkdir(parents=True)
+            (titles / "public.json").write_text("{}", encoding="utf-8")
+            before = sorted(p.name for p in titles.glob("*.json"))
+            (titles / PRIVATE_LOOKALIKE_NAME).write_text("{}", encoding="utf-8")
+            after = sorted(p.name for p in titles.glob("*.json"))
+        self.assertEqual(before, ["public.json"])
+        self.assertEqual(after, sorted(["public.json", PRIVATE_LOOKALIKE_NAME]))
+
+
+class OptInGateTests(unittest.TestCase):
+    """Private-input acceptance tests open only on tracked bytes, never disk presence."""
+
+    def test_hst_optin_gates_do_not_open_for_untracked_lookalike(self):
+        import test_hst_manager_manifest
+        import test_hst_title_manifest
+        import test_public_title_isolation
+
+        with mock.patch.object(test_public_title_isolation, "is_tracked", return_value=False):
+            with self.assertRaises(unittest.SkipTest) as title_ctx:
+                test_hst_title_manifest.HstTitleManifestTests.setUpClass()
+            case = test_hst_manager_manifest.HstManagerManifestTests("require_hst_manifest")
+            with self.assertRaises(unittest.SkipTest) as manager_ctx:
+                case.require_hst_manifest()
+        self.assertIn("unavailable", str(title_ctx.exception))
+        self.assertIn("unavailable", str(manager_ctx.exception))
+
+
+class PublicationEnforcementTests(unittest.TestCase):
+    """Untracked/ignored material stays invisible; staged material must fail."""
+
+    def test_publication_audit_ignores_untracked_ignored_lookalike(self):
+        proc = subprocess.run(
+            [sys.executable, "tools/publish_audit.py", "--tracked-only",
+             "--public-scope", "--provenance-self-consistency"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=600,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn(PRIVATE_LOOKALIKE_NAME, proc.stdout + proc.stderr)
+
+    def test_staged_private_manifest_is_rejected(self):
+        proc = staged_index_audit(
+            PRIVATE_LOOKALIKE_REL,
+            (json.dumps(SYNTHETIC_LOOKALIKE, indent=2) + "\n").encode("utf-8"),
+        )
+        self.assertNotEqual(proc.returncode, 0, "staged private lookalike must be rejected")
+        combined = proc.stdout + proc.stderr
+        self.assertIn("hst-ucus98701", combined, f"rejection must name the path: {combined[:800]}")
+
+    def test_staged_retail_token_in_generated_source_is_rejected(self):
+        proc = staged_index_audit(
+            "src/core/generated/nk_title_catalog.c",
+            b"/* synthetic staged lookalike UCUS-00000 for hermetic-suite regression */\n",
+        )
+        self.assertNotEqual(proc.returncode, 0, "staged retail-token source must be rejected")
+
+    def test_audit_index_leg_matches_worktree_leg_on_clean_tree(self):
+        index_leg = subprocess.run(
+            [sys.executable, "tools/publish_audit.py", "--public-scope",
+             "--provenance-self-consistency"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=600,
+        )
+        self.assertEqual(index_leg.returncode, 0, index_leg.stdout + index_leg.stderr)
+
+
+class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
+    """Proves public test discovery produces identical results whether or not
+    ignored private inputs exist in the workspace (#335).
+
+    Constructs a controlled temp workspace simulating ignored private-looking
+    inputs using synthetic placeholder files (never real private inputs).
+    """
+
+    def test_synthetic_ignored_inputs_isolation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="synthetic-workspace-") as tmp:
+            repo_root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=str(repo_root), capture_output=True, check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Synthetic Author"],
+                cwd=str(repo_root), capture_output=True, check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "synthetic@example.com"],
+                cwd=str(repo_root), capture_output=True, check=True,
+            )
+
+            titles_dir = repo_root / "assets" / "titles"
+            titles_dir.mkdir(parents=True)
+            pgh_dir = repo_root / "place_game_here" / "ISO"
+            pgh_dir.mkdir(parents=True)
+            build_dir = repo_root / "build" / "hst"
+            build_dir.mkdir(parents=True)
+
+            public_manifest = titles_dir / "synthetic.json"
+            public_manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "id": "synthetic-allegrex-v1",
+                        "display_name": "Synthetic Title",
+                        "kind": "synthetic",
+                        "disc": {"id": "TEST00001", "region": "TEST", "revision_policy": "exact-disc-id"},
+                        "executable": {"base": 0, "entry": 0, "bss_metadata_source": "none", "extra_executable_spans": []},
+                        "modules": [],
+                        "filesystem": {
+                            "data_root": "synthetic/none",
+                            "memory_stick_root": "build/synthetic/memstick",
+                            "device_prefixes": ["host0:", "ms0:"],
+                        },
+                        "hle_profile": "synthetic-minimal",
+                        "codegen_profile": "none",
+                        "feature_requirements": ["allegrex-core"],
+                        "verification_profile": "synthetic-public",
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            gitignore = repo_root / ".gitignore"
+            gitignore.write_text(
+                "/place_game_here/\n/build/\n/assets/titles/hst-ucus98701.json\n",
+                encoding="utf-8",
+            )
+
+            subprocess.run(["git", "add", "."], cwd=str(repo_root), capture_output=True, check=True)
+            subprocess.run(["git", "commit", "-m", "init", "--no-gpg-sign"], cwd=str(repo_root), capture_output=True, check=True)
+
+            # Add synthetic ignored private inputs
+            fake_private_manifest = titles_dir / "hst-ucus98701.json"
+            fake_private_manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "id": "hst-ucus98701",
+                        "display_name": "Synthetic Lookalike",
+                        "kind": "retail",
+                        "disc": {"id": "TEST99999", "region": "TEST", "revision_policy": "exact-disc-id"},
+                        "executable": {"base": 0, "entry": 0, "bss_metadata_source": "none", "extra_executable_spans": []},
+                        "modules": [],
+                        "filesystem": {
+                            "data_root": "synthetic/none",
+                            "memory_stick_root": "build/synthetic/memstick",
+                            "device_prefixes": ["host0:", "ms0:"],
+                        },
+                        "hle_profile": "synthetic-minimal",
+                        "codegen_profile": "none",
+                        "feature_requirements": ["allegrex-core"],
+                        "verification_profile": "synthetic-public",
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            fake_eboot = repo_root / "place_game_here" / "EBOOT.elf"
+            fake_eboot.write_bytes(b"\x7fELF-synthetic-placeholder")
+            fake_iso = pgh_dir / "game.iso"
+            fake_iso.write_bytes(b"synthetic-iso-placeholder")
+            fake_obj = build_dir / "recomp.o"
+            fake_obj.write_bytes(b"synthetic-build-artifact")
+
+            # 1. Ambient glob sees both (vulnerable pattern)
+            ambient_manifests = sorted(p.name for p in titles_dir.glob("*.json"))
+            self.assertEqual(ambient_manifests, ["hst-ucus98701.json", "synthetic.json"])
+
+            # 2. Tracked paths helper ignores the untracked / ignored lookalike
+            tracked_out = subprocess.run(
+                ["git", "ls-files", "assets/titles/*.json"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            tracked_set = [p.replace("\\", "/").split("/")[-1] for p in tracked_out.stdout.splitlines() if p.strip()]
+            self.assertEqual(tracked_set, ["synthetic.json"])
+            self.assertNotIn("hst-ucus98701.json", tracked_set)
+
+            # 3. Ignored private inputs are completely untracked
+            all_tracked = subprocess.run(
+                ["git", "ls-files"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            self.assertNotIn("place_game_here", all_tracked)
+            self.assertNotIn("build/", all_tracked)
+            self.assertNotIn("hst-ucus98701.json", all_tracked)
 
 
 if __name__ == "__main__":

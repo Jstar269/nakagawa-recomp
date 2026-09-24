@@ -308,7 +308,7 @@ def verify_all() -> list[Item]:
         Item("P1.3", "codegen.py emits monolithic output + 8 chunk files",
              1, 5, _check_recomp_chunks()),
         Item("P1.4", "hst.exe linked", 1, 6, _check_hst_exe()),
-        Item("P1.5", "hst_manager.ps1 parses (real PS parser when available, else source heuristic)", 1, 4,
+        Item("P1.5", "nk_manager.ps1 parses (real PS parser when available, else source heuristic)", 1, 4,
              _check_ps1_parse()),
         Item("P1.6", "make selftest passes", 1, 3, "pending",
              verified_by="not executed this session"),
@@ -516,7 +516,7 @@ def _check_ps1_parse(ps1: Path | None = None) -> str:
     fall back to a clearly-labeled source heuristic. Never claim a parse from mere
     file existence (#48). The P1.5 item description reflects which path is used."""
     if ps1 is None:
-        ps1 = REPO / "hst_manager.ps1"
+        ps1 = REPO / "nk_manager.ps1"
     if not ps1.exists():
         return "pending"
     pwsh = _find_powershell()

@@ -7,13 +7,13 @@ import { buildPowerShellArgs } from "./powershell-args.mjs";
 const runnerSource = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
 
 test("emits each PowerShell parameter as a separate argv token", () => {
-  assert.deepEqual(buildPowerShellArgs("C:\\repo\\hst_manager.ps1", { Action: "BuildFast" }), [
+  assert.deepEqual(buildPowerShellArgs("C:\\repo\\nk_manager.ps1", { Action: "BuildFast" }), [
     "-NoProfile",
     "-NonInteractive",
     "-ExecutionPolicy",
     "Bypass",
     "-File",
-    "C:\\repo\\hst_manager.ps1",
+    "C:\\repo\\nk_manager.ps1",
     "-Action",
     "BuildFast",
   ]);

@@ -16,6 +16,7 @@ extern "C" {
 #define NK_MAX_TITLE_LEN 128
 #define NK_MAX_DISC_ID_LEN 32
 #define NK_MAX_GAMES 64
+#define NK_MAX_EXECUTABLE_PATH 16
 
 typedef enum {
     NK_OK = 0,
@@ -52,6 +53,12 @@ typedef struct {
     char title_id[64];
     uint64_t iso_size_bytes;
     NkGameSupportStatus status;
+    bool is_experimental;
+    uint32_t executable_eboot_kind;
+    uint32_t executable_boot_kind;
+    uint32_t executable_selection;
+    bool executable_boot_fallback;
+    char selected_executable[NK_MAX_EXECUTABLE_PATH];
     bool is_prepared;
     /* Disc payload staging is deliberately separate from runtime readiness.
        A staged title has its EBOOT/XB data in prepared_root, but may still

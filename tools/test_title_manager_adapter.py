@@ -47,7 +47,7 @@ class TitleManagerAdapterTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.shell = shutil.which("pwsh")
         if cls.shell is None:
-            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) is required")
+            raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-title-adapter-")
@@ -243,7 +243,7 @@ class TitleManagerAdapterTests(unittest.TestCase):
 class RunEntryIsPlanOwned(unittest.TestCase):
     """The address a run starts at must come from validated title configuration.
 
-    hst_manager.ps1 carried a bare `0x0029a060` at its Run and DiffFunc call sites --
+    The former manager carried a bare `0x0029a060` at its Run and DiffFunc call sites --
     the same value the manifest already owns as runtime_bindings.fallback_entry, and
     the same one src/rt/title_config.c compiles in. Three copies of one title address,
     only one of them validated.
@@ -253,7 +253,7 @@ class RunEntryIsPlanOwned(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.shell = shutil.which("pwsh")
         if cls.shell is None:
-            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) is required")
+            raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
 
     def build(self, manifest: dict) -> dict:
         return title_codegen_plan.build_manager_plan(
@@ -352,15 +352,13 @@ class ManagerHoldsNoRunEntryCopy(unittest.TestCase):
     otherwise -- it asserts where the value comes from, not that a run works."""
 
     def setUp(self) -> None:
-        mgr_path = ROOT / "nk_manager.ps1" if (ROOT / "nk_manager.ps1").exists() else ROOT / "hst_manager.ps1"
-        self.manager = mgr_path.read_text(encoding="utf-8")
+        self.manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8")
 
     def test_the_run_and_difffunc_call_sites_take_it_from_the_plan(self) -> None:
         sites = [line for line in self.manager.splitlines() if '"--image", $imagePath' in line]
         self.assertGreaterEqual(len(sites), 2, "the driver invocation sites moved")
         for line in sites:
-            self.assertTrue("(Get-NkRunEntry)" in line or "(Get-HstRunEntry)" in line,
-                          f"driver invocation still carries its own entry: {line.strip()}")
+            self.assertIn("(Get-NkRunEntry)", line)
             self.assertNotIn("0x0029a060", line)
 
     def test_canonical_manager_holds_zero_guest_literals(self) -> None:

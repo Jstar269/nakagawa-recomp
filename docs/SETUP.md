@@ -9,10 +9,17 @@ gate is a portability probe, not Linux support (see
 The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
-- PowerShell 7.6+ (`pwsh`). Windows PowerShell 5.1 is not supported.
+- PowerShell 7.4+ (`pwsh`). Windows PowerShell 5.1 is not supported.
 - CPython 3.14.x (`>=3.14,<3.15`), with `python` resolving to that feature line.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - A current Vulkan SDK and Vulkan-capable GPU.
+
+The PowerShell floor is a static-evidence minimum: a syntax/cmdlet inventory of every
+tracked `.ps1` proves no script needs anything above the automatic `$IsWindows`
+variable (PowerShell 6.0), and 7.4 is the oldest non-EOL line (LTS, end of support
+2026-11-10). The scripts have not been executed on 7.4 itself; the multi-version
+runtime matrix remains open in
+[issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337).
 
 The environment doctor is the executable form of this contract:
 
@@ -232,16 +239,35 @@ For runtime-only changes:
 .\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
 ```
 
-For a direct Make build:
+Direct Make is title-neutral and does not run the manager planner. An HST direct-Make
+invocation must provide the validated `TITLE_MANIFEST` and every title-derived Make
+value explicitly; the supported HST workflow above uses `nk_manager.ps1` so those
+values cannot drift. Direct Make does not perform SDK discovery; export
+`VULKAN_SDK` or pass it as a Make variable when using that escape hatch.
 
-```bash
-mingw32-make GAME_NAME=hst GAME_ELF=place_game_here/EBOOT.elf GAME_BASE=0 GAME_ENTRY=0 \
-    TITLE_MANIFEST=assets/titles/hst-ucus98701.json all
+To build a local AOT package from a validated title manifest and plaintext executable ELF, use
+the planner's package action. It runs the same two-phase Make pipeline and writes the executable,
+generated objects, `package.json`, and `build-report.json` under one dedicated untracked directory:
+
+```powershell
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+python tools/title_codegen_plan.py assets/titles/my-title.json `
+  --package `
+  --game-elf place_game_here/EBOOT.elf `
+  --output-dir build/my-title
 ```
 
-Direct Make does not perform SDK discovery; export `VULKAN_SDK` or pass it as a Make variable when
-using this form. HST requires both address values to be zero. The Makefile's generic defaults are
-intentionally not HST defaults.
+For manifests with guest PRXs, add `--module-dir <directory>`; every required manifest module must
+exist there, and optional modules are included only when named with
+`--include-optional-module <manifest-name>`. Add `--psp-header <path>` when the manifest selects
+`bss_metadata_source: "psp-header"`. `--public-safe` is available for synthetic fixture builds.
+The output directory must be untracked and dedicated. The package schema and explicit unsupported
+semantic-boundary records are defined in
+[`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#5-local-aot-package-contract-v1).
+Inputs whose paths contain spaces or shell-sensitive characters (common under a Windows profile
+directory) are copied into `<output-dir>/staged-inputs/` so the Make recipes can use them. The
+output directory itself must not contain such characters; otherwise the route stops with the
+named `PACKAGE_UNSUPPORTED_PATH` boundary tracked by #296.
 
 `assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
 
@@ -259,7 +285,7 @@ that build left behind.
 ## 4. Run and test
 
 Run `pwsh -NoProfile -File nk_manager.ps1` without an action for usage (exit code 0).
-The canonical manager accepts these actions; `hst_manager.ps1` forwards the same set:
+The canonical manager accepts these actions:
 
 | Action | Description |
 | --- | --- |

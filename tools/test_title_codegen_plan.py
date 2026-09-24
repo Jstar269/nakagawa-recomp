@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import title_codegen_plan
 import title_manifest
+import test_public_title_isolation
 
 
 class TitleCodegenPlanTests(unittest.TestCase):
@@ -25,9 +26,13 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.synthetic = title_manifest.validate_manifest(
             title_manifest.load_manifest(self.synthetic_path)
         )
+        # Opt-in by *tracked bytes*, never by directory presence (#335): a
+        # developer's gitignored lookalike must not silently stand in for the
+        # private fixture, and validating an arbitrary private file in setUp
+        # must not error unrelated tests.
         self.hst = (
             title_manifest.validate_manifest(title_manifest.load_manifest(self.hst_path))
-            if self.hst_path.is_file()
+            if test_public_title_isolation.is_tracked("assets/titles/hst-ucus98701.json")
             else None
         )
 
@@ -61,10 +66,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(plan["game_base"], 0)
         self.assertEqual(plan["game_entry"], 0)
         self.assertEqual(plan["codegen_profile"], "hst")
-        # Generic contract now emits only TITLE_EXTRA_SPANS (host-portable).
-        # HST_EXTRA_SPANS is legacy and lives only in the HST compatibility layer
-        # (Makefile and PowerShell adapter), not in the generic planner. For HST,
-        # the planner emits TITLE only; the adapter synthesizes HST for legacy consumers.
+        # TITLE_EXTRA_SPANS is the sole host-portable planner projection.
         self.assertEqual(plan["environment"]["GAME_BASE"], "0x00000000")
         self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x00000000")
         self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "0x00303194,0x00306e24")
