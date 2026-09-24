@@ -144,6 +144,7 @@ printed and never written to the JSON verdict.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import re
@@ -1005,24 +1006,27 @@ def _reconcile_refresh_audit(
 def _generate_ephemeral_export(
     *,
     candidate_blobs: dict[str, bytes],
-    candidate_tree: str,
     candidate_policy,
     ledger_bytes: bytes,
 ) -> dict:
-    """Build export evidence with the committed producer's transition rules.
+    """Build the export from candidate bytes and the newly generated ledger.
 
     While candidates still commit the legacy ledger, ``policy_sync.py`` counts
-    that file and excludes only the self-referential export.  Once the ledger
-    is retired, both generated control names are absent from the source set and
-    are declared excluded by the post-transition representation.
+    that file and excludes only the self-referential export. The current
+    generated ledger replaces the candidate's old ledger in the digest input,
+    so the export reaches its fixed point in this invocation. The commit tree
+    is reported separately in the verdict; it is not embedded in this
+    self-referential control output.
     """
 
-    files = sorted(candidate_blobs.items())
+    files = sorted(
+        (path, ledger_bytes if path == LEDGER_PATH else raw)
+        for path, raw in candidate_blobs.items()
+    )
     legacy_ledger_present = LEDGER_PATH in candidate_blobs
     return _build_export_document(
         candidate_policy,
         files,
-        candidate_tree=candidate_tree,
         provenance_ledger=ledger_bytes,
         manifest=candidate_blobs.get(MANIFEST_PATH),
         exclude_generated_controls=not legacy_ledger_present,
@@ -1290,32 +1294,56 @@ def _ephemeral_verdict_findings(
     return findings, debt, blob_approved, blob_unapproved
 
 
-def verify_ephemeral(
+@dataclass(frozen=True)
+class EphemeralControls:
+    """The canonical control bytes and validated context used to produce them."""
+
+    base_commit: str
+    base_tree: str
+    candidate_tree: str
+    candidate_blobs: dict[str, bytes]
+    base_blobs: dict[str, bytes]
+    trusted_raw: bytes
+    baseline_bytes: bytes
+    candidate_policy_raw: bytes
+    exact_records: dict[str, dict]
+    record_patterns: dict[str, list[str]]
+    record_ids: set[str]
+    approvals: dict[tuple[str, str], dict]
+    trusted_policy: object
+    candidate_policy: object
+    candidate_policy_matches_trusted: bool
+    policy_delta: dict | None
+    baseline_entries: dict[str, dict]
+    protected: set[str]
+    trusted_scope: set[str]
+    generated_ledger: dict
+    generated_ledger_bytes: bytes
+    generated_export: dict
+    generated_export_bytes: bytes
+
+
+def generate_ephemeral_controls(
     *,
     repo: Path,
-    candidate_rev: str,
+    candidate_tree: str,
     base_rev: str,
     trusted_ledger: Path,
     trusted_baseline: Path,
-    output_dir: Path,
+    workdir: Path,
     trusted_candidate_policy: Path | None = None,
     policy_delta_authority: Path | None = None,
-    require_immutable_revisions: bool = False,
-    authority_revision: str | None = None,
     require_exact_blob_approvals: bool = False,
-) -> dict:
-    """Verify a candidate while materializing provenance controls outside Git.
+) -> EphemeralControls:
+    """Generate the hosted attestation controls from an exact candidate tree.
 
-    The candidate tree is read only through Git objects.  Its legacy ledger and
-    export, when present, are compared as untrusted compatibility data; the
-    temporary outputs used for the verdict are generated from the trusted base
-    baseline, candidate blobs, trusted policy, and external detailed authority.
+    Local refresh and hosted attestation both call this function. Candidate
+    controls are replaced from the trusted base ledger and the external detailed
+    authority; the candidate ledger and export are never trust inputs.
     """
 
     repo = repo.resolve()
     trusted_ledger = _external_input(trusted_ledger, repo=repo, label="trusted detailed ledger")
-    # Named without "trusted": CodeQL's sensitive-data heuristic treats that word as a
-    # secret, and this public ledger baseline flows into the generated output file.
     baseline_file = _external_input(trusted_baseline, repo=repo, label="trusted public baseline")
     if (trusted_candidate_policy is None) != (policy_delta_authority is None):
         raise VerifyError(
@@ -1331,24 +1359,24 @@ def verify_ephemeral(
         policy_delta_authority_file = _external_input(
             policy_delta_authority, repo=repo, label="policy delta authority",
         )
-    output_dir = output_dir.resolve()
-    if _path_is_within(output_dir, repo):
+    workdir = workdir.resolve()
+    if _path_is_within(workdir, repo):
         raise VerifyError(
             "OUTPUT_CANDIDATE_CONTROLLED",
-            "ephemeral provenance outputs must live outside the repository under verification",
+            "ephemeral provenance scratch must live outside the repository under verification",
         )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    workdir.mkdir(parents=True, exist_ok=True)
     trusted_inputs = {trusted_ledger.resolve(), baseline_file.resolve()}
     if blessed_policy_file is not None:
         trusted_inputs.add(blessed_policy_file.resolve())
     if policy_delta_authority_file is not None:
         trusted_inputs.add(policy_delta_authority_file.resolve())
     generated_targets = {
-        (output_dir / "public_provenance_ledger.json").resolve(),
-        (output_dir / "PUBLIC_EXPORT.json").resolve(),
-        (output_dir / "inputs" / "trusted_policy.json").resolve(),
-        (output_dir / "inputs" / "candidate_policy.json").resolve(),
-        (output_dir / "inputs" / "blessed_candidate_policy.json").resolve(),
+        (workdir / "public_provenance_ledger.json").resolve(),
+        (workdir / "PUBLIC_EXPORT.json").resolve(),
+        (workdir / "inputs" / "trusted_policy.json").resolve(),
+        (workdir / "inputs" / "candidate_policy.json").resolve(),
+        (workdir / "inputs" / "blessed_candidate_policy.json").resolve(),
     }
     collisions = sorted(trusted_inputs & generated_targets, key=str)
     if collisions:
@@ -1357,18 +1385,9 @@ def verify_ephemeral(
             "ephemeral output would overwrite trusted input: " + str(collisions[0]),
         )
 
-    if require_immutable_revisions:
-        for role, selector in (("candidate", candidate_rev), ("base", base_rev)):
-            if len(selector) != 40 or any(c not in "0123456789abcdef" for c in selector):
-                raise VerifyError(
-                    "MUTABLE_REVISION_REFUSED",
-                    f"{role} revision {selector!r} is not a full 40-hex commit SHA",
-                )
-
-    candidate_commit = _rev_commit(repo, candidate_rev)
     base_commit = _rev_commit(repo, base_rev)
-    candidate_tree = _rev_tree(repo, candidate_commit)
     base_tree = _rev_tree(repo, base_commit)
+    candidate_tree = _rev_tree(repo, candidate_tree)
     candidate_blobs = read_tree(repo, candidate_tree)
     base_blobs = read_tree(repo, base_tree)
 
@@ -1384,25 +1403,17 @@ def verify_ephemeral(
 
     base_policy_bytes = base_blobs.get(POLICY_PATH) or b""
     trusted_policy = _load_policy_bytes(
-        base_policy_bytes,
-        output_dir / "inputs",
-        "trusted_policy.json",
-        code="TRUSTED_POLICY_INVALID",
+        base_policy_bytes, workdir / "inputs", "trusted_policy.json", code="TRUSTED_POLICY_INVALID",
     )
     candidate_policy_raw = candidate_blobs.get(POLICY_PATH)
     if candidate_policy_raw is None:
         raise VerifyError("CANDIDATE_POLICY_MISSING", f"candidate tree has no {POLICY_PATH}")
     candidate_policy = _load_policy_bytes(
-        candidate_policy_raw,
-        output_dir / "inputs",
-        "candidate_policy.json",
-        code="CANDIDATE_POLICY_INVALID",
+        candidate_policy_raw, workdir / "inputs", "candidate_policy.json", code="CANDIDATE_POLICY_INVALID",
     )
     candidate_policy_matches_trusted = candidate_policy_raw == base_policy_bytes
     policy_delta: dict | None = None
-    if trusted_candidate_policy is not None:
-        # Both paths were resolved and checked above before any scratch output
-        # was created. They are still external inputs, never candidate data.
+    if blessed_policy_file is not None:
         delta_policy_bytes = blessed_policy_file.read_bytes()
         if delta_policy_bytes == base_policy_bytes:
             raise VerifyError(
@@ -1416,7 +1427,7 @@ def verify_ephemeral(
             )
         candidate_policy = _load_policy_bytes(
             delta_policy_bytes,
-            output_dir / "inputs",
+            workdir / "inputs",
             "blessed_candidate_policy.json",
             code="CANDIDATE_POLICY_INVALID",
         )
@@ -1442,10 +1453,8 @@ def verify_ephemeral(
                 "policy delta differs from the independently approved delta; "
                 f"computed={policy_delta} allowed={allowed_delta}",
             )
-        # The external policy is now the candidate policy for all subsequent
-        # generation and scope checks. The equality to candidate_policy_raw was
-        # checked above; this flag controls only the substitution finding.
         candidate_policy_matches_trusted = True
+
     baseline_bytes = baseline_file.read_bytes()
     baseline, baseline_entries = _validate_public_baseline(
         baseline_bytes,
@@ -1473,11 +1482,106 @@ def verify_ephemeral(
     generated_ledger_bytes = _canonical_json_bytes(generated_ledger)
     generated_export = _generate_ephemeral_export(
         candidate_blobs=candidate_blobs,
-        candidate_tree=candidate_tree,
         candidate_policy=candidate_policy,
         ledger_bytes=generated_ledger_bytes,
     )
     generated_export_bytes = _canonical_json_bytes(generated_export)
+    return EphemeralControls(
+        base_commit=base_commit,
+        base_tree=base_tree,
+        candidate_tree=candidate_tree,
+        candidate_blobs=candidate_blobs,
+        base_blobs=base_blobs,
+        trusted_raw=trusted_raw,
+        baseline_bytes=baseline_bytes,
+        candidate_policy_raw=candidate_policy_raw,
+        exact_records=exact_records,
+        record_patterns=record_patterns,
+        record_ids=record_ids,
+        approvals=approvals,
+        trusted_policy=trusted_policy,
+        candidate_policy=candidate_policy,
+        candidate_policy_matches_trusted=candidate_policy_matches_trusted,
+        policy_delta=policy_delta,
+        baseline_entries=baseline_entries,
+        protected=protected,
+        trusted_scope=trusted_scope,
+        generated_ledger=generated_ledger,
+        generated_ledger_bytes=generated_ledger_bytes,
+        generated_export=generated_export,
+        generated_export_bytes=generated_export_bytes,
+    )
+
+
+def verify_ephemeral(
+    *,
+    repo: Path,
+    candidate_rev: str,
+    base_rev: str,
+    trusted_ledger: Path,
+    trusted_baseline: Path,
+    output_dir: Path,
+    trusted_candidate_policy: Path | None = None,
+    policy_delta_authority: Path | None = None,
+    require_immutable_revisions: bool = False,
+    authority_revision: str | None = None,
+    require_exact_blob_approvals: bool = False,
+) -> dict:
+    """Verify a candidate while materializing provenance controls outside Git.
+
+    The candidate tree is read only through Git objects.  Its legacy ledger and
+    export, when present, are compared as untrusted compatibility data; the
+    temporary outputs used for the verdict are generated from the trusted base
+    baseline, candidate blobs, trusted policy, and external detailed authority.
+    """
+
+    repo = repo.resolve()
+
+    if require_immutable_revisions:
+        for role, selector in (("candidate", candidate_rev), ("base", base_rev)):
+            if len(selector) != 40 or any(c not in "0123456789abcdef" for c in selector):
+                raise VerifyError(
+                    "MUTABLE_REVISION_REFUSED",
+                    f"{role} revision {selector!r} is not a full 40-hex commit SHA",
+                )
+
+    candidate_commit = _rev_commit(repo, candidate_rev)
+    candidate_tree = _rev_tree(repo, candidate_commit)
+    output_dir = output_dir.resolve()
+    controls = generate_ephemeral_controls(
+        repo=repo,
+        candidate_tree=candidate_tree,
+        base_rev=base_rev,
+        trusted_ledger=trusted_ledger,
+        trusted_baseline=trusted_baseline,
+        workdir=output_dir,
+        trusted_candidate_policy=trusted_candidate_policy,
+        policy_delta_authority=policy_delta_authority,
+        require_exact_blob_approvals=require_exact_blob_approvals,
+    )
+    base_commit = controls.base_commit
+    base_tree = controls.base_tree
+    candidate_tree = controls.candidate_tree
+    candidate_blobs = controls.candidate_blobs
+    base_blobs = controls.base_blobs
+    trusted_raw = controls.trusted_raw
+    baseline_bytes = controls.baseline_bytes
+    candidate_policy_raw = controls.candidate_policy_raw
+    exact_records = controls.exact_records
+    record_patterns = controls.record_patterns
+    record_ids = controls.record_ids
+    approvals = controls.approvals
+    trusted_policy = controls.trusted_policy
+    candidate_policy = controls.candidate_policy
+    candidate_policy_matches_trusted = controls.candidate_policy_matches_trusted
+    policy_delta = controls.policy_delta
+    baseline_entries = controls.baseline_entries
+    protected = controls.protected
+    trusted_scope = controls.trusted_scope
+    generated_ledger = controls.generated_ledger
+    generated_ledger_bytes = controls.generated_ledger_bytes
+    generated_export = controls.generated_export
+    generated_export_bytes = controls.generated_export_bytes
 
     findings, debt, blob_approved, blob_unapproved = _ephemeral_verdict_findings(
         candidate_commit=candidate_commit,
@@ -1581,9 +1685,8 @@ def _policy_findings(
 
 
 #: Export fields whose value is security-relevant and therefore recomputed.
-#: ``candidate_tree`` is deliberately absent: the release process writes the
-#: pre-export tree there, so it is informational and the real tree binding is
-#: the verdict's own ``candidate_tree``.
+#: Older exports may carry ``candidate_tree``; it is advisory and the actual
+#: candidate tree is bound by the verdict's repository_scope.
 EXPORT_ADVISORY_FIELDS = frozenset({"candidate_tree", "source_tree"})
 
 

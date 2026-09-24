@@ -631,7 +631,7 @@ HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
 HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
 HELP_DESCRIPTION_readiness := run the strict pre-PR gate with external authority
-HELP_DESCRIPTION_provenance-refresh := refresh controls with an external ledger and stage them
+HELP_DESCRIPTION_provenance-refresh := refresh controls through hosted generation and stage them
 HELP_DESCRIPTION_all := generate and compile the current title runtime
 HELP_DESCRIPTION_pipeline := generate image, imports, and recomputed source artifacts
 HELP_DESCRIPTION_compile := compile and link the generated runtime
@@ -788,23 +788,23 @@ endif
 	git diff --quiet -- PUBLIC_EXPORT.json assets/public_provenance_ledger.json assets/public_source_profile.json || { echo "readiness: FAIL -- regenerating the control files changed them, so the commit does not carry the evidence for its own contents. Stage and commit assets/public_provenance_ledger.json, assets/public_source_profile.json and PUBLIC_EXPORT.json."; exit 1; }
 	@echo "== readiness: OK (the suite is separate and still yours to run)"
 
-# One-command wrapper for the ordering-sensitive public-control refresh. The
-# underlying tool stages the worktree because its ledger generator reads the
-# index; keep the external authority requirement explicit and fail closed when
-# it is unavailable. Set PROVENANCE_REFRESH_APPLY_POLICY=1 only when the
-# maintainer has already decided that newly seen routine paths belong on the
-# public surface.
+# One-command local refresh using the hosted attestation's control generator.
+# Stage intended candidate changes first; this target stages only the generated
+# profile (when requested) and the two generated controls. The external
+# authority remains mandatory. Set PROVENANCE_REFRESH_APPLY_POLICY=1 only when
+# the maintainer has already decided that newly seen routine paths belong on
+# the public surface.
 PROVENANCE_REFRESH_APPLY_POLICY ?= 0
 PROVENANCE_REFRESH_POLICY_ARG = $(if $(filter 1 true yes,$(PROVENANCE_REFRESH_APPLY_POLICY)),--apply-policy,)
 
 provenance-refresh:
 ifndef NK_TRUSTED_LEDGER
-	@echo "provenance-refresh: BLOCKED -- NK_TRUSTED_LEDGER is unset."
+	@echo "provenance-refresh: TRUSTED_INPUT_MISSING -- NK_TRUSTED_LEDGER is unset."
 	@echo "  Set it to the external IMPLEMENTATION_PROVENANCE.json and retry."
-	@echo "  This target stages the worktree because the ledger reads the index."
+	@echo "  Stage intended candidate changes before running this target."
 	@exit 1
 else
-	$(PYTHON) tools/provenance_refresh.py --implementation-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
+	$(PYTHON) tools/provenance_refresh.py --trusted-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
 endif
 
 public-safe-verify:
