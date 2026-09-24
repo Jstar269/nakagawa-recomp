@@ -23,16 +23,19 @@
  * WHAT IS AND IS NOT PROVEN
  *   * Integer, memory and control-flow semantics are independently implemented in
  *     the two lanes, so a disagreement is real evidence.
- *   * Scalar FPU arithmetic is NOT independently implemented: both lanes call the
- *     same sr_fpu_* helpers from src/rt/fp_convert.h. The FPU cell therefore
- *     compares operand selection, register indexing and FCR31 threading, not the
- *     arithmetic kernel -- src/rt/fp_convert_selftest.c owns that.
+ *   * The fpu cell still compares AOT and interpreter operand selection and FCR31
+ *     threading. Its shared arithmetic helper is additionally checked by the
+ *     AOT-only fpu_aot cell against fpu_reference.c, a project-authored binary32
+ *     evaluator that uses integer bit manipulation rather than production helpers
+ *     or the host rounding environment.
  */
 
 #include "recomp.c"   /* white-box: the real dispatch core and its dispatch table */
 
 #include "cosim_recomp_funcs.h"  /* generated: f_<addr> declarations */
 #include "cosim_cells.h"         /* generated: cell addresses and the guest layout */
+#include "cosim_fpu_corpus.h"    /* generated: deterministic scalar-FPU boundary corpus */
+#include "fpu_reference.h"       /* verification-only integer binary32 evaluator */
 
 #include <stdlib.h>
 #include <string.h>
@@ -971,6 +974,258 @@ static int run_case(const CosimCase *test, const char *trace_dir) {
     return failed;
 }
 
+/* ---- independent scalar-FPU reference oracle ------------------------------------ */
+
+typedef struct {
+    uint32_t bits;
+    uint32_t cvt_source;
+} CosimFpuValue;
+
+#define COSIM_FPU_VALUE_ROW(bits_, source_) { bits_, source_ },
+
+static const CosimFpuValue g_fpu_values[] = {
+    COSIM_FPU_VALUE_LIST(COSIM_FPU_VALUE_ROW)
+};
+
+static const unsigned g_fpu_compare_registers[] = {
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 4, 5, 6, 7, 12, 13
+};
+
+static const char *const g_fpu_compare_names[] = {
+    "c.f.s", "c.un.s", "c.eq.s", "c.ueq.s", "c.olt.s", "c.ult.s",
+    "c.ole.s", "c.ule.s", "c.sf.s", "c.nle.s", "c.seq.s", "c.ngl.s",
+    "c.lt.s", "c.nge.s", "c.le.s", "c.ngt.s"
+};
+
+static unsigned g_fpu_oracle_checks;
+static unsigned g_fpu_oracle_failures;
+static unsigned g_fpu_oracle_unknown;
+static const char *g_fpu_reported[32];
+static unsigned g_fpu_reported_count;
+
+static void fpu_oracle_mismatch(const char *op, uint32_t a, uint32_t b,
+                                uint32_t fcr31, uint32_t got, uint32_t want) {
+    g_fpu_oracle_failures++;
+    for (unsigned i = 0u; i < g_fpu_reported_count; i++) {
+        if (strcmp(g_fpu_reported[i], op) == 0) {
+            return;
+        }
+    }
+    if (g_fpu_reported_count < sizeof g_fpu_reported / sizeof g_fpu_reported[0]) {
+        g_fpu_reported[g_fpu_reported_count++] = op;
+    }
+    fprintf(stderr,
+            "COSIM FPU REFERENCE FAIL op=%s a=0x%08x b=0x%08x "
+            "fcr31=0x%08x production=0x%08x reference=0x%08x" NEWLINE,
+            op, a, b, fcr31, got, want);
+}
+
+static void fpu_oracle_expect(const char *op, uint32_t a, uint32_t b,
+                              uint32_t fcr31, uint32_t got, uint32_t want,
+                              enum FpuReferenceStatus status) {
+    g_fpu_oracle_checks++;
+    if (status == COSIM_FPU_REFERENCE_EXPECTED_UNKNOWN) {
+        g_fpu_oracle_unknown++;
+        return;
+    }
+    if (status == COSIM_FPU_REFERENCE_INVALID || got != want) {
+        fpu_oracle_mismatch(op, a, b, fcr31, got,
+                            status == COSIM_FPU_REFERENCE_INVALID ? 0u : want);
+    }
+}
+
+static void fpu_oracle_expect_compare(const char *op, uint32_t a, uint32_t b,
+                                      uint32_t fcr31, uint32_t got, uint32_t want,
+                                      enum FpuReferenceStatus status) {
+    g_fpu_oracle_checks++;
+    if (status == COSIM_FPU_REFERENCE_EXPECTED_UNKNOWN) {
+        g_fpu_oracle_unknown++;
+    }
+    if (status == COSIM_FPU_REFERENCE_INVALID || got != want) {
+        fpu_oracle_mismatch(op, a, b, fcr31, got,
+                            status == COSIM_FPU_REFERENCE_INVALID ? 0u : want);
+    }
+}
+
+static int32_t fpu_oracle_s32(uint32_t bits) {
+    int32_t value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+static float fpu_oracle_float(uint32_t bits) {
+    float value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+static uint32_t fpu_oracle_direct_binary(unsigned op, float a, float b,
+                                          uint32_t fcr31) {
+    float result;
+    switch (op) {
+    case COSIM_FPU_REFERENCE_ADD: result = sr_fpu_add_s(a, b, fcr31); break;
+    case COSIM_FPU_REFERENCE_SUB: result = sr_fpu_sub_s(a, b, fcr31); break;
+    case COSIM_FPU_REFERENCE_MUL: result = sr_fpu_mul_s(a, b, fcr31); break;
+    default: result = sr_fpu_div_s(a, b, fcr31); break;
+    }
+    return sr_float_bits(result);
+}
+
+static uint32_t fpu_oracle_direct_unary(unsigned op, float a, uint32_t fcr31) {
+    float result;
+    switch (op) {
+    case COSIM_FPU_REFERENCE_SQRT: result = sqrtf(a); break;
+    case COSIM_FPU_REFERENCE_ABS: result = fabsf(a); break;
+    case COSIM_FPU_REFERENCE_MOV: result = a; break;
+    default: result = -a; break;
+    }
+    (void)fcr31;
+    return sr_float_bits(result);
+}
+
+static int run_fpu_reference_oracle(void) {
+    static const struct {
+        unsigned op;
+        unsigned fd;
+        const char *name;
+    } binary[] = {
+        { COSIM_FPU_REFERENCE_ADD, 2u, "add.s" },
+        { COSIM_FPU_REFERENCE_SUB, 3u, "sub.s" },
+        { COSIM_FPU_REFERENCE_MUL, 4u, "mul.s" },
+        { COSIM_FPU_REFERENCE_DIV, 5u, "div.s" },
+    };
+    static const struct {
+        unsigned op;
+        unsigned fd;
+        const char *name;
+    } unary[] = {
+        { COSIM_FPU_REFERENCE_SQRT, 6u, "sqrt.s" },
+        { COSIM_FPU_REFERENCE_ABS, 7u, "abs.s" },
+        { COSIM_FPU_REFERENCE_MOV, 8u, "mov.s" },
+        { COSIM_FPU_REFERENCE_NEG, 9u, "neg.s" },
+    };
+    static const struct {
+        unsigned fd;
+        unsigned funct;
+        const char *name;
+    } to_word[] = {
+        { 10u, 0x0cu, "round.w.s" },
+        { 11u, 0x0du, "trunc.w.s" },
+        { 12u, 0x0eu, "ceil.w.s" },
+        { 13u, 0x0fu, "floor.w.s" },
+        { 14u, 0x24u, "cvt.w.s" },
+    };
+    const unsigned value_count = sizeof g_fpu_values / sizeof g_fpu_values[0];
+
+    for (unsigned ai = 0u; ai < value_count; ai++) {
+        for (unsigned bi = 0u; bi < value_count; bi++) {
+            const uint32_t a = g_fpu_values[ai].bits;
+            const uint32_t b = g_fpu_values[bi].bits;
+            for (unsigned mode = 0u; mode < 4u; mode++) {
+                for (unsigned fs = 0u; fs < 2u; fs++) {
+                    const uint32_t fcr31 = mode | (fs ? 0x01000000u : 0u);
+                    CpuState state;
+                    memset(&state, 0, sizeof state);
+                    state.fi[0] = a;
+                    state.fi[1] = b;
+                    state.r[8] = g_fpu_values[ai].cvt_source;
+                    state.r[14] = fcr31 | 0x00800000u;
+                    state.r[15] = fcr31;
+                    state.fcr31 = fcr31;
+                    s_cpu = &state;
+                    COSIM_FPU_ORACLE_FN(&state);
+                    s_cpu = NULL;
+
+                    for (unsigned op = 0u; op < sizeof binary / sizeof binary[0]; op++) {
+                        enum FpuReferenceStatus status;
+                        const uint32_t want = fpu_reference_binary(
+                            binary[op].op, a, b, fcr31, &status);
+                        fpu_oracle_expect(binary[op].name, a, b, fcr31,
+                                          state.fi[binary[op].fd], want, status);
+                        fpu_oracle_expect("direct", a, b, fcr31,
+                                          fpu_oracle_direct_binary(
+                                              binary[op].op,
+                                              fpu_oracle_float(a),
+                                              fpu_oracle_float(b), fcr31),
+                                          want, status);
+                    }
+                    for (unsigned op = 0u; op < sizeof unary / sizeof unary[0]; op++) {
+                        enum FpuReferenceStatus status;
+                        const uint32_t want = fpu_reference_unary(
+                            unary[op].op, a, fcr31, &status);
+                        fpu_oracle_expect(unary[op].name, a, 0u, fcr31,
+                                          state.fi[unary[op].fd], want, status);
+                        fpu_oracle_expect("direct", a, 0u, fcr31,
+                                          fpu_oracle_direct_unary(
+                                              unary[op].op,
+                                              fpu_oracle_float(a), fcr31),
+                                          want, status);
+                    }
+                    for (unsigned op = 0u; op < sizeof to_word / sizeof to_word[0]; op++) {
+                        enum FpuReferenceStatus status;
+                        const uint32_t want = fpu_reference_to_word(
+                            a, to_word[op].funct, fcr31, &status);
+                        fpu_oracle_expect(to_word[op].name, a, 0u, fcr31,
+                                          state.fi[to_word[op].fd], want, status);
+                        fpu_oracle_expect("direct", a, 0u, fcr31,
+                                          sr_fpu_to_word(
+                                              fpu_oracle_float(a),
+                                              to_word[op].funct, fcr31),
+                                          want, status);
+                    }
+                    {
+                        enum FpuReferenceStatus status;
+                        const uint32_t want = fpu_reference_cvt_s_w(
+                            fpu_oracle_s32(g_fpu_values[ai].cvt_source),
+                            fcr31, &status);
+                        fpu_oracle_expect("cvt.s.w", a, 0u, fcr31,
+                                          state.fi[15], want, status);
+                        fpu_oracle_expect("direct", a, 0u, fcr31,
+                                          sr_float_bits(sr_fpu_cvt_s_w(
+                                              fpu_oracle_s32(
+                                                  g_fpu_values[ai].cvt_source),
+                                              fcr31)), want, status);
+                    }
+                    for (unsigned condition = 0u; condition < 16u; condition++) {
+                        enum FpuReferenceStatus status;
+                        const unsigned want = fpu_reference_compare(
+                            condition, a, b, &status);
+                        const uint32_t captured = state.r[
+                            g_fpu_compare_registers[condition]];
+                        fpu_oracle_expect_compare(
+                            g_fpu_compare_names[condition], a, b, fcr31,
+                            (captured >> 23) & 1u, want, status);
+                        fpu_oracle_expect_compare(
+                            "direct", a, b, fcr31,
+                            sr_fpu_condition_s(condition, a, b), want, status);
+                        fpu_oracle_expect_compare(
+                            "c.cond.s/FCR31", a, b, fcr31,
+                            captured, fcr31 | (want << 23), status);
+                    }
+                    fpu_oracle_expect(
+                        "bc1t", a, b, fcr31, state.r[10],
+                        fpu_reference_bc1(1u, (state.r[14] >> 23) & 1u)
+                            ? 0x11u : 0x22u,
+                        COSIM_FPU_REFERENCE_OK);
+                    fpu_oracle_expect(
+                        "bc1f", a, b, fcr31, state.r[11],
+                        fpu_reference_bc1(0u, (state.r[15] >> 23) & 1u)
+                            ? 0x33u : 0x44u,
+                        COSIM_FPU_REFERENCE_OK);
+                }
+            }
+        }
+    }
+
+    g_failures += (int)g_fpu_oracle_failures;
+    fprintf(stderr,
+            NEWLINE "cosim: scalar FPU reference oracle: %u checks, "
+            "%u EXPECTED_UNKNOWN (#312), %u failures" NEWLINE,
+            g_fpu_oracle_checks, g_fpu_oracle_unknown,
+            g_fpu_oracle_failures);
+    return (int)g_fpu_oracle_failures;
+}
+
 /* ---- fail-closed negative corpus ------------------------------------------------ */
 /*
  * The comparison above only ever exercises SUCCESSFUL execution. The production
@@ -1589,6 +1844,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    g_failures += run_fpu_reference_oracle();
     g_failures += run_negative_corpus();
     fprintf(stderr, "\ncosim: %u comparison cases, %d divergence report(s)\n",
             executed, g_failures);
