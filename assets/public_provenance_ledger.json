@@ -388,6 +388,30 @@
       "sha256": "5620aee90be59409b5e1b374735f3a4cbd9d605e7543352123ba439d8923b18c"
     },
     {
+      "path": "assets/issue_routing.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "issue-routing-manifest-310",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "467a6a574e2a055f49b3c6e1211d3efc75e73d2dba2a3a92f9a3caa6316115a3"
+    },
+    {
+      "path": "assets/issue_routing.schema.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "issue-routing-manifest-310",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "29682934209d62fe5ca8e1d35ce5648b5343e0120e5877ae52f02b27ab88e74a"
+    },
+    {
       "path": "assets/public_provenance_ledger.json",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -402,7 +426,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b1e54893526645156759f7c98b55196928082b85053523078269b1c05684350a"
+      "sha256": "8fb51f1dc4a25358a36e80a4c140fa7e9b3355f148b320d2c9fb268052185e3b"
     },
     {
       "path": "assets/release_manifest.json",
@@ -7739,7 +7763,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c347f150dd81812e5780dbc82ca5e706dc2863a4019e84e45a0f3fcbb0d1165"
+      "sha256": "d35dd22e432e3138d5e94d7a842a459d85182c2543b866f055e5aa6051ea96f2"
     },
     {
       "path": "tools/psp_oracle/__init__.py",
@@ -7775,7 +7799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "75df3b414bce5b1da6d26ddee5be17f8d70ed749f6df4fe3b3dd05b76b317c05"
+      "sha256": "759a530feca782352bda4ec23e1217fcda06e83a3100b175d5a532431b76323a"
     },
     {
       "path": "tools/psp_oracle/parse_audio_query.py",
@@ -9092,7 +9116,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d192d7bdbc764a84d6587b962a3f4d182ad5ddd77534e27b20c64ec6078412cc"
+      "sha256": "34787bb5c88617a3a02fcf879851e462561608701b7598cce4432b0a4cd8c1f3"
     },
     {
       "path": "tools/test_psp_leaf_parsers.py",
