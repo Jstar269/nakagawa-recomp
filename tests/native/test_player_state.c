@@ -49,6 +49,35 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
+static void write_synthetic_mips_elf(const char *path) {
+    unsigned char elf[88] = { 0 };
+    memcpy(elf, "\x7f" "ELF", 4);
+    elf[4] = 1; /* ELF32 */
+    elf[5] = 1; /* little-endian */
+    elf[6] = 1; /* current ELF version */
+    elf[16] = 2; /* executable */
+    elf[18] = 8; /* MIPS */
+    elf[20] = 1;
+    elf[24] = 0x00; elf[25] = 0x00; elf[26] = 0x80; elf[27] = 0x08;
+    elf[28] = 52; /* program-header table offset */
+    elf[40] = 52; /* ELF header size */
+    elf[42] = 32; /* program-header entry size */
+    elf[44] = 1;  /* program-header count */
+    elf[52] = 1;  /* PT_LOAD */
+    elf[56] = 84; /* file offset */
+    elf[60] = 0x00; elf[61] = 0x00; elf[62] = 0x80; elf[63] = 0x08;
+    elf[64] = 0x00; elf[65] = 0x00; elf[66] = 0x80; elf[67] = 0x08;
+    elf[68] = 4;  /* file size */
+    elf[72] = 4;  /* memory size */
+    elf[76] = 5;  /* readable + executable */
+    elf[80] = 4;  /* alignment */
+    elf[84] = 0x34; elf[85] = 0x12;
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(elf, 1, sizeof(elf), file) == sizeof(elf));
+    assert(fclose(file) == 0);
+}
+
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
@@ -762,12 +791,44 @@ int main(int argc, char **argv) {
         executable_report.selected = NK_ISO_EXEC_SELECTION_NONE;
         executable_report.boot_fallback = false;
         executable_report.boot.kind = NK_ISO_EXEC_UNKNOWN;
+        char decrypted_dir[1024], decrypted_elf[1280];
+        int dir_written = snprintf(decrypted_dir, sizeof(decrypted_dir),
+            "%s%ctitles%c%s%cdecrypted", preflight_root,
+            nk_platform_path_separator(), nk_platform_path_separator(),
+            synthetic_disc_id, nk_platform_path_separator());
+        assert(dir_written > 0 && (size_t)dir_written < sizeof(decrypted_dir));
+        assert(nk_platform_mkdir_p(decrypted_dir));
+        int elf_written = snprintf(decrypted_elf, sizeof(decrypted_elf), "%s%cEBOOT.elf",
+            decrypted_dir, nk_platform_path_separator());
+        assert(elf_written > 0 && (size_t)elf_written < sizeof(decrypted_elf));
+        remove(decrypted_elf);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
-        assert(strcmp(check->message,
-                      "Encrypted executable. Decryption support is in the works (#295).") == 0);
+        assert(strstr(check->message, "Encrypted executable: supply decrypted modules at ") != NULL);
+        assert(strstr(check->message, decrypted_dir) != NULL);
         assert(check->issue_count == 1 && check->issue_numbers[0] == 295);
+
+        write_synthetic_mips_elf(decrypted_elf);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+        assert(check && check->status == PREFLIGHT_OK);
+        assert(strstr(check->message, "decrypted EBOOT.elf") != NULL);
+        executable_report.eboot.kind = NK_ISO_EXEC_SCE_WRAPPER;
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+        assert(check && check->status == PREFLIGHT_OK);
+        executable_report.eboot.kind = NK_ISO_EXEC_PBP;
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+        assert(check && check->status == PREFLIGHT_OK);
+        executable_report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        write_text_file(decrypted_elf, "not an ELF");
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+        assert(check && check->status == PREFLIGHT_UNSUPPORTED);
+        assert(strstr(check->message, "not a usable MIPS ELF32") != NULL);
+        assert(remove(decrypted_elf) == 0);
 
         wiz->inspecting_game.is_experimental = true;
         snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),

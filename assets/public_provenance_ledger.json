@@ -3813,7 +3813,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9c12834a23128581a1fec557de59094c1ad234ded578bcab176bf4720474781"
+      "sha256": "7b3b0ffb330fc30eed304f5b0c5116390d93940c09d8027a19cb8bef1e44c2f4"
     },
     {
       "path": "src/player/player_state.h",
@@ -6721,7 +6721,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e589bb2984ca32e0d2af1de443055a8bd6f3741625222cefc2855d2969075b3b"
+      "sha256": "71232c09de26b30d327c6836facb5753c6995c1937efbe4bb3fb4a801bc56c4c"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -7448,7 +7448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36b4221b6df68074f43a2e0e5d5d1f709f891a1b988e416927d6dfacee03e5cd"
+      "sha256": "a415acd6a48cd9434ce91438a046ade7a8eb0273619336fe6e98245f5f93ead1"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7472,7 +7472,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49a55152827d35652774e375f4f67b4b77570bfd6c53d60b2b34c1b4c7648661"
+      "sha256": "2854e6c94229d7cf4216b095dc2900655359a04e1d1b0077f0936cdb7951dcdb"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -8786,7 +8786,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a822dc5840ad769832fd998038b6ad3efa9aa5103cd6ef2827f01604b604f280"
+      "sha256": "aedd1ad21df86f02fc3b67561b728b916194c029fa4981a467e1b49668571216"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -9020,7 +9020,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7b59a60b7907e6b72e74b62e4e15a90c56fb9663454c79d749855f35717d1e2d"
+      "sha256": "ad02301ca9a0f28d6c22c26a6652bc51f98a0cde5c04b75a50b99d0f98a27b6e"
     },
     {
       "path": "tools/test_progress_evidence.py",
