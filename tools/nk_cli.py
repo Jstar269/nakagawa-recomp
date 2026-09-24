@@ -28,6 +28,7 @@ from nk_core import (
     RuntimeLauncher,
     inspect_iso,
 )
+from nk_core import package_cache
 from nk_core.iso_inspect import (
     MAX_EXECUTABLE_BYTES,
     IsoInspectionError,
@@ -87,14 +88,25 @@ def _require_child(root: Path, child: Path, label: str) -> Path:
 
 def _write_private_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    if os.name != "nt":
-        temporary.chmod(0o600)
-    os.replace(temporary, path)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
+        ) as stream:
+            temporary_path = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            temporary_path.chmod(0o600)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) -> str:
@@ -485,6 +497,134 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         shutil.copyfile(found, package_dir / "SDL3.dll")
 
 
+def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:
+    removed, remaining = package_cache.prune_cache(
+        cache_dir,
+        max_entries=package_cache.cache_entry_limit(),
+        protected_entry=protected_entry,
+    )
+    if removed:
+        print(f"CACHE_PRUNED: removed {removed} old entries; retained {remaining}")
+
+
+def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dict:
+    executable = manifest["executable"]
+    spans = executable.get("extra_executable_spans", [])
+    title_extra_spans = ""
+    if spans:
+        title_extra_spans = ",".join(
+            f"0x{int(span['start']):08x},0x{int(span['end']):08x}" for span in spans
+        )
+    return {
+        "base": f"0x{int(executable['base']):08x}",
+        "entry": f"0x{int(executable['entry']):08x}",
+        "title_extra_spans": title_extra_spans,
+        "profile": manifest.get("codegen_profile", "none"),
+        "funcs_per_chunk": 2000,
+        "optional_modules": [],
+        "codegen_tool": environment.get("CODEGEN_TOOL", "tools/codegen.py"),
+        "codegen_user_args": environment.get("CODEGEN_USER_ARGS", ""),
+        "lle_cpu": environment.get("LLE_CPU", ""),
+        "stale_code_policy": environment.get(
+            "STALE_CODE_POLICY", environment.get("SR_STALE_POLICY", "")
+        ),
+        "chunk_target_bytes": environment.get("CHUNK_TARGET_BYTES", ""),
+    }
+
+
+def _current_package_cache_key(
+    manifest: dict,
+    manifest_path: Path,
+    executable_sha256: str,
+    module_dir: Path | None,
+    psp_header: Path | None,
+) -> dict:
+    selected_modules = [
+        module for module in manifest.get("modules", [])
+        if module.get("role") == "guest-prx" and module.get("required", False)
+    ]
+    module_hashes = []
+    for module in sorted(selected_modules, key=lambda item: item["name"]):
+        if module_dir is None:
+            raise PackageBuildError(f"Required guest PRX {module['name']} is unavailable for cache identity.")
+        module_path = module_dir / module["name"]
+        if not module_path.is_file():
+            raise PackageBuildError(f"Required guest PRX {module['name']} is unavailable for cache identity.")
+        module_hashes.append({
+            "name": module["name"],
+            "load_address": f"0x{int(module['load_address']):08x}",
+            "sha256": package_cache.sha256_file(module_path),
+        })
+    input_hashes = {
+        "manifest": {"sha256": package_cache.sha256_file(manifest_path)},
+        "executable": {"sha256": executable_sha256},
+        "modules": module_hashes,
+        "psp_header": (
+            {"sha256": package_cache.sha256_file(psp_header)}
+            if psp_header is not None else None
+        ),
+    }
+    environment = _runtime_build_environment()
+    options = _package_codegen_options(manifest, environment)
+    return package_cache.build_cache_key(
+        input_hashes=input_hashes,
+        codegen_options=options,
+        analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
+        compiler=package_cache.compiler_identity(
+            environment.get("CC", "gcc"), repository_root=ROOT, environment=environment
+        ),
+        target=package_cache.compiler_target(environment),
+        runtime_source_digest=package_cache.source_tree_digest(ROOT),
+        compile_flags=package_cache.native_compile_flags(
+            public_safe=False, environment=environment
+        ),
+        link_flags=environment.get("LDFLAGS", ""),
+    )
+
+
+def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
+                         cache_key: dict, user_root: Path, disc_id: str) -> None:
+    """Copy a validated cache entry into place, re-validating the copy before promotion."""
+    if target_dir.parent.is_symlink():
+        raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
+    target_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _require_child(user_root, target_dir.parent, "Package destination root")
+    staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
+    shutil.rmtree(staging)
+    shutil.copytree(entry_package, staging)
+    staged_valid, staged_reason = package_cache.validate_package_cache(
+        staging, expected_key=cache_key
+    )
+    if not staged_valid:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise PackageBuildError(
+            f"Copied package cache entry failed validation ({staged_reason}); refusing to promote it."
+        )
+    if target_dir.exists() and target_dir.is_symlink():
+        raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
+    backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
+    if backup is not None:
+        os.replace(target_dir, backup)
+    try:
+        os.replace(staging, target_dir)
+    except OSError:
+        if backup is not None and not target_dir.exists():
+            os.replace(backup, target_dir)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+
+
+def _report_reused_package_stages(stage_observer) -> None:
+    # A validated cache entry satisfies codegen, compile and packaging: report them as
+    # passed so a bring-up run that reuses a package still records every stage.
+    if stage_observer is None:
+        return
+    for stage in ("codegen", "compile", "build_package"):
+        stage_observer(stage, "PASS", 0)
+
+
 def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
     disc_id = args.disc_id.upper()
     if not re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id):
@@ -584,10 +724,69 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             decrypted_module_dir(user_root, disc_id),
         )
 
-        build_dir = cache_dir / "package"
         target_dir = user_root / "packages" / disc_id
         _require_child(user_root, target_dir, "Package destination")
+        if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
+            raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
+        cache_key = _current_package_cache_key(
+            manifest,
+            manifest_cache_path,
+            actual_hash,
+            module_dir,
+            cached_header,
+        )
+        previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
+        decision = package_cache.compare_cache_keys(previous_key, cache_key)
+        target_valid = False
+        target_reason = "package is missing"
+        if target_dir.is_dir() and not target_dir.is_symlink():
+            target_valid, target_reason = package_cache.validate_package_cache(
+                target_dir,
+                expected_key=cache_key,
+            )
+        if target_valid and decision.action == "reuse":
+            _prune_package_cache(cache_dir)
+            print(f"PACKAGE_REUSED: {target_dir}")
+            print("CACHE: unchanged key; AOT and native objects reused")
+            _report_reused_package_stages(stage_observer)
+            return 0
+        if previous_key is not None and decision.reasons:
+            print("CACHE_CHANGED: " + ", ".join(decision.reasons))
+
+        entry_root = (
+            cache_dir / "entries" / cache_key["aot"]["digest"] / cache_key["native"]["digest"]
+        )
+        entry_package = entry_root / "package"
+        if entry_root.is_symlink():
+            raise PackageBuildError("Package cache entry is a symlink; refusing to reuse it.")
+        if entry_package.is_dir() and not entry_package.is_symlink():
+            entry_valid, entry_reason = package_cache.validate_package_cache(
+                entry_package,
+                expected_key=cache_key,
+            )
+            if entry_valid:
+                _promote_cache_entry(entry_package, target_dir, cache_dir, cache_key, user_root, disc_id)
+                _prune_package_cache(cache_dir, entry_root)
+                print(f"PACKAGE: {target_dir}")
+                print("CACHE: content-addressed entry reused")
+                _report_reused_package_stages(stage_observer)
+                return 0
+            if entry_package.is_symlink():
+                raise PackageBuildError("Package cache entry is a symlink; refusing to replace it.")
+            shutil.rmtree(entry_package)
+        elif entry_package.exists():
+            raise PackageBuildError("Package cache entry is not a directory; refusing to replace it.")
+
+        reuse_source = None
+        native_only = False
+        if target_valid and decision.generated_c_reusable:
+            reuse_source = target_dir
+            native_only = decision.action == "native-recompile"
+        entry_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        build_dir = entry_package
         if build_dir.exists():
+            if build_dir.is_symlink():
+                raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
             shutil.rmtree(build_dir)
         command = [
             sys.executable,
@@ -603,6 +802,10 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             command.extend(("--module-dir", str(module_dir)))
         if cached_header is not None:
             command.extend(("--psp-header", str(cached_header)))
+        if reuse_source is not None:
+            command.extend(("--reuse-aot-from", str(reuse_source)))
+        if native_only:
+            command.append("--native-only")
         if os.name == "nt":
             print("COMMAND: " + subprocess.list2cmdline(command))
         else:
@@ -646,6 +849,13 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             )
         package_started = time.perf_counter()
         _stage_runtime_assets(build_dir)
+        package_cache.write_completion_manifest(build_dir, cache_key)
+        valid_package, package_reason = package_cache.validate_package_cache(
+            build_dir,
+            expected_key=cache_key,
+        )
+        if not valid_package:
+            raise PackageBuildError(f"Generated package failed cache verification: {package_reason}")
 
         package_json = json.loads((build_dir / "package.json").read_text(encoding="utf-8"))
         if package_json.get("title", {}).get("id") != entry["title_id"] or \
@@ -660,6 +870,12 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         shutil.rmtree(staging)
         shutil.copytree(build_dir, staging)
         _require_child(user_root, staging, "Package staging directory")
+        valid_staging, staging_reason = package_cache.validate_package_cache(
+            staging,
+            expected_key=cache_key,
+        )
+        if not valid_staging:
+            raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
         backup = None
         if target_dir.exists():
             if target_dir.is_symlink():
@@ -672,7 +888,14 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             if backup is not None and not target_dir.exists():
                 os.replace(backup, target_dir)
             raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+        _prune_package_cache(cache_dir, entry_root)
         print(f"PACKAGE: {target_dir}")
+        if native_only:
+            print("CACHE: generated C reused; native objects recompiled")
+        else:
+            print("CACHE: AOT regenerated for changed cache key")
         if stage_observer is not None:
             stage_observer(
                 "build_package", "PASS",
