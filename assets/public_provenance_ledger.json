@@ -3861,7 +3861,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e9f44918678ae1388fe8c75841927aa524465612e9b12f852c87e8133c9701a"
+      "sha256": "4de4a0720823e5e149b1f1176af4c765dee85b2a1b055128201d0e3ee87551da"
     },
     {
       "path": "src/core/nk_title_manifest.h",
