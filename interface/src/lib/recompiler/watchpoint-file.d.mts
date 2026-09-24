@@ -2,6 +2,7 @@
 import type { NormalizedWatchpoint } from "./watchpoint-schema.mjs";
 
 export const WATCHPOINTS_FILE_FORMAT: string;
+export const WATCHPOINTS_LEGACY_FILE_FORMAT: string;
 export const WATCHPOINTS_FILE_VERSION: number;
 export const WATCHPOINTS_FILE_MAX_BYTES: number;
 export const WATCHPOINTS_FILE_NAME: string;

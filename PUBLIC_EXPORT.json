@@ -4,13 +4,13 @@
   "generated_evidence": "Generated from the canonical publication policy and exact source bytes. Evidence is not authorization to publish. PUBLIC_EXPORT.json is excluded from its own included-content digest to avoid a self-reference.",
   "profile": "public-safe-v1",
   "policy_version": "2.0.0",
-  "policy_sha256": "b7bb9fcdcade3c253855dc418fa89d5e217281c1be9914af173bf9b3efdc6a33",
+  "policy_sha256": "dfea282f10966f6785ab2d88b77c2fd42c6824903c0499480d1f37c080d2f23d",
   "audit_tool_version": "0.4.0",
-  "tracked_file_count": 824,
-  "included_file_count": 824,
-  "exported_file_count": 824,
+  "tracked_file_count": 823,
+  "included_file_count": 823,
+  "exported_file_count": 823,
   "excluded_file_count": 0,
-  "included_content_sha256": "5fffd202b0461b35159dacb00e7bf99269502507741b60c49e73ca73cc05220e",
+  "included_content_sha256": "c4f19529c7ee09d4071ac902e49f7e0cb4ef5fd368533b9f5ddcaeb46edc2735",
   "digest_excludes": [
     "PUBLIC_EXPORT.json"
   ],
@@ -71,6 +71,6 @@
     "font/*.pgf"
   ],
   "excluded_present_paths": [],
-  "provenance_ledger_sha256": "640385e67f4cd7daf5cad275171c8279f55770b02cc7ba2a0ae995f4b1e5c463",
+  "provenance_ledger_sha256": "996773ebc4bc86e9401d1b027ace7eebaec4563cc4a24c67f411d3a5abab2061",
   "manifest_sha256": "4ad45669c8b1def79ac5556510c71c56889e868bf54825c98c4edc244ae9a8b8"
 }
