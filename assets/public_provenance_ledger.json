@@ -903,7 +903,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "edd508b8a17e941cf837366fc7654bd7215d3a4f7347d13ae327b73fa9057aa0"
+      "sha256": "38a394684d2df3cbe2eeb453f750f5e3decb72b35f0e5c626d666474342a004d"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1194,7 +1194,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d1c15340e1b481673cd84db225e55a6c3b366f579ed5b3f25cb00fdff98db524"
+      "sha256": "0aa6ce0b69b464eced80f0adbb44e1119ad35bf366266896d6af679c71c74d75"
     },
     {
       "path": "docs/provenance/HST_PUBLIC_CENSUS.md",
