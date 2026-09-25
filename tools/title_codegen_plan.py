@@ -500,19 +500,21 @@ def _resolve_make_safe_build_root(intended_output_dir: Path) -> Path:
             pass
 
     parent = intended_output_dir.parent
-    if parent.exists():
-        short_parent = _windows_short_path(parent)
-        if short_parent is not None:
-            # Do NOT resolve(): on Windows that expands 8.3 aliases back to the long,
-            # space-containing name. GetShortPathNameW already returns an absolute path.
-            short_rendered = short_parent.as_posix()
-            if not any(ord(c) < 0x20 for c in short_rendered) and not _make_unsafe(short_rendered):
-                return short_parent
+    if not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+    short_parent = _windows_short_path(parent)
+    if short_parent is not None:
+        # Do NOT resolve(): on Windows that expands 8.3 aliases back to the long,
+        # space-containing name. GetShortPathNameW already returns an absolute path.
+        short_rendered = short_parent.as_posix()
+        if not any(ord(c) < 0x20 for c in short_rendered) and not _make_unsafe(short_rendered):
+            return short_parent
 
     rendered = intended_output_dir.as_posix()
+    reason = "contains spaces" if any(char.isspace() for char in rendered) else "exceeds path length limits"
     raise PackageRouteError(
         "PACKAGE_UNSUPPORTED_PATH",
-        f"output-dir {rendered!r} contains spaces, 8.3 short names are unavailable "
+        f"output-dir {rendered!r} {reason}, 8.3 short names are unavailable "
         "on this volume, and NK_BUILD_ROOT is unset or invalid; "
         "set NK_BUILD_ROOT to a folder without spaces (issue #296)",
     )
@@ -959,9 +961,11 @@ def _cache_key_for_build(
     plan: dict[str, Any],
     selected_optional: set[str],
     funcs_per_chunk: int,
-    public_safe: bool,
+    public_safe: bool | None = None,
     compiler_name: str,
 ) -> dict[str, Any]:
+    if public_safe is None:
+        public_safe = not has_private_backends(ROOT)
     # Imported lazily: planning (--manager-plan) must not depend on the package cache.
     from nk_core import package_cache
 
@@ -983,6 +987,10 @@ def _cache_key_for_build(
     )
 
 
+def has_private_backends(root: Path = ROOT) -> bool:
+    return (root / "src" / "rt" / "pgf.c").is_file() and (root / "src" / "rt" / "pgd.c").is_file()
+
+
 def build_package(
     manifest: dict[str, Any],
     *,
@@ -997,12 +1005,15 @@ def build_package(
     funcs_per_chunk: int = 2000,
     python_command: str = "python",
     make_command: str | None = None,
-    public_safe: bool = False,
+    public_safe: bool | None = None,
     reuse_aot_from: Path | None = None,
     native_only: bool = False,
 ) -> dict[str, Any]:
     """Run the canonical two-phase Make build and emit package/report JSON."""
     from nk_core import package_cache
+
+    if public_safe is None:
+        public_safe = not has_private_backends(ROOT)
 
     try:
         normalized = title_manifest.validate_manifest(manifest)
@@ -1029,7 +1040,8 @@ def build_package(
             "issue #296)",
         )
     has_spaces = any(char.isspace() for char in output_rendered)
-    if has_spaces:
+    is_too_long = os.name == "nt" and len(output_rendered) + 85 >= 260
+    if has_spaces or is_too_long:
         build_root = _resolve_make_safe_build_root(output_dir)
         build_root.mkdir(parents=True, exist_ok=True)
         safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", output_dir.name) or "pkg"
@@ -1296,12 +1308,23 @@ def build_package(
                 funcs_per_chunk=funcs_per_chunk,
             ),
         )
+        backends_mode = "public" if public_safe else "private"
+        backend_limits = (
+            [
+                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "PGD-protected data: unavailable (#295)",
+            ]
+            if public_safe
+            else []
+        )
         report = {
             "format": BUILD_REPORT_FORMAT,
             "schema_version": PACKAGE_SCHEMA_VERSION,
             "title_id": normalized["id"],
             "runtime_abi": {"name": "CpuState", "version": codegen_abi_version()},
             "cache": cache,
+            "backends": backends_mode,
+            "limits": backend_limits,
             "input_hashes": input_hashes,
             "tools": tools,
             "coverage": coverage,
@@ -1353,7 +1376,12 @@ def build_package(
         package_path = build_workspace / "package.json"
         report_path.write_text(canonical_json(report), encoding="utf-8", newline="\n")
         package_path.write_text(canonical_json(package), encoding="utf-8", newline="\n")
-        package_cache.write_completion_manifest(build_workspace, cache_key)
+        package_cache.write_completion_manifest(
+            build_workspace,
+            cache_key,
+            backends=backends_mode,
+            limits=backend_limits,
+        )
         valid_package, package_reason = package_cache.validate_package_cache(
             build_workspace,
             expected_key=cache_key,
@@ -1440,7 +1468,7 @@ def main(argv: list[str] | None = None) -> int:
                 funcs_per_chunk=args.funcs_per_chunk,
                 python_command=args.python_command,
                 make_command=args.make_command,
-                public_safe=args.public_safe,
+                public_safe=True if args.public_safe else None,
                 reuse_aot_from=args.reuse_aot_from,
                 native_only=args.native_only,
             )
