@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "af6bca1043531aafece01b3c2631794fc26723d48e74e21c7da67369931aab58"
+      "sha256": "a62e1864c07a1fc420c4cc30b5fbad992c507470cbdcb2041f613d99f76ee973"
     },
     {
       "path": "NOTICE.md",
@@ -8015,7 +8015,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "6b89c3abbc2f6865c5e3297723bb82359f9c80d60e7147254e9d723cd065b825"
+      "sha256": "f1cc3251caa1f727510091971033feccff52e4f67f557868ef9c8c18d255b923"
     },
     {
       "path": "tools/test_callback_correctness.py",
