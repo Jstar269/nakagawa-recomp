@@ -86,6 +86,12 @@ static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
 
 static int      s_renderer_terminal = 0;
+/* A quit request (window close, SDL_EVENT_QUIT, ESC) is sticky. Two call sites drain
+ * the SDL event queue -- gui_pump's sdl3vk_poll() and every present -- and only the
+ * former exits the process. When a present consumed the quit (the common case: it
+ * polls every frame), the request was lost and the runtime kept running with no
+ * window, so the launcher could never see the game end. */
+static int      s_quit_requested = 0;
 static uint64_t s_swapchain_gen = 0;
 static uint64_t s_frame_sem_gen = 0;
 
@@ -611,9 +617,9 @@ static void poll_input(int *quit) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
-        case SDL_EVENT_QUIT: *quit = 1; break;
+        case SDL_EVENT_QUIT: s_quit_requested = 1; break;
         case SDL_EVENT_KEY_DOWN:
-            if (ev.key.key == SDLK_ESCAPE) *quit = 1;
+            if (ev.key.key == SDLK_ESCAPE) s_quit_requested = 1;
             if (ev.key.key == SDLK_F1 && !ev.key.repeat) {
                 sdl3vk_hud_set_enabled(!s_hud_enabled);
             }
@@ -676,6 +682,7 @@ static void poll_input(int *quit) {
     }
     s_buttons = b;
     s_lx = lx; s_ly = ly;
+    if (s_quit_requested) *quit = 1;
 }
 
 int sdl3vk_get_vk(Sdl3VkInfo *out) {
@@ -2287,6 +2294,26 @@ int sdl3vk_capture_selftest(void) {
             fprintf(stderr, "terminal state: refused arm exposed stale result=%d\n",
                     sdl3vk_capture_result()); ok = 0;
         }
+    }
+
+    /* Test 7: a quit consumed by a present is not lost. The present path drains the
+     * event queue every frame, so a window close almost always lands there; the
+     * process-exit decision is made later by sdl3vk_poll(). */
+    {
+        s_renderer_terminal = 0;
+        create_swapchain();
+        SDL_Event quit_ev;
+        SDL_zero(quit_ev);
+        quit_ev.type = SDL_EVENT_QUIT;
+        if (!SDL_PushEvent(&quit_ev)) {
+            fprintf(stderr, "quit: SDL_PushEvent failed: %s\n", SDL_GetError()); ok = 0;
+        }
+        (void)sdl3vk_present_rgba(px);
+        if (sdl3vk_poll() != 0) {
+            fprintf(stderr, "quit: a quit consumed by a present was lost; sdl3vk_poll() still reports alive\n");
+            ok = 0;
+        }
+        s_quit_requested = 0;
     }
 
     int errors = sdl3vk_validation_error_count();
