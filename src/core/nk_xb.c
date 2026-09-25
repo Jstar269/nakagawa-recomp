@@ -47,6 +47,8 @@ typedef struct {
     uint8_t symbol;
 } XbHuffmanSymbol;
 
+static FILE *xb_fopen(const char *path, const char *mode);
+
 static void xb_error(char *message, size_t message_size, const char *format, ...) {
     if (!message || message_size == 0) return;
     va_list args;
@@ -553,6 +555,106 @@ static int offset_index_compare(const void *left, const void *right) {
     return a->index < b->index ? -1 : (a->index > b->index ? 1 : 0);
 }
 
+static bool xb_file_read_at(FILE *file, uint64_t offset, void *output,
+                            size_t amount) {
+    if (!file || (!output && amount != 0u) || offset > (uint64_t)INT64_MAX ||
+        (nk_fseek64(file, (int64_t)offset, SEEK_SET) != 0)) return 0;
+    return amount == 0u || fread(output, 1, amount, file) == amount;
+}
+
+static int xb_file_load_metadata(FILE *file, NkXbArchive *archive) {
+    if (!file || !archive || !archive->data || archive->source_size < 8u) return 0;
+    uint8_t fixed[8];
+    if (!xb_file_read_at(file, 0u, fixed, sizeof(fixed))) return 0;
+    memcpy((void *)archive->data, fixed, sizeof(fixed));
+    XbReader count_reader = { fixed + 4u, 4u, 0u, archive->big_endian };
+    uint32_t file_count = 0;
+    if (!reader_u32(&count_reader, &file_count) || file_count == 0u ||
+        file_count > archive->limits.max_files || file_count > NK_XB_MAX_FILES) {
+        return 1;
+    }
+    size_t fst_bytes = 0;
+    if (!checked_mul_size((size_t)file_count, 8u, &fst_bytes) ||
+        fst_bytes > archive->source_size - 8u) return 1;
+    if (!xb_file_read_at(file, 8u, (void *)(archive->data + 8u), fst_bytes)) return 0;
+
+    size_t table_end = 8u + fst_bytes;
+    size_t padding = (4u - (table_end & 3u)) & 3u;
+    if (padding > archive->source_size - table_end) return 1;
+    size_t string_header_offset = table_end + padding;
+    if (string_header_offset > archive->source_size ||
+        8u > archive->source_size - string_header_offset) return 1;
+    uint8_t string_header[8];
+    if (!xb_file_read_at(file, string_header_offset, string_header,
+                         sizeof(string_header))) return 0;
+    memcpy((void *)(archive->data + string_header_offset), string_header,
+           sizeof(string_header));
+    XbReader string_reader = { string_header, sizeof(string_header), 0u,
+                               archive->big_endian };
+    uint32_t string_expanded = 0;
+    uint32_t string_compressed = 0;
+    if (!reader_u32(&string_reader, &string_expanded) ||
+        !reader_u32(&string_reader, &string_compressed) ||
+        string_expanded == 0u ||
+        string_expanded > archive->limits.max_string_table_bytes ||
+        string_expanded > NK_XB_MAX_STRING_TABLE_BYTES ||
+        string_compressed > archive->limits.max_string_table_bytes ||
+        string_compressed > NK_XB_MAX_STRING_TABLE_BYTES) {
+        return 1;
+    }
+    size_t string_offset = string_header_offset + 8u;
+    size_t string_size = string_compressed == 0u
+        ? (size_t)string_expanded : (size_t)string_compressed;
+    if (string_size > archive->source_size - string_offset) return 1;
+    if (string_size != 0u &&
+        !xb_file_read_at(file, string_offset, (void *)(archive->data + string_offset),
+                         string_size)) return 0;
+    size_t string_end = string_offset + string_size;
+    size_t end_padding = (4u - (string_end & 3u)) & 3u;
+    if (end_padding > archive->source_size - string_end) return 1;
+    if (end_padding != 0u &&
+        !xb_file_read_at(file, string_end, (void *)(archive->data + string_end),
+                         end_padding)) return 0;
+    return 1;
+}
+
+static NkResult xb_file_read_entry(const NkXbArchive *archive,
+                                    const NkXbEntry *entry,
+                                    uint8_t *decoded) {
+    if (!archive || !archive->file_backed || !archive->file_path || !entry || !decoded ||
+        entry->expanded_size > SIZE_MAX || entry->span_size > SIZE_MAX ||
+        entry->offset > archive->source_size ||
+        entry->span_size > archive->source_size - entry->offset) {
+        return NK_ERROR_INVALID_XB;
+    }
+    FILE *file = xb_fopen(archive->file_path, "rb");
+    if (!file) return NK_ERROR_IO;
+    NkResult result = NK_OK;
+    if (entry->compression == NK_XB_COMPRESSION_NONE) {
+        if (!xb_file_read_at(file, entry->offset, decoded,
+                             (size_t)entry->expanded_size)) {
+            result = NK_ERROR_IO;
+        }
+    } else {
+        size_t payload_size = (size_t)entry->span_size;
+        uint8_t *payload = (uint8_t *)malloc(payload_size);
+        if (!payload) {
+            result = NK_ERROR_OUT_OF_MEMORY;
+        } else if (!xb_file_read_at(file, entry->offset, payload, payload_size)) {
+            result = NK_ERROR_IO;
+        } else {
+            char error[128];
+            result = decode_prefixed(payload, payload_size, entry->compression,
+                                     (size_t)entry->expanded_size,
+                                     &archive->limits, archive->big_endian,
+                                     decoded, error, sizeof(error));
+        }
+        free(payload);
+    }
+    if (fclose(file) != 0 && result == NK_OK) result = NK_ERROR_IO;
+    return result;
+}
+
 static bool entries_content_identical(const NkXbArchive *archive,
                                       const NkXbEntry *a,
                                       const NkXbEntry *b) {
@@ -561,6 +663,23 @@ static bool entries_content_identical(const NkXbArchive *archive,
     }
     if (a->offset == b->offset && a->span_size == b->span_size) {
         return true;
+    }
+    if (archive->file_backed) {
+        if (a->expanded_size > SIZE_MAX) return false;
+        size_t size = (size_t)a->expanded_size;
+        uint8_t *buf_a = (uint8_t *)malloc(size);
+        uint8_t *buf_b = (uint8_t *)malloc(size);
+        if (!buf_a || !buf_b) {
+            free(buf_a); free(buf_b);
+            return false;
+        }
+        NkResult res_a = xb_file_read_entry(archive, a, buf_a);
+        NkResult res_b = xb_file_read_entry(archive, b, buf_b);
+        bool identical = (res_a == NK_OK && res_b == NK_OK &&
+                          memcmp(buf_a, buf_b, size) == 0);
+        free(buf_a);
+        free(buf_b);
+        return identical;
     }
     if (a->compression == NK_XB_COMPRESSION_NONE) {
         if (a->offset + a->expanded_size > archive->data_size ||
@@ -805,41 +924,45 @@ static NkResult parse_archive(NkXbArchive *archive, char *error_message,
                 return xb_fail(error_message, error_message_size,
                                "compressed entry is missing its size header");
             }
-            XbReader header = { payload, payload_size, 0, archive->big_endian };
-            uint32_t header_expanded = 0;
-            uint32_t header_compressed = 0;
-            if (!reader_u32(&header, &header_expanded) ||
-                !reader_u32(&header, &header_compressed) ||
-                header_expanded == 0 || header_expanded > archive->limits.max_entry_bytes ||
-                header_expanded > NK_XB_MAX_ENTRY_BYTES) {
-                free(fst); free(entries); free(offsets);
-                return xb_fail(error_message, error_message_size,
-                               "invalid compressed entry expanded size");
-            }
-            if ((row.compression == NK_XB_COMPRESSION_LZS ||
-                 row.compression == NK_XB_COMPRESSION_HUFFMAN) &&
-                header_expanded != row.expanded_size) {
-                free(fst); free(entries); free(offsets);
-                return xb_fail(error_message, error_message_size,
-                               "compressed entry expanded size disagrees with FST");
-            }
-            uint64_t compressed_body_size = header_compressed == 0
-                ? (uint64_t)header_expanded : (uint64_t)header_compressed;
-            if (compressed_body_size > UINT64_MAX - 8u) {
-                free(fst); free(entries); free(offsets);
-                return xb_fail(error_message, error_message_size,
-                               "compressed entry size overflows");
-            }
-            if (row.compression == NK_XB_COMPRESSION_DEFLATE) {
+            if (archive->file_backed) {
                 stored_size = span_size;
-            } else if (header_compressed > 8u && (uint64_t)header_compressed <= span_size) {
-                stored_size = (uint64_t)header_compressed;
-            } else if (8u + compressed_body_size <= span_size) {
-                stored_size = 8u + compressed_body_size;
             } else {
-                free(fst); free(entries); free(offsets);
-                return xb_fail(error_message, error_message_size,
-                               "compressed entry exceeds its FST span");
+                XbReader header = { payload, payload_size, 0, archive->big_endian };
+                uint32_t header_expanded = 0;
+                uint32_t header_compressed = 0;
+                if (!reader_u32(&header, &header_expanded) ||
+                    !reader_u32(&header, &header_compressed) ||
+                    header_expanded == 0 || header_expanded > archive->limits.max_entry_bytes ||
+                    header_expanded > NK_XB_MAX_ENTRY_BYTES) {
+                    free(fst); free(entries); free(offsets);
+                    return xb_fail(error_message, error_message_size,
+                                   "invalid compressed entry expanded size");
+                }
+                if ((row.compression == NK_XB_COMPRESSION_LZS ||
+                     row.compression == NK_XB_COMPRESSION_HUFFMAN) &&
+                    header_expanded != row.expanded_size) {
+                    free(fst); free(entries); free(offsets);
+                    return xb_fail(error_message, error_message_size,
+                                   "compressed entry expanded size disagrees with FST");
+                }
+                uint64_t compressed_body_size = header_compressed == 0
+                    ? (uint64_t)header_expanded : (uint64_t)header_compressed;
+                if (compressed_body_size > UINT64_MAX - 8u) {
+                    free(fst); free(entries); free(offsets);
+                    return xb_fail(error_message, error_message_size,
+                                   "compressed entry size overflows");
+                }
+                if (row.compression == NK_XB_COMPRESSION_DEFLATE) {
+                    stored_size = span_size;
+                } else if (header_compressed > 8u && (uint64_t)header_compressed <= span_size) {
+                    stored_size = (uint64_t)header_compressed;
+                } else if (8u + compressed_body_size <= span_size) {
+                    stored_size = 8u + compressed_body_size;
+                } else {
+                    free(fst); free(entries); free(offsets);
+                    return xb_fail(error_message, error_message_size,
+                                   "compressed entry exceeds its FST span");
+                }
             }
         } else if (stored_size > span_size) {
             free(fst); free(entries); free(offsets);
@@ -903,6 +1026,7 @@ void nk_xb_close(NkXbArchive *archive) {
     if (!archive) return;
     free(archive->entries);
     if (archive->owns_data) free((void *)archive->data);
+    free(archive->file_path);
     memset(archive, 0, sizeof(*archive));
 }
 
@@ -929,6 +1053,7 @@ NkResult nk_xb_open_memory(const void *data, size_t data_size,
     out_archive->data = copy;
     out_archive->data_size = data_size;
     out_archive->owns_data = true;
+    out_archive->source_size = data_size;
     snprintf(out_archive->source_name, sizeof(out_archive->source_name), "%s",
              source_name && source_name[0] ? source_name : "memory.xb");
     NkResult result = parse_archive(out_archive, error_message, error_message_size);
@@ -987,6 +1112,16 @@ static bool xb_member_path_to_host_utf8(const char *member,
 #endif
 }
 
+static char *xb_strdup(const char *value) {
+    if (!value) return NULL;
+    size_t length = strlen(value);
+    if (length == SIZE_MAX) return NULL;
+    char *copy = (char *)malloc(length + 1u);
+    if (!copy) return NULL;
+    memcpy(copy, value, length + 1u);
+    return copy;
+}
+
 NkResult nk_xb_open_file(const char *path, bool big_endian,
                          const NkXbLimits *limits, NkXbArchive *out_archive,
                          char *error_message, size_t error_message_size) {
@@ -1033,11 +1168,168 @@ NkResult nk_xb_open_file(const char *path, bool big_endian,
     out_archive->data = data;
     out_archive->data_size = size;
     out_archive->owns_data = true;
+    out_archive->source_size = size;
     out_archive->limits = effective;
     out_archive->big_endian = big_endian;
     snprintf(out_archive->source_name, sizeof(out_archive->source_name), "%s", path);
     NkResult result = parse_archive(out_archive, error_message, error_message_size);
     if (result != NK_OK) nk_xb_close(out_archive);
+    return result;
+}
+
+NkResult nk_xb_open_file_lazy(const char *path, bool big_endian,
+                         const NkXbLimits *limits, NkXbArchive *out_archive,
+                         char *error_message, size_t error_message_size) {
+    if (error_message && error_message_size > 0) error_message[0] = '\0';
+    if (!path || !out_archive) {
+        return xb_fail(error_message, error_message_size,
+                       "invalid XB file input");
+    }
+    NkXbLimits effective = normalized_limits(limits);
+    int64_t file_size = nk_platform_get_file_size(path);
+    if (file_size <= 0) {
+        return xb_fail(error_message, error_message_size,
+                       "cannot stat XB archive");
+    }
+    if ((uint64_t)file_size > effective.max_archive_bytes ||
+        (uint64_t)file_size > NK_XB_MAX_ARCHIVE_BYTES ||
+        (uint64_t)file_size > SIZE_MAX) {
+        return xb_fail(error_message, error_message_size,
+                       "archive exceeds the configured byte limit");
+    }
+    size_t size = (size_t)file_size;
+    uint8_t *data = (uint8_t *)malloc(size);
+    if (!data) return NK_ERROR_OUT_OF_MEMORY;
+    FILE *file = xb_fopen(path, "rb");
+    if (!file) {
+        free(data);
+        return xb_fail(error_message, error_message_size,
+                       "cannot open XB archive");
+    }
+    memset(out_archive, 0, sizeof(*out_archive));
+    out_archive->data = data;
+    out_archive->data_size = size;
+    out_archive->owns_data = true;
+    out_archive->file_backed = true;
+    out_archive->file_path = xb_strdup(path);
+    out_archive->source_size = size;
+    out_archive->limits = effective;
+    out_archive->big_endian = big_endian;
+    snprintf(out_archive->source_name, sizeof(out_archive->source_name), "%s", path);
+    if (!out_archive->file_path || !xb_file_load_metadata(file, out_archive)) {
+        fclose(file);
+        nk_xb_close(out_archive);
+        return xb_fail(error_message, error_message_size,
+                       "XB archive metadata could not be read");
+    }
+    int close_failed = fclose(file) != 0;
+    int64_t size_after = nk_platform_get_file_size(path);
+    if (close_failed || size_after != file_size) {
+        nk_xb_close(out_archive);
+        return xb_fail(error_message, error_message_size,
+                       "XB archive changed or could not be read");
+    }
+    NkResult result = parse_archive(out_archive, error_message, error_message_size);
+    if (result == NK_OK) {
+        free((void *)out_archive->data);
+        out_archive->data = NULL;
+        out_archive->data_size = 0u;
+        out_archive->owns_data = false;
+    }
+    if (result != NK_OK) nk_xb_close(out_archive);
+    return result;
+}
+
+NkResult nk_xb_read_entry_range(const NkXbArchive *archive, size_t entry_index,
+                                uint64_t offset, void *output,
+                                size_t output_capacity, size_t *output_size,
+                                char *error_message, size_t error_message_size) {
+    if (error_message && error_message_size > 0) error_message[0] = '\0';
+    if (output_size) *output_size = 0;
+    if (!archive || !archive->entries || entry_index >= archive->entry_count) {
+        return xb_fail(error_message, error_message_size,
+                       "XB entry index is out of range");
+    }
+    const NkXbEntry *entry = &archive->entries[entry_index];
+    if (entry->expanded_size > SIZE_MAX || entry->span_size > SIZE_MAX ||
+        entry->offset > archive->source_size ||
+        entry->span_size > archive->source_size - entry->offset ||
+        offset > entry->expanded_size) {
+        return xb_fail(error_message, error_message_size,
+                       "XB entry span exceeds archive");
+    }
+    uint64_t available = entry->expanded_size - offset;
+    size_t amount = output_capacity;
+    if ((uint64_t)amount > available) amount = (size_t)available;
+    if (amount == 0u) return NK_OK;
+    if (!output) return xb_fail(error_message, error_message_size,
+                                "XB output buffer is too small");
+
+    NkResult result = NK_OK;
+    if (archive->file_backed) {
+        int64_t current_size = nk_platform_get_file_size(archive->file_path);
+        if (current_size < 0 || (uint64_t)current_size != archive->source_size) {
+            return xb_fail(error_message, error_message_size,
+                           "XB archive changed or could not be read");
+        }
+        FILE *file = xb_fopen(archive->file_path, "rb");
+        if (!file) return xb_fail(error_message, error_message_size,
+                                  "cannot open XB archive member");
+        if (entry->compression == NK_XB_COMPRESSION_NONE) {
+            if (!xb_file_read_at(file, entry->offset + offset, output, amount)) {
+                result = xb_fail(error_message, error_message_size,
+                                 "cannot read XB archive member");
+            }
+        } else {
+            size_t payload_size = (size_t)entry->span_size;
+            uint8_t *payload = (uint8_t *)malloc(payload_size);
+            uint8_t *decoded = (uint8_t *)malloc((size_t)entry->expanded_size);
+            if (!payload || !decoded) {
+                result = NK_ERROR_OUT_OF_MEMORY;
+            } else if (!xb_file_read_at(file, entry->offset, payload, payload_size)) {
+                result = xb_fail(error_message, error_message_size,
+                                 "cannot read XB archive member");
+            } else {
+                result = decode_prefixed(payload, payload_size, entry->compression,
+                                         (size_t)entry->expanded_size,
+                                         &archive->limits, archive->big_endian,
+                                         decoded, error_message, error_message_size);
+                if (result == NK_OK) {
+                    memcpy(output, decoded + (size_t)offset, amount);
+                }
+            }
+            free(payload);
+            free(decoded);
+        }
+        if (fclose(file) != 0 && result == NK_OK) {
+            result = xb_fail(error_message, error_message_size,
+                             "XB archive member close failed");
+        }
+    } else {
+        if (!archive->data) {
+            return xb_fail(error_message, error_message_size,
+                           "XB archive data is unavailable");
+        }
+        if (entry->compression == NK_XB_COMPRESSION_NONE) {
+            memcpy(output, archive->data + (size_t)entry->offset + (size_t)offset,
+                   amount);
+        } else {
+            size_t expanded = (size_t)entry->expanded_size;
+            uint8_t *decoded = (uint8_t *)malloc(expanded);
+            if (!decoded) {
+                result = NK_ERROR_OUT_OF_MEMORY;
+            } else {
+                result = decode_prefixed(archive->data + (size_t)entry->offset,
+                                         (size_t)entry->span_size,
+                                         entry->compression, expanded,
+                                         &archive->limits, archive->big_endian,
+                                         decoded, error_message, error_message_size);
+                if (result == NK_OK) memcpy(output, decoded + (size_t)offset, amount);
+                free(decoded);
+            }
+        }
+    }
+    if (result == NK_OK && output_size) *output_size = amount;
     return result;
 }
 
@@ -1047,8 +1339,7 @@ NkResult nk_xb_read_entry(const NkXbArchive *archive, size_t entry_index,
                           size_t error_message_size) {
     if (error_message && error_message_size > 0) error_message[0] = '\0';
     if (output_size) *output_size = 0;
-    if (!archive || !archive->data || !archive->entries ||
-        entry_index >= archive->entry_count) {
+    if (!archive || !archive->entries || entry_index >= archive->entry_count) {
         return xb_fail(error_message, error_message_size,
                        "XB entry index is out of range");
     }
@@ -1058,24 +1349,9 @@ NkResult nk_xb_read_entry(const NkXbArchive *archive, size_t entry_index,
         return xb_fail(error_message, error_message_size,
                        "XB output buffer is too small");
     }
-    if (entry->offset > archive->data_size || entry->span_size > archive->data_size - (size_t)entry->offset) {
-        return xb_fail(error_message, error_message_size,
-                       "XB entry span exceeds archive");
-    }
-    const uint8_t *payload = archive->data + (size_t)entry->offset;
-    size_t payload_size = (size_t)entry->span_size;
-    NkResult result;
-    if (entry->compression == NK_XB_COMPRESSION_NONE) {
-        memcpy(output, payload, (size_t)entry->expanded_size);
-        result = NK_OK;
-    } else {
-        result = decode_prefixed(payload, payload_size, entry->compression,
-                                 (size_t)entry->expanded_size, &archive->limits,
-                                 archive->big_endian, (uint8_t *)output,
-                                 error_message, error_message_size);
-    }
-    if (result == NK_OK && output_size) *output_size = (size_t)entry->expanded_size;
-    return result;
+    return nk_xb_read_entry_range(archive, entry_index, 0u, output,
+                                  output_capacity, output_size,
+                                  error_message, error_message_size);
 }
 
 static bool make_member_path(const char *root, const char *member,

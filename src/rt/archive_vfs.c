@@ -278,8 +278,8 @@ NkResult sr_archive_vfs_mount_file(SrArchiveVfs *vfs, const char *path,
     }
     if (actual_variant < -1) return NK_ERROR_INVALID_XB;
     NkXbArchive archive;
-    NkResult result = nk_xb_open_file(path, big_endian, limits, &archive,
-                                      NULL, 0);
+    NkResult result = nk_xb_open_file_lazy(path, big_endian, limits, &archive,
+                                           NULL, 0);
     if (result != NK_OK) return result;
     result = archive_adopt(vfs, &archive, actual_variant);
     if (result != NK_OK) nk_xb_close(&archive);
@@ -458,10 +458,16 @@ NkResult sr_archive_vfs_read(const SrArchiveVfs *vfs, const SrArchiveFile *file,
     }
 
     if (entry->compression == NK_XB_COMPRESSION_NONE) {
-        if (entry->offset > mount->data_size ||
-            entry->expanded_size > mount->data_size - (size_t)entry->offset ||
+        if (entry->offset > mount->source_size ||
+            entry->expanded_size > mount->source_size - entry->offset ||
             offset > entry->expanded_size ||
             amount > entry->expanded_size - (size_t)offset) return NK_ERROR_INVALID_XB;
+        if (mount->file_backed) {
+            NkResult result = nk_xb_read_entry_range(mount, file->entry_index, offset,
+                                                     output, output_capacity,
+                                                     output_size, NULL, 0);
+            return result;
+        }
         memcpy(output, mount->data + (size_t)entry->offset + (size_t)offset, amount);
         if (output_size) *output_size = amount;
         return NK_OK;

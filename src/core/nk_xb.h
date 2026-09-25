@@ -62,6 +62,9 @@ typedef struct {
     const uint8_t *data;
     size_t data_size;
     bool owns_data;
+    bool file_backed;
+    char *file_path;
+    uint64_t source_size;
     NkXbEntry *entries;
     size_t entry_count;
     size_t data_start;
@@ -79,6 +82,9 @@ NkXbLimits nk_xb_default_limits(void);
 NkResult nk_xb_open_file(const char *path, bool big_endian,
                          const NkXbLimits *limits, NkXbArchive *out_archive,
                          char *error_message, size_t error_message_size);
+NkResult nk_xb_open_file_lazy(const char *path, bool big_endian,
+                              const NkXbLimits *limits, NkXbArchive *out_archive,
+                              char *error_message, size_t error_message_size);
 NkResult nk_xb_open_memory(const void *data, size_t data_size,
                            const char *source_name, bool big_endian,
                            const NkXbLimits *limits, NkXbArchive *out_archive,
@@ -92,6 +98,10 @@ NkResult nk_xb_read_entry(const NkXbArchive *archive, size_t entry_index,
                           void *output, size_t output_capacity,
                           size_t *output_size, char *error_message,
                           size_t error_message_size);
+NkResult nk_xb_read_entry_range(const NkXbArchive *archive, size_t entry_index,
+                                uint64_t offset, void *output,
+                                size_t output_capacity, size_t *output_size,
+                                char *error_message, size_t error_message_size);
 
 typedef bool (*NkXbProgressCallback)(const NkXbEntry *entry,
                                      size_t completed_entries,
