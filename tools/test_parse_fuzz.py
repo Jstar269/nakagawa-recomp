@@ -72,13 +72,14 @@ def _run_stage(stage: str, action, data: bytes):
         ) from exc
 
 
-def exercise(data: bytes, base: int, path: Path) -> dict[str, object]:
+def exercise(data: bytes, base: int, path: Path | None = None) -> dict[str, object]:
     """Run the parser pipeline and report the stage reached by the input.
 
     A rejected stage stops the dependent stages and marks them ``not_reached``;
     it is not reported as if every parser had consumed the same bytes.
     """
-    path.write_bytes(data)
+    if path is not None and not isinstance(data, (bytes, bytearray, memoryview)):
+        path.write_bytes(data)
     report = {
         "prx": "not_reached",
         "analyze": "not_reached",
@@ -88,7 +89,7 @@ def exercise(data: bytes, base: int, path: Path) -> dict[str, object]:
     }
 
     def load_prx():
-        prx = prxload.Prx(str(path), base)
+        prx = prxload.Prx(data, base)
         prx.relocate()
         return prx
 
@@ -98,7 +99,7 @@ def exercise(data: bytes, base: int, path: Path) -> dict[str, object]:
         return report
 
     status, elf = _run_stage(
-        "analyze", lambda: analyze.Elf(str(path), base), data
+        "analyze", lambda: analyze.Elf(data, base), data
     )
     report["analyze"] = status
     if status == "rejected":
@@ -321,9 +322,8 @@ class TestParseFuzz(unittest.TestCase):
                 data = _mutate_bytes(seed_bytes, rng)
             else:
                 data = rng.randbytes(rng.randint(0, 256))
-            self.path.write_bytes(data)
             try:
-                sizes, bss = prxload.read_psp_segment_sizes(str(self.path), 2)
+                sizes, bss = prxload.read_psp_segment_sizes(data, 2)
                 self.assertIsInstance(sizes, list)
                 self.assertIsInstance(bss, int)
                 accepted += 1
