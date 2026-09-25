@@ -7837,6 +7837,10 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                 break;
             }
         }
+        /* Mounting only appends to the index; sort it once here, at the end of
+         * discovery, so the first guest lookup does not pay for (or mutate
+         * state for) finalization. Lookups still finalize a late mount. */
+        if (ok && !sr_archive_vfs_finalize(vfs)) ok = 0;
     }
     archive_candidates_destroy(candidates, candidate_count);
     if (!ok) return -1;
