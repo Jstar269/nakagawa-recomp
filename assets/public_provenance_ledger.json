@@ -231,7 +231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "991097291a55f0889157238c10f617b2adeea3b6f8ef9519da7287899dd35397"
+      "sha256": "0e23918cf5f9b87b1d10823c9c05c37a767dd05224d0b556b3b0c1b4ac8c3831"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a62e1864c07a1fc420c4cc30b5fbad992c507470cbdcb2041f613d99f76ee973"
+      "sha256": "2ab4c791557dbe302ce332642477eead77ce6ae8cb7aa2379562649716a78a07"
     },
     {
       "path": "NOTICE.md",
@@ -463,7 +463,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "eafdba3c991d0c2a0cbcb3028e4a70ddf98c666b6e614fd9862fa1113dd8efc6"
+      "sha256": "4eb9b9e2f1a2b27c93f291af1a9f3a680e12982b4101d683d2800a198b117df0"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -805,7 +805,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "79fdcf2c77f4907438168bfcfbe71ac815a229f70d57ecd2167537a0bf9827a5"
+      "sha256": "e2d0b2f7911eb58ac571d9a570ae406dc0d03570f4db5625e08141b2197581a0"
     },
     {
       "path": "docs/CI.md",
@@ -907,7 +907,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d935d14493c85edd680dc7161b9109b629ee984e9560fc4a8485c033569d181c"
+      "sha256": "bbf3dba787cf709e51ecef611929576ec93f07fc58e17357aad19f28fa6e25dc"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1219,7 +1219,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b57ac3defc8c0e7d95dc1462671b03a5efc493aa10fe32aa1116c49b903ddcb4"
+      "sha256": "c6ba6a81519bec97dfc1bb376ebad9454b15ce88f487bad8d4c6a78a09a5aa1d"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -1246,7 +1246,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7af5266dbf1d6180ff74d196c162b1cb9ec17d4b7346215ab18d9f10193a1c56"
+      "sha256": "4102dffa3f2e5916874c1f51b8b2f6c47d418ae436f1ff57f066015d192cb829"
     },
     {
       "path": "docs/provenance/GUEST_INTERP_ATTESTATION.md",
@@ -1474,7 +1474,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4a89752a4509cd5c523a04ba1884f2a967f5c929e6211c092c51f192092d4fb7"
+      "sha256": "933aa59d85c87412cf69d1eb0aea4b07055efa2ef5966fd0de0e9c39e0817c9b"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -1804,7 +1804,7 @@
         "source": "public documentation review",
         "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded"
       },
-      "sha256": "55b4a67662b6bb8c8edac43e536085a00f83027b219b0a2c58da4890c64bde7a"
+      "sha256": "8bf90bf316ab849eb0f94439941940b8d4fa048473c587cb0b446b7c4b74bcb4"
     },
     {
       "path": "interface/.env.example",
@@ -5883,16 +5883,16 @@
       "sha256": "85bdf16cf721715b00f4b393f76982b23a4c0dce23829080c470990aa7cf10b4"
     },
     {
-      "path": "src/rt/pgf_unavailable.c",
+      "path": "src/rt/pgf_public.c",
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "pgf-public-safe-seam",
+        "record_id": "pgf-public-reader-349",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "537a578f0872efbbb2c78b0ebde7bf509a48ae3e9a10673914486b5eea98625f"
+      "sha256": "50b111c35ed99ef2fb7c4b1d13d3cbffc9b6073ffe6e7542e7b519edde00df6c"
     },
     {
       "path": "src/rt/profiler_selftest.c",
@@ -6487,6 +6487,18 @@
         "upstream_attribution": null
       },
       "sha256": "7cd458c8481b02bd2efdda75865fdd09630d075e3375b7dd1f61b5f3d8c07de6"
+    },
+    {
+      "path": "tests/native/test_pgf_public.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgf-public-reader-tests-349",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "47be108d179d8bfaecd46f01b71a20a819cc1daa35e1b911213e286e0f1818a7"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -7469,7 +7481,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "398a7a67b17af5186aff51758ad8b666278b41dfb399fd5b0142ca4578b3199d"
+      "sha256": "53d19b5f2cc39d96d290b6983b19fc8f6a185b0ac38aabbe27dd8249cf623a66"
     },
     {
       "path": "tools/ppm2png.py",
@@ -8027,7 +8039,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "38f710ce1456b085a0d0bf8e3297c18fdae4285192e5965e191c0d837825268c"
+      "sha256": "bb6b2739006c95dfa00c65232dce32e2fddc2a4d735abe33a000e29e2d67c3f1"
     },
     {
       "path": "tools/test_build_truth.py",
@@ -8774,7 +8786,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "06c287df11362d113dd353f9d75f72cf9896175b6823963c73ae1a4aa2bd7e68"
+      "sha256": "265dbff873edefe65de4bc7fb54235777dd2097dacdc1ed0190252ccd4c78f82"
     },
     {
       "path": "tools/test_nid_name_proof.py",
@@ -8933,7 +8945,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e7791944b32b7493ff86d75fb369e48e973368954ae01d635d089bde283332fc"
+      "sha256": "02896f625aee7d8bcc028ae5db02fd3f36e824e2d91529acf7d4b23f9fe07299"
     },
     {
       "path": "tools/test_progress_evidence.py",
