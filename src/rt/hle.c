@@ -11873,6 +11873,12 @@ void sr_vblank_tick(void) {
         s_framebuf = s_display_active.addr;
         s_last_flip_vcount = s_vcount;
         s_watchdog_bucket = 0;
+        /* Same arm as the sync=0 immediate flip: a NEXTFRAME (sync=1) flip is presented
+         * here, so the capture must be armed before this present or the recorded frame
+         * is not the presented one. Arming only in the sync=0 branch left every
+         * double-buffering title (which flips at VBLANK, not synchronously) with no
+         * present-truthful capture at all. */
+        fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
         display_present_active();
     }
     if (ge_log_on() && (s_vcount & 0x3f) == 0)

@@ -1,11 +1,11 @@
 {
   "compiler": {
-    "name": "glslc.exe",
+    "name": "glslc",
     "options": [
       "--target-env=vulkan1.1"
     ],
     "target_environment": "vulkan1.1",
-    "version": "shaderc v2026.2 v2026.2\nspirv-tools v2026.2 v2022.4-1193-gc1cb30bb\nglslang 11.1.0-1412-g5ed4003a\n\nTarget: SPIR-V 1.0"
+    "version": "shaderc v2026.3 v2026.3\nspirv-tools v2026.3 v2022.4-1283-gb707790a\nglslang 11.1.0-1493-g168d452a\n\nTarget: SPIR-V 1.0"
   },
   "schema_version": 1,
   "shaders": [
@@ -20,11 +20,11 @@
     },
     {
       "embedded": "psp_frag.inc",
-      "embedded_sha256": "e7239e8df4b56945064a4c977c339d64caf62d96aea133b3b7e07e8d75802396",
+      "embedded_sha256": "871e07a64939f53758d66642e5ae67c4f7d776c89f39b8cdc316f3ef26eac3c1",
       "source": "shaders/psp.frag",
-      "source_sha256": "1b19e8dd6dc5092c514eaf2261b1cd5c1cd8482994cd43ccb4f4e1282db7fed3",
-      "spirv_bytes": 19636,
-      "spirv_sha256": "62233365ca6414dd5f9530e0c98310ce242220d77fb2542eee4c08906b43a113",
+      "source_sha256": "9a7b867c8802b2739ac3a3f0f97c512d5034deacbdde50a73a319f5e2eaaea5a",
+      "spirv_bytes": 19484,
+      "spirv_sha256": "57ca74cc397695ecfc9f25852cba6bf34c88c6f3d7000f1858afb3ee64203f06",
       "stage": "frag"
     }
   ]

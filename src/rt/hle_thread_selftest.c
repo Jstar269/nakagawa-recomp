@@ -316,6 +316,12 @@ static int s_audio_queue_result;
 static int s_audio_queue_seq[4];
 static int s_audio_queue_seq_len;
 
+/* Capture-arm observer: the present-truthful capture policy runs before the present it
+ * records, so the harness only needs to know whether a path was armed, never its
+ * contents. See test_display_capture_arms_on_latched_flip(). */
+static unsigned long s_cap_arm_calls;
+static char s_cap_arm_path[128];
+
 void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     (void)ch; (void)volL; (void)volR;
     s_audio_push_calls++;
@@ -388,7 +394,14 @@ int g_prof_enabled;
 void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 #endif
 uint64_t SDL_GetTicksNS(void) { return 0; }
-int sdl3vk_capture_arm(const char *path) { (void)path; return 0; }
+int sdl3vk_capture_arm(const char *path) {
+    s_cap_arm_calls++;
+    if (path) {
+        strncpy(s_cap_arm_path, path, sizeof(s_cap_arm_path) - 1);
+        s_cap_arm_path[sizeof(s_cap_arm_path) - 1] = '\0';
+    }
+    return 1;   /* an armed capture is never published by this harness */
+}
 int sdl3vk_capture_result(void) { return 0; }
 int sdl3vk_renderer_terminal(void) { return 0; }
 const char *sdl3vk_capture_source_label(void) { return ""; }
@@ -4389,6 +4402,63 @@ static void test_display_setframebuf_flip_accounting(void) {
     expect(err3 == ERR_ILLEGAL_ADDR,
            "the recorded error tracks the most recent refusal");
     expect(i3 == i2, "a refused request performed no flip");
+}
+
+/* Present-truthful capture arming on BOTH flip paths (issue #57 capture policy).
+ *
+ * The policy's own contract is that a published capture is exactly the frame that was
+ * presented, which is only true if the capture slot is armed before the present call.
+ * The immediate (sync=0) flip armed in sceDisplaySetFrameBuf; the NEXTFRAME (sync=1)
+ * flip is published from sr_vblank_tick and armed nowhere. A title that double-buffers
+ * -- which is the normal way to render, and the only way this flagship renders -- then
+ * produced almost no present-truthful captures at all: a 900 s session published six,
+ * every one of them an immediate-flip frame. The arm is host-side only, so what is
+ * asserted here is that the arm happens on the path that presents, not which frames a
+ * particular route ends up showing. */
+static void test_display_capture_arms_on_latched_flip(void) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t VRAM_A = 0x04000000u;
+    static const uint32_t VRAM_B = 0x04044000u;
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    /* The policy reads SR_FBSNAP once and caches it, so arm it before the first flip. */
+    _putenv_s("SR_FBSNAP", "1");
+
+    /* Configure the display with an immediate flip so a latched flip is accepted. */
+    sr_display_advance_vcount(1u);
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "capture fixture configures the display with an immediate flip");
+
+    /* A latched request is not a present yet, so it must not arm on its own. */
+    s_cap_arm_calls = 0;
+    s_cap_arm_path[0] = 0;
+    sr_display_advance_vcount(1u);
+    cpu.r[4] = VRAM_A; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 1;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "SetFrameBuf accepts a latched (NEXTFRAME) flip");
+    expect(s_cap_arm_calls == 0u,
+           "a latched request arms nothing before the VBLANK that presents it");
+
+    sr_display_advance_vcount(1u);
+    sr_vblank_tick();
+    expect(s_cap_arm_calls == 1u,
+           "the VBLANK that publishes a latched flip arms the capture slot first");
+    expect(strstr(s_cap_arm_path, "frame_") != NULL,
+           "the armed path is the FBSNAP capture slot, not the FBDUMP one-shot");
+
+    /* The immediate path must still arm exactly once, through its own route. */
+    s_cap_arm_calls = 0;
+    sr_display_advance_vcount(1u);
+    cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "capture fixture requests a second immediate flip");
+    expect(s_cap_arm_calls == 1u,
+           "an immediate flip still arms the capture slot exactly once");
+
+    _putenv_s("SR_FBSNAP", "");
 }
 
 /* No-frame watchdog observation boundary semantics.
@@ -8705,6 +8775,112 @@ static uint64_t ge_sentinel_hash64_region(uint32_t fb_base, uint32_t stride,
         }
     }
     return hash;
+}
+
+/* Linearly filtered sprite: nothing from outside the sampled region may reach the
+ * framebuffer.
+ *
+ * The GE sentinel above draws its textured region with GE_TEXFILTER=NEAREST, which pins
+ * the endpoint-exclusive rectangle but not the filter window. This is the same full
+ * production route -- source-owned guest list -> sceGeListEnQueue -> ge_run_list -> the
+ * ge.c software rasterizer -> guest VRAM -- with GE_TEXFILTER=LINEAR over a texture whose
+ * row 0 is pure white and whose rows 1..4 are a distinct ramp.
+ *
+ * An integer texel coordinate names that texel's CENTRE, which is the convention the
+ * nearest branch of sample_tex_f() implements by rounding, so at 1:1 the filter weight is
+ * zero and rows 1..4 must be reproduced exactly. A filter window centred half a texel
+ * earlier instead blends row 0 in at 50%, which is a real defect: on a title screen it
+ * painted a one-pixel white line along the top edge of every linearly filtered sprite,
+ * from texture rows the draw never addressed. The assertion is per channel, so any
+ * contribution from the outside row is a failure, not a tolerance question. */
+static void test_ge_linear_filter_stays_inside_region(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t fb_base = 0x04000000u;
+    const uint32_t fb_stride = 512u;
+    const uint32_t tex_base = 0x04100000u;
+    const uint32_t dl_base = 0x08900000u;
+    const uint32_t vtx_base = 0x08904000u;
+    const uint32_t rect_x = 100u, rect_y = 100u, rect_w = 4u, rect_h = 4u;
+    const uint32_t outside = 0xFFFFFFFFu;   /* row 0: pure white, no sampled texel is white */
+    #define LIN_TEXEL(u, v) ((v) == 0u ? outside \
+        : 0xFF000000u | (0x40u << 16) | ((v) * 40u << 8) | ((u) * 40u))
+    for (uint32_t v = 0; v < 8u; v++)
+        for (uint32_t u = 0; u < 8u; u++)
+            MEM_W32(tex_base + (v * 8u + u) * 4u, LIN_TEXEL(u, v));
+
+    /* Sprite corners: texel (1,1) at screen (100,100) to texel (5,5) at (104,104). */
+    #define W_FLOAT(addr, val) do { float _f = (val); uint32_t _u; memcpy(&_u, &_f, 4); MEM_W32((addr), _u); } while(0)
+    /* VERTEXTYPE (3<<0)|(3<<7)|(1<<23) is UV + XYZ, i.e. five floats per vertex. */
+    W_FLOAT(vtx_base + 0x00, 1.0f); W_FLOAT(vtx_base + 0x04, 1.0f);
+    W_FLOAT(vtx_base + 0x08, (float)rect_x); W_FLOAT(vtx_base + 0x0C, (float)rect_y);
+    W_FLOAT(vtx_base + 0x10, 0.0f);
+    W_FLOAT(vtx_base + 0x14, 1.0f + (float)rect_w); W_FLOAT(vtx_base + 0x18, 1.0f + (float)rect_h);
+    W_FLOAT(vtx_base + 0x1C, (float)(rect_x + rect_w));
+    W_FLOAT(vtx_base + 0x20, (float)(rect_y + rect_h));
+    W_FLOAT(vtx_base + 0x24, 0.0f);
+
+    uint32_t *dl = (uint32_t *)SR_HOST(dl_base);
+    int p = 0;
+    #define DL_CMD(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((val) & 0x00FFFFFFu)
+    DL_CMD(0x10, (vtx_base >> 8) & 0x000F0000u);
+    DL_CMD(0x4C, (dl_base >> 8) & 0x000F0000u);
+    DL_CMD(0x9C, 0);                                   /* FBP = 0x04000000 */
+    DL_CMD(0x9D, fb_stride | (0x04000000u >> 8));
+    DL_CMD(0xD2, 3);                                   /* FBFMT = RGBA8888 */
+    DL_CMD(0xD3, 0);
+    DL_CMD(0x22, 0);                                   /* no alpha test */
+    DL_CMD(0x21, 0);                                   /* no alpha blending */
+    DL_CMD(0x1E, 0);
+    DL_CMD(0xA0, tex_base & 0x00FFFFFFu);
+    DL_CMD(0xA8, 8 | ((tex_base & 0xFF000000u) >> 8));  /* TEXBUFWIDTH = 8 */
+    DL_CMD(0xB8, (3 << 8) | 3);                        /* TEXSIZE = 8x8 */
+    DL_CMD(0xC0, 0);                                   /* TEXMAPMODE = UV */
+    DL_CMD(0xC3, 3);                                   /* TEXFORMAT = RGBA8888 */
+    DL_CMD(0xC6, 1);                                   /* TEXFILTER = LINEAR */
+    DL_CMD(0xC7, 0);                                   /* TEXWRAP = CLAMP */
+    DL_CMD(0xC9, (1 << 8) | 3);                        /* TEXFUNC = REPLACE, RGBA */
+    DL_CMD(0x1E, 1);                                   /* TEXTUREMAPENABLE */
+    DL_CMD(0x12, (3 << 0) | (3 << 7) | (1 << 23));      /* VERTEXTYPE = UV + float pos + through */
+    DL_CMD(0x01, vtx_base & 0x00FFFFFFu);
+    DL_CMD(0x04, (6 << 16) | 2);                       /* PRIM = SPRITES, count 2 */
+    DL_CMD(0x0F, 0);                                   /* FINISH */
+    DL_CMD(0x0C, 0);                                   /* END */
+    #undef DL_CMD
+    #undef W_FLOAT
+
+    memset(SR_HOST(fb_base), 0, fb_stride * 272u * 4u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl_base; cpu.r[5] = 0; cpu.r[6] = 0; cpu.r[7] = 0;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xFF000000u) == 0x35000000u,
+           "linear-filter list is accepted by production dispatch");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid; cpu.r[5] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "linear-filter list completes");
+
+    const uint32_t *fb = (const uint32_t *)SR_HOST(fb_base);
+    int leaked = 0, wrong = 0;
+    for (uint32_t dy = 0; dy < rect_h; dy++) {
+        for (uint32_t dx = 0; dx < rect_w; dx++) {
+            uint32_t want = LIN_TEXEL(1u + dx, 1u + dy) & 0x00FFFFFFu;
+            uint32_t got = fb[(rect_y + dy) * fb_stride + rect_x + dx] & 0x00FFFFFFu;
+            if (got == (outside & 0x00FFFFFFu)) leaked++;
+            else if (got != want) wrong++;
+        }
+    }
+    expect(leaked == 0,
+           "no linearly filtered sprite pixel is the outside texel row itself");
+    expect(wrong == 0,
+           "a linearly filtered 1:1 sprite reproduces its own texels exactly "
+           "(a half-texel window blends the outside row 50/50 into the first row)");
+    expect(fb[(rect_y - 1) * fb_stride + rect_x] == 0 &&
+               fb[(rect_y + rect_h) * fb_stride + rect_x] == 0,
+           "a linearly filtered sprite still paints no row outside its rectangle");
+    #undef LIN_TEXEL
 }
 
 static void test_ge_guest_sentinel(void) {
@@ -15240,6 +15416,7 @@ int main(int argc, char **argv) {
     test_nested_frame_under_psp_callback_dispatch();
     test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
+    test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
@@ -15269,6 +15446,7 @@ int main(int argc, char **argv) {
     test_unapplicable_route_disables_without_scanning();
     test_missing_root_fails_once_and_stays_failed();
     test_display_setframebuf_flip_accounting();
+    test_display_capture_arms_on_latched_flip();
     test_watchdog_no_new_frame_observation();
     test_watchdog_fires_on_boundary_crossing_not_exact_multiple();
     test_interrupt_nid_semantics();
