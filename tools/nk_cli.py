@@ -1338,7 +1338,7 @@ def _new_bringup_report() -> dict:
 
 
 def _update_issues(report: dict, values) -> None:
-    allowed = {71, 118, 285, 295, 296, 297, 298, 300, 308}
+    allowed = {71, 118, 280, 285, 295, 296, 297, 298, 300, 308}
     report["issue_numbers"] = sorted(
         set(report["issue_numbers"]) | {value for value in values if value in allowed}
     )
@@ -1420,6 +1420,8 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (the runtime rejected an unresolved dispatch target)"
     elif report["failure_class"] == "EXITED_ZERO_BEFORE_HLE":
         detail = " (the runtime exited zero before its first PSP kernel import)"
+    elif report["failure_class"] == "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP":
+        detail = " (the guest module unloaded itself before PSP display framebuffer setup; why is not yet established, and the stop/unload lifecycle is tracked in #280)"
     elif report["failure_class"] == "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP":
         detail = " (the runtime exited zero before PSP display framebuffer setup)"
     elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
@@ -1610,6 +1612,30 @@ def _flight_has_display_framebuffer_setup(path: Path | None) -> bool | None:
     if any(
         isinstance(event, dict) and event.get("class") == "hle"
         and event.get("kind") == 1 and event.get("arg0") == 0x289D82FE
+        for event in events
+    ):
+        return True
+    return False if dropped == 0 else None
+
+
+def _flight_has_module_self_unload(path: Path | None) -> bool | None:
+    """Return whether the flight bundle proves a guest module self-unload call."""
+    if path is None:
+        return None
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recorder = bundle.get("recorder") if isinstance(bundle, dict) else None
+    events = bundle.get("events") if isinstance(bundle, dict) else None
+    dropped = recorder.get("dropped") if isinstance(recorder, dict) else None
+    if (not isinstance(events, list) or isinstance(dropped, bool)
+            or not isinstance(dropped, int) or dropped < 0):
+        return None
+    self_unload_nids = {0x8F2DF740, 0xD675EBB8}
+    if any(
+        isinstance(event, dict) and event.get("class") == "hle"
+        and event.get("kind") == 1 and event.get("arg0") in self_unload_nids
         for event in events
     ):
         return True
@@ -2004,10 +2030,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 else:
                     framebuffer_observed = _flight_has_display_framebuffer_setup(flight_output)
                     if framebuffer_observed is False:
-                        _fail_bringup(
-                            report, "launch", "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [285, 308],
-                            int((time.perf_counter() - started) * 1000),
-                        )
+                        if _flight_has_module_self_unload(flight_output) is True:
+                            failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 285, 308]
+                        else:
+                            failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [285, 308]
+                        _fail_bringup(report, "launch", failure, issues,
+                                      int((time.perf_counter() - started) * 1000))
                     elif framebuffer_observed is None:
                         _fail_bringup(
                             report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [285, 308],
