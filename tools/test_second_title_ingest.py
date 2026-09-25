@@ -122,7 +122,9 @@ int main(int argc, char **argv) {
         assert(strcmp(session.title_id, "pspdev-phase5-v1") == 0);
         assert(strcmp(session.disc_id, "TEST00005") == 0);
         assert(session.config.resolution_scale == 1);
-        assert(session.config.diagnostic_mode == false);
+        /* Dispatch is unconditionally fail-closed (src/rt/recomp.c); no launch
+         * config toggle exists. The spawned-runtime mock below asserts the
+         * child environment carries no dispatch-control variable. */
 
         assert(nk_launch_start(&session) == NK_OK);
         printf("SECOND_TITLE_RUNTIME_LAUNCHED\\n");
@@ -178,9 +180,11 @@ int main(void) {
     assert(iso != NULL && strlen(iso) > 0);
     const char *fps = getenv("SR_FPS_CAP");
     assert(fps != NULL && strcmp(fps, "60") == 0);
-    /* Diagnostic fatal dispatch must NOT be set in consumer mode */
+    /* No dispatch-control variable may reach the runtime: dispatch is
+     * unconditionally fail-closed (src/rt/recomp.c). */
     const char *fatal = getenv("SR_DISPATCH_FATAL");
     assert(fatal == NULL);
+    assert(getenv("SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS") == NULL);
     return 0;
 }
 """

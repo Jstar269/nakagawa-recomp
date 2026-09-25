@@ -145,6 +145,7 @@ extern int sr_hle_test_data_state(void);
 extern size_t sr_hle_test_data_entry_count(void);
 extern int sr_hle_test_data_key_seen(const char *key_prefix);
 extern void sr_hle_test_data_reset(int pace_ms);
+extern unsigned long long sr_hle_test_data_phase_ms(unsigned int phase);
 
 /* Issue #178 white-box message-pipe probes (defined in hle.c, selftest-only). */
 typedef struct {
@@ -3927,6 +3928,169 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     sr_hle_test_data_reset(0);
     DeleteFileA(archive_path);
     RemoveDirectoryA(root);
+}
+
+enum {
+    HOST_DATA_PHASE_ARCHIVE_DISCOVER,
+    HOST_DATA_PHASE_PRIMARY_WALK,
+    HOST_DATA_PHASE_LOOSE_WALK,
+    HOST_DATA_PHASE_FINALIZE,
+    HOST_DATA_PHASE_VALIDATE,
+    HOST_DATA_PHASE_PUBLISH
+};
+
+static int host_data_bench_dir(const char *base, size_t bucket,
+                               char *path, size_t capacity, int create) {
+    if (!base || !path || capacity == 0u) return 0;
+    size_t used = (size_t)snprintf(path, capacity, "%s", base);
+    if (used >= capacity) return 0;
+    unsigned depth = 1u + (unsigned)(bucket % 4u);
+    int written = snprintf(path + used, capacity - used, "\\Pack%03zu.XB%u.D",
+                           bucket, (unsigned)(bucket % 3u));
+    if (written < 0 || (size_t)written >= capacity - used) return 0;
+    used += (size_t)written;
+    if (create && !hle_make_directory(path)) return 0;
+    unsigned components[] = {
+        (unsigned)bucket,
+        (unsigned)((bucket / 4u) % 20u),
+        (unsigned)((bucket / 16u) % 5u)
+    };
+    static const char *const names[] = { "Group", "Scope", "Cell" };
+    for (unsigned level = 1; level < depth; level++) {
+        written = snprintf(path + used, capacity - used, "\\%s%03u",
+                           names[level - 1u], components[level - 1u]);
+        if (written < 0 || (size_t)written >= capacity - used) return 0;
+        used += (size_t)written;
+        if (create && !hle_make_directory(path)) return 0;
+    }
+    return 1;
+}
+
+static int host_data_bench_write_files(const char *base, size_t count,
+                                       char prefix) {
+    char directory[MAX_PATH];
+    char path[MAX_PATH];
+    for (size_t bucket = 0; bucket < 80u; bucket++) {
+        if (!host_data_bench_dir(base, bucket, directory,
+                                 sizeof(directory), 1)) return 0;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (!host_data_bench_dir(base, i % 80u, directory,
+                                 sizeof(directory), 0)) return 0;
+        int written = snprintf(path, sizeof(path), "%s\\%c%05zu.DaTa",
+                              directory, prefix, i);
+        if (written < 0 || (size_t)written >= sizeof(path)) return 0;
+        FILE *file = fopen(path, "wb");
+        if (!file) return 0;
+        int ok = fputc((int)(unsigned char)prefix, file) != EOF;
+        if (fclose(file) != 0) ok = 0;
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
+static void host_data_bench_remove_tree(const char *root) {
+    if (!root || !root[0]) return;
+    char pattern[MAX_PATH];
+    int pattern_size = snprintf(pattern, sizeof(pattern), "%s\\*", root);
+    if (pattern_size < 0 || (size_t)pattern_size >= sizeof(pattern)) return;
+    WIN32_FIND_DATAA data;
+    HANDLE handle = FindFirstFileA(pattern, &data);
+    if (handle != INVALID_HANDLE_VALUE) {
+        do {
+            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0)
+                continue;
+            char child[MAX_PATH];
+            int child_size = snprintf(child, sizeof(child), "%s\\%s", root, data.cFileName);
+            if (child_size < 0 || (size_t)child_size >= sizeof(child)) continue;
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                host_data_bench_remove_tree(child);
+                RemoveDirectoryA(child);
+            } else {
+                DeleteFileA(child);
+            }
+        } while (FindNextFileA(handle, &data));
+        FindClose(handle);
+    }
+    RemoveDirectoryA(root);
+}
+
+static int host_data_bench_make_tree(const char *root, size_t total_files,
+                                     char *dataroot, size_t dataroot_capacity) {
+    char usrdir[MAX_PATH];
+    char loose[MAX_PATH];
+    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\xbdata_extracted", root);
+    if (n < 0 || (size_t)n >= dataroot_capacity) return 0;
+    n = snprintf(usrdir, sizeof(usrdir), "%s\\USRDIR", root);
+    if (n < 0 || (size_t)n >= sizeof(usrdir)) return 0;
+    n = snprintf(loose, sizeof(loose), "%s\\data", usrdir);
+    if (n < 0 || (size_t)n >= sizeof(loose) ||
+        !hle_make_directory(root) || !hle_make_directory(usrdir) ||
+        !hle_make_directory(dataroot) || !hle_make_directory(loose)) return 0;
+    size_t primary_count = total_files * 4u / 5u;
+    size_t loose_count = total_files - primary_count;
+    return host_data_bench_write_files(dataroot, primary_count, 'P') &&
+           host_data_bench_write_files(loose, loose_count, 'L');
+}
+
+static void test_host_data_scan_scaling(void) {
+    static const size_t counts[] = { 15000u, 30000u, 60000u };
+    unsigned long long elapsed_ms[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    char cwd[MAX_PATH];
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) {
+        expect(0, "the synthetic host-data benchmark has a working directory");
+        return;
+    }
+    if (!hle_make_directory("build")) {
+        expect(0, "the synthetic host-data benchmark build directory exists");
+        return;
+    }
+    for (size_t sample = 0; sample < sizeof(counts) / sizeof(counts[0]); sample++) {
+        char root[MAX_PATH];
+        char dataroot[MAX_PATH];
+        root[0] = '\0';
+        int n = snprintf(root, sizeof(root), "%s\\build\\host_data_scan_%lu_%llu",
+                         cwd, (unsigned long)GetCurrentProcessId(),
+                         (unsigned long long)GetTickCount64());
+        int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
+        int tree_ok = root_path_ok &&
+            host_data_bench_make_tree(root, counts[sample], dataroot, sizeof(dataroot));
+        expect(tree_ok, "the mixed-case 1-to-4-level synthetic host-data tree was created");
+        if (!tree_ok) {
+            if (root_path_ok) host_data_bench_remove_tree(root);
+            continue;
+        }
+        SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+        sr_hle_test_data_reset(0);
+        ULONGLONG started = GetTickCount64();
+        int state = sr_host_data_prepare();
+        elapsed_ms[sample] = GetTickCount64() - started;
+        expect(state == SR_DATA_TEST_STATE_READY,
+               "the synthetic prepared-tree route reaches READY");
+        expect(sr_hle_test_data_entry_count() == counts[sample],
+               "the primary and loose walks publish every synthetic file exactly once");
+        fprintf(stderr,
+                "[HOST_DATA_SCALE] files=%zu total_ms=%llu archive_discover_ms=%llu "
+                "walk_ms=%llu loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu "
+                "publish_ms=%llu\n",
+                counts[sample], elapsed_ms[sample],
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_ARCHIVE_DISCOVER),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PRIMARY_WALK),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_LOOSE_WALK),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_FINALIZE),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_VALIDATE),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PUBLISH));
+        SetEnvironmentVariableA("SR_DATAROOT", NULL);
+        sr_hle_test_data_reset(0);
+        host_data_bench_remove_tree(root);
+    }
+    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u,
+           "all three synthetic scaling sizes were measured");
+    expect(elapsed_ms[1] <= elapsed_ms[0] * 3u + 1000u &&
+               elapsed_ms[2] <= elapsed_ms[0] * 7u + 2000u,
+           "host-data preparation growth stays near-linear from 15k to 60k files");
+    expect(elapsed_ms[2] <= 20000u,
+           "a 60k-file primary-plus-loose synthetic tree prepares within 20 seconds");
 }
 
 typedef struct {
@@ -15509,6 +15673,7 @@ int main(int argc, char **argv) {
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
     test_direct_xb_many_members_skip_loose_walk();
+    test_host_data_scan_scaling();
     test_archive_mode_preserves_loose_routes();
     test_unprepared_route_lookup_fails_closed_without_building();
     test_slow_enumeration_completes_before_guest_start();
