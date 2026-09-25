@@ -17,6 +17,11 @@ import json
 from pathlib import Path
 import subprocess
 
+try:
+    from .nk_core.git_isolation import isolated_git_env
+except ImportError:
+    from nk_core.git_isolation import isolated_git_env
+
 ROOT = Path(__file__).resolve().parent.parent
 EXPORT_PATH = "PUBLIC_EXPORT.json"
 PROVENANCE_LEDGER_PATH = "assets/public_provenance_ledger.json"
@@ -101,15 +106,16 @@ def write_document(path: Path, document: dict) -> None:
 
 
 def index_files(repo_root: Path = ROOT) -> list[tuple[str, bytes]]:
+    env = isolated_git_env(root=repo_root)
     raw = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=repo_root,
-                         capture_output=True, check=True).stdout.decode("utf-8", errors="surrogateescape")
+                         env=env, capture_output=True, check=True).stdout.decode("utf-8", errors="surrogateescape")
     requests: list[tuple[str, str]] = []
     for item in raw.split("\0"):
         parts = item.split(None, 3)
         if len(parts) == 4:
             requests.append((parts[3], parts[1]))
     proc = subprocess.Popen(["git", "cat-file", "--batch"], cwd=repo_root,
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+                            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     assert proc.stdin and proc.stdout
     output, _ = proc.communicate(("".join(f"{sha}\n" for _, sha in requests)).encode("ascii"))
     result: list[tuple[str, bytes]] = []

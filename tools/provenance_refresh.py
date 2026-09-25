@@ -29,14 +29,21 @@ POLICY = "assets/public_source_profile.json"
 try:
     from . import provenance_attest_verify as verifier
     from . import provenance_ledger
+    from .nk_core.git_isolation import isolated_git_env
 except ImportError:
     import provenance_attest_verify as verifier
     import provenance_ledger
+    from nk_core.git_isolation import isolated_git_env
 
 
 def _run(repo: Path, *args: str, capture: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
-        list(args), cwd=repo, text=True, capture_output=capture, check=False,
+        list(args),
+        cwd=repo,
+        env=isolated_git_env(root=repo),
+        text=True,
+        capture_output=capture,
+        check=False,
     )
 
 

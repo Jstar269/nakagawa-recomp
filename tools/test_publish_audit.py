@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import publication_policy
 import publish_audit
+from nk_core.git_isolation import isolated_git_env, run_git
 
 LF = bytes([10])
 CRLF = bytes([13, 10])
@@ -59,28 +60,94 @@ def hermetic_policy(repo: Path, include_paths, exclude_paths=(), exclude_globs=(
     return policy_path, export_path
 
 
-def _isolated_git_env(repo: Path) -> dict:
-    """Git environment with host-global/system config disabled.
-
-    Hermetic fixtures must decide their own blob bytes. A host ``filter.lfs``
-    clean driver (common in global/system Git config) would rewrite ``git add``
-    content for any ``filter=lfs`` pattern, so the staged blob -- and the
-    entry kind derived from it -- would depend on the machine running the test.
-    Point both config env vars at one empty file for the fixture's Git calls.
-
-    Call after ``git init``: the empty file lives under ``.git/`` so it is
-    never enumerated as a fixture path.
-    """
-    empty = repo / ".git" / "_empty_git_config"
-    if not empty.exists():
-        empty.write_text("", encoding="utf-8", newline="\n")
-    env = os.environ.copy()
-    env["GIT_CONFIG_GLOBAL"] = str(empty)
-    env["GIT_CONFIG_SYSTEM"] = str(empty)
-    return env
-
-
 class TestPublishAudit(unittest.TestCase):
+    def test_scratch_git_setup_ignores_inherited_git_dir(self):
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            root = Path(tmp_dir_raw).resolve()
+            scratch = root / "scratch"
+            sacrificial = root / "sacrificial"
+            bootstrap_env = {
+                key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+            }
+            run_git(["init", "-q", str(scratch)], cwd=root, check=True, capture_output=True, env=bootstrap_env)
+            run_git(["init", "-q", str(sacrificial)], cwd=root, check=True, capture_output=True, env=bootstrap_env)
+            config_path = sacrificial / ".git" / "config"
+            before = config_path.read_bytes()
+
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(sacrificial / ".git")}):
+                env = isolated_git_env(root=scratch)
+                run_git(
+                    ["config", "user.name", "Test"],
+                    cwd=scratch,
+                    check=True,
+                    capture_output=True,
+                    env=env,
+                )
+                run_git(
+                    ["config", "user.email", "test@example.com"],
+                    cwd=scratch,
+                    check=True,
+                    capture_output=True,
+                    env=env,
+                )
+
+            after = config_path.read_bytes()
+            self.assertEqual(after, before)
+            self.assertNotIn(b"[user]", after)
+
+    def test_isolated_git_env_drops_repository_selectors_and_config(self):
+        selectors = {
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_DIR",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            "GIT_INDEX_FILE",
+            "GIT_NAMESPACE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_PREFIX",
+            "GIT_QUARANTINE_PATH",
+            "GIT_SHALLOW_FILE",
+            "GIT_WORK_TREE",
+        }
+        base = {name: "ambient" for name in selectors}
+        base.update({
+            "GIT_CONFIG": "ambient",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "user.name",
+            "GIT_CONFIG_VALUE_0": "Ambient",
+            "GIT_AUTHOR_NAME": "Ambient Author",
+        })
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            root = Path(tmp_dir_raw).resolve() / "scratch"
+            root.mkdir()
+            env = isolated_git_env(base, root=root)
+        for name in selectors - {"GIT_CEILING_DIRECTORIES"}:
+            self.assertNotIn(name, env)
+        for name in ("GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
+            self.assertNotIn(name, env)
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "Nakagawa Recomp Tests")
+        self.assertEqual(env["GIT_COMMITTER_EMAIL"], "tests@nakagawa-recomp.invalid")
+        self.assertEqual(Path(env["GIT_CEILING_DIRECTORIES"]).resolve(), root.parent)
+
+    def test_isolated_git_env_keeps_only_the_index_of_the_inspected_repository(self):
+        """A hook's GIT_INDEX_FILE is kept for its own repository and dropped for any other."""
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            tmp_dir = Path(tmp_dir_raw).resolve()
+            inspected = tmp_dir / "inspected"
+            other = tmp_dir / "other"
+            for repo in (inspected, other):
+                repo.mkdir()
+                run_git(["init", "-q"], repo, check=True)
+            own_index = str(inspected / ".git" / "index.lock")
+            env = isolated_git_env({"GIT_INDEX_FILE": own_index}, root=inspected)
+            self.assertEqual(Path(env["GIT_INDEX_FILE"]).resolve(), Path(own_index).resolve())
+            foreign_index = str(other / ".git" / "index")
+            env = isolated_git_env({"GIT_INDEX_FILE": foreign_index}, root=inspected)
+            self.assertNotIn("GIT_INDEX_FILE", env)
+
     def test_forbidden_private_paths_and_formats(self):
         self.assertIsNotNone(publish_audit._forbidden_path("place_game_here/EBOOT.elf"))
         self.assertIsNotNone(publish_audit._forbidden_path("notes/EBOOT.BIN.dec.h"))
@@ -378,10 +445,7 @@ class TestPublishAudit(unittest.TestCase):
         # selected source changes, never silently.
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-            env = _isolated_git_env(repo)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, env=env)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, env=env)
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
 
             for name in ("LICENSE", "NOTICE.md", "README.md", "AGENTS.md"):
                 (repo / name).write_text(name + "\n", encoding="utf-8", newline="\n")
@@ -389,7 +453,7 @@ class TestPublishAudit(unittest.TestCase):
                 "*.dat filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8", newline="\n"
             )
             (repo / "data.dat").write_text("Not an LFS pointer content\n", encoding="utf-8", newline="\n")
-            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True, env=env)
+            run_git(["add", "-A"], cwd=repo, check=True, capture_output=True)
 
             # Index declares LFS; an unstaged worktree edit removes the policy.
             (repo / ".gitattributes").write_text(
@@ -419,8 +483,8 @@ class TestPublishAudit(unittest.TestCase):
 
             # Reverse: stage the empty policy and leave the LFS policy only in
             # the (unstaged) worktree.
-            subprocess.run(
-                ["git", "add", ".gitattributes"], cwd=repo, check=True, capture_output=True, env=env
+            run_git(
+                ["add", ".gitattributes"], cwd=repo, check=True, capture_output=True
             )
             (repo / ".gitattributes").write_text(
                 "*.dat filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8", newline="\n"
@@ -452,16 +516,13 @@ class TestPublishAudit(unittest.TestCase):
         # with an explicit finding, never be skipped as "no LFS policy".
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-            env = _isolated_git_env(repo)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, env=env)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, env=env)
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
 
             for name in ("LICENSE", "NOTICE.md", "README.md", "AGENTS.md"):
                 (repo / name).write_text(name + "\n", encoding="utf-8", newline="\n")
             (repo / ".gitattributes").write_bytes(b"*.dat filter=lfs \xff\xfe -text\n")
             (repo / "data.dat").write_text("content\n", encoding="utf-8", newline="\n")
-            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True, env=env)
+            run_git(["add", "-A"], cwd=repo, check=True, capture_output=True)
 
             entries = publish_audit._get_git_entries(tracked_only=True, repo_root=repo)
             findings = publish_audit.audit_entries(entries, repo_root=repo)
@@ -928,11 +989,9 @@ class TestPublishAudit(unittest.TestCase):
             (repo / "NOTICE.md").write_text("NOTICE", encoding="utf-8", newline="\n")
             (repo / "README.md").write_text("README", encoding="utf-8", newline="\n")
             (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
+            run_git(["add", "."], cwd=repo, check=True, capture_output=True)
+            run_git(["commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
 
             entries = publish_audit._get_filesystem_entries(repo)
             paths = [e.path for e in entries]
@@ -1006,7 +1065,7 @@ class TestPublishAudit(unittest.TestCase):
             self.assertIn("linked", paths)
             self.assertNotIn("linked/sentinel.txt", paths, f"scan crossed junction: {paths}")
 
-            subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+            run_git(["init"], cwd=repo, capture_output=True, check=True)
             git_entries = publish_audit._get_git_entries(
                 tracked_only=False,
                 repo_root=repo,
@@ -1045,10 +1104,8 @@ class TestPublishAudit(unittest.TestCase):
             if not self._make_junction(junction, outside):
                 self.skipTest("cannot create NTFS junction")
 
-            subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+            run_git(["init"], cwd=repo, capture_output=True, check=True)
+            run_git(["add", "-A"], cwd=repo, check=True, capture_output=True)
 
             entries = publish_audit._get_git_entries(
                 tracked_only=True,
@@ -1081,8 +1138,8 @@ class TestPublishAudit(unittest.TestCase):
             # what would actually be published, and flag the junction
             # separately -- rather than substitute a refusal and leave the
             # staged bytes unscanned.
-            staged = subprocess.run(
-                ["git", "cat-file", "-p", ":linked/sentinel.txt"],
+            staged = run_git(
+                ["cat-file", "-p", ":linked/sentinel.txt"],
                 cwd=repo, capture_output=True, check=True,
             ).stdout
             self.assertEqual(staged, b"outside", "precondition: git staged the smuggled bytes")
@@ -1262,13 +1319,11 @@ class TestPublishAudit(unittest.TestCase):
             (repo / ".gitignore").write_text(".ruff_cache/\n", encoding="utf-8", newline="\n")
             (repo / ".ruff_cache").mkdir()
             (repo / ".ruff_cache" / "bin.dat").write_bytes(b"\x00\x01\x02\x03binary-cache-data")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
+            run_git(["add", "."], cwd=repo, check=True, capture_output=True)
+            run_git(["commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
             # .ruff_cache is untracked; a fresh run of the scan must prune it.
-            self.assertNotIn(".gitignore", subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout)
+            self.assertNotIn(".gitignore", run_git(["status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout)
 
             entries = publish_audit._get_filesystem_entries(repo)
             paths = [e.path for e in entries]
@@ -1288,14 +1343,12 @@ class TestPublishAudit(unittest.TestCase):
             (repo / "AGENTS.md").write_text("AGENTS", encoding="utf-8", newline="\n")
             (repo / ".gitignore").write_text("*.tmp\n", encoding="utf-8", newline="\n")
             (repo / "note.tmp").write_text("tracked despite pattern", encoding="utf-8", newline="\n")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
             # git add . would skip note.tmp (matches *.tmp); a force-add is how
             # a tracked file that matches an ignore pattern legitimately exists.
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "add", "-f", "note.tmp"], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+            run_git(["add", "."], cwd=repo, check=True, capture_output=True)
+            run_git(["add", "-f", "note.tmp"], cwd=repo, check=True, capture_output=True)
+            run_git(["commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
 
             entries = publish_audit._get_filesystem_entries(repo)
             paths = [e.path for e in entries]
@@ -1361,9 +1414,7 @@ class TestPublishAudit(unittest.TestCase):
     def test_hermetic_git_index_vs_working_tree_contract(self):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
 
             slash = chr(92)
             safe_content = "# SPDX-License-Identifier: GPL-2.0-or-later\n# Safe tracked file\n"
@@ -1378,8 +1429,8 @@ class TestPublishAudit(unittest.TestCase):
 
             # --- Case 1: Index is SAFE, Working tree on disk is UNSAFE (unstaged edit) ---
             target_file.write_text(safe_content, encoding="utf-8", newline="\n")
-            subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True)
-            safe_sha = subprocess.run(["git", "ls-files", "-s", "src/core.py"], cwd=repo, capture_output=True, text=True, check=True).stdout.split()[1]
+            run_git(["add", "src/core.py"], cwd=repo, check=True)
+            safe_sha = run_git(["ls-files", "-s", "src/core.py"], cwd=repo, capture_output=True, text=True, check=True).stdout.split()[1]
 
             # Modify working tree to be UNSAFE without staging
             target_file.write_text(unsafe_content, encoding="utf-8", newline="\n")
@@ -1396,8 +1447,8 @@ class TestPublishAudit(unittest.TestCase):
 
             # --- Case 2: Index is UNSAFE, Working tree on disk is SAFE ---
             target_file.write_text(unsafe_content, encoding="utf-8", newline="\n")
-            subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True)
-            unsafe_sha = subprocess.run(["git", "ls-files", "-s", "src/core.py"], cwd=repo, capture_output=True, text=True, check=True).stdout.split()[1]
+            run_git(["add", "src/core.py"], cwd=repo, check=True)
+            unsafe_sha = run_git(["ls-files", "-s", "src/core.py"], cwd=repo, capture_output=True, text=True, check=True).stdout.split()[1]
 
             # Revert working tree on disk to be SAFE (unstaged)
             target_file.write_text(safe_content, encoding="utf-8", newline="\n")
@@ -1439,9 +1490,7 @@ UNSAFE_SOURCE = (
 
 def _make_publication_fixture_repo(repo: Path) -> Path:
     """Build a minimal hermetic repo that a clean publication audit passes."""
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
+    run_git(["init"], cwd=repo, check=True, capture_output=True)
 
     for name, body in (
         ("LICENSE", "LICENSE"),
@@ -1491,7 +1540,7 @@ def _make_publication_fixture_repo(repo: Path) -> Path:
         newline="\n",
     )
 
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    run_git(["add", "-A"], cwd=repo, check=True, capture_output=True)
     return target
 
 
@@ -1518,7 +1567,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
             _make_publication_fixture_repo(repo)
-            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+            run_git(["commit", "-qm", "fixture"], cwd=repo, check=True)
 
             materialized, tree = publish_audit._materialize_committed_tree("HEAD", repo)
             try:
@@ -1584,7 +1633,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
             target = _make_publication_fixture_repo(repo)
 
             target.write_text(UNSAFE_SOURCE, encoding="utf-8", newline="\n")
-            subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True, capture_output=True)
+            run_git(["add", "src/core.py"], cwd=repo, check=True, capture_output=True)
             target.unlink()
 
             entries = publish_audit._get_git_entries(
@@ -1659,7 +1708,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
                 )
 
                 # Staging it keeps it caught: the normal commit-bound workflow is unchanged.
-                subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True, capture_output=True)
+                run_git(["add", "src/core.py"], cwd=repo, check=True, capture_output=True)
                 staged_codes = [publish_audit.main(list(args)) for args in invocations]
                 self.assertTrue(
                     any(code != 0 for code in staged_codes),
@@ -1668,7 +1717,7 @@ class TestVerifyWorktreeTruth(unittest.TestCase):
 
                 # Reverting on disk *and* in the index returns the gate to green.
                 target.write_text(SAFE_SOURCE, encoding="utf-8", newline="\n")
-                subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True, capture_output=True)
+                run_git(["add", "src/core.py"], cwd=repo, check=True, capture_output=True)
                 restored_codes = [publish_audit.main(list(args)) for args in invocations]
                 self.assertEqual(
                     restored_codes,
@@ -1747,8 +1796,8 @@ class TextHygieneTests(unittest.TestCase):
                 "path = '" + user_path + "'\r\n"
             ).encode("utf-8")
             target.write_bytes(crlf_source)
-            subprocess.run(
-                ["git", "-c", "core.autocrlf=false", "add", "src/core.py"],
+            run_git(
+                ["-c", "core.autocrlf=false", "add", "src/core.py"],
                 cwd=repo,
                 check=True,
                 capture_output=True,
@@ -1799,8 +1848,8 @@ class TextHygieneTests(unittest.TestCase):
                 for f in candidate_findings
             ))
 
-            subprocess.run(
-                ["git", "-c", "core.autocrlf=false", "commit", "-qm", "crlf fixture"],
+            run_git(
+                ["-c", "core.autocrlf=false", "commit", "-qm", "crlf fixture"],
                 cwd=repo,
                 check=True,
             )
@@ -1930,7 +1979,7 @@ class TestPrivateRootDetection(unittest.TestCase):
                 encoding="utf-8",
                 newline="\n",
             )
-            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+            run_git(["add", "-A"], cwd=repo, check=True, capture_output=True)
 
             # 1. Clean file: passes
             entries = publish_audit._get_git_entries(
@@ -1956,7 +2005,7 @@ class TestPrivateRootDetection(unittest.TestCase):
             self.assertTrue(any(("contains configured private root '" + "C:" + "/nk'") in f.detail for f in findings_worktree))
 
             # 3. Add to index (staged)
-            subprocess.run(["git", "add", "src/core.py"], cwd=repo, check=True, capture_output=True)
+            run_git(["add", "src/core.py"], cwd=repo, check=True, capture_output=True)
             index_entries = publish_audit._get_git_entries(
                 tracked_only=True, repo_root=repo, content_source=publish_audit.CONTENT_INDEX
             )

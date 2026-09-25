@@ -37,6 +37,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+from nk_core.git_isolation import run_git  # noqa: E402
 import provenance_attest_verify as verifier  # noqa: E402
 import provenance_ledger  # noqa: E402
 import provenance_refresh  # noqa: E402
@@ -136,8 +137,6 @@ class Repository:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self._git("init", "--quiet", "--initial-branch=main")
-        self._git("config", "user.email", "fixture@example.invalid")
-        self._git("config", "user.name", "Fixture")
         self._git("config", "commit.gpgsign", "false")
         # Keep Git from starting background maintenance while TemporaryDirectory
         # is removing this throwaway repository on hosted Python 3.14 runners.
@@ -145,8 +144,8 @@ class Repository:
         self._git("config", "maintenance.auto", "false")
 
     def _git(self, *args: str) -> str:
-        result = subprocess.run(
-            ["git", *args], cwd=self.root, capture_output=True, text=True, check=True,
+        result = run_git(
+            args, cwd=self.root, capture_output=True, text=True, check=True,
         )
         return result.stdout.strip()
 
@@ -362,8 +361,8 @@ class GateCase(unittest.TestCase):
         return result
 
     def current_entries(self, rev: str = "HEAD") -> list[dict]:
-        raw = subprocess.run(
-            ["git", "show", f"{rev}:{verifier.LEDGER_PATH}"], cwd=self.repo.root,
+        raw = run_git(
+            ["show", f"{rev}:{verifier.LEDGER_PATH}"], cwd=self.repo.root,
             capture_output=True, check=True,
         ).stdout
         return json.loads(raw.decode("utf-8"))["entries"]
@@ -1548,24 +1547,24 @@ class PathCanonicalizationTests(GateCase):
     """One file, one spelling. Ambiguity fails closed rather than normalizing."""
 
     def _stage_path(self, raw_path: bytes) -> str:
-        blob = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"], cwd=self.repo.root,
+        blob = run_git(
+            ["hash-object", "-w", "--stdin"], cwd=self.repo.root,
             input=b"int x(void) { return 1; }\n", capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
         # `git mktree` builds a single level, so it cannot express a nested
         # path. `update-index --index-info` takes the raw bytes and any depth.
-        subprocess.run(["git", "read-tree", self.base], cwd=self.repo.root, check=True,
-                       capture_output=True)
-        subprocess.run(
-            ["git", "update-index", "-z", "--index-info"], cwd=self.repo.root,
+        run_git(["read-tree", self.base], cwd=self.repo.root, check=True,
+                capture_output=True)
+        run_git(
+            ["update-index", "-z", "--index-info"], cwd=self.repo.root,
             input=b"100644 " + blob.encode("ascii") + b" 0\t" + raw_path + b"\0",
             capture_output=True, check=True,
         )
-        tree = subprocess.run(
-            ["git", "write-tree"], cwd=self.repo.root, capture_output=True, check=True,
+        tree = run_git(
+            ["write-tree"], cwd=self.repo.root, capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
-        return subprocess.run(
-            ["git", "commit-tree", tree, "-p", self.base, "-m", "odd path"],
+        return run_git(
+            ["commit-tree", tree, "-p", self.base, "-m", "odd path"],
             cwd=self.repo.root, capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
 
@@ -1752,8 +1751,8 @@ class ContentBindingTests(GateCase):
         self.repo.branch("attack", self.base)
         # Stage a real mode-120000 entry without needing symlink support on the
         # host filesystem, which Windows CI runners do not reliably grant.
-        blob = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"], cwd=self.repo.root,
+        blob = run_git(
+            ["hash-object", "-w", "--stdin"], cwd=self.repo.root,
             input=b"src/rt/core.c", capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
         self.repo._git("update-index", "--add", "--cacheinfo", f"120000,{blob},src/rt/link.c")
@@ -2227,8 +2226,8 @@ class EphemeralGenerationTests(unittest.TestCase):
 
     def baseline(self, commit: str | None = None) -> Path:
         commit = commit or self.base
-        raw = subprocess.run(
-            ["git", "show", f"{commit}:{verifier.LEDGER_PATH}"],
+        raw = run_git(
+            ["show", f"{commit}:{verifier.LEDGER_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         path = self.outside / "trusted-baseline.json"
@@ -2512,8 +2511,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("authorized obsolete exclusion removal")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         blessed_policy = self.outside / "blessed-exclusion-removal-policy.json"
@@ -2555,8 +2554,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("authorized candidate policy change")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         blessed_policy = self.outside / "blessed-candidate-policy.json"
@@ -2597,8 +2596,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("policy change for output collision test")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         authority_document = _canonical({
@@ -2654,8 +2653,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("mismatched candidate policy")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         blessed_policy = self.outside / "wrong-blessed-candidate-policy.json"

@@ -88,10 +88,12 @@ import tempfile
 from dataclasses import dataclass
 
 try:
+    from .nk_core.git_isolation import isolated_git_env
     from .public_export import build_document as _build_export_document
     from .public_export import write_document as _write_json_document
     from .publication_policy import load_policy as _load_publication_policy
 except ImportError:
+    from nk_core.git_isolation import isolated_git_env
     from public_export import build_document as _build_export_document
     from public_export import write_document as _write_json_document
     from publication_policy import load_policy as _load_publication_policy
@@ -431,7 +433,14 @@ def _write_controls_atomic(writes: list[tuple[Path, bytes]], *, code: str) -> No
 
 
 def _git(*args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        env=isolated_git_env(root=ROOT),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     return result.stdout
 
 
@@ -449,8 +458,11 @@ def _index_blobs() -> dict[str, bytes]:
             requests.append((parts[3], parts[1]))
     if not requests:
         return {}
-    proc = subprocess.Popen(["git", "cat-file", "--batch"], cwd=ROOT,
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc = subprocess.Popen(
+        ["git", "cat-file", "--batch"], cwd=ROOT,
+        env=isolated_git_env(root=ROOT),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    )
     assert proc.stdin and proc.stdout
     stdout, _ = proc.communicate(("".join(f"{sha}\n" for _, sha in requests)).encode("ascii"))
     blobs: dict[str, bytes] = {}
@@ -728,7 +740,11 @@ def _canonical_json_bytes(document: dict) -> bytes:
 
 def _git_at(repo_root: Path, *args: str) -> bytes:
     result = subprocess.run(
-        ["git", *args], cwd=repo_root, capture_output=True, check=False,
+        ["git", *args],
+        cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
+        capture_output=True,
+        check=False,
     )
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
@@ -766,6 +782,7 @@ def _tree_blobs(repo_root: Path, tree_sha: str) -> dict[str, bytes]:
 
     proc = subprocess.Popen(
         ["git", "cat-file", "--batch"], cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdin and proc.stdout
