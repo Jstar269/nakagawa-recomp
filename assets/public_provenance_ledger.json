@@ -7247,7 +7247,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd9c0e69f7e12b9fe8e92348ccc426344516e9d3122a775840ac7ccf64171efd"
+      "sha256": "f9b796d1fb9417650378407eb78c208b36d454f1784d2afa7a9c67049c2606c4"
     },
     {
       "path": "tools/nk_core/iso_inspect.py",
@@ -9149,7 +9149,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ff43bd2c79e838637a5ca4b3655ce6dadf452da894a09d2b8ce2d529bf89825b"
+      "sha256": "93d98b394f738ab9c4129d5d1a0308c607e64882e26f11d8218a43fd712caf59"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
