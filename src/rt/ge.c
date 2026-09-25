@@ -3295,16 +3295,34 @@ unsigned long g_list_writes=0, g_list_nonblack=0, g_list_clearpx=0;
 static uint32_t ge_run_list_inner(uint32_t addr, int resume);
 
 uint32_t ge_run_list(uint32_t addr, int resume) {
+    uint64_t perf_started = sr_perf_now_ns();
     ge_cpu_profile_configure();
+    uint64_t transform_before = 0;
+    uint64_t primitive_before = 0;
     uint64_t nested_before = 0;
-    if (s_cpu_profile)
+    if (s_cpu_profile) {
+        if (sr_perf_enabled) {
+            transform_before = s_cpu_profile_stats.primitive_profile_phase[GE_PRIM_PROFILE_TRANSFORM].ns;
+            primitive_before = s_cpu_profile_stats.phase[GE_CPU_PRIMITIVE].ns;
+        }
         nested_before = s_cpu_profile_stats.phase[GE_CPU_PRIMITIVE].ns +
                         s_cpu_profile_stats.phase[GE_CPU_BLOCK_TRANSFER].ns +
                         s_cpu_profile_stats.phase[GE_CPU_CLUT_LOAD].ns +
                         s_cpu_profile_stats.phase[GE_CPU_FLUSH].ns;
+    }
     uint64_t profile_started = ge_cpu_profile_begin();
     unsigned long t0 = wall_ms();
     uint32_t next_addr = ge_run_list_inner(addr, resume);
+    if (perf_started) sr_perf_ge_cpu(perf_started);
+    if (sr_perf_enabled && s_cpu_profile) {
+        uint64_t transform_after = s_cpu_profile_stats.primitive_profile_phase[GE_PRIM_PROFILE_TRANSFORM].ns;
+        uint64_t primitive_after = s_cpu_profile_stats.phase[GE_CPU_PRIMITIVE].ns;
+        uint64_t transform_delta = transform_after > transform_before
+                                       ? transform_after - transform_before : 0;
+        uint64_t primitive_delta = primitive_after > primitive_before
+                                       ? primitive_after - primitive_before : 0;
+        sr_perf_ge_cpu_phase(transform_delta, primitive_delta);
+    }
     s_ge_ms_acc += wall_ms() - t0;
     if (s_cpu_profile) {
         uint64_t total = SDL_GetTicksNS() - profile_started;

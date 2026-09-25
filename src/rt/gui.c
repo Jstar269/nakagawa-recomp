@@ -279,7 +279,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (stride == 0) stride = 512;
 
     if (!present_slot_due()) {
-        sr_perf_present_skip();
+        if (sr_perf_enabled) sr_perf_present_skip();
 #ifdef SR_SDL3VK
         /* A host present that never runs must not service an armed capture: otherwise a
          * later present would publish the old path with newer pixels. Resolve it as

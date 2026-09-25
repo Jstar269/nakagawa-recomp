@@ -55,7 +55,6 @@ void sr_oor(uint32_t address, uint32_t value, int store) {{
 uint32_t sr_get_ge_status(void) {{ return 0; }}
 uint32_t sched_current_uid(void) {{ return 0; }}
 void sr_debug_init_watches(void) {{}}
-void sr_perf_init(void) {{}}
 void sr_profile_init(void) {{}}
 void sr_register_all(void) {{}}
 static void dummy_recomp_fn(CpuState *s) {{ (void)s; }}
@@ -432,7 +431,7 @@ int main(int argc, char **argv) {{
 
             compiled = subprocess.run(
                 [CC, "-std=c11", "-O2", f"-I{RT_DIR}", f"-I{tmpdir}", "-Wall", "-Wextra", "-Werror",
-                 str(src), str(RT_DIR / "title_config.c"), "-o", str(exe)],
+                 str(src), str(RT_DIR / "title_config.c"), str(RT_DIR / "perf.c"), "-o", str(exe)],
                 capture_output=True, text=True,
             )
             self.assertEqual(compiled.returncode, 0, compiled.stderr)

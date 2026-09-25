@@ -1582,6 +1582,12 @@ static int dispatch_run_interp(
     return (int)interp_result;
 }
 
+static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target) {
+    if (sr_perf_enabled) sr_perf_aot_begin(target);
+    fn(s);
+    if (sr_perf_enabled) sr_perf_aot_end();
+}
+
 static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
@@ -1593,7 +1599,10 @@ static int dispatch_try_with_boundary(
     if ((target & SR_DISPATCH_VFPU_MASK) == SR_DISPATCH_VFPU_TAG) {
         uint32_t pc=target&~SR_DISPATCH_VFPU_MASK;
         uint32_t op=MEM_R32(pc);
-        if (sr_vfpu_interp(s,op)==SR_VFPU_OTHER) {
+        uint64_t perf_started = sr_perf_now_ns();
+        int vfpu_result = sr_vfpu_interp(s,op);
+        if (perf_started) sr_perf_vfpu(op, perf_started, vfpu_result);
+        if (vfpu_result==SR_VFPU_OTHER) {
             fprintf(stderr,
                     "VFPU_FALLBACK_OTHER: pc=0x%08x op=0x%08x target=0x%08x caller_pc=0x%08x ra=0x%08x sp=0x%08x "
                     "a0=0x%08x a1=0x%08x a2=0x%08x obj_vptr=0x%08x vslot0c=0x%08x "
@@ -1733,7 +1742,10 @@ static int dispatch_try_with_boundary(
         uint32_t alias_target = 0u;
         if (sr_title_config_dispatch_alias(target, &alias_target)) {
             RecompFn aliased = sr_lookup(alias_target);
-            if (aliased) { aliased(s); return SR_GUEST_INTERP_AOT_HANDOFF; }
+            if (aliased) {
+                dispatch_call_aot(aliased, s, alias_target);
+                return SR_GUEST_INTERP_AOT_HANDOFF;
+            }
         }
     }
 
@@ -1873,6 +1885,7 @@ static int dispatch_try_with_boundary(
          * Gate off, sr_stale_block_is_stale() is one cached-flag branch
          * returning 0, so this stays exactly on the current path. */
         if (sr_stale_block_is_stale(target)) {
+            sr_perf_interp_set_reason(SR_PERF_INTERP_STALE_BLOCK);
             return dispatch_run_interp(s, target, call_boundary);
         }
         if (target == 0x00000214u) {
@@ -1909,7 +1922,7 @@ static int dispatch_try_with_boundary(
                 fprintf(stderr, "  [INIT_WALKER_GUARD] saving r[16]=0x%08x before dispatch 0x%08x\n",
                         saved_r16, target);
             }
-            fn(s);
+            dispatch_call_aot(fn, s, target);
             s->r[16] = saved_r16;
             if (s_displog) {
                 fprintf(stderr, "  [INIT_WALKER_GUARD] restored r[16]=0x%08x (was 0x%08x after call)\n",
@@ -1919,7 +1932,7 @@ static int dispatch_try_with_boundary(
             if (s_displog) {
                 fprintf(stderr, "  -> calling fn %p for 0x%08x, s->r[29]=0x%08x sr_timeslice=%d\n", (void*)fn, target, s->r[29], atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
             }
-            fn(s);
+            dispatch_call_aot(fn, s, target);
         }
 
         if (g_prof_enabled && prof_entry) {
@@ -2062,6 +2075,7 @@ static int dispatch_try_with_boundary(
          * instruction's architectural effects unapplied and propagates to the public
          * dispatch wrapper, which terminates instead of resuming native code as if the
          * guest transfer had succeeded. */
+        sr_perf_interp_set_reason(SR_PERF_INTERP_DISPATCH_MISS);
         return dispatch_run_interp(s, target, call_boundary);
     }
     return SR_GUEST_INTERP_AOT_HANDOFF;
