@@ -4285,7 +4285,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3c5b29d60fb4fef757ae84f8a5e22298fe2c50289505c90ce0034e1a3c40b1b"
+      "sha256": "68f05d5736f0925611460597d5e3d7b986155d282e62c2ad6bd6db5893ab112e"
     },
     {
       "path": "src/rt/archive_vfs.h",
@@ -4297,7 +4297,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5a8f72d9d7aa3f73564e3b97fd8b1cafa11c29719566c8ff4c7d2940cf164bb"
+      "sha256": "1c7bc18b442f247019703db96d64724e99fb1c6e250a98a9487668220ef38e6c"
     },
     {
       "path": "src/rt/asset_index.h",
@@ -5791,7 +5791,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "00ef5a90b503105c312b8838f355807307a7f84957513eeb85ffe96f5aed6c85"
+      "sha256": "1293cb4729fc7552a24a9905aa38d03119c5b248a07b381214b7809910c8a389"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6666,7 +6666,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea0aef16b5eb84d42946e5009599f99e6d73873ebf52fb1eaa2d0c8b12674f65"
+      "sha256": "05f6dddd1d164b768c0ad2a068ec0fafa3684f577b42c419b862c31b1dad2460"
     },
     {
       "path": "tools/README.md",
