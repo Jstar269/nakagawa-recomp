@@ -105,11 +105,15 @@ class PackageRouteMakeSafetyTests(unittest.TestCase):
 
             spaced_env = str(base / "bad root")
             with mock.patch.dict(os.environ, {"NK_BUILD_ROOT": spaced_env}):
-                with self.assertRaises(title_codegen_plan.PackageRouteError) as ctx:
-                    title_codegen_plan._resolve_make_safe_build_root(
-                        base / "dest with space" / "out"
-                    )
+                with mock.patch(
+                    "title_codegen_plan._windows_short_path", return_value=None
+                ):
+                    with self.assertRaises(title_codegen_plan.PackageRouteError) as ctx:
+                        title_codegen_plan._resolve_make_safe_build_root(
+                            base / "dest with space" / "out"
+                        )
             self.assertEqual(ctx.exception.code, "PACKAGE_UNSUPPORTED_PATH")
+            self.assertIn("set NK_BUILD_ROOT to a folder without spaces", str(ctx.exception))
 
 
 class DoctorWorkspacePathTests(unittest.TestCase):

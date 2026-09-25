@@ -1036,7 +1036,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4450d342c9106b6a9eef5a2b4403eac0ce03730c67e74ab1d151a6a3b1afa8cd"
+      "sha256": "2393982188c601fa545f1da61ae47e37ea28da97d5e2b95a84918002a0b56031"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -1045,7 +1045,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "52a6e1e56220fa7950651cb5b05725c84c553138034e8d53b4d53294370bdffb"
+      "sha256": "4748ecc896e2947da66d39c428d43aea0ed727e453b88b8eff2fb36540744104"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1492,7 +1492,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8bbb0002e294a905de65e3204247843e37ccb4def87a734497a67f0c66019494"
+      "sha256": "1cc81c335f0917dc5bca00be70413b0fd895f33b0b984119aebfde51bd477487"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -9056,7 +9056,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b675f44945fdde35f3b3471bf403394795cc2785b3ec13166aae43233beb3a3c"
+      "sha256": "9c7e107793a209e95b02a59724bc55bff821d1885d8b30d356fe6d8dd93691b0"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -9758,7 +9758,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d79d32eec0e81bed5d2ee2adc1053037df6e399a7cf1829150629d41bad4e64"
+      "sha256": "4d1e48956fe3301d00d8c5b427271e1643e1a3cb0ebd739c4f6594d94cab3c62"
     },
     {
       "path": "tools/test_xb_probe.py",
