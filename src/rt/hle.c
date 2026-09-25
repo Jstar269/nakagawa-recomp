@@ -6285,38 +6285,30 @@ UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
  * box (osk_win.c) or, for automation, from a scripted answer.
  *
  * The public contract (PSPSDK psputility_osk.h) owns the flow: InitStart creates the
- * keyboard, Update refreshes it, GetStatus reports the local state, ShutdownStart removes
- * it. SceUtilityOskState is NONE=0, INITING=1, INITED=2, VISIBLE=3, QUIT=4, FINISHED=5,
- * SceUtilityOskResult is UNCHANGED=0, CANCELLED=1, CHANGED=2, and SceUtilityOskParams.state
- * is the same state enum mirrored in the caller's block. A game drives the keyboard by
- * polling GetStatus, so what it sees must not depend on how often it polls: each call
- * reports the state it was in and advances at most one step, so every step is observable
- * however fast the poll, and the terminal step a game waits for stays standing until
- * ShutdownStart. The earlier machine reported 3 (VISIBLE) forever once the text was
- * collected and never reported QUIT or FINISHED at all, so a game waiting for the state
- * the contract ends on waited for it forever.
+ * keyboard, Update refreshes it, ShutdownStart removes it, and sceUtilityOskGetStatus
+ * returns the common pspUtilityDialogState (psputility.h): NONE=0, INIT=1, VISIBLE=2,
+ * QUIT=3, FINISHED=4. The SDK's own OSK sample drives it exactly so: INIT waits, VISIBLE
+ * calls Update, QUIT calls ShutdownStart, FINISHED waits, NONE ends the loop, and the
+ * header says to poll after ShutdownStart until NONE. QUIT is where the keyboard is
+ * dismissed whether the person confirmed or cancelled; the per-field result
+ * (SceUtilityOskResult: UNCHANGED=0, CANCELLED=1, CHANGED=2) tells the two apart.
+ * SceUtilityOskState (INITING..FINISHED, 0..5) is a different enum: it describes the
+ * parameter block's own state field, not the GetStatus return value.
  *
- * sceUtilityOskUpdate keeps its named no-dialog compatibility result (#281), so the
- * runtime owns the progression. The text is collected on the poll that leaves INITED --
- * the first poll after the keyboard is usable, and the same point the native box has
- * always opened -- so the field results are in place before VISIBLE is reported. */
+ * GetStatus reports the state it was in and advances at most one step, so every step is
+ * observable however often the title polls: INIT -> VISIBLE, VISIBLE -> QUIT (the text is
+ * collected on that poll, the point the native box has always opened), QUIT stands until
+ * ShutdownStart, then FINISHED -> NONE. sceUtilityOskUpdate keeps its named no-dialog
+ * compatibility result (#281), so the runtime owns the progression. */
 int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap);
-enum { OSK_NONE = 0, OSK_INITING = 1, OSK_INITED = 2, OSK_VISIBLE = 3, OSK_QUIT = 4, OSK_FINISHED = 5 };
+enum { OSK_NONE = 0, OSK_INIT = 1, OSK_VISIBLE = 2, OSK_QUIT = 3, OSK_FINISHED = 4 };
 static int s_osk_status = OSK_NONE;
-static int s_osk_quit = 0;                                /* ShutdownStart seen */
-static int s_osk_finished = 1;                            /* every field answered CHANGED */
 static uint32_t s_osk_param = 0;
 /* A keyboard keeps the dialog slot after it shuts down, so GetStatus reports NONE(0)
  * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
  * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
 static int s_osk_current = 0;
 static int s_osk_current_clear(void) { s_osk_current = 0; return 0; }
-
-/* SceUtilityOskParams.state is documented as the local OSK state, so a game that reads the
- * block instead of calling GetStatus sees the same value. */
-static void osk_publish_state(void) {
-    if (s_osk_param) MEM_W32(s_osk_param + 0x38, (uint32_t)s_osk_status);
-}
 
 /* ---- Scripted answers, for automation. SR_OSK_SCRIPT=<file> supplies one answer per
  * field in order: the line's UTF-8 text, or the keyword CANCEL to answer that field as
@@ -6413,7 +6405,6 @@ static void osk_run(void) {
     uint32_t fields = MEM_R32(p + 0x34);                   /* SceUtilityOskData[] */
     if (nf < 1 || nf > 8 || !fields) return;
     int scripted = osk_script_configured();
-    s_osk_finished = 1;
     for (int i = 0; i < nf; i++) {
         uint32_t f = fields + (uint32_t)i * 0x34;
         uint32_t descA = MEM_R32(f + 0x1c), inA = MEM_R32(f + 0x20);
@@ -6443,7 +6434,6 @@ static void osk_run(void) {
             for (; w[j] && j < cap - 1; j++) MEM_W16(outA + (uint32_t)j * 2, (uint16_t)w[j]);
             MEM_W16(outA + (uint32_t)j * 2, 0);
         }
-        if (!ok) s_osk_finished = 0;
         MEM_W32(f + 0x2c, ok ? 2u : 1u);                   /* result: CHANGED / CANCELLED */
         if (getenv("SR_DLGLOG"))
             fprintf(stderr, "osk: field %d desc='%ls' in='%ls' -> %s '%ls'\n",
@@ -6455,12 +6445,9 @@ static void osk_run(void) {
 static uint32_t h_OskInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
     s_osk_param = A0;
-    s_osk_status = OSK_INITING;
-    s_osk_quit = 0;
-    s_osk_finished = 1;
+    s_osk_status = OSK_INIT;
     s_osk_current = 1;                                     /* the OSK owns the dialog slot */
     s_osk_script_read = 0;                                 /* a new keyboard re-reads its answers */
-    osk_publish_state();
     return 0;
 }
 /* GetStatus with no OSK ever started (e.g. polled every boot frame while a savedata dialog
@@ -6469,24 +6456,14 @@ static uint32_t h_OskGetStatus(CpuState *s) {
     (void)s;
     if (!s_osk_current) return 0x80110005u;
     int ret = s_osk_status;
-    if (s_osk_quit) {
-        s_osk_quit = 0;
-        s_osk_status = OSK_NONE;
-    } else if (s_osk_status == OSK_INITING) {
-        s_osk_status = OSK_INITED;
-    } else if (s_osk_status == OSK_INITED) {
-        osk_run();
-        s_osk_status = OSK_VISIBLE;
-    } else if (s_osk_status == OSK_VISIBLE) {
-        s_osk_status = s_osk_finished ? OSK_FINISHED : OSK_QUIT;
-    }
-    if (s_osk_status != ret) osk_publish_state();
-    if (!s_osk_status) s_osk_param = 0;                    /* nothing left to publish into */
-    return (uint32_t)ret;
+    if (s_osk_status == OSK_INIT) s_osk_status = OSK_VISIBLE;
+    else if (s_osk_status == OSK_VISIBLE) { osk_run(); s_osk_status = OSK_QUIT; }
+    else if (s_osk_status == OSK_FINISHED) { s_osk_status = OSK_NONE; s_osk_param = 0; }
+    return (uint32_t)ret;                                  /* QUIT stands until ShutdownStart */
 }
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
-    if (s_osk_status) s_osk_quit = 1;                      /* the next poll reports NONE */
+    if (s_osk_status) s_osk_status = OSK_FINISHED;         /* then NONE on the next poll */
     return 0;
 }
 

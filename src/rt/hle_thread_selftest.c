@@ -1856,9 +1856,10 @@ static void test_controlled_unsupported_registration(void) {
  * for automation. The stub below stands in for the native box and counts how often it was
  * asked, which is what makes "a scripted run never opens it" an observable claim.
  *
- * The status machine under test is the public PSPSDK one: SceUtilityOskState is NONE=0,
- * INITING=1, INITED=2, VISIBLE=3, QUIT=4, FINISHED=5, a game drives the keyboard by
- * polling GetStatus, and every step must be observable however fast the poll. */
+ * The status machine under test is the public PSPSDK one: sceUtilityOskGetStatus returns
+ * pspUtilityDialogState (psputility.h) NONE=0, INIT=1, VISIBLE=2, QUIT=3, FINISHED=4, and the
+ * SDK's OSK sample calls ShutdownStart on QUIT and stops on NONE. QUIT is reported whether
+ * the person confirmed or cancelled; the per-field result tells them apart. */
 static int s_osk_native_calls;
 static int s_osk_native_answer = 1;                        /* what the stub "person" pressed */
 
@@ -1962,26 +1963,23 @@ static void test_osk_scripted_answer(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
     expect(sr_syscall(&cpu, k_init) == 0u, "sceUtilityOskInitStart accepts an OSK parameter block");
-    expect(MEM_R32(OSK_PARAM_ADDR + 0x38u) == 1u,
-           "a started keyboard publishes INITING into the parameter block");
     expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u,
-           "GetStatus reports INITING then INITED, one step per poll");
-    expect(osk_poll(&cpu) == 3u, "GetStatus reports VISIBLE once the text has been collected");
-    expect(osk_poll(&cpu) == 5u && osk_poll(&cpu) == 5u,
-           "GetStatus reports FINISHED and keeps reporting it, so a game waiting for it proceeds");
+           "GetStatus reports INIT then VISIBLE, one step per poll");
+    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "GetStatus reports QUIT once the text has been collected, and QUIT stands until the "
+           "game calls ShutdownStart, as the SDK's OSK sample expects");
     expect(s_osk_native_calls == 2, "an unconfigured keyboard opens the native box once per field");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, n, 1),
            "the answered field is written as UTF-16 and reported CHANGED");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 2u && osk_guest_out_is(1, n, 1),
            "every field is answered, not only the first");
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, k_down) == 0u && osk_poll(&cpu) == 5u && osk_poll(&cpu) == 0u &&
+    expect(sr_syscall(&cpu, k_down) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u &&
                osk_poll(&cpu) == 0u,
-           "ShutdownStart reports NONE, which a game spinning on a non-zero status can leave");
-    expect(MEM_R32(OSK_PARAM_ADDR + 0x38u) == 0u,
-           "the shut-down keyboard publishes NONE into the parameter block");
+           "after ShutdownStart GetStatus reports FINISHED once, then NONE, which a game "
+           "spinning on a non-zero status can leave");
 
-    /* A cancelled keyboard reports QUIT, the other terminal state the contract defines. */
+    /* A cancelled keyboard also reports QUIT; only the field result differs. */
     s_osk_native_calls = 0;
     s_osk_native_answer = 0;
     osk_guest_build(1, 16u, 0u);
@@ -1990,8 +1988,8 @@ static void test_osk_scripted_answer(void) {
     expect(sr_syscall(&cpu, k_init) == 0u, "a second keyboard starts for the cancelled path");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 4u,
-           "a cancelled keyboard reports QUIT, never FINISHED");
+    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "a cancelled keyboard reports QUIT and keeps reporting it until ShutdownStart");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u && osk_guest_out_is(0, old, 3),
            "a cancelled field keeps the initial text and reports CANCELLED");
     s_osk_native_answer = 1;
@@ -2010,9 +2008,8 @@ static void test_osk_scripted_answer(void) {
     expect(sr_syscall(&cpu, k_init) == 0u, "a scripted keyboard starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 4u,
-           "a scripted keyboard follows the same status sequence, and a cancelled field makes "
-           "the whole keyboard report QUIT");
+    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "a scripted keyboard follows the same status sequence as a person's");
     expect(s_osk_native_calls == 0, "a scripted answer never opens the native input box");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, play, 4),
            "the first scripted answer is written as UTF-16 and reported CHANGED");
@@ -2049,7 +2046,7 @@ static void test_osk_scripted_answer(void) {
     expect(s_osk_native_calls == 0, "a short script still never opens the native input box");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 1u,
            "a field with no scripted answer is answered CANCELLED rather than left to a person");
-    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 4u,
+    expect(osk_poll(&cpu) == 3u,
            "a keyboard with a cancelled field reports QUIT");
     memset(&cpu, 0, sizeof(cpu));
     (void)sr_syscall(&cpu, k_down);

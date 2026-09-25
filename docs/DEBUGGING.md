@@ -270,10 +270,11 @@ run that reached an unanswered keyboard would otherwise block on a window nothin
 dismiss. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
 played one are read the same way.
 
-The keyboard's status machine is the public one: `sceUtilityOskGetStatus` reports `INITING`,
-then `INITED`, then `VISIBLE`, then `FINISHED` (or `QUIT` if any field was cancelled) until
-`sceUtilityOskShutdownStart` reports `NONE`, and every step is observable however often the
-title polls. `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
+A scripted answer follows the same status sequence as a person's. `sceUtilityOskGetStatus`
+returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE`, then `QUIT`
+(whether the text was confirmed or cancelled; each field's result tells them apart) until the
+title calls `sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`.
+`sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
 
