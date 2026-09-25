@@ -7503,6 +7503,34 @@ static unsigned long s_data_test_builds_after_guest; /* attempts after guest sta
 static int s_data_test_guest_started;
 static int s_data_test_pace_ms;                      /* per-directory pacing hook */
 #endif
+/* Per-phase wall time of the one-time index preparation, reported on one stderr line in
+ * every build. The developer route has measured 77-270 s here on a real ~59k-file tree
+ * while a synthetic 60k tree takes about 2.5 s, so the phase split is the evidence needed
+ * to tell an algorithmic cost from a host filesystem cost. Six tick reads, once per boot. */
+enum {
+    SR_DATA_TEST_PHASE_ARCHIVE_DISCOVER,
+    SR_DATA_TEST_PHASE_PRIMARY_WALK,
+    SR_DATA_TEST_PHASE_LOOSE_WALK,
+    SR_DATA_TEST_PHASE_FINALIZE,
+    SR_DATA_TEST_PHASE_VALIDATE,
+    SR_DATA_TEST_PHASE_PUBLISH,
+    SR_DATA_TEST_PHASE_COUNT
+};
+static ULONGLONG s_data_test_phase_ms[SR_DATA_TEST_PHASE_COUNT];
+#define SR_DATA_TEST_PHASE_START(name) ((name) = GetTickCount64())
+#define SR_DATA_TEST_PHASE_STOP(phase, name) \
+    (s_data_test_phase_ms[(phase)] += GetTickCount64() - (name))
+static void data_report_phases(void) {
+    const ULONGLONG *ms = s_data_test_phase_ms;
+    fprintf(stderr, "host_data: phase_ms archive_discover=%llu walk=%llu loose_walk=%llu "
+                    "finalize=%llu validate=%llu publish=%llu\n",
+            (unsigned long long)ms[SR_DATA_TEST_PHASE_ARCHIVE_DISCOVER],
+            (unsigned long long)ms[SR_DATA_TEST_PHASE_PRIMARY_WALK],
+            (unsigned long long)ms[SR_DATA_TEST_PHASE_LOOSE_WALK],
+            (unsigned long long)ms[SR_DATA_TEST_PHASE_FINALIZE],
+            (unsigned long long)ms[SR_DATA_TEST_PHASE_VALIDATE],
+            (unsigned long long)ms[SR_DATA_TEST_PHASE_PUBLISH]);
+}
 /* SR_DATA_EXPECTED_COUNT legacy define removed: use sr_title_config_expected_data_file_count() */
 
 static char *data_rel_join(const char *prefix, const char *name) {
@@ -8166,8 +8194,11 @@ int sr_host_data_prepare(void) {
     size_t primary_count = 0;
     size_t archive_count = 0;
     int archive_mode = 0;
+    ULONGLONG phase_started = 0;
     if (root_ok) {
+        SR_DATA_TEST_PHASE_START(phase_started);
         archive_mode = archive_data_discover(root_wide, &s_archive_vfs, &archive_count);
+        SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_ARCHIVE_DISCOVER, phase_started);
         if (archive_mode < 0) root_ok = 0;
     }
     int walk_ok = root_ok;
@@ -8175,22 +8206,36 @@ int sr_host_data_prepare(void) {
         s_data_archive_mode = 1;
         if (!sr_wide_to_utf8_alloc(root_wide, &s_data_root_utf8)) walk_ok = 0;
         primary_count = sr_archive_vfs_entry_count(&s_archive_vfs);
+        SR_DATA_TEST_PHASE_START(phase_started);
         if (!data_validate_archive_index(primary_count)) walk_ok = 0;
+        SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_VALIDATE, phase_started);
         if (walk_ok) {
+            SR_DATA_TEST_PHASE_START(phase_started);
             walk_ok = data_loose_content_walk(root_wide, &temporary);
+            SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_LOOSE_WALK, phase_started);
+            SR_DATA_TEST_PHASE_START(phase_started);
             if (walk_ok && temporary.count != 0u &&
                 !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+            SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         }
     } else if (walk_ok) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         sr_archive_vfs_init(&s_archive_vfs);
+        SR_DATA_TEST_PHASE_START(phase_started);
         walk_ok = data_walk(root_wide, "", NULL, &temporary);
+        SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_PRIMARY_WALK, phase_started);
         if (walk_ok) {
             primary_count = temporary.count;
+            SR_DATA_TEST_PHASE_START(phase_started);
             walk_ok = data_loose_content_walk(root_wide, &temporary);
+            SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_LOOSE_WALK, phase_started);
         }
+        SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+        SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
+        SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !data_validate_index(&temporary, primary_count)) walk_ok = 0;
+        SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_VALIDATE, phase_started);
     }
     if (!walk_ok) {
         fprintf(stderr, "host_data: index initialization failed; refusing partial index\n");
@@ -8206,6 +8251,7 @@ int sr_host_data_prepare(void) {
     free(root_wide);
     if (archive_mode > 0) {
         int loose_index_present = temporary.count != 0u;
+        SR_DATA_TEST_PHASE_START(phase_started);
         if (loose_index_present &&
             !sr_asset_index_publish(&s_data_index, &temporary)) {
             fprintf(stderr, "host_data: failed to publish loose-content index\n");
@@ -8219,6 +8265,7 @@ int sr_host_data_prepare(void) {
             atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
             return SR_DATA_STATE_FAILED;
         }
+        SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_PUBLISH, phase_started);
         if (!loose_index_present) {
             sr_asset_index_destroy(&s_data_index);
             sr_asset_index_init(&s_data_index);
@@ -8227,8 +8274,10 @@ int sr_host_data_prepare(void) {
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_READY, memory_order_release);
         fprintf(stderr, "host_data: mounted %zu archives with %zu members under %s\n",
                 archive_count, primary_count, root_label);
+        data_report_phases();
         return SR_DATA_STATE_READY;
     }
+    SR_DATA_TEST_PHASE_START(phase_started);
     if (!sr_asset_index_publish(&s_data_index, &temporary)) {
         fprintf(stderr, "host_data: failed to publish finalized index\n");
         sr_asset_index_destroy(&temporary);
@@ -8236,6 +8285,7 @@ int sr_host_data_prepare(void) {
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
     }
+    SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_PUBLISH, phase_started);
     atomic_store_explicit(&s_data_state, SR_DATA_STATE_READY, memory_order_release);
     fprintf(stderr, "host_data: indexed %zu files under %s\n", s_data_index.count, root_label);
     if (s_data_index.count != primary_count) {
@@ -8243,6 +8293,7 @@ int sr_host_data_prepare(void) {
                         "the loose content beside it\n",
                 primary_count, s_data_index.count - primary_count);
     }
+    data_report_phases();
     return SR_DATA_STATE_READY;
 }
 
@@ -8263,6 +8314,10 @@ void sr_hle_test_data_mark_guest_start(void) { s_data_test_guest_started = 1; }
 unsigned long sr_hle_test_data_walk_calls(void) { return s_data_test_walk_calls; }
 unsigned long sr_hle_test_data_build_attempts(void) { return s_data_test_build_attempts; }
 unsigned long sr_hle_test_data_builds_after_guest(void) { return s_data_test_builds_after_guest; }
+unsigned long long sr_hle_test_data_phase_ms(unsigned int phase) {
+    return phase < SR_DATA_TEST_PHASE_COUNT ?
+        (unsigned long long)s_data_test_phase_ms[phase] : 0u;
+}
 int sr_hle_test_data_state(void) {
     return atomic_load_explicit(&s_data_state, memory_order_acquire);
 }
@@ -8300,6 +8355,7 @@ void sr_hle_test_data_reset(int pace_ms) {
     s_data_test_builds_after_guest = 0;
     s_data_test_guest_started = 0;
     s_data_test_pace_ms = pace_ms;
+    memset(s_data_test_phase_ms, 0, sizeof(s_data_test_phase_ms));
 }
 #endif
 
