@@ -64,6 +64,15 @@ add_executable(test_launch_resolution tests/native/test_launch_resolution.c)
 target_link_libraries(test_launch_resolution PRIVATE nakagawa_core)
 add_test(NAME launch_resolution_test COMMAND test_launch_resolution)
 
+add_executable(test_pgf_public
+    tests/native/test_pgf_public.c
+    src/rt/pgf_public.c
+)
+target_include_directories(test_pgf_public PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rt
+)
+add_test(NAME pgf_public_test COMMAND test_pgf_public)
+
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
     src/player/setup_staging.c
