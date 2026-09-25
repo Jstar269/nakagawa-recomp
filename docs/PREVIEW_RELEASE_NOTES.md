@@ -25,7 +25,7 @@ This is the limitations section, not a footnote:
 
 - **Not an end-user "ISO -> click Play" product release:** This is an experimental platform release. An end-user product workflow is tracked under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
 - **No automated retail decryption or compilation:** Commercial games require user-supplied plain (unencrypted) executables; the project ships no decryption tools or keys, and whether any lawful decryption capability can be offered is an open maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). End-user recompilation routes (#296) are in active development.
-- **Silent by design:** The public-safe build intentionally lacks a host audio output backend and produces no sound (#301).
+- **Audio output requires a connected audio device:** Public builds drive one SDL3 audio stream per sceAudio channel ([#301](https://github.com/Jstar269/nakagawa-recomp/issues/301), [#411](https://github.com/Jstar269/nakagawa-recomp/pull/411)); with no audio device the game runs silently after one message.
 - **Windows 11 x64 only:** Verified on Windows 11 x64 only; no Linux ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)), macOS ([#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)), or Android ([#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)) support is claimed.
 - **No proprietary content:** Retail executables, ISOs, assets, decrypted modules, generated retail C, saves, keys, private traces/captures, and firmware PGF fonts are not included.
 - **Local verification is not hosted-CI or release authority:** Final release tagging requires hosted CI green, provenance refresh, and maintainer authorization.
