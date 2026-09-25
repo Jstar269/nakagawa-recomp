@@ -140,6 +140,16 @@ def _is_cache_digest(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
+def _path_key(path: Path) -> str:
+    """Comparison key for filesystem paths.
+
+    MSYS2's Windows Python joins iterdir() children with a backslash while
+    resolve() returns forward slashes, and its Path equality does not treat the
+    two spellings as the same path. Normalise separators and case explicitly.
+    """
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
 def prune_cache(
     cache_root_path: Path | str,
     *,
@@ -169,13 +179,13 @@ def prune_cache(
     except OSError:
         return 0, 0
     protected = (
-        Path(protected_entry).expanduser().resolve(strict=False)
+        _path_key(Path(protected_entry).expanduser().resolve(strict=False))
         if protected_entry is not None else None
     )
-    candidates.sort(key=lambda item: (item[1] == protected, item[0]), reverse=True)
+    candidates.sort(key=lambda item: (_path_key(item[1]) == protected, item[0]), reverse=True)
     removed = 0
     for _, entry in candidates[max_entries:]:
-        if protected is not None and entry == protected:
+        if protected is not None and _path_key(entry) == protected:
             continue
         if entry.is_symlink():
             continue
@@ -516,16 +526,26 @@ def _atomic_write(path: Path, data: bytes) -> None:
                 pass
 
 
-def write_completion_manifest(package_dir: Path, key: Mapping[str, Any]) -> Path:
+def write_completion_manifest(
+    package_dir: Path,
+    key: Mapping[str, Any],
+    *,
+    backends: str | None = None,
+    limits: list[str] | None = None,
+) -> Path:
     package_dir = package_dir.resolve(strict=False)
     artifacts = _artifact_records(package_dir)
-    document = {
+    document: dict[str, Any] = {
         "format": COMPLETION_FORMAT,
         "schema_version": COMPLETION_SCHEMA_VERSION,
         "status": "complete",
         "cache_key": key,
         "artifacts": artifacts,
     }
+    if backends is not None:
+        document["backends"] = backends
+    if limits is not None:
+        document["limits"] = limits
     destination = package_dir / COMPLETION_MANIFEST
     _atomic_write(destination, canonical_json(document).encode("utf-8"))
     return destination
@@ -547,8 +567,10 @@ def validate_completion_manifest(
         return False, f"completion manifest is unreadable: {exc}", None
     if not isinstance(document, dict):
         return False, "completion manifest must be a JSON object", None
+    allowed = {"format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits"}
     required = {"format", "schema_version", "status", "cache_key", "artifacts"}
-    if set(document) != required:
+    doc_keys = set(document)
+    if not required.issubset(doc_keys) or not doc_keys.issubset(allowed):
         return False, "completion manifest fields do not match the cache contract", None
     if document["format"] != COMPLETION_FORMAT or document["schema_version"] != COMPLETION_SCHEMA_VERSION:
         return False, "completion manifest format or schema is unsupported", None

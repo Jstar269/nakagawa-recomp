@@ -2,7 +2,10 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "ui_renderer.h"
+#include "iso_reader.h"
+#include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
+#include <SDL3/SDL_version.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -256,7 +259,68 @@ static void ui_font_ensure(void) {
     g_font.ready = true;
 }
 
+/* --- Per-game ISO texture cache (ICON0.PNG and PIC1.PNG) --- */
+typedef struct {
+    char iso_path[MAX_PATH_LEN];
+    SDL_Texture *icon_tex;
+    float icon_w;
+    float icon_h;
+    bool icon_attempted;
+    SDL_Texture *pic1_tex;
+    float pic1_w;
+    float pic1_h;
+    bool pic1_attempted;
+} GameTextureCacheEntry;
+
+#define GAME_TEXTURE_CACHE_SIZE 64
+static GameTextureCacheEntry s_game_textures[GAME_TEXTURE_CACHE_SIZE];
+
+static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
+    if (!iso_path || !*iso_path) return NULL;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_game_textures[i].iso_path[0] && strcmp(s_game_textures[i].iso_path, iso_path) == 0) {
+            return &s_game_textures[i];
+        }
+    }
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (!s_game_textures[i].iso_path[0]) {
+            strncpy(s_game_textures[i].iso_path, iso_path, sizeof(s_game_textures[i].iso_path) - 1);
+            s_game_textures[i].iso_path[sizeof(s_game_textures[i].iso_path) - 1] = '\0';
+            return &s_game_textures[i];
+        }
+    }
+    if (s_game_textures[0].icon_tex) {
+        SDL_DestroyTexture(s_game_textures[0].icon_tex);
+        s_game_textures[0].icon_tex = NULL;
+    }
+    if (s_game_textures[0].pic1_tex) {
+        SDL_DestroyTexture(s_game_textures[0].pic1_tex);
+        s_game_textures[0].pic1_tex = NULL;
+    }
+    memset(&s_game_textures[0], 0, sizeof(s_game_textures[0]));
+    strncpy(s_game_textures[0].iso_path, iso_path, sizeof(s_game_textures[0].iso_path) - 1);
+    s_game_textures[0].iso_path[sizeof(s_game_textures[0].iso_path) - 1] = '\0';
+    return &s_game_textures[0];
+}
+
+static void ui_game_textures_shutdown(void) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_game_textures[i].icon_tex) {
+            SDL_DestroyTexture(s_game_textures[i].icon_tex);
+            s_game_textures[i].icon_tex = NULL;
+        }
+        if (s_game_textures[i].pic1_tex) {
+            SDL_DestroyTexture(s_game_textures[i].pic1_tex);
+            s_game_textures[i].pic1_tex = NULL;
+        }
+        s_game_textures[i].iso_path[0] = '\0';
+        s_game_textures[i].icon_attempted = false;
+        s_game_textures[i].pic1_attempted = false;
+    }
+}
+
 void ui_font_shutdown(void) {
+    ui_game_textures_shutdown();
     if (!g_font.attempted) return;
     for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
         if (g_font.entries[i].tex) {
@@ -700,6 +764,90 @@ static void draw_monogram(SDL_Renderer *ren, float x, float y, float size,
               (SDL_Color){ 241, 245, 249, 255 });
 }
 
+static void ui_load_pic1_if_needed(SDL_Renderer *ren, GameTextureCacheEntry *entry, const char *iso_path) {
+    if (!entry || entry->pic1_attempted || !iso_path || !*iso_path) return;
+    entry->pic1_attempted = true;
+    uint8_t *bytes = NULL;
+    size_t size = 0;
+    uint32_t w = 0, h = 0;
+    NkIconStatus st = nk_iso_read_image_entry(iso_path, "PSP_GAME/PIC1.PNG",
+                                              &bytes, &size, &w, &h);
+    if (st == NK_ICON_OK && bytes && size > 0) {
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+        SDL_IOStream *io = SDL_IOFromConstMem(bytes, size);
+        if (io) {
+            SDL_Surface *surf = SDL_LoadPNG_IO(io, true);
+            if (surf) {
+                entry->pic1_tex = SDL_CreateTextureFromSurface(ren, surf);
+                if (entry->pic1_tex) {
+                    SDL_GetTextureSize(entry->pic1_tex, &entry->pic1_w, &entry->pic1_h);
+                }
+                SDL_DestroySurface(surf);
+            }
+        }
+#else
+        (void)ren;
+#endif
+        free(bytes);
+    }
+}
+
+static void draw_game_icon(SDL_Renderer *ren, float x, float y, float max_w, float max_h,
+                           const GameRecord *game) {
+    GameTextureCacheEntry *entry = NULL;
+    if (game && game->iso_path[0]) {
+        entry = ui_get_game_texture_entry(game->iso_path);
+        if (entry && !entry->icon_attempted) {
+            entry->icon_attempted = true;
+            uint8_t *bytes = NULL;
+            size_t size = 0;
+            uint32_t w = 0, h = 0;
+            NkIconStatus st = nk_iso_read_image_entry(game->iso_path, "PSP_GAME/ICON0.PNG",
+                                                      &bytes, &size, &w, &h);
+            if (st == NK_ICON_OK && bytes && size > 0) {
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+                SDL_IOStream *io = SDL_IOFromConstMem(bytes, size);
+                if (io) {
+                    SDL_Surface *surf = SDL_LoadPNG_IO(io, true);
+                    if (surf) {
+                        entry->icon_tex = SDL_CreateTextureFromSurface(ren, surf);
+                        if (entry->icon_tex) {
+                            SDL_GetTextureSize(entry->icon_tex, &entry->icon_w, &entry->icon_h);
+                        }
+                        SDL_DestroySurface(surf);
+                    }
+                }
+#endif
+                free(bytes);
+            }
+        }
+    }
+
+    if (entry && entry->icon_tex && entry->icon_w > 0.0f && entry->icon_h > 0.0f) {
+        float aspect = entry->icon_w / entry->icon_h;
+        float fit_w = max_w;
+        float fit_h = fit_w / aspect;
+        if (fit_h > max_h) {
+            fit_h = max_h;
+            fit_w = fit_h * aspect;
+        }
+        float offset_x = x + (max_w - fit_w) * 0.5f;
+        float offset_y = y + (max_h - fit_h) * 0.5f;
+
+        draw_shadow(ren, offset_x, offset_y, fit_w, fit_h, 4.0f);
+        draw_rounded_fill(ren, offset_x, offset_y, fit_w, fit_h, 4.0f, (SDL_Color){ 0, 0, 0, 180 });
+        SDL_FRect dst = { offset_x, offset_y, fit_w, fit_h };
+        SDL_RenderTexture(ren, entry->icon_tex, NULL, &dst);
+        draw_rounded_outline(ren, offset_x, offset_y, fit_w, fit_h, 4.0f, COLOR_CARD_BORDER);
+        return;
+    }
+
+    float mono_size = max_h;
+    if (mono_size > max_w) mono_size = max_w;
+    draw_monogram(ren, x + (max_w - mono_size) * 0.5f, y + (max_h - mono_size) * 0.5f,
+                  mono_size, game ? game->disc_id : NULL, game ? game->title_name : NULL);
+}
+
 /* Per-frame motion preference, set by ui_render_frame from settings. */
 static bool g_reduce_motion;
 
@@ -925,7 +1073,7 @@ static const char *status_label(NkGameSupportStatus status) {
         case NK_STATUS_PREPARED:          return "PREPARED";
         case NK_STATUS_BOOTS:             return "BOOTS";
         case NK_STATUS_PLAYABLE:          return "PLAYABLE";
-        case NK_STATUS_VERIFIED:          return "VERIFIED";
+        case NK_STATUS_VERIFIED:          return "CATALOG MATCH";
         default:                          return "UNKNOWN STATUS";
     }
 }
@@ -933,11 +1081,11 @@ static const char *status_label(NkGameSupportStatus status) {
 /* Human-readable label for the configured internal resolution scale. */
 static const char *resolution_label(int scale) {
     switch (scale) {
-        case 1: return "480p (1x PSP)";
-        case 2: return "544p (2x PSP)";
-        case 3: return "720p (3x PSP)";
-        case 4: return "1080p (4x PSP)";
-        case 8: return "4K UHD (8x PSP)";
+        case 1: return "1x Native (480x272)";
+        case 2: return "2x Vita (960x544)";
+        case 3: return "3x Scale (1440x816)";
+        case 4: return "4x Scale (1920x1088)";
+        case 8: return "8x Scale (3840x2176)";
         default: return "Custom Scale";
     }
 }
@@ -945,10 +1093,10 @@ static const char *resolution_label(int scale) {
 /* Human-readable label for the configured frame rate cap. */
 static const char *fps_label(int cap) {
     switch (cap) {
-        case 30: return "30 FPS VULKAN";
-        case 60: return "60 FPS VULKAN";
-        case 0:  return "VULKAN UNCAPPED";
-        default: return "VULKAN";
+        case 30: return "30 FPS CAP";
+        case 60: return "60 FPS CAP";
+        case 0:  return "UNCAPPED TARGET";
+        default: return "CADENCE CAP";
     }
 }
 
@@ -1096,6 +1244,21 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
 
     draw_shadow(ren, hero_x, hero_y, hero_w, hero_h, 10.0f);
     draw_rounded_fill(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BG);
+    GameTextureCacheEntry *hero_tex_entry = ui_get_game_texture_entry(game->iso_path);
+    if (hero_tex_entry) {
+        ui_load_pic1_if_needed(ren, hero_tex_entry, game->iso_path);
+        if (hero_tex_entry->pic1_tex) {
+            SDL_Rect prev_clip;
+            bool had_clip = SDL_GetRenderClipRect(ren, &prev_clip);
+            SDL_Rect hero_clip = { (int)hero_x + 1, (int)hero_y + 1, (int)hero_w - 2, (int)hero_h - 2 };
+            SDL_SetRenderClipRect(ren, &hero_clip);
+            SDL_SetTextureAlphaMod(hero_tex_entry->pic1_tex, 40);
+            SDL_FRect dst = { hero_x, hero_y, hero_w, hero_h };
+            SDL_RenderTexture(ren, hero_tex_entry->pic1_tex, NULL, &dst);
+            draw_filled_rect(ren, hero_x, hero_y, hero_w, hero_h, (SDL_Color){ 12, 15, 18, 120 });
+            SDL_SetRenderClipRect(ren, had_clip ? &prev_clip : NULL);
+        }
+    }
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
 
     /* Status Pills: a successful staging transaction is distinct from runtime
@@ -1117,10 +1280,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         draw_badge(ren, hero_x + (showcase_demo ? 510.0f : 350.0f), hero_y + 28.0f,
                    fps_label(app->settings.fps_cap), COLOR_LIME);
     }
-    /* Generated title mark: hue from the disc ID, initials from the title.
-     * Runtime-drawn, zero art assets to license. */
+    /* Game Icon: loaded from disc ICON0.PNG or generated monogram badge fallback */
     if (hero_w >= 900.0f && hero_h >= 200.0f) {
-        draw_monogram(ren, hero_x + hero_w - 100.0f, hero_y + 24.0f, 64.0f, game->disc_id, game->title_name);
+        draw_game_icon(ren, hero_x + hero_w - 140.0f, hero_y + 24.0f, 108.0f, 64.0f, game);
     }
 
     /* Game Title */
@@ -1192,7 +1354,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         draw_text(ren, hero_x + 48.0f, rail_y + 12.0f, "RENDER RESOLUTION", 0.9f, COLOR_TEXT_DIM);
         {
             char res_line[64];
-            snprintf(res_line, sizeof(res_line), "%s · Vulkan Native", resolution_label(app->settings.resolution_scale));
+            snprintf(res_line, sizeof(res_line), "%s", resolution_label(app->settings.resolution_scale));
             draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 32.0f, res_line, 1.0f, col_w - 16.0f, COLOR_TEXT_WHITE);
         }
         draw_text(ren, hero_x + 48.0f + col_w, rail_y + 12.0f, "CONTROLLER INPUT", 0.9f, COLOR_TEXT_DIM);
@@ -1203,7 +1365,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             draw_text_ellipsized(ren, hero_x + 48.0f + col_w, rail_y + 32.0f, ctrl_line, 1.0f, col_w - 16.0f, COLOR_TEXT_WHITE);
         }
         draw_text(ren, hero_x + 48.0f + col_w * 2.0f,
-                  rail_y + 12.0f, game->assets_staged ? "STAGED ASSETS" : "SAVE DATA",
+                  rail_y + 12.0f, game->assets_staged ? "STAGED ASSETS" : "SESSION & STORAGE",
                   0.9f, COLOR_TEXT_DIM);
         {
             char save_line[128];
@@ -1214,8 +1376,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                          (unsigned)game->extracted_audio_count,
                          (unsigned)game->extracted_visual_count);
             } else {
-                snprintf(save_line, sizeof(save_line), "Last played: %s",
-                         game->last_played[0] ? game->last_played : "Never");
+                const char *lp = (game->last_played[0] && strcmp(game->last_played, "Ready") != 0)
+                                     ? game->last_played : "Never";
+                snprintf(save_line, sizeof(save_line), "Last played: %s", lp);
             }
             draw_text_ellipsized(ren, hero_x + 48.0f + col_w * 2.0f,
                                  rail_y + 32.0f, save_line, 1.0f,
@@ -1236,8 +1399,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                          (unsigned)game->extracted_visual_count,
                          (unsigned)game->extracted_layout_count);
             } else {
-                snprintf(save_line, sizeof(save_line), "Last played: %s",
-                         game->last_played[0] ? game->last_played : "Never");
+                const char *lp = (game->last_played[0] && strcmp(game->last_played, "Ready") != 0)
+                                     ? game->last_played : "Never";
+                snprintf(save_line, sizeof(save_line), "Last played: %s", lp);
             }
             draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 34.0f,
                                  save_line, 1.0f, hero_w - 96.0f, COLOR_TEXT_MUTED);
@@ -1269,14 +1433,20 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
-        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "PACKAGE STALE - REBUILD (#297)");
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "REBUILD PACKAGE", true, in, primary_focused)) {
+            player_app_start_package_build(app, app->selected_game_index);
+        }
+        focus++;
+    } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "BUILD PACKAGE", true, in, primary_focused)) {
+            player_app_start_package_build(app, app->selected_game_index);
+        }
+        focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                          "PACKAGE INCOMPATIBLE (#297)");
-    } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
-        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "PACKAGE MISSING (#296/#297)");
     } else if (game->assets_staged) {
         /* Disc extraction is useful progress, but it is not a runnable
          * recompiled title. Keep this state visible without exposing a
@@ -1374,9 +1544,8 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                    active ? COLOR_EMERALD : COLOR_TEXT_DIM);
         float title_avail = cw - 24.0f;
         if (ch >= 80.0f) {
-            draw_monogram(ren, card_x + cw - 46.0f, card_y + 8.0f, 36.0f,
-                          app->games[i].disc_id, app->games[i].title_name);
-            title_avail = cw - 70.0f;
+            draw_game_icon(ren, card_x + cw - 64.0f, card_y + 8.0f, 54.0f, 36.0f, &app->games[i]);
+            title_avail = cw - 74.0f;
         }
         draw_text_ellipsized(ren, card_x + 12.0f, card_y + 48.0f,
                              app->games[i].title_name, 1.1f, title_avail,
@@ -1502,7 +1671,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
                          app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "PlayStation Portable Title",
                          2.2f, card_w - 64.0f, COLOR_TEXT_WHITE);
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 116.0f, card_w - 64.0f,
-                      "Disc identified as verified release in Nakagawa title catalog.\nThis build does not connect the module preparation pipeline.",
+                      "Disc identified in Nakagawa title catalog.\nThis build does not connect the module preparation pipeline.",
                       1.1f, COLOR_TEXT_MUTED, 3);
 
     /* Honesty warning */
@@ -1713,7 +1882,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     draw_badge(ren, card_x + 32.0f, card_y + 24.0f, "PLAYER CONFIGURATION", COLOR_BLUE);
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 60.0f, "Graphics & Controller Settings",
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
-    draw_text(ren, card_x + 32.0f, card_y + 96.0f, "Applies to game launch. In-memory in this build.", 1.0f, COLOR_TEXT_DIM);
+    if (app->settings_notice[0]) {
+        draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
+    } else {
+        draw_text(ren, card_x + 32.0f, card_y + 96.0f, "Configuration saved to settings.json.", 1.0f, COLOR_TEXT_DIM);
+    }
 
     float col1_x = card_x + 32.0f;
     float col2_x = two_col ? card_x + card_w * 0.5f : col1_x;
@@ -1777,8 +1950,8 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         {
             char vsync_label[32];
             snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
-            char fs_label[32];
-            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
+            char fs_label[64];
+            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
             float by = y + 24.0f;
             float bx = col1_x;
             bool focused = (app->focus_index == focus);
@@ -1787,16 +1960,16 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             }
             focus++;
             bx += 150.0f;
-            if (bx + 160.0f > inner_r + 1.0f) {
+            if (bx + 310.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
             }
             focused = (app->focus_index == focus);
-            if (draw_button_focused(ren, bx, by, 160.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+            if (draw_button_focused(ren, bx, by, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
                 player_app_toggle_fullscreen(app);
             }
             focus++;
-            bx += 170.0f;
+            bx += 320.0f;
             if (bx + 200.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
@@ -1810,10 +1983,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             focus++;
             y = by + 52.0f;
         }
-        /* Volume stepper. */
-        draw_text(ren, col1_x, y, "MASTER VOLUME (STORED)", 1.1f, COLOR_TEXT_DIM);
+        /* Volume stepper and audio text. */
+        draw_text(ren, col1_x, y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);
+        y = draw_text_wrapped(ren, col1_x, y + 22.0f, inner_r - col1_x,
+                              "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
+                              0.95f, COLOR_TEXT_WHITE, 2);
+        draw_text(ren, col1_x, y + 6.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
         {
-            float by = y + 24.0f;
+            float by = y + 26.0f;
             bool minus_focused = (app->focus_index == focus);
             if (draw_button_focused(ren, col1_x, by, 44.0f, 34.0f, "-", false, in, minus_focused)) {
                 player_app_adjust_volume(app, -5);
@@ -1871,6 +2048,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         bool close_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 32.0f, close_y, 200.0f, 46.0f, "SAVE & CLOSE", true, in, close_focused)) {
+            player_app_save_settings(app, NULL);
             player_app_set_view(app, VIEW_LIBRARY);
         }
         focus++;
@@ -1924,14 +2102,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         char vsync_label[32];
         snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
         bool focused = (app->focus_index == focus);
-        if (draw_button_focused(ren, col1_x, tog_y + 24.0f, 150.0f, 36.0f, vsync_label, app->settings.vsync, in, focused)) {
+        if (draw_button_focused(ren, col1_x, tog_y + 24.0f, 130.0f, 36.0f, vsync_label, app->settings.vsync, in, focused)) {
             player_app_toggle_vsync(app);
         }
         focus++;
-        char fs_label[32];
-        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
+        char fs_label[64];
+        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
-        if (draw_button_focused(ren, col1_x + 160.0f, tog_y + 24.0f, 170.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+        if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
         }
         focus++;
@@ -1947,9 +2125,9 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     /* Audio */
     draw_text(ren, col2_x, col2_y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);
     draw_text_wrapped(ren, col2_x, col2_y + 24.0f, card_x + card_w - 32.0f - col2_x,
-                      "Audio output: not initialized in this build. Volume is stored and applies when the backend lands.",
+                      "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
                       1.0f, COLOR_TEXT_WHITE, 2);
-    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME", 0.9f, COLOR_TEXT_DIM);
+    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
     {
         bool minus_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col2_x, col2_y + 86.0f, 44.0f, 34.0f, "-", false, in, minus_focused)) {
@@ -2003,6 +2181,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     bool close_focused = (app->focus_index == focus);
     float close_y = card_y + card_h - 72.0f;
     if (draw_button_focused(ren, card_x + 32.0f, close_y, 200.0f, 46.0f, "SAVE & CLOSE", true, in, close_focused)) {
+        player_app_save_settings(app, NULL);
         player_app_set_view(app, VIEW_LIBRARY);
     }
     focus++;
@@ -2061,6 +2240,135 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
         snprintf(diag_line, sizeof(diag_line), "Status: %s", app->input_settings.save_diagnostic);
         draw_text_ellipsized(ren, card_x + 32.0f, content_y + 4.0f, diag_line, 0.85f, card_w - 64.0f, COLOR_TEXT_MUTED);
         content_y += 24.0f;
+    }
+
+    if (input_settings_is_calibrating(&app->input_settings)) {
+        GuidedCalibrationStage stage = input_settings_get_calibration_stage(&app->input_settings);
+        float cal_card_x = card_x + 32.0f;
+        float cal_card_y = content_y + 8.0f;
+        float cal_card_w = card_w - 64.0f;
+        float cal_btn_y = card_y + card_h - 52.0f;
+
+        switch (stage) {
+            case CALIBRATION_STAGE_REST: {
+                draw_badge(ren, cal_card_x, cal_card_y, "STEP 1 OF 3: RESTING POSITIONS", COLOR_BLUE);
+                draw_text(ren, cal_card_x, cal_card_y + 30.0f, "Leave Analog Stick and Triggers at Rest", 1.8f, COLOR_TEXT_WHITE);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 70.0f, cal_card_w,
+                                  "Please do not touch the analog stick or triggers for about 1 second.\n"
+                                  "The system is sampling the neutral resting values of your controller hardware.",
+                                  1.1f, COLOR_TEXT_MUTED, 3);
+                int ms = app->input_settings.calib.elapsed_ms;
+                if (ms > 1000) ms = 1000;
+                float pct = (float)ms / 10.0f;
+                float bar_w = cal_card_w > 400.0f ? 400.0f : cal_card_w;
+                draw_progress_bar(ren, cal_card_x, cal_card_y + 140.0f, bar_w, 24.0f, pct);
+                char prog_text[64];
+                snprintf(prog_text, sizeof(prog_text), "Sampling resting values: %d / 1000 ms (%d%%)", ms, (int)pct);
+                draw_text(ren, cal_card_x, cal_card_y + 175.0f, prog_text, 1.0f, COLOR_TEXT_DIM);
+
+                char live_rest_info[256];
+                snprintf(live_rest_info, sizeof(live_rest_info),
+                         "Live Neutral: Stick X=%d, Stick Y=%d | L-Trig=%d, R-Trig=%d",
+                         app->input_settings.calib.sampled_rest_x,
+                         app->input_settings.calib.sampled_rest_y,
+                         app->input_settings.calib.sampled_rest_lt,
+                         app->input_settings.calib.sampled_rest_rt);
+                draw_text(ren, cal_card_x, cal_card_y + 205.0f, live_rest_info, 0.95f, COLOR_LIME);
+
+                bool cancel_focused = (app->focus_index == 0);
+                if (draw_button_focused(ren, cal_card_x, cal_btn_y, 220.0f, 38.0f, "CANCEL CALIBRATION", false, in, cancel_focused)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                }
+                break;
+            }
+            case CALIBRATION_STAGE_EXTREMES: {
+                draw_badge(ren, cal_card_x, cal_card_y, "STEP 2 OF 3: SAMPLE EXTREMES", COLOR_AMBER);
+                draw_text(ren, cal_card_x, cal_card_y + 30.0f, "Move Stick in Circles & Press Triggers Fully", 1.8f, COLOR_TEXT_WHITE);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 70.0f, cal_card_w,
+                                  "Rotate the analog stick in full circles around its boundaries,\n"
+                                  "and squeeze both the left and right triggers down completely.\n"
+                                  "When finished capturing maximum ranges, click 'Finish Sampling'.",
+                                  1.1f, COLOR_TEXT_MUTED, 4);
+
+                char ext_stick_info[256];
+                snprintf(ext_stick_info, sizeof(ext_stick_info),
+                         "Stick X: min = %6d, max = %6d (live: %6d)\nStick Y: min = %6d, max = %6d (live: %6d)",
+                         app->input_settings.calib.sampled_min_x,
+                         app->input_settings.calib.sampled_max_x,
+                         app->host_axes_live[NK_HOST_AXIS_LEFTX],
+                         app->input_settings.calib.sampled_min_y,
+                         app->input_settings.calib.sampled_max_y,
+                         app->host_axes_live[NK_HOST_AXIS_LEFTY]);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 155.0f, cal_card_w, ext_stick_info, 1.0f, COLOR_TEXT_WHITE, 2);
+
+                char ext_trig_info[256];
+                snprintf(ext_trig_info, sizeof(ext_trig_info),
+                         "Left Trigger:  rest = %6d, extreme = %6d (live: %6d)\nRight Trigger: rest = %6d, extreme = %6d (live: %6d)",
+                         app->input_settings.calib.sampled_rest_lt,
+                         app->input_settings.calib.sampled_max_lt,
+                         app->host_axes_live[NK_HOST_AXIS_LEFT_TRIGGER],
+                         app->input_settings.calib.sampled_rest_rt,
+                         app->input_settings.calib.sampled_max_rt,
+                         app->host_axes_live[NK_HOST_AXIS_RIGHT_TRIGGER]);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 205.0f, cal_card_w, ext_trig_info, 1.0f, COLOR_TEXT_WHITE, 2);
+
+                bool finish_focused = (app->focus_index == 0);
+                if (draw_button_focused(ren, cal_card_x, cal_btn_y, 200.0f, 38.0f, "FINISH SAMPLING", true, in, finish_focused)) {
+                    input_settings_finish_calibration_extremes(&app->input_settings);
+                }
+
+                bool cancel_focused = (app->focus_index == 1);
+                if (draw_button_focused(ren, cal_card_x + 220.0f, cal_btn_y, 140.0f, 38.0f, "CANCEL", false, in, cancel_focused)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                }
+                break;
+            }
+            case CALIBRATION_STAGE_RESULT: {
+                draw_badge(ren, cal_card_x, cal_card_y, "STEP 3 OF 3: REVIEW & ACCEPT", COLOR_EMERALD);
+                draw_text(ren, cal_card_x, cal_card_y + 30.0f, "Review Calibration Results", 1.8f, COLOR_TEXT_WHITE);
+                draw_text_wrapped(ren, cal_card_x, cal_card_y + 70.0f, cal_card_w,
+                                  "Check the recorded neutral resting points and extreme ranges below.\n"
+                                  "Click 'Accept Calibration' to apply these transforms to the active profile.",
+                                  1.1f, COLOR_TEXT_MUTED, 3);
+
+                char res_x[128], res_y[128], res_tl[128], res_tr[128];
+                snprintf(res_x, sizeof(res_x), "Stick X-Axis:  Rest = %6d,  Min = %6d,  Max = %6d",
+                         app->input_settings.calib.result_rest_x,
+                         app->input_settings.calib.result_min_x,
+                         app->input_settings.calib.result_max_x);
+                snprintf(res_y, sizeof(res_y), "Stick Y-Axis:  Rest = %6d,  Min = %6d,  Max = %6d",
+                         app->input_settings.calib.result_rest_y,
+                         app->input_settings.calib.result_min_y,
+                         app->input_settings.calib.result_max_y);
+                snprintf(res_tl, sizeof(res_tl), "Left Trigger:  Rest = %6d,  Extreme = %6d",
+                         app->input_settings.calib.result_trigger_rest,
+                         app->input_settings.calib.result_trigger_extreme);
+                snprintf(res_tr, sizeof(res_tr), "Right Trigger: Rest = %6d,  Extreme = %6d",
+                         app->input_settings.calib.result_trigger_rest,
+                         app->input_settings.calib.result_trigger_extreme);
+
+                draw_text(ren, cal_card_x, cal_card_y + 140.0f, res_x, 1.05f, COLOR_TEXT_WHITE);
+                draw_text(ren, cal_card_x, cal_card_y + 170.0f, res_y, 1.05f, COLOR_TEXT_WHITE);
+                draw_text(ren, cal_card_x, cal_card_y + 200.0f, res_tl, 1.05f, COLOR_LIME);
+                draw_text(ren, cal_card_x, cal_card_y + 230.0f, res_tr, 1.05f, COLOR_LIME);
+
+                bool accept_focused = (app->focus_index == 0);
+                if (draw_button_focused(ren, cal_card_x, cal_btn_y, 220.0f, 38.0f, "ACCEPT CALIBRATION", true, in, accept_focused)) {
+                    input_settings_accept_calibration(&app->input_settings);
+                }
+
+                bool cancel_focused = (app->focus_index == 1);
+                if (draw_button_focused(ren, cal_card_x + 240.0f, cal_btn_y, 140.0f, 38.0f, "CANCEL", false, in, cancel_focused)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+
+        render_footer_hints(ren, app);
+        return;
     }
 
     int focus = 0;
@@ -2135,6 +2443,13 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
         bool trig_plus_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 80.0f, y, 40.0f, 28.0f, "+", false, in, trig_plus_focused)) {
             input_settings_adjust_trigger_threshold(&app->input_settings, 1000);
+        }
+        focus++;
+        y += 36.0f;
+
+        bool cal_btn_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, y, 260.0f, 32.0f, "CALIBRATE STICK & TRIGGERS", false, in, cal_btn_focused)) {
+            input_settings_start_calibration(&app->input_settings);
         }
         focus++;
         y += 40.0f;
@@ -2254,8 +2569,14 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
     }
     focus++;
 
+    bool cal_btn_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, right_x, cal_y + 82.0f, 260.0f, 32.0f, "CALIBRATE STICK & TRIGGERS", false, in, cal_btn_focused)) {
+        input_settings_start_calibration(&app->input_settings);
+    }
+    focus++;
+
     /* Live Monitor & Deadzone Visualizer Box */
-    float mon_y = cal_y + 88.0f;
+    float mon_y = cal_y + 122.0f;
     draw_text(ren, right_x, mon_y, "LIVE INPUT & DEADZONE MONITOR", 1.0f, COLOR_TEXT_DIM);
 
     int16_t rx = app->host_axes_live[NK_HOST_AXIS_LEFTX];
@@ -2356,32 +2677,160 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
     render_footer_hints(ren, app);
 }
 
+/* --- View: Building Runtime Package --- */
+static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float cx = w * 0.5f;
+    float cy = h * 0.5f;
+    float card_w = dialog_card_w(w, 720.0f);
+    float card_h = 460.0f;
+    if (card_h > h - 40.0f && h > 300.0f) card_h = h - 40.0f;
+    float card_x = centered_card_x(w, card_w);
+    if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
+    float card_y = cy - card_h * 0.5f;
+    if (card_y < 70.0f) card_y = 70.0f;
+
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+
+    /* Badge & Title */
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "BUILDING RUNTIME PACKAGE", COLOR_BLUE);
+
+    char title_buf[256];
+    if (app->build_session.title_name[0]) {
+        snprintf(title_buf, sizeof(title_buf), "%s (%s)",
+                 app->build_session.title_name, app->build_session.disc_id);
+    } else {
+        snprintf(title_buf, sizeof(title_buf), "Package Build (%s)",
+                 app->build_session.disc_id);
+    }
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 64.0f, title_buf, 1.8f, card_w - 64.0f, COLOR_TEXT_WHITE);
+
+    /* Stages row: Preflight -> Extract -> Compile -> Package */
+    static const char *stages[] = { "Preflight", "Extract", "Compile", "Package" };
+    static const PackageBuildStage stage_enums[] = {
+        PACKAGE_BUILD_STAGE_PREFLIGHT,
+        PACKAGE_BUILD_STAGE_EXTRACT,
+        PACKAGE_BUILD_STAGE_COMPILE,
+        PACKAGE_BUILD_STAGE_PACKAGE
+    };
+    float stage_x = card_x + 32.0f;
+    float stage_y = card_y + 106.0f;
+    float chip_w = (card_w - 64.0f - 30.0f) / 4.0f;
+    if (chip_w > 150.0f) chip_w = 150.0f;
+
+    for (int i = 0; i < 4; i++) {
+        SDL_Color bg = (SDL_Color){ 20, 26, 32, 255 };
+        SDL_Color text_col = COLOR_TEXT_MUTED;
+        SDL_Color border_col = COLOR_CARD_BORDER;
+        if (app->build_session.current_stage == stage_enums[i]) {
+            bg = COLOR_BLUE;
+            text_col = COLOR_TEXT_WHITE;
+            border_col = COLOR_BLUE;
+        } else if (app->build_session.current_stage > stage_enums[i] || app->build_session.is_complete) {
+            text_col = COLOR_EMERALD;
+            border_col = COLOR_EMERALD;
+        }
+        float cur_x = stage_x + (float)i * (chip_w + 10.0f);
+        draw_rounded_fill(ren, cur_x, stage_y, chip_w, 28.0f, 6.0f, bg);
+        draw_rounded_outline(ren, cur_x, stage_y, chip_w, 28.0f, 6.0f, border_col);
+        float t_w = 0.0f, t_h = 0.0f;
+        text_size_at_scale(stages[i], 1.0f, &t_w, &t_h);
+        draw_text(ren, cur_x + (chip_w - t_w) * 0.5f, stage_y + (28.0f - t_h) * 0.5f,
+                  stages[i], 1.0f, text_col);
+    }
+
+    /* Progress bar */
+    float bar_y = stage_y + 40.0f;
+    draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
+
+    /* Current status message & elapsed time */
+    float info_y = bar_y + 24.0f;
+    const char *msg = app->build_session.current_message[0]
+        ? app->build_session.current_message : "Building package...";
+    draw_text_ellipsized(ren, card_x + 32.0f, info_y, msg, 1.1f, card_w - 180.0f, COLOR_TEXT_WHITE);
+
+    char elapsed_str[64];
+    unsigned int sec = app->build_session.elapsed_ms / 1000;
+    unsigned int tenths = (app->build_session.elapsed_ms % 1000) / 100;
+    snprintf(elapsed_str, sizeof(elapsed_str), "Elapsed: %u.%u s", sec, tenths);
+    draw_text(ren, card_x + card_w - 150.0f, info_y, elapsed_str, 1.0f, COLOR_TEXT_MUTED);
+
+    /* Output log box */
+    float log_y = info_y + 28.0f;
+    float log_h = 100.0f;
+    draw_rounded_fill(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, (SDL_Color){ 14, 18, 22, 255 });
+    draw_rounded_outline(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, COLOR_CARD_BORDER);
+
+    int count = app->build_session.output_line_count;
+    int display_lines = count > 4 ? 4 : count;
+    int start_idx = count > 4 ? count - 4 : 0;
+    float text_y = log_y + 8.0f;
+    for (int i = 0; i < display_lines; i++) {
+        const char *l = package_builder_get_output_line(&app->build_session, start_idx + i);
+        draw_text_ellipsized(ren, card_x + 44.0f, text_y, l, 0.95f, card_w - 88.0f, COLOR_TEXT_MUTED);
+        text_y += 22.0f;
+    }
+
+    /* Cancel button */
+    float btn_y = card_y + card_h - 58.0f;
+    bool focused = (app->focus_index == 0);
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 180.0f, 44.0f, "CANCEL BUILD", false, in, focused)) {
+        player_app_cancel_package_build(app);
+        player_app_set_view(app, VIEW_LIBRARY);
+    }
+}
+
 /* --- View: Error Dialog --- */
 static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
     float cx = w * 0.5f;
     float cy = h * 0.5f;
-    float card_w = dialog_card_w(w, 640.0f);
-    float card_h = 340.0f;
+    float card_w = dialog_card_w(w, 680.0f);
+    bool has_build_details = (app->last_error.failed_stage[0] != '\0' ||
+                              app->last_error.log_file_path[0] != '\0');
+    float card_h = has_build_details ? 420.0f : 340.0f;
+    if (card_h > h - 32.0f && h > 340.0f) card_h = h - 32.0f;
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
     float card_y = cy - card_h * 0.5f;
-    if (card_y < 80.0f) card_y = 80.0f;
-    if (card_y + card_h > h - 32.0f && h > 440.0f) card_y = h - 32.0f - card_h;
+    if (card_y < 60.0f) card_y = 60.0f;
 
     draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, app->last_error.error_code, COLOR_RED);
-    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 72.0f, app->last_error.title,
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, app->last_error.error_code, COLOR_RED);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 66.0f, app->last_error.title,
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
-    draw_text_wrapped(ren, card_x + 32.0f, card_y + 116.0f, card_w - 64.0f,
-                      app->last_error.message, 1.1f, COLOR_TEXT_MUTED, 4);
+
+    float text_y = card_y + 110.0f;
+    if (app->last_error.failed_stage[0]) {
+        char stage_str[128];
+        snprintf(stage_str, sizeof(stage_str), "FAILED STAGE: %s", app->last_error.failed_stage);
+        draw_badge(ren, card_x + 32.0f, text_y, stage_str, COLOR_AMBER);
+        text_y += 34.0f;
+    }
+
+    const char *err_msg = app->last_error.boundary_text[0]
+        ? app->last_error.boundary_text
+        : app->last_error.message;
+    draw_text_wrapped(ren, card_x + 32.0f, text_y, card_w - 64.0f,
+                      err_msg, 1.1f, COLOR_TEXT_MUTED, 4);
+    text_y += 76.0f;
+
+    if (app->last_error.log_file_path[0]) {
+        char log_str[NK_MAX_PATH + 32];
+        snprintf(log_str, sizeof(log_str), "LOG FILE: %s", app->last_error.log_file_path);
+        draw_text_ellipsized(ren, card_x + 32.0f, text_y, log_str, 0.95f, card_w - 64.0f, COLOR_TEXT_MUTED);
+    }
 
     bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 250.0f, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
+    float btn_y = card_y + card_h - 58.0f;
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
         player_app_set_view(app, app->last_error.return_view);
     }
 }
@@ -2885,6 +3334,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_SETUP_WIZARD:
             render_setup_wizard(renderer, app, input);
+            break;
+        case VIEW_BUILDING_PACKAGE:
+            render_building_package(renderer, app, input);
             break;
         default:
             render_empty_library(renderer, app, input);

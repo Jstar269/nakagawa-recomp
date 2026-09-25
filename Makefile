@@ -129,6 +129,24 @@ VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
 # glslc from the Vulkan SDK is used ONLY by the opt-in `shaders` target below.
 GLSLC ?= glslc
 
+# Vulkan include and library search paths. On Windows these come from the resolved SDK
+# (see the VULKAN_SDK block above). On Linux there is no SDK directory by default: the
+# loader is a system library (libvulkan.so) and the headers live under /usr/include, so the
+# standard search paths already find them and no -I/-L is emitted. Forcing -I/Include -I/include
+# on Linux reorders GCC's own header search and breaks #include_next, so the empty SDK is
+# handled explicitly here rather than by leaving a dangling -I$(VULKAN_SDK)/Include.
+#
+# An explicit VULKAN_SDK override on Linux is still honoured: if the caller names a real
+# directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
+# (no override, no discovery) is the system loader.
+ifeq ($(OS),Windows_NT)
+VULKAN_INC_FLAGS := -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+VULKAN_LIB_FLAGS := -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
+else
+VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I$(VULKAN_SDK)/include,)
+VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L$(VULKAN_SDK)/lib,) -lvulkan
+endif
+
 # SDL3 dependency discovery and isolation (issue #331).
 # An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
 # found (MSYS2 UCRT64 on Windows, pkg-config/system elsewhere). One Python pass
@@ -151,14 +169,14 @@ endif
 # Direct Make remains conservative -O0/-O0. Validated private title adapters may
 # request measured profile-specific values; explicit overrides remain supported.
 RUNTIME_OPT ?= -O0
-CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -Isrc/core $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
+CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -Isrc/core $(SDL3_INC_FLAGS) $(VULKAN_INC_FLAGS) -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
 override CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 # The extracted HST archive tree has a title-specific extracted-data census
 # (HST: 56,672 files). The generic build has no census (0 = disabled); a
 # title-configured build carries the expectation via runtime_bindings
 # (expected_data_file_count) validated from the title manifest. See
 # tools/title_manifest.py, tools/title_runtime_config.py and docs/PORTING.md C-2.
-LDFLAGS ?= $(SDL3_LDFLAGS) -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
+LDFLAGS ?= $(SDL3_LDFLAGS) $(if $(VULKAN_SDK),-L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib,)
 # Optional per-package linker map. Kept separate from LDFLAGS so package builds
 # can request it without replacing the SDK/library search paths.
 LINK_MAP ?=
@@ -167,7 +185,22 @@ LINK_MAP_ARG = $(if $(strip $(LINK_MAP)),$(LINK_MAP_VALUE),)
 # DirectInput (-ldinput8 -ldxguid) removed: gui.c controller input is now handled entirely by
 # the SDL3 gamepad subsystem (src/rt/gpu_sdl3vk). -lole32 stays (Media Foundation, h264_mf.c);
 # -lwinmm stays (sched.c timeBeginPeriod); -lgdi32 stays (GDI fallback presenter).
-LIBS       ?= -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lole32 -lwinmm
+# The Windows-only group is split out so a non-Windows link drops the members that have no
+# Linux equivalent. h264_mf.c (mfplat/ole32) and gui.c (gdi32) are themselves #ifdef _WIN32,
+# so on Linux they contribute no undefined symbols; -lwinmm is dead weight on every platform
+# (no timeBeginPeriod/timeEndPeriod call exists in the tree) but is kept on Windows for
+# byte-identical output.
+# The Vulkan import library name differs by platform: vulkan-1.lib (Windows SDK) vs libvulkan.so
+# (Linux loader). The two are NOT interchangeable, so the name is chosen per platform rather
+# than unified to one.
+ifeq ($(OS),Windows_NT)
+VULKAN_LIB_NAME := -lvulkan-1
+WIN_ONLY_LIBS   := -lmfplat -lgdi32 -lole32 -lwinmm
+else
+VULKAN_LIB_NAME := -lvulkan
+WIN_ONLY_LIBS   :=
+endif
+LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS)
 
 BUILD_DIR  ?= build/$(GAME_NAME)
 # The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
@@ -446,14 +479,23 @@ PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 # machine's SDK install. The player-vulkan-check order-only prerequisite below
 # fails closed with the one variable to set when discovery found nothing,
 # instead of a hardcoded fallback or a confusing compiler error.
-PLAYER_VULKAN_INC   :=
+#
+# On Windows the SDK's -L path is already in LDFLAGS and the import library is
+# in LIBS, so PLAYER_VULKAN_LIB stays empty and the link line is byte-identical
+# to the pre-Linux-edit form. On Linux there is no SDK directory, so the Vulkan
+# group is carried here instead.
+# PLAYER_VULKAN_INC is spelled out literally on Windows so the Makefile-wiring
+# test can assert it derives from $(VULKAN_SDK) rather than an intermediate
+# variable; on Linux it is empty by default and only set when the caller names
+# an explicit VULKAN_SDK.
+PLAYER_VULKAN_INC   := -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 PLAYER_VULKAN_LIB   :=
 EXE_EXT             := .exe
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_EXTRA_LIBS   :=
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
-PLAYER_VULKAN_INC   :=
+PLAYER_VULKAN_INC   := $(VULKAN_INC_FLAGS)
 PLAYER_VULKAN_LIB   :=
 EXE_EXT             :=
 endif
@@ -658,7 +700,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin sdl3-check vfpu_fuzz_validate_synthetic
+INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1235,10 +1277,15 @@ portable-core-objects: $(PORTABLE_CORE_OBJS)
 atrac3p-objects: $(ATRAC3P_OBJS)
 
 # A clear player-target failure when no usable SDK resolved (see the Windows
-# branch above). A no-op recipe when VULKAN_SDK is set.
+# branch above). On Linux the Vulkan loader is a system library, so the check is
+# an empty recipe and the player links -lvulkan directly.
 .PHONY: player-vulkan-check
+ifeq ($(OS),Windows_NT)
 player-vulkan-check:
 	$(if $(strip $(VULKAN_SDK)),,$(error No usable Vulkan SDK found; set VULKAN_SDK to the SDK root (e.g. mingw32-make player VULKAN_SDK=C:/path/to/VulkanSDK/<version>) or install a current SDK))
+else
+player-vulkan-check: ;
+endif
 
 # A clear failure when SDL3 dependency is missing or invalid.
 .PHONY: sdl3-check
@@ -1248,12 +1295,12 @@ sdl3-check:
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
-PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(PLAYER_VULKAN_INC) $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
@@ -1442,7 +1489,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS)
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS) -lm
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -1528,8 +1575,8 @@ atrac3p-title-accept:
 # recomp.c/vfpu_tables.c/vfpu_interp.c (heap_selftest pattern); only
 # scheduler/driver plumbing is stubbed. No game inputs or private data required.
 vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(BUILD_DIR)/vfpu_overlap_diff_cases.h
-	$(CC) $(CFLAGS) -DSR_FLIGHT_RECORDER_STANDALONE -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) 		-o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS)
+	$(CC) $(CFLAGS) -DSR_FLIGHT_RECORDER_STANDALONE -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
+		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS) -lm
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 $(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/codegen.py
@@ -1965,7 +2012,7 @@ shader-repro-verify:
 player-state-test-bin:
 	@mkdir -p build
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c \
 		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
@@ -1973,6 +2020,12 @@ input-settings-test-bin:
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
 		tests/native/test_input_settings.c -o build/test_input_settings$(EXE_EXT)
+
+package-builder-test-bin:
+	@mkdir -p build
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
+		tests/native/test_package_builder.c -o build/test_package_builder$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
@@ -1995,6 +2048,8 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_player_state$(EXE_EXT)
 	$(MAKE) --no-print-directory input-settings-test-bin
 	./build/test_input_settings$(EXE_EXT)
+	$(MAKE) --no-print-directory package-builder-test-bin
+	./build/test_package_builder$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c \
 		tests/native/test_xb_parser.c -o build/test_xb_parser$(EXE_EXT)
