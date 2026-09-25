@@ -326,7 +326,7 @@ first on `PATH` (#294). The contract is explicit:
 | --- | --- |
 | Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `dashboard`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
 | `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
-| Local Windows runs | Windows CPython (for example `C:\Program Files\Python314\python.exe`); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
+| Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
 
 Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
 the runner's Windows `PATH` explicitly with `MSYS2_PATH_TYPE: inherit` and assert

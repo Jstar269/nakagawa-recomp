@@ -597,11 +597,14 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
+          # Compare against MSYS2's own UCRT64 prefix wherever the runner installed
+          # MSYS2 (for example under the runner temp directory), never a fixed drive.
+          prefix="$(cygpath -m /ucrt64)"
           py="$(python -c 'import sys; print(sys.executable.replace(chr(92), chr(47)))')"
-          echo "python -> $py"
+          echo "python -> $py (expected under $prefix)"
           case "$py" in
-            /ucrt64/*|[Cc]:/msys64/ucrt64/*) ;;
-            *) echo "expected the MSYS2 UCRT64 python, got $py" >&2; exit 1 ;;
+            /ucrt64/*|"$prefix"/*) ;;
+            *) echo "expected the MSYS2 UCRT64 python under $prefix, got $py" >&2; exit 1 ;;
           esac
           python --version
 
