@@ -1074,17 +1074,22 @@ def read_psp_segment_sizes(path, expected_segments):
     the aggregate BSS size.  Keeping that metadata in the flat image prevents
     the user partition from being placed on top of omitted static storage.
     """
-    with open(path, "rb") as f:
-        header = f.read(0x80)
+    memory_input = isinstance(path, (bytes, bytearray, memoryview))
+    input_label = "<PSP header memory buffer>" if memory_input else path
+    if memory_input:
+        header = bytes(path)[:0x80]
+    else:
+        with open(path, "rb") as f:
+            header = f.read(0x80)
     if len(header) < 0x64 or header[:4] != b"~PSP":
-        raise ValueError(f"{path}: not a valid ~PSP module header")
+        raise ValueError(f"{input_label}: not a valid ~PSP module header")
 
     segment_count = header[0x27]
     if segment_count == 0 or segment_count > 4:
-        raise ValueError(f"{path}: invalid PSP segment count {segment_count}")
+        raise ValueError(f"{input_label}: invalid PSP segment count {segment_count}")
     if segment_count != expected_segments:
         raise ValueError(
-            f"{path}: PSP header has {segment_count} load segments, "
+            f"{input_label}: PSP header has {segment_count} load segments, "
             f"ELF has {expected_segments}"
         )
 
@@ -1095,14 +1100,19 @@ def read_psp_segment_sizes(path, expected_segments):
 
 class Prx:
     def __init__(self, path, base, psp_header=None):
+        memory_input = isinstance(path, (bytes, bytearray, memoryview))
+        input_label = "<PRX memory buffer>" if memory_input else path
         if not isinstance(base, int) or base < 0 or base > 0xFFFFFFFF:
-            raise ValueError(f"{path}: load base is outside the 32-bit address space")
-        with open(path, "rb") as f:
-            self.data = f.read(MAX_ELF_FILE_BYTES + 1)
+            raise ValueError(f"{input_label}: load base is outside the 32-bit address space")
+        if memory_input:
+            self.data = bytes(path)
+        else:
+            with open(path, "rb") as f:
+                self.data = f.read(MAX_ELF_FILE_BYTES + 1)
         if len(self.data) > MAX_ELF_FILE_BYTES:
-            raise ValueError(f"{path}: ELF file exceeds the 256 MiB input bound")
+            raise ValueError(f"{input_label}: ELF file exceeds the 256 MiB input bound")
         d = self.data
-        envelope = validate_elf32_envelope(d, path)
+        envelope = validate_elf32_envelope(d, input_label)
         self.entry = envelope["entry"]
         self.phoff = envelope["phoff"]
         self.shoff = envelope["shoff"]
