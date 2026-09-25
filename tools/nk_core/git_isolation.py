@@ -27,14 +27,16 @@ _REPOSITORY_SELECTING_VARIABLES = frozenset({
 
 
 @functools.lru_cache(maxsize=32)
-def _absolute_git_dir(root: str) -> str | None:
-    """The repository directory `root` resolves to with no inherited selectors."""
+def _absolute_git_dir(cwd: str, git_dir: str | None = None) -> str | None:
+    """The repository directory git resolves from `cwd` (and an explicit GIT_DIR)."""
     env = {key: value for key, value in os.environ.items()
            if key not in _REPOSITORY_SELECTING_VARIABLES and not key.startswith("GIT_CONFIG")}
+    if git_dir:
+        env["GIT_DIR"] = git_dir
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--absolute-git-dir"],
-            cwd=root, env=env, capture_output=True, text=True, check=False,
+            cwd=cwd, env=env, capture_output=True, text=True, check=False,
         )
     except OSError:
         return None
@@ -43,24 +45,27 @@ def _absolute_git_dir(root: str) -> str | None:
     return os.path.normcase(os.path.realpath(result.stdout.strip()))
 
 
-def _index_file_inside(root: Path, index_file: str) -> str | None:
-    """`index_file` as an absolute path when it belongs to root's own repository.
+def _caller_index_for(root: Path, env: Mapping[str, str]) -> str | None:
+    """The caller's GIT_INDEX_FILE, as an absolute path, when it indexes `root`.
 
-    A pre-commit hook runs with GIT_INDEX_FILE naming the index being committed
-    (a lock file for `git commit -a` or a path-limited commit). Audits of the real
-    checkout must read that index, while an inherited index that points into some
-    other repository is still dropped.
+    A pre-commit hook runs with GIT_INDEX_FILE naming the index being committed (a
+    lock file for `git commit -a` or a path-limited commit), and the publication
+    tests stage candidates in a temporary index the same way. When the caller's own
+    repository (its GIT_DIR, else its working directory) is the repository being
+    inspected, that index is the caller's intent and is kept. An index inherited
+    while inspecting some other repository, such as a scratch repository created by
+    a test, is dropped.
     """
-    git_dir = _absolute_git_dir(str(root))
-    if git_dir is None:
+    target = _absolute_git_dir(str(root))
+    if target is None:
         return None
-    candidate = Path(index_file)
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    resolved = os.path.normcase(os.path.realpath(candidate))
-    if os.path.dirname(resolved) != git_dir:
+    caller = _absolute_git_dir(os.getcwd(), env.get("GIT_DIR"))
+    if caller != target:
         return None
-    return str(candidate)
+    index_file = Path(env["GIT_INDEX_FILE"])
+    if not index_file.is_absolute():
+        index_file = Path.cwd() / index_file
+    return str(index_file)
 
 
 def isolated_git_env(
@@ -71,7 +76,7 @@ def isolated_git_env(
     env = dict(os.environ if base is None else base)
     kept_index = None
     if root is not None and env.get("GIT_INDEX_FILE"):
-        kept_index = _index_file_inside(Path(root).resolve(), env["GIT_INDEX_FILE"])
+        kept_index = _caller_index_for(Path(root).resolve(), env)
     for key in tuple(env):
         if key in _REPOSITORY_SELECTING_VARIABLES or key.startswith("GIT_CONFIG"):
             del env[key]

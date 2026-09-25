@@ -133,7 +133,7 @@ class TestPublishAudit(unittest.TestCase):
         self.assertEqual(Path(env["GIT_CEILING_DIRECTORIES"]).resolve(), root.parent)
 
     def test_isolated_git_env_keeps_only_the_index_of_the_inspected_repository(self):
-        """A hook's GIT_INDEX_FILE is kept for its own repository and dropped for any other."""
+        """The caller's GIT_INDEX_FILE is kept for its own repository and dropped for any other."""
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             tmp_dir = Path(tmp_dir_raw).resolve()
             inspected = tmp_dir / "inspected"
@@ -141,11 +141,17 @@ class TestPublishAudit(unittest.TestCase):
             for repo in (inspected, other):
                 repo.mkdir()
                 run_git(["init", "-q"], repo, check=True)
-            own_index = str(inspected / ".git" / "index.lock")
-            env = isolated_git_env({"GIT_INDEX_FILE": own_index}, root=inspected)
-            self.assertEqual(Path(env["GIT_INDEX_FILE"]).resolve(), Path(own_index).resolve())
-            foreign_index = str(other / ".git" / "index")
-            env = isolated_git_env({"GIT_INDEX_FILE": foreign_index}, root=inspected)
+            staged_index = str(tmp_dir / "staged-index")
+            env = isolated_git_env(
+                {"GIT_DIR": str(inspected / ".git"), "GIT_INDEX_FILE": staged_index},
+                root=inspected,
+            )
+            self.assertEqual(env["GIT_INDEX_FILE"], staged_index)
+            self.assertNotIn("GIT_DIR", env)
+            env = isolated_git_env(
+                {"GIT_DIR": str(other / ".git"), "GIT_INDEX_FILE": staged_index},
+                root=inspected,
+            )
             self.assertNotIn("GIT_INDEX_FILE", env)
 
     def test_forbidden_private_paths_and_formats(self):
