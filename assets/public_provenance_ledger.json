@@ -1501,7 +1501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cc81c335f0917dc5bca00be70413b0fd895f33b0b984119aebfde51bd477487"
+      "sha256": "2922b8517f6da978ab99836aa04f192fa4a165697d77f4b833efbb7301856b86"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -9065,7 +9065,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c7e107793a209e95b02a59724bc55bff821d1885d8b30d356fe6d8dd93691b0"
+      "sha256": "9db33199f3182ae309e9fac45cc9e9b16984951f73b5bb5e1502013aff264713"
     },
     {
       "path": "tools/test_portability_inventory.py",
