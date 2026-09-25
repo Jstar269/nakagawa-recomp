@@ -8136,10 +8136,13 @@
     },
     {
       "path": "tools/test_asset_index_c.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "asset-index-c-selftest-driver-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ce8ea530cc1de53500f1f2aa368ef490614c6550f0a7a71bd9fe18feb8c08a3b"
     },
@@ -8865,10 +8868,13 @@
     },
     {
       "path": "tools/test_matrix_report.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "matrix-report-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "cad81180a55efb392ea571c1df3b2996edfe9a1977f5599b3ed39b5c1d941daa"
     },
@@ -9096,10 +9102,13 @@
     },
     {
       "path": "tools/test_production_smoke.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "production-smoke-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "5c121709d0af016caff2849d104d6d4b517c5d4bc49ca0c4ad2dd2b73514922f"
     },
@@ -9378,10 +9387,13 @@
     },
     {
       "path": "tools/test_sbom.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "sbom-tooling-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d52cc113edb333e461e539251435fa1d8edbb12a7407b4eb5f7812adca538e3e"
     },
