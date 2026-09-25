@@ -65,6 +65,7 @@
         "UNRESOLVED_DISPATCH_TARGET",
         "EXITED_ZERO_BEFORE_HLE",
         "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP",
+        "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP",
         "GUEST_ACTIVITY_UNVERIFIED",
         "DISPLAY_PROGRESS_UNVERIFIED",
         "ENTRY_NOT_COMPILED",
@@ -81,7 +82,7 @@
     "issue_numbers": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "type": "integer", "enum": [71, 118, 285, 295, 296, 297, 298, 300, 308] }
+      "items": { "type": "integer", "enum": [71, 118, 280, 285, 295, 296, 297, 298, 300, 308] }
     },
     "unsupported_imports": {
       "type": "array",
