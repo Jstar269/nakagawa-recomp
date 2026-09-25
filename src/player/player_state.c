@@ -830,9 +830,9 @@ void player_app_populate_sample_games(PlayerApp *app) {
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
-    /* A launch initiated by the player always requests a GUI child, even if
+    /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
 
     char package_error[2048] = "";
     player_app_validate_runtime_package(
@@ -850,7 +850,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     NkResult res = nk_launch_prepare_session(&app->launch_session, game,
                                               player_package_root(app, game));
     /* nk_launch defaults gui_mode to false for headless harnesses. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
     if (res != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
