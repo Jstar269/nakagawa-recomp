@@ -16,19 +16,35 @@ in the works.
 
 ## What the player does automatically
 
-1. Add the ISO: drag it into the player window, or click **Add Game**.
+1. Add the ISO: drag it into the player window, or click **Add Game**. If the
+   disc is already in your library, re-adding it keeps its completed extraction
+   and staged files as long as the disc ID, version, and image size match.
 2. The player reads the disc's own `PARAM.SFO` to identify the title and disc ID.
+   At start-up, the player also loads every title manifest in `<user data>/manifests`
+   (up to 8, in alphabetical order), so any title recognized from a user-supplied
+   manifest is identified without extra options.
 3. It checks the executable:
    - An **unencrypted** executable, including discs that carry an unencrypted
      `BOOT.BIN`, is selected automatically. Homebrew and the project's showcase
      demos are in this group.
    - For an **encrypted** executable, the game card says so and names the
-     folder where the player looks for your unencrypted files.
-4. Once an unencrypted executable is available, click **Build package**. The
-   player recompiles the game, shows each stage, and turns on **Play** when the
-   package is ready. Anything it can't handle yet stops the build with a message
-   naming what is missing and its tracking issue. It never pretends a build
-   succeeded.
+     folder where the player looks for your unencrypted files (`<user data>/titles/<DISC_ID>/decrypted/`).
+     If an experimental profile was created while the executable was still
+     encrypted, supplying `EBOOT.elf` in that folder is picked up automatically
+     when building.
+4. Once an unencrypted executable is available, click **Build package**.
+   - If the manifest reads BSS metadata from the disc's `~PSP` executable
+     header, `build-package` extracts it directly from the disc image; you do
+     not need to provide a separate header file.
+   - The compiled package ships the decrypted modules it compiled against in
+     `<package>/modules`, and the launcher sets `SR_MODULE_DIR` to point there
+     so launches are self-contained.
+   - A run starts at the title's declared fallback entry when one is defined
+     (`runtime_bindings.fallback_entry`), or at the executable entry point.
+   - The player recompiles the game, shows each stage, and turns on **Play** when the
+     package is ready. Anything it can't handle yet stops the build with a message
+     naming what is missing and its tracking issue. It never pretends a build
+     succeeded.
 
 ## Supplying unencrypted files
 
@@ -50,6 +66,25 @@ On Windows, `<user data>` is `%LOCALAPPDATA%\Nakagawa\data`. A usable file
 starts with the ELF signature bytes `7F 45 4C 46`. A file that starts with
 `~PSP` or `~SCE` is still encrypted, and the player will say so. The player
 picks up the folder automatically the next time it checks the game.
+
+Decrypted guest modules can be named either after their file name on the disc
+(for example `psmf.prx`) or after their manifest module name (for example
+`scePsmf_library.prx`). If a module is missing or not a plain decrypted ELF, the
+build error message displays both names.
+
+### Supplying title manifests
+
+If your game requires an external title manifest overlay, place the `.json` manifest in:
+
+```text
+<user data>/manifests/
+└── <manifest_name>.json
+```
+
+The player loads every `.json` manifest in this directory on start-up (sorted
+alphabetically, up to 8 manifests). The command-line tool `tools/nk_cli.py
+build-package` also inspects this folder after checking repository titles,
+resolving the title identically.
 
 Laws on decrypting software differ between countries, and some restrict it
 even for copies you own. Check the rules where you live.
