@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a62e1864c07a1fc420c4cc30b5fbad992c507470cbdcb2041f613d99f76ee973"
+      "sha256": "56253ef0adcc60c9c0e7a962a9aae4c4205ef4b0ed3a70fe4ed4cd485bcea26d"
     },
     {
       "path": "NOTICE.md",
@@ -463,7 +463,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "5af9a719c54e2aa159a8f114db16089065f06fc6587bd63e1e72eac154f9ee6b"
+      "sha256": "8dbabf75a1b4f0a665d48ce97b2ad3e91989a963cdca7b38d7a5c88b0caeccdb"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -808,6 +808,15 @@
       "sha256": "79fdcf2c77f4907438168bfcfbe71ac815a229f70d57ecd2167537a0bf9827a5"
     },
     {
+      "path": "docs/ARCHIVE_VFS.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "efb9f862c7cd568112b5b771b3a5d5d1267205b7f83dfd4feb2ebe5a09e19ec1"
+    },
+    {
       "path": "docs/CI.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1093,7 +1102,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "81fbe29e29947dd0921f8ae98891265df2740923178aff5a36de9ba3352085a3"
+      "sha256": "71d3a887fc94270f8a1b698d29c1578455ac789c2661da7707cf835e075dfe0c"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -4171,6 +4180,30 @@
       "sha256": "f47d423f9e65b190c68c2fdc87f4b44bad8df47d802f5bf77c187b2dcbb47760"
     },
     {
+      "path": "src/rt/archive_vfs.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "archive-vfs-298",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c3c5b29d60fb4fef757ae84f8a5e22298fe2c50289505c90ce0034e1a3c40b1b"
+    },
+    {
+      "path": "src/rt/archive_vfs.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "archive-vfs-298",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b5a8f72d9d7aa3f73564e3b97fd8b1cafa11c29719566c8ff4c7d2940cf164bb"
+    },
+    {
       "path": "src/rt/asset_index.h",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5662,7 +5695,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "24d98b3346cc622facea8fa18764be3f2b2131563452d980a28ba54a207b0516"
+      "sha256": "9d3f62463259fef74391398169a4f99199fbeba6a3ba0a6d19fd9503d1d1ae65"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5700,7 +5733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "139b94297c9eb67e0282e96a55528326803c43835bcebd6203a58edbd99dd080"
+      "sha256": "2c66bb885e89aa7127267b937038cb6322755914dbba8004380fba179f8a27e5"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6525,7 +6558,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0b2cf9bda7622e3d1571537db8561cc879bb3558f7e9e5611f92b21b7b2dda8f"
+      "sha256": "ea0aef16b5eb84d42946e5009599f99e6d73873ebf52fb1eaa2d0c8b12674f65"
     },
     {
       "path": "tools/README.md",
