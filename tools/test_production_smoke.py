@@ -917,12 +917,14 @@ class TestProductionSmokePackage(unittest.TestCase):
         cached_elf = user_root / "cache" / "packages" / "ULUS99998" / "selected.elf"
         self.assertEqual(cached_elf.read_bytes(), executable_bytes)
         package_dir = user_root / "packages" / "ULUS99998"
-        if completed.returncode == 0:
-            self.assertTrue((package_dir / "package.json").is_file())
-            return
-        self.assertIn("production PGF/PGD runtime backends", completed.stderr)
-        self.assertIn("in the works (#297)", completed.stderr)
-        self.assertFalse((package_dir / "package.json").exists())
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertNotIn("production PGF/PGD runtime backends", completed.stderr)
+        self.assertTrue((package_dir / "package.json").is_file())
+        self.assertTrue((package_dir / "build-report.json").is_file())
+        report = json.loads((package_dir / "build-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report.get("backends"), "public")
+        self.assertIn("fonts: import your own PSP fonts; public font reader in the works (#349)", report.get("limits", []))
+        self.assertIn("PGD-protected data: unavailable (#295)", report.get("limits", []))
 
     def test_bad_executable_is_rejected_with_a_named_reason(self):
         bad_elf = self.root / "bad.elf"
