@@ -26,7 +26,7 @@ Classification is fail-closed:
   paths may keep one only while their trusted bytes and claim are frozen, and
   require an exact record before their bytes change;
 * any other path -- in particular an unrecorded implementation path under
-  ``src/``, ``tools/``, or the dashboard -- resolves to ``unresolved``, and the
+  ``src/``, ``tools/``, or another implementation tree -- resolves to ``unresolved``, and the
   generator refuses to write release evidence while any included path is
   unresolved.
 
@@ -544,9 +544,8 @@ def _is_configuration_path(path: str) -> bool:
 
     Matches CI/template prefixes (``.github/``), build fragments (``mk/``),
     configuration extensions, well-known configuration filenames, dotfiles, and
-    ``*.config.*`` files.  ``interface/`` as a whole is deliberately *not*
-    configuration: the dashboard's ``src/`` is implementation and needs a
-    ledger record, only its config-shaped files match this rule.
+    config-shaped files. Source-bearing suffixes remain implementation even
+    beside configuration files.
     """
     if path.startswith(CONFIGURATION_PREFIXES):
         return True
@@ -892,7 +891,7 @@ def _exact_path(path: object, *, code: str) -> str:
         raise RefreshError(code, "authorization must name a non-empty exact path")
     if "\\" in path or path.startswith("/") or PurePosixPath(path).is_absolute():
         raise RefreshError(code, f"path is not a repository-relative POSIX path: {path!r}")
-    # Brackets are valid literal path characters (for example a Next.js
+    # Brackets are valid literal path characters in dynamic route paths.
     # dynamic route directory named ``[id]``).  Only glob operators are
     # treated as wildcard authorization here; bracketed paths are still
     # required to match an exact path in the trusted tree.

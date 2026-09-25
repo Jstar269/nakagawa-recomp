@@ -970,7 +970,7 @@ def generate_report(db_path, output_path, html_path=None, pdf_path=None, limit=1
     # 2. Output HTML if specified
     if html_path:
         generate_html_report(runs, latencies, html_path)
-        print(f"Interactive HTML dashboard generated successfully at: {html_path}")
+        print(f"Interactive HTML report generated successfully at: {html_path}")
 
     # 3. Output PDF if specified
     if pdf_path:
