@@ -518,10 +518,21 @@ void sr_trace_close(void);
  * release build removes the hooks in the preprocessor. TRACE=1 retains a predicted-false
  * runtime gate and byte-accurate instruction tracing for oracle/diff builds. The address
  * expression passed to sr_end is a pure register-plus-constant computation. */
+#ifndef PERF_AOT_INSTRUCTIONS
+#define PERF_AOT_INSTRUCTIONS 0
+#endif
 extern int sr_trace_active;
 void sr_begin_impl(CpuState *s, uint32_t pc, uint32_t op);
 void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size);
-#ifdef SR_INSTRUCTION_TRACE
+#if PERF_AOT_INSTRUCTIONS
+#define sr_begin(s, pc, op) do { \
+    if (__builtin_expect(sr_perf_aot_active, 0)) sr_perf_aot_instruction((pc), (op)); \
+    if (__builtin_expect(sr_trace_active, 0)) sr_begin_impl((s), (pc), (op)); \
+} while (0)
+#define sr_end(s, mem_addr, size) do { \
+    if (__builtin_expect(sr_trace_active, 0)) sr_end_impl((s), (mem_addr), (size)); \
+} while (0)
+#elif defined(SR_INSTRUCTION_TRACE)
 #define sr_begin(s, pc, op)       do { if (__builtin_expect(sr_trace_active, 0)) sr_begin_impl((s), (pc), (op)); } while (0)
 #define sr_end(s, mem_addr, size) do { if (__builtin_expect(sr_trace_active, 0)) sr_end_impl((s), (mem_addr), (size)); } while (0)
 #else
@@ -641,6 +652,8 @@ size_t sr_host_data_entry_count(void);      /* valid after READY */
 
 void     sched_init(CpuState *cpu);                 /* CpuState the running thread reads/writes */
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
+uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
+                                uint32_t attr, const char *name);
 uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */
 void     sched_exit_current_unchecked(int32_t status); /* raw status for non-ThreadMan teardown */
@@ -738,6 +751,28 @@ typedef struct SrThreadRunStatus {
     uint32_t releaseCount;
 } SrThreadRunStatus;
 int      sched_thread_run_status(uint32_t uid, SrThreadRunStatus *out);
+typedef struct SrThreadInfo {
+    uint32_t size;
+    char name[32];
+    uint32_t attr;
+    uint32_t status;
+    uint32_t entry;
+    uint32_t stack;
+    uint32_t stackSize;
+    uint32_t gpReg;
+    uint32_t initPriority;
+    uint32_t currentPriority;
+    uint32_t waitType;
+    uint32_t waitId;
+    uint32_t wakeupCount;
+    uint32_t exitStatus;
+    uint32_t runClocksLow;
+    uint32_t runClocksHigh;
+    uint32_t intrPreemptCount;
+    uint32_t threadPreemptCount;
+    uint32_t releaseCount;
+} SrThreadInfo;
+int      sched_thread_info(uint32_t uid, SrThreadInfo *out);
 uint32_t sched_thread_exit_status(uint32_t uid);
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);

@@ -543,7 +543,9 @@ static SrGuestInterpResult execute_noncontrol(
                 uint32_t saved_pc = s->pc;
                 int vfpu_rc;
                 s->pc = pc;
+                uint64_t perf_started = sr_perf_now_ns();
                 vfpu_rc = sr_vfpu_interp(s, opcode);
+                if (perf_started) sr_perf_vfpu(opcode, perf_started, vfpu_rc);
                 if (s->flow_kind != 0u) {
                     int rc = -1;
                     return map_flow_result(s, rc, fault, pc, opcode);
@@ -837,6 +839,8 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             sr_end(s, delay_store_address, delay_store_size);
 
             instruction_count += 2u;
+            if (sr_perf_enabled) sr_perf_interp_instruction();
+            if (sr_perf_enabled) sr_perf_interp_instruction();
             pc = transfer.taken ? transfer.target : pc + 8u;
             s->pc = pc;
             continue;
@@ -856,6 +860,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         }
         sr_end(s, store_address, store_size);
         instruction_count++;
+        if (sr_perf_enabled) sr_perf_interp_instruction();
         pc += 4u;
         s->pc = pc;
     }
@@ -865,7 +870,10 @@ SrGuestInterpResult sr_guest_interp_run(
     CpuState *s,
     uint32_t entry,
     SrGuestInterpFault *fault) {
-    return sr_guest_interp_run_internal(s, entry, NULL, fault);
+    if (sr_perf_enabled) sr_perf_interp_begin(entry);
+    SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, NULL, fault);
+    if (sr_perf_enabled) sr_perf_interp_end(s->pc, (int)result);
+    return result;
 }
 
 SrGuestInterpResult sr_guest_interp_run_with_boundary(
@@ -873,7 +881,10 @@ SrGuestInterpResult sr_guest_interp_run_with_boundary(
     uint32_t entry,
     const SrGuestInterpCallBoundary *boundary,
     SrGuestInterpFault *fault) {
-    return sr_guest_interp_run_internal(s, entry, boundary, fault);
+    if (sr_perf_enabled) sr_perf_interp_begin(entry);
+    SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, boundary, fault);
+    if (sr_perf_enabled) sr_perf_interp_end(s->pc, (int)result);
+    return result;
 }
 
 const char *sr_guest_interp_result_name(SrGuestInterpResult result) {

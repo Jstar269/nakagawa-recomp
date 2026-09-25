@@ -163,6 +163,12 @@
     "name": "sceIoOpen",
     "status": "unreviewed"
   },
+  "0x10f3bb61": {
+    "classification": "dedicated",
+    "handler": "h_Memset",
+    "name": "memset",
+    "status": "complete"
+  },
   "0x132f1eca": {
     "classification": "dedicated",
     "handler": "h_AtracReinit",
@@ -230,6 +236,12 @@
     "handler": "h_StdFd",
     "name": "sceKernelStdin",
     "status": "unreviewed"
+  },
+  "0x17c1684e": {
+    "classification": "dedicated",
+    "handler": "h_ReferThreadStatus",
+    "name": "sceKernelReferThreadStatus",
+    "status": "partial"
   },
   "0x18260574": {
     "classification": "dedicated",
@@ -851,6 +863,12 @@
     "handler": "h_GetThreadStackFreeSize",
     "name": "sceKernelGetThreadStackFreeSize",
     "status": "unreviewed"
+  },
+  "0x52df196c": {
+    "classification": "dedicated",
+    "handler": "h_Strlen",
+    "name": "strlen",
+    "status": "complete"
   },
   "0x54f5fb11": {
     "classification": "dedicated",
@@ -1591,7 +1609,7 @@
     "classification": "dedicated",
     "handler": "h_Memset",
     "name": "sceKernelMemset",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0xa0b5a7c2": {
     "classification": "dedicated",
