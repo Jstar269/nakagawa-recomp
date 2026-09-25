@@ -1018,22 +1018,35 @@ int main(int argc, char **argv) {
 }
 '''
 
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.gcc = shutil.which("gcc")
+        if not cls.gcc:
+            return
+        cls._class_temp = Path(tempfile.mkdtemp(prefix="nk_launch_parity_class_"))
+        cls._harness = cls._compile_harness_class(cls._class_temp, cls.gcc)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if hasattr(cls, "_class_temp"):
+            shutil.rmtree(cls._class_temp, ignore_errors=True)
+
     def setUp(self) -> None:
-        self.gcc = shutil.which("gcc")
         if not self.gcc:
             self.skipTest("gcc not available for the native parity harness")
         self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_launch_parity_"))
         self.iso = self.temp_dir / "source.iso"
         self.iso.write_bytes(b"iso")
-        self.harness = self._compile_harness()
+        self.harness = self._harness
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def _compile_harness(self) -> Path:
-        harness_c = self.temp_dir / "parity_harness.c"
-        harness_c.write_text(self.HARNESS_C, encoding="utf-8", newline="\n")
-        out = self.temp_dir / ("parity_harness.exe" if sys.platform == "win32" else "parity_harness")
+    @classmethod
+    def _compile_harness_class(cls, class_temp: Path, gcc: str) -> Path:
+        harness_c = class_temp / "parity_harness.c"
+        harness_c.write_text(cls.HARNESS_C, encoding="utf-8", newline="\n")
+        out = class_temp / ("parity_harness.exe" if sys.platform == "win32" else "parity_harness")
         core_srcs = [
             REPO_ROOT / "src" / "core" / "nk_iso.c",
             REPO_ROOT / "src" / "core" / "nk_library.c",
@@ -1047,13 +1060,14 @@ int main(int argc, char **argv) {
         else:
             core_srcs.append(REPO_ROOT / "src" / "core" / "nk_platform_posix.c")
         cmd = [
-            self.gcc, "-std=c99", "-Wall", "-Wextra",
+            gcc, "-std=c99", "-Wall", "-Wextra",
             "-I", str(REPO_ROOT / "src" / "core"),
             "-I", str(REPO_ROOT / "src" / "core" / "generated"),
             str(harness_c),
         ] + [str(s) for s in core_srcs] + ["-o", str(out)]
         res = subprocess.run(cmd, capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0, f"parity harness compile failed: {res.stderr}")
+        if res.returncode != 0:
+            raise RuntimeError(f"failed to build native launch parity harness:\n{res.stderr}\n{res.stdout}")
         return out
 
     @staticmethod
