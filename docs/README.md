@@ -84,6 +84,8 @@ with explicit target and unbuilt boundaries.
   the target pipeline exists.
 - [`WEB_UI_MIGRATION.md`](WEB_UI_MIGRATION.md) — CURRENT inventory and migration
   record for the `interface/` prototype and the native migration derived from it.
+- [`WEB_UI_RETIREMENT.md`](WEB_UI_RETIREMENT.md) — retirement plan and parity
+  audit for the `interface/` localhost web dashboard in favor of the native player and CLI.
 - [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md),
   [`PREVIEW_RELEASE_NOTES.md`](PREVIEW_RELEASE_NOTES.md) — proposed scope and
   copy for an early preview. Both are proposals: creating a tag or release is a
@@ -164,6 +166,7 @@ in this slice; classification comes first, directory moves separately.
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and distributable title packages remain unbuilt |
 | `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and absent retail-preparation stages are distinguished inline |
 | `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; the wizard staging slice landed (PR #202), while web retirement and full parity remain unbuilt |
+| `WEB_UI_RETIREMENT.md` | DRAFT | Web dashboard retirement plan and native parity audit |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
 | `INDEPENDENCE_CAMPAIGN.md` | DRAFT | Independence route plan; read for intent, never cite as built state |
