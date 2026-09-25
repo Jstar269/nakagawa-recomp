@@ -246,9 +246,17 @@ static int create_swapchain(void) {
     sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
     {
         VkPresentModeKHR pm[8]; uint32_t npm = 8;
-        if (vkGetPhysicalDeviceSurfacePresentModesKHR(s_pdev, s_surf, &npm, pm) >= VK_SUCCESS)
-            for (uint32_t i = 0; i < npm; i++)
-                if (pm[i] == VK_PRESENT_MODE_MAILBOX_KHR) { sci.presentMode = pm[i]; break; }
+        int avail[8]; int navail = 0;
+        if (vkGetPhysicalDeviceSurfacePresentModesKHR(s_pdev, s_surf, &npm, pm) >= VK_SUCCESS) {
+            for (uint32_t i = 0; i < npm && i < 8; i++) avail[navail++] = (int)pm[i];
+        }
+        const char *vs = getenv("SR_VSYNC");
+        int vsync_on = !vs || !vs[0] || atoi(vs) != 0;
+        sci.presentMode = (VkPresentModeKHR)sdl3vk_pick_present_mode(vsync_on, avail, navail);
+        if (!vsync_on && sci.presentMode == VK_PRESENT_MODE_FIFO_KHR) {
+            fprintf(stderr, "sdl3vk: SR_VSYNC=0 requested but this surface offers no "
+                            "MAILBOX/IMMEDIATE mode; falling back to FIFO (vsync)\n");
+        }
     }
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = old;
@@ -261,6 +269,24 @@ static int create_swapchain(void) {
     memset(s_swap_img_fence,0,sizeof(s_swap_img_fence));
     s_swapchain_gen++;
     return 1;
+}
+
+/* Guard the plain-int present-mode contract the picker documents against the
+ * Vulkan enum actually compiled against (IMMEDIATE=0, MAILBOX=1, FIFO=2). */
+typedef char sdl3vk_present_mode_immediate_is_0[(int)VK_PRESENT_MODE_IMMEDIATE_KHR == 0 ? 1 : -1];
+typedef char sdl3vk_present_mode_mailbox_is_1[(int)VK_PRESENT_MODE_MAILBOX_KHR == 1 ? 1 : -1];
+typedef char sdl3vk_present_mode_fifo_is_2[(int)VK_PRESENT_MODE_FIFO_KHR == 2 ? 1 : -1];
+
+int sdl3vk_pick_present_mode(int vsync, const int *available, int count) {
+    const int immediate = 0;
+    const int mailbox = 1;
+    const int fifo = 2;
+    if (vsync) return fifo;
+    for (int i = 0; i < count; i++)
+        if (available[i] == mailbox) return mailbox;
+    for (int i = 0; i < count; i++)
+        if (available[i] == immediate) return immediate;
+    return fifo;
 }
 
 /* ---- init --------------------------------------------------------------------------- */
@@ -276,6 +302,15 @@ int sdl3vk_init(const char *title) {
     if (!s_win) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 0;
+    }
+    {
+        /* Settings > Fullscreen (SR_FULLSCREEN), applied before the Vulkan
+         * surface is created so the swapchain picks up the right extent. */
+        const char *fs = getenv("SR_FULLSCREEN");
+        if (fs && fs[0] && atoi(fs) != 0 && !SDL_SetWindowFullscreen(s_win, true)) {
+            fprintf(stderr, "sdl3vk: SR_FULLSCREEN=1 could not be applied: %s\n",
+                    SDL_GetError());
+        }
     }
 
     Uint32 next = 0;
