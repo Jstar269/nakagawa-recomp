@@ -142,10 +142,13 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ci-workflow",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "74775dd4da5fbb8e98e9619007956bb9b97e2f02eb84bfe3d6d9984a044ceb6b"
     },
@@ -1514,10 +1517,13 @@
     },
     {
       "path": "fixtures/production_smoke/generate.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "production-smoke-fixture-generator",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "933aa59d85c87412cf69d1eb0aea4b07055efa2ef5966fd0de0e9c39e0817c9b"
     },
