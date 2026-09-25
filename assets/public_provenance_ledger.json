@@ -8310,12 +8310,15 @@
     },
     {
       "path": "tools/test_build_truth.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-truth-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "b5c7e9e1697498f5ce76c0feb0ed005cc75351a4dff87d52581bf4562bb89fa9"
+      "sha256": "4f5fbd7709e78d6a4c9dfbb35b13b5a109fc96c0798d8beda50338a22a028e1f"
     },
     {
       "path": "tools/test_callback_correctness.py",
