@@ -269,21 +269,21 @@
           "@img/sharp-wasm32",
           "@img/sharp-darwin-*"
         ],
-        "obligation": "libvips and the sharp prebuilt binary packages are LGPL-3.0-or-later and are shipped as prebuilt shared libraries inside the standalone output. The relink mechanism (relinkable object files plus a relink script, dynamic linking against a replaceable library, or exclusion of these packages from the release) is a maintainer decision; see issue #421.",
+        "obligation": "libvips and the sharp prebuilt binary packages are LGPL-3.0-or-later and are shipped as prebuilt shared libraries inside the standalone output. The relink mechanism (relinkable object files plus a relink script, dynamic linking against a replaceable library, or exclusion of these packages from the release) was left open by #421, which covers only the native package. The maintainer retired the web dashboard on 2026-09-25 (#314), so exclusion applies: these packages are removed with interface/ and ship in no release.",
         "resolved": false
       },
       "EPL-2.0": {
         "applies_to": [
           "elkjs"
         ],
-        "obligation": "EPL-2.0 section 3 permits a Secondary License (for example GPL-2.0-or-later) for the GPL-incompatible modules. Whether this distribution designates a Secondary License is a maintainer legal decision and is NOT made here.",
+        "obligation": "EPL-2.0 section 3 permits a Secondary License (for example GPL-2.0-or-later) for the GPL-incompatible modules. Whether this distribution designates a Secondary License is a maintainer legal decision and is NOT made here. It becomes moot with the web dashboard's retirement (#314), which removes elkjs from every release.",
         "resolved": false
       },
       "CC-BY-4.0": {
         "applies_to": [
           "caniuse-lite"
         ],
-        "obligation": "Creative Commons Attribution 4.0 requires attribution to the creator, a link to the license, and an indication of whether changes were made. caniuse-lite carries the data set compiled from the Can I Use project; the exact attribution string to publish is a maintainer decision.",
+        "obligation": "Creative Commons Attribution 4.0 requires attribution to the creator, a link to the license, and an indication of whether changes were made. caniuse-lite carries the data set compiled from the Can I Use project; the exact attribution string to publish is a maintainer decision. It becomes moot with the web dashboard's retirement (#314), which removes caniuse-lite from every release.",
         "resolved": false
       }
     },
