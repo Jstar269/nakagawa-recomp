@@ -33,6 +33,7 @@ typedef struct {
     const char * const *compatible_disc_ids; /* NULL-terminated array of alias disc IDs */
     uint32_t executable_base;
     uint32_t executable_entry;
+    uint32_t run_entry;                 /* where a run starts: runtime_bindings.fallback_entry when declared, else executable_entry (title_codegen_plan._resolve_run_entry) */
     const char *bss_metadata_source;
     const char *data_root;
     const char *memory_stick_root;

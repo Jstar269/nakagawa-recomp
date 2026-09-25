@@ -673,6 +673,23 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
+    /* Title manifests the user keeps in <user data>/manifests are loaded on every
+     * start, so a game that needs one is recognized without command-line flags. */
+    {
+        char user_data_root[NK_MAX_PATH];
+        bool have_root = app.runtime_root[0]
+            ? snprintf(user_data_root, sizeof(user_data_root), "%s", app.runtime_root) > 0
+            : nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root));
+        char manifest_dir[NK_MAX_PATH + 16];
+        if (have_root && snprintf(manifest_dir, sizeof(manifest_dir), "%s%cmanifests",
+                                  user_data_root, nk_platform_path_separator()) > 0) {
+            char report[2048];
+            int loaded = nk_title_manifest_load_overlay_dir(manifest_dir, report, sizeof(report));
+            if (loaded > 0) printf("[PLAYER] Loaded %d title manifest(s) from %s\n", loaded, manifest_dir);
+            if (report[0]) fprintf(stderr, "[PLAYER] Title manifests not loaded:\n%s", report);
+        }
+    }
+
     /* Load external manifest overlay if requested */
     if (manifest_overlay_path) {
         char err_msg[256];
