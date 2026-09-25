@@ -329,7 +329,11 @@ class RuntimeLauncher:
         # identity: a wrong entry point does not produce a readable error, it
         # produces a runtime that executes the wrong bytes.
         base = title_profile.executable_base
-        entry = title_profile.executable_entry
+        # The run entry (fallback_entry, which the registry resolves to a declared
+        # runtime_bindings.fallback_entry or else executable.entry), not the raw ELF
+        # entry: the native launcher and the package planner start runs there too.
+        entry = (int(title_profile.fallback_entry, 16) if title_profile.fallback_entry
+                 else title_profile.executable_entry)
 
         cmd = [
             str(exe_path),
