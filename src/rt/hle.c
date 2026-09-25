@@ -1766,7 +1766,9 @@ static uint32_t h_CreateThread(CpuState *s) {
     /* a0=name, a1=entry, a2=priority, a3=stackSize. Returns a UID bound to the entry.
      * sched_create_thread returns 0 when the TCB table or the stack arena is exhausted;
      * real PSP fails such a create instead of granting a smaller stack. */
-    uint32_t uid = sched_create_thread(A1, (int)A2, A3);
+    char name[32] = {0};
+    if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t uid = sched_create_thread_ex(A1, (int)A2, A3, stack_arg(s, 0), name);
     return uid ? uid : 0x80020190u;   /* SCE_KERNEL_ERROR_NO_MEMORY */
 }
 static uint32_t h_StartThread(CpuState *s) {
@@ -2118,6 +2120,32 @@ static uint32_t h_ReferThreadRunStatus(CpuState *s) {
             "REFER_RUN target=0x%x status=%u pri=%u waitType=%u waitId=0x%x wakeups=%u\n",
             A0, rs.status, rs.currentPriority, rs.waitType, rs.waitId, rs.wakeupCount); }
     }
+    return 0;
+}
+static uint32_t h_ReferThreadStatus(CpuState *s) {
+    if (!A1 || !sr_guest_span_writable(A1, (uint32_t)sizeof(SrThreadInfo)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SrThreadInfo info;
+    if (sched_thread_info(A0, &info) != 0) return 0x80020198u;
+    for (uint32_t i = 0; i < sizeof(info.name); i++) MEM_W8(A1 + 4u + i, (uint8_t)info.name[i]);
+    MEM_W32(A1 + 0x00u, info.size);
+    MEM_W32(A1 + 0x24u, info.attr);
+    MEM_W32(A1 + 0x28u, info.status);
+    MEM_W32(A1 + 0x2cu, info.entry);
+    MEM_W32(A1 + 0x30u, info.stack);
+    MEM_W32(A1 + 0x34u, info.stackSize);
+    MEM_W32(A1 + 0x38u, info.gpReg);
+    MEM_W32(A1 + 0x3cu, info.initPriority);
+    MEM_W32(A1 + 0x40u, info.currentPriority);
+    MEM_W32(A1 + 0x44u, info.waitType);
+    MEM_W32(A1 + 0x48u, info.waitId);
+    MEM_W32(A1 + 0x4cu, info.wakeupCount);
+    MEM_W32(A1 + 0x50u, info.exitStatus);
+    MEM_W32(A1 + 0x54u, info.runClocksLow);
+    MEM_W32(A1 + 0x58u, info.runClocksHigh);
+    MEM_W32(A1 + 0x5cu, info.intrPreemptCount);
+    MEM_W32(A1 + 0x60u, info.threadPreemptCount);
+    MEM_W32(A1 + 0x64u, info.releaseCount);
     return 0;
 }
 /* The extra PRXs are compiled into the native dispatch table, but their data segments are not
@@ -3649,6 +3677,25 @@ static uint32_t h_Memset(CpuState *s) {
         sr_oor(dst, val, 1);
     }
     return dst;
+}
+static uint32_t h_Strlen(CpuState *s) {
+    (void)s;
+    if (!A0) {
+        sr_oor(A0, 0u, 0);
+        return 0u;
+    }
+    uint32_t readable = sr_guest_span_prefix(A0, 0xFFFFFFFFu);
+    if (!readable) {
+        sr_oor(A0, 0u, 0);
+        return 0u;
+    }
+    const unsigned char *start = (const unsigned char *)SR_HOST(A0);
+    const unsigned char *end = (const unsigned char *)memchr(start, 0, readable);
+    if (!end) {
+        sr_oor(A0, 0u, 0);
+        return 0u;
+    }
+    return (uint32_t)(end - start);
 }
 static uint32_t h_Memcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size */
@@ -15247,6 +15294,7 @@ static void hle_register_thread_exit_handlers(void) {
     sr_hle_register(0x809ce29b, "sceKernelExitDeleteThread", h_ExitDeleteThread);
     sr_hle_register(0x278c0df5, "sceKernelWaitThreadEnd", h_WaitThreadEnd);
     sr_hle_register(0x840e8133, "sceKernelWaitThreadEndCB", h_WaitThreadEndCB);
+    sr_hle_register(0x17c1684e, "sceKernelReferThreadStatus", h_ReferThreadStatus);
 }
 
 /* The host PSP oracle mode is an extension of hle_thread_selftest, not a second
@@ -15582,6 +15630,8 @@ static void hle_register_bulk_memory_handlers(void) {
      * instead of a test-only mapping. */
     sr_hle_register(0xd97f94d8, "sceDmacTryMemcpy", h_DmacTryMemcpy);
     sr_hle_register(0xa089eca4, "sceKernelMemset", h_Memset);
+    sr_hle_register(0x10f3bb61, "memset", h_Memset);
+    sr_hle_register(0x52df196c, "strlen", h_Strlen);
     sr_hle_register(0x1839852a, "sceKernelMemcpy", h_Memcpy);
 }
 

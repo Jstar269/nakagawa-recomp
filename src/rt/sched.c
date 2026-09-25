@@ -133,6 +133,9 @@ typedef struct {
     uint32_t uid;
     int      state;
     int      priority;
+    int      init_priority;
+    uint32_t attr;
+    char     name[32];
     uint32_t entry, arglen, argp;
     SrCoro  *coro;               /* this thread's coroutine (sr_coro); NULL until first started */
     int      started;            /* coroutine has begun running its body */
@@ -1687,7 +1690,8 @@ static void sched_release_thread_stack(TCB *t) {
     t->stack_released = 1;
 }
 
-uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
+uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
+                                uint32_t attr, const char *name) {
     if (sr_title_config_is_worker_entry(entry) && !getenv("SR_NO_THREAD_REUSE")) {
         TCB *existing = tcb_by_entry(entry);
         if (existing) {
@@ -1739,6 +1743,10 @@ uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) 
         t->uid = sr_alloc_uid();
         t->state = TH_DORMANT;
         t->priority = priority;
+        t->init_priority = priority;
+        t->attr = attr;
+        memset(t->name, 0, sizeof(t->name));
+        if (name) strncpy(t->name, name, sizeof(t->name) - 1u);
         t->entry = entry;
         t->started = 0;
         t->coro = NULL;
@@ -1750,10 +1758,18 @@ uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) 
     t->uid = sr_alloc_uid();
     t->state = TH_DORMANT;
     t->priority = priority;
+    t->init_priority = priority;
+    t->attr = attr;
+    memset(t->name, 0, sizeof(t->name));
+    if (name) strncpy(t->name, name, sizeof(t->name) - 1u);
     t->entry = entry;
     t->started = 0;
     t->coro = NULL;
     return sched_create_thread_finish(t, entry, priority, stack_size);
+}
+
+uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
+    return sched_create_thread_ex(entry, priority, stack_size, 0u, NULL);
 }
 
 /* Continuation of sched_create_thread: stack/UID seeding + libc/reent registration.
@@ -3388,6 +3404,36 @@ int sched_thread_run_status(uint32_t uid, SrThreadRunStatus *out) {
     out->wakeupCount = (uint32_t)t->wakeups;
     out->runClocksLow = (uint32_t)s_tick;
     out->runClocksHigh = (uint32_t)(s_tick >> 32);
+    return 0;
+}
+
+int sched_thread_info(uint32_t uid, SrThreadInfo *out) {
+    uid = resolve_thread_uid(uid);
+    TCB *t = tcb_by_uid(uid);
+    if (!t || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    SrThreadRunStatus status;
+    if (sched_thread_run_status(uid, &status) != 0) return -1;
+    out->size = (uint32_t)sizeof(*out);
+    memcpy(out->name, t->name, sizeof(out->name));
+    out->attr = t->attr;
+    out->status = status.status;
+    out->entry = t->entry;
+    out->stack = t->stack_base;
+    out->stackSize = t->stack_size;
+    out->gpReg = s_cur >= 0 && t == &s_tcb[s_cur] && s_cpu
+               ? s_cpu->r[28] : t->saved.r[28];
+    out->initPriority = (uint32_t)t->init_priority;
+    out->currentPriority = status.currentPriority;
+    out->waitType = status.waitType;
+    out->waitId = status.waitId;
+    out->wakeupCount = status.wakeupCount;
+    out->exitStatus = (uint32_t)t->exit_status;
+    out->runClocksLow = status.runClocksLow;
+    out->runClocksHigh = status.runClocksHigh;
+    out->intrPreemptCount = status.intrPreemptCount;
+    out->threadPreemptCount = status.threadPreemptCount;
+    out->releaseCount = status.releaseCount;
     return 0;
 }
 
