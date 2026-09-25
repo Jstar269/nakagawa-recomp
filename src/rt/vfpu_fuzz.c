@@ -157,7 +157,7 @@ static int check_transcendentals(void) {
         float x=(float)i/64.0f;
         float es=fabsf(sr_vfpu_sin(x)-sinf(x*1.57079632679489661923f));
         float ec=fabsf(sr_vfpu_cos(x)-cosf(x*1.57079632679489661923f));
-        if(es>trig_err)trig_err=es;if(ec>trig_err)trig_err=ec;
+        if(es>trig_err){trig_err=es;}if(ec>trig_err){trig_err=ec;}
     }
     for(int i=-1000;i<=1000;i++){
         float x=(float)i/1000.0f;
@@ -166,9 +166,9 @@ static int check_transcendentals(void) {
     }
     for(int i=1;i<=4096;i++){
         float x=(float)i/53.0f;
-        float e=fabsf(sr_vfpu_log2(x)-log2f(x));if(e>log_err)log_err=e;
-        float ref=sqrtf(x),got=sr_vfpu_sqrt(x);e=fabsf(got-ref)/ref;if(e>sqrt_rel)sqrt_rel=e;
-        ref=1.0f/ref;got=sr_vfpu_rsqrt(x);e=fabsf(got-ref)/ref;if(e>sqrt_rel)sqrt_rel=e;
+        float e=fabsf(sr_vfpu_log2(x)-log2f(x));if(e>log_err){log_err=e;}
+        float ref=sqrtf(x),got=sr_vfpu_sqrt(x);e=fabsf(got-ref)/ref;if(e>sqrt_rel){sqrt_rel=e;}
+        ref=1.0f/ref;got=sr_vfpu_rsqrt(x);e=fabsf(got-ref)/ref;if(e>sqrt_rel){sqrt_rel=e;}
     }
     int bad=trig_err>1.0e-5f||asin_err>=0.02f||log_err>1.0e-4f||sqrt_rel>2.0e-6f;
     printf("vfpu_math: trig_abs=%g asin_abs=%g log2_abs=%g sqrt_rel=%g%s\n",

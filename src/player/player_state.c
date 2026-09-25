@@ -840,7 +840,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!player_app_game_has_runtime(app, game)) {
         player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
                              package_error[0] ? package_error :
-                                 "Runtime package is missing or incompatible (#297).",
+                                 "Runtime package is missing or incompatible; build it from the library (#297).",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }

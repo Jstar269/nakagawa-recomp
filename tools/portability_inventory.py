@@ -16,7 +16,7 @@ Classification (per the wave-1 portability lane contract):
                                (scheduler, HLE, GE, memory, analysis surfaces)
   BACKEND_EXPECTED             host-services/backend code (GPU, audio, media,
                                OSK, input, driver, capture, third-party decoders)
-  BUILD_TOOL_ONLY              Make/tooling/CI/dashboard code
+  BUILD_TOOL_ONLY              Make/tooling/CI code
   TEST_ONLY                    selftest/unit-test code
   PRIVATE_MANAGER_ONLY         PowerShell title-manager orchestration
 

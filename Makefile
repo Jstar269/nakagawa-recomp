@@ -1532,7 +1532,7 @@ vfpu-tables-selftest:
 	$(BUILD_DIR)/vfpu_tables_selftest.exe
 
 # watchpoints-file-selftest — bounded parser regression for the derived
-# watchpoints.json runtime artifact (issue #188): the exact dashboard-writer
+# watchpoints.json runtime artifact (issue #188): the canonical JSON
 # fixture round-trips into the expected native watchpoint set, plus fail-closed
 # cases (wrong version/format, malformed JSON, out-of-range/reversed/oversized
 # strbuf-selftest — unit and adversarial tests for sr_buf_append / strbuf.h.

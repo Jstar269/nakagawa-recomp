@@ -157,7 +157,6 @@ TEMP_PATH = re.compile(
 #: Technical debt management ceilings (Issue #188 Finding 11 O-11).
 #: Ceilings are non-increasing: counts must not rise without explicit budget edit and rationale.
 DEBT_BUDGETS: dict[str, int] = {
-    "eslint_off_rules": 29,
     "ruff_select_rule_families": 4,
     "first_party_todos": 7,
     "powershell_silently_continue": 53,
@@ -1186,31 +1185,6 @@ SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS = frozenset({
     "src/rt/atrac3p/libavutil/thread.h",
 })
 
-# Upstream shadcn/ui files require exact SPDX identifiers: verbatim copies
-# declare MIT; files modified by this project declare MIT AND GPL-3.0-or-later.
-# Their separate MIT source notice is preserved in THIRD_PARTY_LICENSES.
-SPDX_UPSTREAM_HEADER_OVERRIDES = {
-    "interface/src/components/ui/alert-dialog.tsx": "MIT",
-    "interface/src/components/ui/alert.tsx": "MIT",
-    "interface/src/components/ui/badge.tsx": "MIT",
-    "interface/src/components/ui/button.tsx": "MIT",
-    "interface/src/components/ui/dialog.tsx": "MIT",
-    "interface/src/components/ui/dropdown-menu.tsx": "MIT",
-    "interface/src/components/ui/input.tsx": "MIT",
-    "interface/src/components/ui/label.tsx": "MIT",
-    "interface/src/components/ui/progress.tsx": "MIT",
-    "interface/src/components/ui/select.tsx": "MIT",
-    "interface/src/components/ui/slider.tsx": "MIT",
-    "interface/src/components/ui/switch.tsx": "MIT",
-    "interface/src/components/ui/toast.tsx": "MIT",
-    "interface/src/components/ui/toaster.tsx": "MIT",
-    "interface/src/components/ui/toggle-group.tsx": "MIT",
-    "interface/src/components/ui/toggle.tsx": "MIT",
-    "interface/src/components/ui/tooltip.tsx": "MIT",
-    "interface/src/hooks/use-mobile.ts": "MIT AND GPL-3.0-or-later",
-    "interface/src/hooks/use-toast.ts": "MIT AND GPL-3.0-or-later",
-}
-
 PROJECT_SPDX_IDENTIFIER = "GPL-3.0-or-later"
 SPDX_IDENTIFIER_LINE = re.compile(r"SPDX-License-Identifier:\s*(.*?)\s*(?:\*/)?\s*$")
 
@@ -1275,22 +1249,10 @@ def _spdx_provenance_findings(path: str, record: dict, raw_bytes: bytes) -> list
         if not identifiers and byte_exact_import and path not in SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS:
             return []
         evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
-        expected = (
-            SPDX_UPSTREAM_HEADER_OVERRIDES[path]
-            if path in SPDX_UPSTREAM_HEADER_OVERRIDES
-            else evidence.get("license")
-        )
+        expected = evidence.get("license")
         if not isinstance(expected, str) or not expected or expected == "see NOTICE.md":
             return [Finding("SPDX_UPSTREAM_LICENSE_UNKNOWN", path, "upstream provenance does not name an SPDX license")]
-        if path in SPDX_UPSTREAM_HEADER_OVERRIDES:
-            if identifiers != [expected]:
-                actual = ", ".join(identifiers) if identifiers else "missing"
-                return [Finding(
-                    "SPDX_UPSTREAM_LINEAGE",
-                    path,
-                    f"upstream SPDX lineage must declare exactly {expected}; found {actual}",
-                )]
-        elif expected not in identifiers:
+        if expected not in identifiers:
             return [Finding(
                 "SPDX_UPSTREAM_LINEAGE",
                 path,
@@ -1491,25 +1453,12 @@ def _action_pin_findings(repo_root: Path = ROOT, audited_paths: set[str] | None 
 def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None) -> list[Finding]:
     """Audit unmanaged debt surfaces against non-increasing budgets (Issue #188 Finding 11 O-11).
 
-    Fails when any of the four measured surfaces (ESLint disabled rules, ruff select families,
+    Fails when any of the three measured surfaces (ruff select families,
     first-party debt markers, or PowerShell SilentlyContinue) exceeds its configured ceiling.
     """
     findings: list[Finding] = []
 
-    # 1. ESLint disabled rules (interface/eslint.config.mjs)
-    eslint_cfg = repo_root / "interface" / "eslint.config.mjs"
-    if eslint_cfg.is_file():
-        text = _text(eslint_cfg) or ""
-        matches = re.findall(r'["\']([^"\']+)["\']\s*:\s*["\'](off|warn)["\']', text)
-        obs = len(matches)
-        ceiling = DEBT_BUDGETS["eslint_off_rules"]
-        if obs > ceiling:
-            findings.append(
-                Finding("DEBT_BUDGET", "interface/eslint.config.mjs",
-                        f"ESLint disabled rules count {obs} exceeds debt ceiling {ceiling}")
-            )
-
-    # 2. Ruff select rule families (pyproject.toml)
+    # 1. Ruff select rule families (pyproject.toml)
     pyproject = repo_root / "pyproject.toml"
     if pyproject.is_file():
         text = _text(pyproject) or ""
@@ -1524,13 +1473,11 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
                             f"Ruff select rule families count {obs} exceeds debt ceiling {ceiling}")
                 )
 
-    # 3. First-party debt markers
+    # 2. First-party debt markers
     marker_pat = re.compile(r"\b(?:" + r"TO" + r"DO|FIX" + r"ME|HA" + r"CK)\b")
     excluded_prefixes = (
         "third_party/",
         "src/rt/atrac3p/libavcodec/",
-        "interface/node_modules/",
-        "interface/.next/",
         "build/",
         "fs/",
     )
@@ -1568,7 +1515,7 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
                     f"First-party debt marker count {todo_count} exceeds debt ceiling {ceiling}")
         )
 
-    # 4. PowerShell SilentlyContinue
+    # 3. PowerShell SilentlyContinue
     ps_pat = re.compile(r"SilentlyContinue", re.IGNORECASE)
     ps_count = 0
     for rel in all_paths:
@@ -1848,7 +1795,7 @@ def _default_provenance(
     if rel_path.startswith(".github/") or rel_path.startswith(".") or rel_path in (".gitignore", ".gitattributes", ".clang-format", ".editorconfig", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml"):
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", "configuration", "included", policy_public
 
-    if rel_path.startswith(("src/", "tools/", "interface/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1"):
+    if rel_path.startswith(("src/", "tools/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1"):
         gen_kind = "documentation" if (rel_path.startswith("docs/") or ext == ".md") else ("data" if ext in (".json", ".jsonc", ".dat") else ("script" if ext in (".ps1", ".sh") else "source"))
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", gen_kind, "included", policy_public
 
