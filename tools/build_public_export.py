@@ -47,8 +47,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 try:
     from . import public_export
+    from .nk_core.git_isolation import isolated_git_env, run_git
 except ImportError:  # direct script execution
     import public_export
+    from nk_core.git_isolation import isolated_git_env, run_git
 
 PUBLIC_EXPORT_MANIFEST = "PUBLIC_EXPORT.json"
 PUBLIC_SAFE_PROFILE_ID = "public-safe-v1"
@@ -160,6 +162,7 @@ def run_publish_audit(repo_root: Path = ROOT) -> GateResult:
     res = subprocess.run(
         command,
         cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
         capture_output=True,
         text=True,
     )
@@ -205,6 +208,7 @@ def run_history_audit(repo_root: Path = ROOT) -> GateResult:
     res = subprocess.run(
         [sys.executable, str(audit_script), "--json"],
         cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
         capture_output=True,
         text=True,
     )
@@ -227,6 +231,7 @@ def run_sbom_verification(repo_root: Path = ROOT) -> GateResult:
     res = subprocess.run(
         [sys.executable, str(verify_script)],
         cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
         capture_output=True,
         text=True,
     )
@@ -304,6 +309,7 @@ def run_candidate_audit(candidate_root: Path, trusted_ledger: Path | None = None
     res = subprocess.run(
         command,
         cwd=ROOT,
+        env=isolated_git_env(root=candidate_root),
         capture_output=True,
         text=True,
     )
@@ -326,11 +332,12 @@ def _index_snapshot(repo_root: Path) -> tuple[str, list[tuple[str, str, bytes]]]
     materialized candidate preserves executable bits, and non-regular index
     entries fail closed here rather than being silently dropped.
     """
+    env = isolated_git_env(root=repo_root)
     tree_sha = subprocess.run(
-        ["git", "write-tree"], cwd=repo_root, capture_output=True, text=True, check=True
+        ["git", "write-tree"], cwd=repo_root, env=env, capture_output=True, text=True, check=True
     ).stdout.strip()
     raw_ls = subprocess.run(
-        ["git", "ls-files", "-s", "-z"], cwd=repo_root, capture_output=True, check=True
+        ["git", "ls-files", "-s", "-z"], cwd=repo_root, env=env, capture_output=True, check=True
     ).stdout.decode("utf-8", errors="surrogateescape")
 
     regular: list[tuple[str, str, str]] = []  # path, mode, blob sha
@@ -360,6 +367,7 @@ def _index_snapshot(repo_root: Path) -> tuple[str, list[tuple[str, str, bytes]]]
     proc = subprocess.Popen(
         ["git", "cat-file", "--batch"],
         cwd=repo_root,
+        env=env,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
     )
@@ -566,20 +574,10 @@ def export_sanitized_public_tree(
             print(f"EXCLUDED: {path}")
 
         # Initialize clean single-commit Git repository
-        subprocess.run(["git", "init"], cwd=staging, check=True, capture_output=True)
-        subprocess.run(["git", "add", "."], cwd=staging, check=True, capture_output=True)
-        # The export commit is a mechanical snapshot, not a contribution, so it
-        # carries a fixed tool identity supplied per-invocation. Relying on the
-        # ambient Git identity makes this step fail on any host that has none
-        # (CI runners), and would otherwise attribute the snapshot to whoever
-        # happened to run it.
-        subprocess.run(
+        run_git(["init"], cwd=staging, check=True, capture_output=True)
+        run_git(["add", "."], cwd=staging, check=True, capture_output=True)
+        run_git(
             [
-                "git",
-                "-c",
-                "user.name=Nakagawa Recomp Export",
-                "-c",
-                "user.email=export@nakagawa-recomp.invalid",
                 "commit",
                 "-m",
                 "Initial sanitized public release export of Nakagawa Recomp",
