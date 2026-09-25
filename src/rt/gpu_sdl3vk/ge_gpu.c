@@ -3472,6 +3472,167 @@ static int coherence_run_software_sprite_semantics(void) {
     return 1;
 }
 
+/* ---- linearly filtered sprite: nothing from outside the sampled region may bleed ----
+ *
+ * The sprite-exact fixtures above run with GE_TEXFILTER=0 (NEAREST), so they pin the
+ * endpoint-exclusive rectangle but say nothing about the filter window. This fixture
+ * samples texel rows 1..4 of a texture whose row 0 is pure white, and demands that a
+ * linearly filtered 1:1 sprite reproduce rows 1..4 exactly: an integer texel coordinate
+ * names that texel's centre, so the filter weight is 0 and the outside row cannot
+ * contribute. A half-texel window error shows up here as a white 50/50 wash on the
+ * sprite's first row and column -- the one-pixel line this fixture exists to catch.
+ * Both backends run the same list and the results must also agree byte for byte. */
+#define COH_LIN_RECT_X 100
+#define COH_LIN_RECT_Y 100
+#define COH_LIN_RECT_W 4
+#define COH_LIN_RECT_H 4
+#define COH_LIN_TEX_U0 1u
+#define COH_LIN_TEX_V0 1u
+#define COH_LIN_OUTSIDE_ROW 0xFFFFFFFFu   /* pure white: no sampled texel uses 255 */
+
+static uint32_t coherence_linear_texel(unsigned u, unsigned v) {
+    if (v == 0u) return COH_LIN_OUTSIDE_ROW;          /* outside the sampled region */
+    if (v > 4u) return 0xFF000000u;                    /* below it */
+    return 0xFF000000u | (0x40u << 16) | ((v * 40u) << 8) | (u * 40u);
+}
+
+/* The default GE alpha-write state leaves the destination alpha byte at zero (see
+ * coherence_sprite_texel), so the RGB triple is what this fixture compares. */
+#define COH_LIN_RGB 0x00FFFFFFu
+
+static uint32_t coherence_prepare_linear_sprite_fixture(uint32_t tex_base) {
+    uint32_t *tex = (uint32_t *)SR_HOST(tex_base);
+    for (unsigned v = 0; v < 8u; v++)
+        for (unsigned u = 0; u < 8u; u++)
+            tex[v * 8u + u] = coherence_linear_texel(u, v);
+    sr_gpu_vram_dirty(tex_base, 8u * 8u * 4u);
+
+    const uint32_t vaddr = 0x00101000u;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(vaddr);
+    vtx[0] = (RawSpriteVtx){ (float)COH_LIN_TEX_U0, (float)COH_LIN_TEX_V0,
+                             (float)COH_LIN_RECT_X, (float)COH_LIN_RECT_Y, 0.0f };
+    vtx[1] = (RawSpriteVtx){ (float)(COH_LIN_TEX_U0 + COH_LIN_RECT_W),
+                             (float)(COH_LIN_TEX_V0 + COH_LIN_RECT_H),
+                             (float)(COH_LIN_RECT_X + COH_LIN_RECT_W),
+                             (float)(COH_LIN_RECT_Y + COH_LIN_RECT_H), 0.0f };
+
+    const uint32_t list_addr = 0x00100000u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    int p = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x9C, 0x00160000u);
+    DL_EMIT(0x9D, 512u | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, tex_base & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 8 | ((tex_base & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (3 << 8) | 3);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC6, 1);   /* GE_TEXFILTER = LINEAR: the filter window is what is under test */
+    DL_EMIT(0xC7, 0);
+    DL_EMIT(0xC9, 3 | (1 << 8));
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3 << 0) | (3 << 7) | (1 << 23));
+    DL_EMIT(0x01, vaddr & 0x00FFFFFFu);
+    DL_EMIT(0x04, (6 << 16) | 2u);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+    return list_addr;
+}
+
+static int coherence_verify_linear_sprite(const char *path, const uint32_t *fb,
+                                          uint32_t stride) {
+    for (int dy = 0; dy < COH_LIN_RECT_H; dy++) {
+        for (int dx = 0; dx < COH_LIN_RECT_W; dx++) {
+            uint32_t want = coherence_linear_texel(COH_LIN_TEX_U0 + (unsigned)dx,
+                                                   COH_LIN_TEX_V0 + (unsigned)dy) & COH_LIN_RGB;
+            uint32_t got = fb[(COH_LIN_RECT_Y + dy) * stride + COH_LIN_RECT_X + dx] & COH_LIN_RGB;
+            if (got != want) {
+                fprintf(stderr,
+                        "gpu coherence selftest [linear-%s]: pixel=(%d,%d) texel=(%u,%u) "
+                        "expected=%06x actual=%06x%s\n",
+                        path, COH_LIN_RECT_X + dx, COH_LIN_RECT_Y + dy,
+                        COH_LIN_TEX_U0 + (unsigned)dx, COH_LIN_TEX_V0 + (unsigned)dy,
+                        want, got,
+                        (got & COH_LIN_RGB) == (COH_LIN_OUTSIDE_ROW & COH_LIN_RGB)
+                            ? " -- the texel row OUTSIDE the sampled region bled in" : "");
+                return 0;
+            }
+        }
+    }
+    /* The rectangle stays endpoint-exclusive: a filter that reached outward would also
+     * paint the neighbouring rows. */
+    for (int dx = 0; dx < COH_LIN_RECT_W; dx++) {
+        if (fb[(COH_LIN_RECT_Y - 1) * stride + COH_LIN_RECT_X + dx] != 0 ||
+            fb[(COH_LIN_RECT_Y + COH_LIN_RECT_H) * stride + COH_LIN_RECT_X + dx] != 0) {
+            fprintf(stderr, "gpu coherence selftest [linear-%s]: y edge leaked\n", path);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int coherence_run_linear_sprite(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+
+    uint32_t list_addr = coherence_prepare_linear_sprite_fixture(tex_base);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(list_addr, 0);
+
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride, .width = 480, .height = 272 };
+    if (!gegpu_sync_guest_fb(&desc)) {
+        fprintf(stderr, "gpu coherence selftest [linear-gpu]: gegpu_sync_guest_fb failed\n");
+        return 0;
+    }
+    uint32_t *fb = (uint32_t *)guest;
+    if (!coherence_verify_linear_sprite("gpu", fb, stride)) return 0;
+
+    size_t bytes = stride * FB_H * sizeof(*fb);
+    uint8_t *reference = (uint8_t *)malloc(bytes);
+    if (!reference) {
+        fprintf(stderr, "gpu coherence selftest [linear-gpu]: no reference buffer\n");
+        return 0;
+    }
+    memcpy(reference, guest, bytes);
+
+    memset(guest, 0, stride * FB_H * 4u);
+    ge_set_gpu_hooks(NULL);
+    ge_run_list(list_addr, 0);
+    ge_set_gpu_hooks(&k_hooks);
+    if (!coherence_verify_linear_sprite("software", fb, stride)) { free(reference); return 0; }
+    size_t mismatch = 0;
+    while (mismatch < bytes && reference[mismatch] == guest[mismatch]) mismatch++;
+    if (mismatch != bytes) {
+        fprintf(stderr, "gpu coherence selftest [linear-parity]: byte=%zu gpu=%02x software=%02x\n",
+                mismatch, reference[mismatch], guest[mismatch]);
+        free(reference);
+        return 0;
+    }
+    free(reference);
+
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n",
+           "linear-no-region-bleed", stride, s_scale);
+    return 1;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -3497,6 +3658,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_overlap_case()) ok = 0;
     if (!coherence_run_sprite_semantics()) ok = 0;
     if (!coherence_run_software_sprite_semantics()) ok = 0;
+    if (!coherence_run_linear_sprite()) ok = 0;
     coherence_reset_targets();
     return ok;
 }

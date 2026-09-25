@@ -189,7 +189,6 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     }
 
     /* Volume scaling and submission */
-    uint64_t perf_started = sr_perf_now_ns();
     if (volL == 0x8000 && volR == 0x8000) {
         SDL_PutAudioStreamData(s_streams[ch], lr, nframes * 4);
     } else {
@@ -210,8 +209,6 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
             free(buf);
         }
     }
-    if (perf_started) sr_perf_audio_output(perf_started, (uint32_t)nframes);
-
     s_stats.total_pushed_frames += (uint64_t)nframes;
     s_stats.channel_pushed_frames[ch] += (uint64_t)nframes;
 
