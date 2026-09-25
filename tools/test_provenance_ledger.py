@@ -358,20 +358,11 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         cls, _ = provenance_ledger._class_for("nk.ps1", None)
         self.assertEqual(cls, "unresolved")
 
-    def test_interface_implementation_is_not_wholesale_configuration(self) -> None:
-        """The dashboard's src/ is implementation, not reviewed configuration."""
-        self.assertEqual(
-            provenance_ledger._class_for("interface/src/lib/new_module.ts", None)[0], "unresolved"
-        )
-        self.assertEqual(
-            provenance_ledger._class_for("interface/src/app/api/route.ts", None)[0], "unresolved"
-        )
-        self.assertEqual(
-            provenance_ledger._class_for("interface/package.json", None)[0], "reviewed_configuration"
-        )
-        self.assertEqual(
-            provenance_ledger._class_for("interface/next.config.ts", None)[0], "reviewed_configuration"
-        )
+    def test_source_implementation_is_not_wholesale_configuration(self) -> None:
+        self.assertEqual(provenance_ledger._class_for("src/lib/new_module.ts", None)[0], "unresolved")
+        self.assertEqual(provenance_ledger._class_for("src/api/route.ts", None)[0], "unresolved")
+        self.assertEqual(provenance_ledger._class_for("project/package.json", None)[0], "reviewed_configuration")
+        self.assertEqual(provenance_ledger._class_for("project/tool.config.ts", None)[0], "reviewed_configuration")
 
     def test_docs_config_fixture_metadata_rules_are_preserved(self) -> None:
         cases = {
@@ -386,8 +377,8 @@ class ProvenanceFailClosedTest(unittest.TestCase):
             "mk/build_common.mk": "reviewed_configuration",
             ".github/workflows/ci.yml": "reviewed_configuration",
             "pyproject.toml": "reviewed_configuration",
-            "interface/package-lock.json": "reviewed_configuration",
-            "interface/prisma/schema.prisma": "reviewed_configuration",
+            "assets/example-lock.json": "reviewed_configuration",
+            "db/schema.prisma": "reviewed_configuration",
             "fixtures/psp_oracle/probe.c": "synthetic_fixture",
             "tools/test_gen_nidnames.py": "synthetic_fixture",
             "assets/titles/synthetic.json": "public_factual_metadata",
@@ -414,11 +405,11 @@ class ProvenanceFailClosedTest(unittest.TestCase):
 
     def test_is_implementation_path(self) -> None:
         for impl in ("src/rt/x.c", "tools/x.py", "nk.ps1", "copy_build_assets.ps1",
-                     "interface/src/lib/x.ts", "interface/scripts/prepare-standalone.mjs"):
+                     "src/lib/x.ts", "tools/scripts/run.mjs"):
             with self.subTest(impl=impl):
                 self.assertTrue(provenance_ledger.is_implementation_path(impl), impl)
         for not_impl in ("docs/x.md", "Makefile", "mk/build_common.mk", "assets/titles/x.json",
-                         ".gitignore", "interface/package.json"):
+                         ".gitignore", "project/package.json"):
             with self.subTest(not_impl=not_impl):
                 self.assertFalse(provenance_ledger.is_implementation_path(not_impl), not_impl)
 
@@ -699,7 +690,7 @@ class _RefreshFixture:
         "# synthetic fixture - not a retail or private input\n"
         "def test_helper():\n    return 0\n"
     )
-    route = "interface/src/app/api/recompiler/profiles/[id]/export/route.ts"
+    route = "src/routes/[id]/export/route.ts"
     route_source = (
         "// SPDX-License-Identifier: GPL-3.0-or-later\n"
         "// synthetic fixture - literal bracketed route path\n"
@@ -753,7 +744,7 @@ class _RefreshFixture:
             return "synthetic_fixture", {"source": "path-reviewed fixture/test census"}
         record_id = {
             "src/rt/existing.c": "PROV-EXISTING",
-            "interface/src/app/api/recompiler/profiles/[id]/export/route.ts": "PROV-ROUTE",
+            "src/routes/[id]/export/route.ts": "PROV-ROUTE",
         }.get(relative, "PROV-HELPER")
         return "project_authored_attested", {
             "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",

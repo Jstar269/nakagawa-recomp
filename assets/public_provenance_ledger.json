@@ -75,7 +75,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "026c2ecaf6c48f38fdcd9b61e6fc9993e3e292b443ba3e5b498f4a0ccefe41e3"
+      "sha256": "1feb481ae2e8267c1501ac9f3ce9399cc7fa76fd502477e918ce6cfae6ea7d26"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/config.yml",
@@ -93,7 +93,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "14ab9739735950edba5f463d7295bb469ffce4de9c00e01d9e1619c48a28c3ee"
+      "sha256": "3466968777a6a5b0735dbb608c53ea27eb6e17e63ffe43c3744263f81567e166"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/smoke_test_report.yml",
@@ -111,7 +111,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c2608b96947f01fa2cb5ffa58a572a6dbe785f1ca8f46e7c0d8b93c379cd7417"
+      "sha256": "894217e4fe9b2d5879116e19416d201961150a87f2d165ed5a6a2c57b18ca430"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -129,7 +129,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bded5ec54ea844235824834b63f9353af4aa7db1c4e399252eb48633646e4f24"
+      "sha256": "2c1cace0923515c4e1f740dde95d5602e3e447ac18f0761873e287544ce47c2b"
     },
     {
       "path": ".github/instructions/c-generated.instructions.md",
@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5a69b72d81b9df4f8f5a82939551406f8949ac9b06f2e09881af48a72f1927bc"
+      "sha256": "20ca3da82fa54e85bf93ac28907e05bd7f907bb677b1128c4993892405a7f866"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -186,7 +186,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "74ff1f8572015bd6a921b405ff21068d6127ce4e6c637e92bf943c6a0b2dea60"
+      "sha256": "ba29aa183d43d99e33f3a19214dd120b109d765d38538d70d9a766e1947c0da2"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -195,7 +195,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "879e4c441c464c3090d5877b46e444e8c3bd2dc3189d44eb58190abfff60c088"
+      "sha256": "3eae3710908d7c0d6d8c37436d4738ea615ecaaf07964ed656853afc3884e3f3"
     },
     {
       "path": ".pre-commit-config.yaml",
@@ -207,7 +207,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4ae4dc5b575561591699ff90303c0a78f8e4c9b01cc33d299c7d60842cd7843d"
+      "sha256": "8804de70bcabc3f08a07b25402c4221c845cc29752ad17aa3cf1f73ae65dfcff"
     },
     {
       "path": "AGENTS.md",
@@ -216,7 +216,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9fc75fa607930d7a31e0852cb5545c35970a1951d7be0c1519845c8b931e1db7"
+      "sha256": "898c24088b73e5dad3aa22eb5aa8cd4328bfbec33aa8d358749e3739c07ba980"
     },
     {
       "path": "CLAUDE.md",
@@ -255,7 +255,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "69143e5a1121e0ebb00b0b95ef07e3b2d94b8c34ba69b8aa27dea9d134fac661"
+      "sha256": "b97493416c7b24ae10175482068f8c777fe293ef21c6e95b7e6bd1c7db54934c"
     },
     {
       "path": "CREDITS.md",
@@ -273,7 +273,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dc04785466209f3e16d873df8105d62af182f856d982ea2d6db9ee5ef6c2b489"
+      "sha256": "940fb4f3cc977c3919972d7a7133e4a9fd45223517dc3842df6b306232e2f07f"
     },
     {
       "path": "LICENSE",
@@ -295,7 +295,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "04b600bc69fdea8e0e4059eefc82ed2d3eb92b688c54cff1a81b329a919fad66"
+      "sha256": "7f246b422c11bb0bc4b3f7ab3119ca51cd34f1037d2c5afa470a8077ec44ea86"
     },
     {
       "path": "NOTICE.md",
@@ -304,7 +304,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5c4c481afb59ba46b4ca6f999b2e25d3e60b9ce562d0de5c29ec619cc7d753bb"
+      "sha256": "a02046f50f4679cbd7fc1d995ea188049857662df76997df36db160f10414faf"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -321,7 +321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "82a168d31eb4741167b601019dccd2117b3e8c7c117ee8ce7220c8e9d9bc7136"
+      "sha256": "9e73b955d72d5f5953ca6662f23584985f0bbf30c14d6478b6f9a0e82fbcc825"
     },
     {
       "path": "REVIEW.md",
@@ -339,7 +339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7c0088d453b7ba560dc308c2da2b7ae50d6b4d0b0d6b1be82ae3a0a488d2e6d5"
+      "sha256": "00d8e02d259068ed4dc034378b6b39484bc349e8fd2f63522fb19900a87ce296"
     },
     {
       "path": "THIRD_PARTY_LICENSES/GPL-2.0.txt",
@@ -375,19 +375,6 @@
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "98454ee97dec8ccf25f93766b42cabf40d29517f28db11c8c3ec66b65d1b9825"
-    },
-    {
-      "path": "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dependency-shadcn-dashboard",
-        "evidence_tier": "S",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f"
     },
     {
       "path": "assets/README.md",
@@ -473,7 +460,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "c7a1f9a6bfcfa095f04afb25b927bf490e017a0ac04b27ed75135da593af183e"
+      "sha256": "e8a32327c437ee5d0b0ab92e13391a5ec584933aee239f69dcc47d50f00d7fcb"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -494,7 +481,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ecbb008c1acdd37b8956b0b1118bbead7bb6563058c2ed722071c7a802ce9161"
+      "sha256": "7bc88aae34454125c63e8e144a8b501d3af7229a555d0e383fa3df66235c3b1f"
     },
     {
       "path": "assets/third_party_components.json",
@@ -506,7 +493,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "021765f7dc4e2ec708095fd118ac8fd03df3e928180561f2ac1b3af0715cdae6"
+      "sha256": "b478bfbe293a536f0bb7b4dd7e3155cae8344fdc9dd4e58b09b1c36813f25029"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -518,7 +505,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f7e202181c16b8c63bc87c5dfd5988042579f38cb38eec8789c437d14c9f574c"
+      "sha256": "b2d08fd7718a2ad55a4b1414b780f91c484914a72be8a61b576560232389b13f"
     },
     {
       "path": "assets/title_manifest.schema.json",
@@ -839,7 +826,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "93c432a6c5b5d24933bab464ff276c1f98b54218417e1949cf444c788514b444"
+      "sha256": "28e8acc587cfd9ece5d420b4ef3d9dfbb9ea3400c4219d7ab27b456ee0ceb2c7"
     },
     {
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
@@ -875,7 +862,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7c85755e23f4b90775c346665ef44b70a7c3d626db045afd3001e54c36157564"
+      "sha256": "92a174bbbbf61f553bdfdeb0a4b6eff84e5dac75963783f5631a391997b1da07"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -968,7 +955,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bbf3dba787cf709e51ecef611929576ec93f07fc58e17357aad19f28fa6e25dc"
+      "sha256": "aec8b01809f2d77d5ce2dbcc0f643f7f3de69fc023aedd5845d5731f8b771b31"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1013,7 +1000,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dc645c3e24df36f08e73ccef107f70815d63faff1d36cdc44b9c85701b4875a6"
+      "sha256": "34627cf675c21a842f138a3949bb06df7dca0b9ec417f71362c047d4862771ca"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1022,7 +1009,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7c115848d0d0e9f610e5537f24114ccfb4c230ce10f33073914db1633103cf10"
+      "sha256": "976b275395a590626adca73c2b6be6af358d582a4a0d08bc7fa2b61554ccedca"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -1031,7 +1018,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ba39788ffad7aa64943309a92dd8663351151183e3e07ff22e3345adc4df8816"
+      "sha256": "e96a0d93512a2a2991d07b6750b9305e12a78bfdd48978c9d7948df00a80d1ce"
     },
     {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
@@ -1070,7 +1057,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1780ec4ef089ecab9e9086b5a52346a9c450ca18591a69230bae7161a4118a31"
+      "sha256": "18f62e1a759e66d4e7216c180f64e22d77d6f0821ce11309eac9ab8f3093952e"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -1079,7 +1066,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4748ecc896e2947da66d39c428d43aea0ed727e453b88b8eff2fb36540744104"
+      "sha256": "2a005d52791937c12bea1df6fef58a63435a75c6f43010ccb760f67ae8c91a20"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1097,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2cc81db9683885124a9e5eb7aaeae3b57f5be5ed1d3209f00f022ea053833ba0"
+      "sha256": "e93393f440d4aed0c2dd77a5778d1d8ed694e94b3f1b8a874268a5565bb5054f"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -1127,7 +1114,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7b0606fa01a95de559124c0f87b051223e7fbc72127621982a3bf05adb0ca6c2"
+      "sha256": "950e0e4c1889fce0f2399d3f44ccc5b4ce55b262e117f12f9f7a2e30770395f6"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -1136,7 +1123,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e6b8d628bbb97ace7cc7d3153f22d6410df75c95a749b76882293757a0ba8c07"
+      "sha256": "ad9ee7863bd2c6bc8a9eddd953321bd848995110e1d8dfb66edc9648451cc356"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -1154,7 +1141,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1bde1cb6cb08d3fdf6fb5e0d28bab56f0f1a7e464b74a5cf4fa6b9174108a37d"
+      "sha256": "9622b4eaade06573b765295c7d1e71ee987395cd18bc2c344060c6bc131a8cdb"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1181,7 +1168,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "95566264443526fc5b9916ed24346cb908dea6ecc89d21eb8d31eaaad679129d"
+      "sha256": "34c05cb066cc68a1fd9c20b726d77f53a5b015f39268eef8f754ce3dd2157741"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1235,7 +1222,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "922bd32c7d0b0f9fbfbb473ebb866c30036d1f59104e3f827de4ac69e71d331d"
+      "sha256": "bcafbbf1ce781a50febde630c8245c29ddb8dda83e1c2288abb280cf0b4cce20"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -1253,25 +1240,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1b60735eb863fe7ee270ecd51cb5a77856a8ac6103064aabcee971d90765db75"
-    },
-    {
-      "path": "docs/WEB_UI_MIGRATION.md",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "eb20d5fb07871d4da847d9c66cb2d7ed7ae813096c2243e7c0469b17a68e7ae1"
-    },
-    {
-      "path": "docs/WEB_UI_RETIREMENT.md",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "5609f00a14a7a668bc9450f4bbe826cd53b66d2f3eaea9ceb6ab792517620982"
+      "sha256": "cd7fc25b1118311ef7014780ee2830a614f27bb70701ecccac20ca43fc64a24d"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1280,7 +1249,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e99de23bfef60324cd27ec7d116c79fb9d33d9e45c7dbbc9f05a0176a8aeb8ad"
+      "sha256": "5e8ccc4c83cfb3315e35dae5718ff508c53062646c0ff317f604d435f8cc35d4"
     },
     {
       "path": "docs/YOUR_OWN_GAMES.md",
@@ -1319,33 +1288,6 @@
       "sha256": "8e1d6cb4f6573eccd1903cbdfdaf638dcda1ebc52ff15ccf21c62b09a7fd6ccd"
     },
     {
-      "path": "docs/images/showcase-breakout-v180.png",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "bda0e223bc94c7bd44d2d799953dbde8120d2b16ce9f15d281842f6a6de4874b"
-    },
-    {
-      "path": "docs/images/showcase-ge-scene-v120.png",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
-    },
-    {
-      "path": "docs/images/showcase-ge-scene-v240.png",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "d258a82c18eb714c30e4cde2402cbe83d20265337231d25feed9c57cd433289b"
-    },
-    {
       "path": "docs/provenance/FONT_ORIGINS.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1379,7 +1321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a8b1506d5ae9576136778b6de54ef68ad69bcbfc8e1af71fea724e4d7b0faf29"
+      "sha256": "891bcef187326f207bbbc81fb23cffc975919b8bf212fe3f8e23c08727596f21"
     },
     {
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.json",
@@ -1415,7 +1357,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "66b244de1765803749698eadd5db0959e9e37459489f785f61f8951d145ea205"
+      "sha256": "e28d196433d7cbd9470aa50b92065848245a3fa67bebcb06950bd5a3aaea7139"
     },
     {
       "path": "fixtures/cosim/README.md",
@@ -1976,1852 +1918,6 @@
       "sha256": "506616db4ea37b951840f2fc488db1d1f935f20306af555e4cf8db0788cc5d53"
     },
     {
-      "path": "interface/.env.example",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "5e65e79eb399de3ee9d3727da9447f843e08b0a05cfdd7012b8efd4b98b6283b"
-    },
-    {
-      "path": "interface/.gitignore",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "9faa27591d62d7dfefc74602535343b360c579be5530d1638646a4ec9ca5e01d"
-    },
-    {
-      "path": "interface/.npmrc",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "89570b4333de5a4920e113d299e774c671b4e83ebfe34757ad27c3960a7bd269"
-    },
-    {
-      "path": "interface/README.md",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "27e7c1027c29b1cefb50c59af14f4e8a4249249fd0cdde8722f087701a3d343c"
-    },
-    {
-      "path": "interface/components.json",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "4b0a88efc61eb3b93585eaef3da001f7f30ba7f47b005218345e737813f848d3"
-    },
-    {
-      "path": "interface/eslint.config.mjs",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "023ea1d73d11a704821ef1445c1be9bb9f677a898d0b30f6c93a5cc21c1f4fb0"
-    },
-    {
-      "path": "interface/next.config.ts",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "06e5c0686a1d3058d0cd2ff489f3564d54980f46c068f4d7723c215736619c45"
-    },
-    {
-      "path": "interface/package-lock.json",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "e56533888a97a590819bab8193041482e1061f8dbf66373aa6e2b08e5791d269"
-    },
-    {
-      "path": "interface/package.json",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "881776e1d4fbbfc78187aa25986bcf7020f33f6848a9a86c1e9d7e00a17e59b8"
-    },
-    {
-      "path": "interface/postcss.config.mjs",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "77f3de9b7c7053be51a0408da89bd4b6b301e249d51eaba3ba8a78427f69a2ba"
-    },
-    {
-      "path": "interface/prisma.config.ts",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "ea87f5cd2b3da5ddcbb1fde6002c0cbe09966277a434bfa449eb189d186fd6fb"
-    },
-    {
-      "path": "interface/prisma/schema.prisma",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "08bb2d60b53b83bb8bda8bc802dcd660b37aa54e6318e479239a7f98fe9c7b37"
-    },
-    {
-      "path": "interface/public/logo.svg",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-000",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "8506450e8ef647695d218c4b3245ef573f9c6473783f372eef87fdba9bd47eac"
-    },
-    {
-      "path": "interface/public/robots.txt",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "a3d27b3ca5ce32341fa9f96f01169b521b1657c05d1860c45d1e53a6258e9e8b"
-    },
-    {
-      "path": "interface/scripts/prepare-standalone.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-001",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7a99a60e5bab585b9a14b21a5122e0e58798385a03fb6e93c959464e2be5e940"
-    },
-    {
-      "path": "interface/scripts/start-standalone.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-002",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "2de7865c89b4869a30a008979d5ca51b1e61a785a143fd25b24b0df374db9bdc"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/assets/file/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-003",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "00cc0c48bb435fb9d488ea827c878e7ead9033b53092dac8a4f0b9068b37b06b"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/assets/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-004",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7c174e0b9ff61a244c62d418a5b749b5d48c8c0dd65cacb6eafb4f84c0ed6417"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/boot/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-005",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7bd568a18d44c3b72b1ad6207f7ba0a31a037abaa7a5b9f876c52e87dfd22294"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/config/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-006",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "e224c9694e885195921b82d726063c0bd67f9746ecdeaa18c46860daba9ae1a6"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/debug/console/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-007",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3f5a01190cc0e8181903689f3cda3c01a5ad3207b265975da2d619a8df66e5f7"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/debug/nid-audit/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-008",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "82d889c6fe0c6a282472783385dedb20928ee579c09c46cd79460d818f52d6e9"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/doctor/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "manager-first-run-ux-truthfulness-20260831",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "0832c7e2da519ddc6f17ce1d0df3b3dd4cb82e95ea2c439f9a4be0df643c25e6"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/issues/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-009",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "5e001528aa1882a129f938c97f90522ebfc36e8f725a6240f363d94339d47a63"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/log/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-010",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "886f5d17a4f419fbc4670de6fd9251284957615cc5a3fdc42fc6ca57ec340fd8"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/manager/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-011",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "399f1e5ce3e63cb71680be840ecdb3f386ed1c75bf4ec93f09b244d6250d471b"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/profiles/[id]/export/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-012",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "56e5f7d87bb08aa6cb47745f47422da230b829b59689e8ae0f45b41182d5e2ae"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/profiles/[id]/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-013",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "b24d80002a8bc12daaa1f27c7bafaee237fd531155313fd7e33c642c1fa958dc"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/profiles/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-014",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "6a55c80303ee596c71fc210c696d4371a395269787952ce0c3aaec91e821285c"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/progress/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-015",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "6e5b4461ad4e426e383f8484eb54ff24c72d2cec0999dc67c3b7d808f107fb21"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/run/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-016",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "77184f65f14415c44cd0724ccee7c7ed11e000f9792f2da4646d39ac51c3f042"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/telemetry/export/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-017",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "564b737b456ce93f2bfd63e5644081e97c3cee5d602b5d0435245482c07ca5fb"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/telemetry/profiler/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-018",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c87217b4cf751db509a45452872dc484ad5f42592d7a4ac93a071ae615b13e8f"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/telemetry/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-019",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4c11caf3da0f96a03143ffa8085accc981cc93af8597f1523f716a0c76c88103"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/telemetry/trends/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-020",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4535ed01e01428271fb4437788f040e2e5077de4c83ec5a5040f960a70210792"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/tests/fuzz/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-021",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "ee84ad7044b13a938f3be12af2d16f8328f7df89081bf28eb7ff76985efeeab6"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/tests/microtest/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-022",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "13a13913c9b93c597f0ab838bb4fd19798709ce72313dd05c4c38d7902345479"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/visual-regression/image/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-023",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cb3bccb512518c116a0442d6f8639ea209d3141a5d26718e45c190a10b22aa28"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/visual-regression/report/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-024",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "950e82b71ea67e2748567b0cb05fbd289e83cc67c216ca2da9124e95d3f20665"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/visual-regression/variance/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-025",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "637c17d3cad2f46ef90ecb78991682190b4f3ed3546613376a3cd78d0504fb35"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/watchpoints/profiles/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-026",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "a05d25df839b9f0b7bcdfe96278544603ce106c80a6a4b1d6cd4ddab457f8f40"
-    },
-    {
-      "path": "interface/src/app/api/recompiler/watchpoints/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-027",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "8080467e70eb4131222b2eeb7436b1c0b8889c06575d7c24910c343a759f4728"
-    },
-    {
-      "path": "interface/src/app/api/route.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-028",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "76b1bab0cd6518d5d9ceeb0d3391a5267af491a0fea89bc7bf20385e1d98204a"
-    },
-    {
-      "path": "interface/src/app/globals.css",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-029",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "202ba7c1fd8817b77df5571158870e625a84f3a30f710268e5a82ca2821d8e99"
-    },
-    {
-      "path": "interface/src/app/layout.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-030",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "834db62a434452077ddf5e2720b1ee27359519d63bc6fdabe33c052dd2392701"
-    },
-    {
-      "path": "interface/src/app/page.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-031",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "ef5a3383ba084f1e73563176c07830016fe4ab922827238ad7872df0c3d428c2"
-    },
-    {
-      "path": "interface/src/components/studio/assets-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-032",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "1ead9f3fedb362c3cd14330ae2807b8e59f6e08f1ffc13c41f490451ace02d9e"
-    },
-    {
-      "path": "interface/src/components/studio/build-health-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-033",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "bf5ac7ddb3bdf92ab76ff5b5982cc2a2140bc40d029f10e4d33c602b7551ca19"
-    },
-    {
-      "path": "interface/src/components/studio/build-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "manager-first-run-ux-truthfulness-20260831",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c292971e0e815be43af07a07da729da3691553c2405f97842bf1f6b831a333dc"
-    },
-    {
-      "path": "interface/src/components/studio/config-diff.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-034",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "2beeb5b6e15546491543b88120dd25c9ff3b6e0421b7e32ea0638ef6eb977b38"
-    },
-    {
-      "path": "interface/src/components/studio/controllers-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-035",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "9e6f6231897c2be411682df516bf258783b63910c477dea3c4d889c2f97a001b"
-    },
-    {
-      "path": "interface/src/components/studio/court-preview.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-036",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "67b5cec0d3eca75882173e0cd293bce9c9ad80226a81ac6472915c0b31d5722b"
-    },
-    {
-      "path": "interface/src/components/studio/execution-console.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-037",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "f079b19e8a65e641d831c9b5e71bae314ce0bfa03b34a7fc596f8dcbd753e154"
-    },
-    {
-      "path": "interface/src/components/studio/footer.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-038",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "1d7cbd37d18b73642f641c09b83ab0087148b1913c9202ccb95e21b73dd553c7"
-    },
-    {
-      "path": "interface/src/components/studio/gamepad-detector.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-039",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cb7b3c54ed8a4a343dfca54dcc1b96d099e27eee4304c0106da776e4a2940318"
-    },
-    {
-      "path": "interface/src/components/studio/graphics-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-040",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "e9dbf94b1730af1b64c0d1b57e85c4197404b795bb6cd14fccfc28cf048d28fa"
-    },
-    {
-      "path": "interface/src/components/studio/internals-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-041",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c3476f1a35fd64957e0f3d71b53eef319893fe1b68e19f2f57beca71c93f4f5c"
-    },
-    {
-      "path": "interface/src/components/studio/iso-file-tree.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-042",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "bd9d9042b21899aff8273cde5da3a557b929ec04fe5db1fdadc813bd09e3010f"
-    },
-    {
-      "path": "interface/src/components/studio/iso-loader.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "manager-first-run-ux-truthfulness-20260831",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "b0c982a8124ef3516ff400661aed18c7bf8d0f27d183341d64be176b330f5156"
-    },
-    {
-      "path": "interface/src/components/studio/limitations-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-043",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "56a54831dcc3b6a0eeb83851e08d7bd4e6c40ebfee723baeb40226822460da60"
-    },
-    {
-      "path": "interface/src/components/studio/nid-audit-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-044",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4de5c04107e112ba206f3b80793e86ade4a89d809ea78c7eba35d5249d2f2b84"
-    },
-    {
-      "path": "interface/src/components/studio/onboarding-tour.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-045",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4be8b19762483123de5727df62d49b32c2cf6ea796c236e08dba7c4760895403"
-    },
-    {
-      "path": "interface/src/components/studio/patches-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-046",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7c1d1cd0f1fc1efa5e7263ecad46e9d5e7a14562eb3cecc1290288231c43c38c"
-    },
-    {
-      "path": "interface/src/components/studio/performance-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-047",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "59316ce95c4e8f663a13ff1ee3e52bcdbc4e1fb73f607b018ed521a4c2b5652b"
-    },
-    {
-      "path": "interface/src/components/studio/porting-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-048",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "88a70f902fb173a513d26c1b68907899849ee18b0a10e9a6235cff5c01662441"
-    },
-    {
-      "path": "interface/src/components/studio/preflight-card.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "manager-first-run-ux-truthfulness-20260831",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "26e4a5d52f9550a23c344923cd3960a0514c544461dfc09777b3ce427225a518"
-    },
-    {
-      "path": "interface/src/components/studio/preset-bar.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-049",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "64a8b44015e866c689470cf28c89f8bff5eea15b5fe3cad80831fc994db12aa4"
-    },
-    {
-      "path": "interface/src/components/studio/profile-switcher.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-050",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "a8326e7d078d222292cf2160273e33379a55c77fc1fd79c8f0d49c3e8bbb46cf"
-    },
-    {
-      "path": "interface/src/components/studio/profiler-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-051",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "f066ac6cba1c39316986913ce808ed6b8c0ca02ef02cdbca7ff0e22f18c5987a"
-    },
-    {
-      "path": "interface/src/components/studio/progress-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-052",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "9fd4b1312b605687013f01ddb2309748b6405b6a6a3a671c780915c15599aa1c"
-    },
-    {
-      "path": "interface/src/components/studio/share-dialog.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-053",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "64c3ed10287bbf0a5cb651642a01544edaa7b1c0125a202d6661f976d90ed61c"
-    },
-    {
-      "path": "interface/src/components/studio/sidebar.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-054",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cc6e2528e6c026986c395bd8d67516b8439df6c8ff189b745404b95b5353f4eb"
-    },
-    {
-      "path": "interface/src/components/studio/studio-context.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-studio-shell-00",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "9e91d4143c251449d12f060f31a6c61945f487ba56d7a4afc1ce24ad321923d2"
-    },
-    {
-      "path": "interface/src/components/studio/summary-rail.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "manager-first-run-ux-truthfulness-20260831",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7d911f43356cda367a64a4f0430ef01114cdf73ab2be1daf006131e21dc1f7d5"
-    },
-    {
-      "path": "interface/src/components/studio/test-lab-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-055",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "66d5dff3104957479512a87b39c6ad42d2ac0b190a77da38062ea1c975b31304"
-    },
-    {
-      "path": "interface/src/components/studio/topbar.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-studio-shell-01",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cef1705e6fb00c4ad55ae518412e4d9b95072f771bbc2828556d10f798e6b01e"
-    },
-    {
-      "path": "interface/src/components/studio/troubleshooting-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-056",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3724ae33b575b8e7db67b3999c2b7031ff018e86f5aeda4e652a08ae21b959ab"
-    },
-    {
-      "path": "interface/src/components/studio/ui-bits.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-057",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c80148f010be9d4058f60035174df5bd1dbdd0c81385f269e1781c6ddf059954"
-    },
-    {
-      "path": "interface/src/components/studio/visual-regression-panel.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-058",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "edd4aa5700e9cacac022018d238b6ec98eacbf0964e671793376d80855908f4a"
-    },
-    {
-      "path": "interface/src/components/studio/vram-viewer.tsx",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-059",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "895eebc4a73752eda3eac210772067e9d802b45a78b2bff677359b04d918cb9c"
-    },
-    {
-      "path": "interface/src/components/ui/alert-dialog.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "a76213c5f62be9c748c2bd6b40c0a5b06a7e9109a12336563dea316c00c8e480"
-    },
-    {
-      "path": "interface/src/components/ui/alert.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "19a88d306e9728cc570f1bfa467679726817db8bebbe8fed46eed561abf088c5"
-    },
-    {
-      "path": "interface/src/components/ui/badge.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "12afd0b9a7eef861e6383b55864be58c2653b346b53cbc393a89ee4e0b70d05c"
-    },
-    {
-      "path": "interface/src/components/ui/button.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "6940872bf122271a604890d88f45e06f05bbe00ef69c6ef358fa37b3b87bacb6"
-    },
-    {
-      "path": "interface/src/components/ui/dialog.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "b970adf18bb9f8e445ac10788df19a6110f7125de912ac21f6a033bb3ecd4872"
-    },
-    {
-      "path": "interface/src/components/ui/dropdown-menu.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "567e5e4f4203adba35501bf064e415c25f93b8f82a5cd8437ebfc7795f5ce007"
-    },
-    {
-      "path": "interface/src/components/ui/input.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "fdcbec3ca95192058a6dc346d19ec46784de106269fab47094b6b48bd2cb99a5"
-    },
-    {
-      "path": "interface/src/components/ui/label.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "cfd6aeb90a34ca42f4fffaeb0861fca27db4e09b752e75d609c7ff1e99c0019c"
-    },
-    {
-      "path": "interface/src/components/ui/progress.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "a54d55442bb523e095e09ae98e447ef0069c60a98b33d56aa0933f4662accfc3"
-    },
-    {
-      "path": "interface/src/components/ui/select.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "6718e4810940d758ae5b6fd8e4a99ae7070e4b13aa85dde6e5fa80b0c0311cc7"
-    },
-    {
-      "path": "interface/src/components/ui/slider.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "ab8fcea97cd41c01d5bd86864a474d383d1226897daa06ee5b577d288d7133c3"
-    },
-    {
-      "path": "interface/src/components/ui/switch.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "f0fd3c1dd20a3c4948a8e0fa3600442dd0e764ef7493e3f517a5e5173d2e7422"
-    },
-    {
-      "path": "interface/src/components/ui/toast.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "a2514d0c0834f60aabd31819e50729fa46c7e15a8d9be8daf54fb126eaf3f832"
-    },
-    {
-      "path": "interface/src/components/ui/toaster.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "b1254cb1644373db9c9b11a8cd4f4a71eba4b2976968c4e3fd327a53d171ab35"
-    },
-    {
-      "path": "interface/src/components/ui/toggle-group.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "2d306d6af1425766af06a3b1bf775e4d85b2f3659ec247aa154abe4e779fa9f1"
-    },
-    {
-      "path": "interface/src/components/ui/toggle.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "91b84e07fda8c7b544d908aa2192f312dc31611aed4db779e9fade3853f06ce3"
-    },
-    {
-      "path": "interface/src/components/ui/tooltip.tsx",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "56ffdf61207a9c48430aa7e8c72158dc4cfdab0b50a3b7539740aceb1bdf9abd"
-    },
-    {
-      "path": "interface/src/hooks/use-gamepads.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-060",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7be3c9081b0fc528a2331bd9f281d39f6d912d22d1e5b900bb186af73e902a37"
-    },
-    {
-      "path": "interface/src/hooks/use-keyboard-shortcuts.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-061",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "2a49172f3885e9b23b7aaf7df40c1d5b91a2cfd2a695cdf9652ef3ce69986a47"
-    },
-    {
-      "path": "interface/src/hooks/use-mobile.ts",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "4fc1aeccfc4260ad4738690b67f1bafc4fae12e8b35459eb41c9ab05964feaac"
-    },
-    {
-      "path": "interface/src/hooks/use-theme.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-062",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "ec9f2d9262d20a84a479ff88ab694c125ca5b91f19895cb30abdffb6d0a1182b"
-    },
-    {
-      "path": "interface/src/hooks/use-toast.ts",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "shadcn-ui-dashboard-primitives",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "MIT",
-        "modification_status": "modified_or_translated; see trusted record"
-      },
-      "sha256": "f9ee2956c278ca95d49675bbc9a630ef19d76c7ea876c765eae58ad218c55779"
-    },
-    {
-      "path": "interface/src/lib/db.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-063",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "50789854649591a6753711040edf248e3be9da0ea9085d2c79d985a4971702ef"
-    },
-    {
-      "path": "interface/src/lib/format.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-064",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3862b1ca0f31d04a3cf9b6aec317bcf35ab947adea659309e51efc12295676df"
-    },
-    {
-      "path": "interface/src/lib/recompiler/config-schema.d.mts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-065",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "539e72697b24c6f60600cf6ecbaeb11dfbaabb94eccdf4333180f70e159845d0"
-    },
-    {
-      "path": "interface/src/lib/recompiler/config-schema.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-066",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "119994617d4c434758463c82c239ff7904d8beffa6a717e66fa2c886ddca360a"
-    },
-    {
-      "path": "interface/src/lib/recompiler/config-schema.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-067",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "0b767024476fa2c4095f47d613aa5dc126ed20d27fcbf4debf9dd310815d0559"
-    },
-    {
-      "path": "interface/src/lib/recompiler/debug-console-contract.d.mts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-068",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "1634d7a8b335707c3c9358108df211961fce2e5d57ba7870899970f4120254fa"
-    },
-    {
-      "path": "interface/src/lib/recompiler/debug-console-contract.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-069",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "358589a814a56e41599ad99ee5b34be40d57bb8074f832f3fa8cebeb5febff78"
-    },
-    {
-      "path": "interface/src/lib/recompiler/debug-console-contract.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-070",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7b54734c082ca0bba464d9d75b45ab74f720e8d4e4efbee34f3a0bbbfc63281f"
-    },
-    {
-      "path": "interface/src/lib/recompiler/defaults.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-071",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "dea418483c8d7feb10a308bdbc15777835e65d1a2472509d0c7e9a6c5955aea0"
-    },
-    {
-      "path": "interface/src/lib/recompiler/diff.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-072",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "8810dfb6270133b33259f2cf7f543d84eb7fc08dd3a14f03410e56f2fa342b64"
-    },
-    {
-      "path": "interface/src/lib/recompiler/doctor.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "manager-first-run-ux-truthfulness-20260831",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "baea57c78494799b345d2eae13d3d86099ee4d1838bd950a43bab78afc7db193"
-    },
-    {
-      "path": "interface/src/lib/recompiler/doctor.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "manager-first-run-ux-truthfulness-20260831",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "0db64a900d1c2b58506f8962bce74281fac7ece4972b3644aabea27fcce9e27e"
-    },
-    {
-      "path": "interface/src/lib/recompiler/iso.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-073",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "044e15b8b3e758fb207aeb467bd7fba8906aa17452420615035b0ac07d5b827a"
-    },
-    {
-      "path": "interface/src/lib/recompiler/local-request.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-074",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "1f660f58331f815c0fca05f4000cb70819ec29b62be9b0f1510e0a0fa5978d0f"
-    },
-    {
-      "path": "interface/src/lib/recompiler/loopback-bind.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-loopback-sse-regressions-20260915",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cfcb67b568f3e20e326e899ba7a42b3f877cc74fc9d6e002fb73a058cdb7ea88"
-    },
-    {
-      "path": "interface/src/lib/recompiler/loopback-guard.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-loopback-sse-regressions-20260915",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "03cd6047de5cc9e3f2132e6e9e5fc2df4b32d325d7a3517945004baa7a319b0b"
-    },
-    {
-      "path": "interface/src/lib/recompiler/manager-contract.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-075",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "2386e40967d067e5cca2cff2c685c1571dd6ae15f0255b335284c2d89514bade"
-    },
-    {
-      "path": "interface/src/lib/recompiler/manager-process.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-076",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4f4eb704cafee10191bb289d5433bb9fc467f5f6198112d188c907a1cd3022e6"
-    },
-    {
-      "path": "interface/src/lib/recompiler/manager-process.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-077",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7a1071dbcdf6b4d6109509da7eb72bc4b77c91fdeec9a37ada5bdea1876769c9"
-    },
-    {
-      "path": "interface/src/lib/recompiler/manager-sse.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-loopback-sse-regressions-20260915",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "42bf5bfab04154ab2770908f5299ac712271737335cf399222be99717a5517f5"
-    },
-    {
-      "path": "interface/src/lib/recompiler/powershell-args.d.mts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-078",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "7da1751cdeb90cb3e7feccd97b0757d9a9765376466788bce50f19ff0104a696"
-    },
-    {
-      "path": "interface/src/lib/recompiler/powershell-args.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-079",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "5d39424682300632309d32977331becaf958417b7191402713247e46df8095d6"
-    },
-    {
-      "path": "interface/src/lib/recompiler/powershell-args.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-080",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "51751639cbb94b22ba16e59d9a6c5d19b471faa2093cf4b193a1e91da63bfeb9"
-    },
-    {
-      "path": "interface/src/lib/recompiler/ppm.d.mts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-081",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "df3bffb98c41e4d1bfae71d08df3907c3c0a10ee0b2d2aad0488424e0e9140f0"
-    },
-    {
-      "path": "interface/src/lib/recompiler/ppm.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-082",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "2b1e35902e64282b9a160035310d1cc62bb26d4c9a22c5e2840d32169572548b"
-    },
-    {
-      "path": "interface/src/lib/recompiler/ppm.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-083",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "e93b21e75bb3ba13f7a04c71be49bb642e5a920a3fdfbbedd653b9025e03a23d"
-    },
-    {
-      "path": "interface/src/lib/recompiler/presets.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-084",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "d8e72b3695b8fcff7181ad1b05b31661b8646a5334ac2eda69c8768d273cd809"
-    },
-    {
-      "path": "interface/src/lib/recompiler/profile-store.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-085",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "b6844560fe44e47e35e39b58e2b076cc51d1ec7f2f13de4f359051231f1bfdea"
-    },
-    {
-      "path": "interface/src/lib/recompiler/profile-store.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-086",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "66828fbaed45805ab30e237e47a19ab780c23d8d75825a2f369abf4f427caf72"
-    },
-    {
-      "path": "interface/src/lib/recompiler/profiles.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-087",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "96cf8641497f2c4c8f2fd2e0279b4a65d9673c41ec9c63bd8df0000026a4187f"
-    },
-    {
-      "path": "interface/src/lib/recompiler/progress-snapshot.d.mts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-088",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "996f814da101c70cb65daf76bd0d0fb8f3f3d7949fd7df58bde1183fba617cad"
-    },
-    {
-      "path": "interface/src/lib/recompiler/progress-snapshot.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-089",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "85783ed4331ee76b7d5aa01d127fb1b2fcbbf92a5e692f19eda6af592449ae1b"
-    },
-    {
-      "path": "interface/src/lib/recompiler/progress-snapshot.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-090",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cbf64d4c36045d284a072c8f232952ad8b6acd56c9e02a76c87e96805a777d42"
-    },
-    {
-      "path": "interface/src/lib/recompiler/real-data.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-091",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "313ea65d71eaf63cbbc4557c56620c7c7166aa84650de39c4b55b57e48cbadfb"
-    },
-    {
-      "path": "interface/src/lib/recompiler/route-integrity.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-092",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "555021b70f4fc0d23c6e933d247d11d6fe775b15f247dac2e6913274d4f1b476"
-    },
-    {
-      "path": "interface/src/lib/recompiler/runner.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-093",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "5e808e6780aa738729f0fcf5686b3d7e59b72b10b23e070051fc87c969d6fa33"
-    },
-    {
-      "path": "interface/src/lib/recompiler/share.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-094",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c4775f2d9c2ff457e0441f7982f576d410ab6a4cc9f7b16fab5def258a731b9b"
-    },
-    {
-      "path": "interface/src/lib/recompiler/telemetry.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-095",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "70f798f68d3b1767f7388ecfbfa8b07a5b1b7d1894b71739c4ba6f4978912d78"
-    },
-    {
-      "path": "interface/src/lib/recompiler/types.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-096",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "b5ec583273f60508bfe2d597e5286ac8a18a90f80baace84bd14f469f96be1ae"
-    },
-    {
-      "path": "interface/src/lib/recompiler/visual-regression-route.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-097",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "816628473ddae119e4ccb0065f574fac207153aae681a571c6276625be3e373d"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-file.d.mts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-098",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "8a4bf7036d3634d0c5ecdf7a42590b95223ecffda2dc420960ede27710f9f9ee"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-file.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-099",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "de9cc39d97a45547fae280cbc4faad2f08eb864694dfc35163f4b192c122afa8"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-file.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-100",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3dad06dee2a90961e4eba385a461940a51c24604e396942b52c77b7e0bbd3a5f"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-route.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-101",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "6ce21d2026cce283f5cc5b1344de2e3633cea7162736db1035671ded8b6139ad"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-schema.d.mts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-102",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "9d823ea3147ba76004c727a861df97717cfeb3508e26b8827deae17f8bf5adaf"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-schema.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-103",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "51e6c1e14e2d8f7c4d85d7b82c223a6b94a441dfb5a5bda6aeeada7bb67b5998"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-schema.test.mjs",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-104",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "1a13a5d56cd06516d77691d07d86cea2115f1bc8fc4b14bf88aad957c778769c"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-store.test.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-105",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "f8a1b0b6765f5fd6777033b614c981a9a96a23373372f877dc275f9433d5b98e"
-    },
-    {
-      "path": "interface/src/lib/recompiler/watchpoint-store.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-106",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3ecf46dc35b3da7b67a60025bb656fb29fc47ace7356645eabad09b531e3e38d"
-    },
-    {
-      "path": "interface/src/lib/recompiler/zip.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-107",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c7fd09231316718c2a822e11f6db30f40fdb73c226f6f2b9268021e2f4d09b5b"
-    },
-    {
-      "path": "interface/src/lib/utils.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-108",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "cedb7246ffd014f75d31cd101269e340fe571765b1ffd5deaa444388e886f6c2"
-    },
-    {
-      "path": "interface/src/proxy.ts",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "dashboard-109",
-        "evidence_tier": "N",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "a37df322587526c08de79d6ad8b93a3a5b41cd5d222a58f1a54e0d9f62fbfb33"
-    },
-    {
-      "path": "interface/tailwind.config.ts",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "55dc30ffbf5d60bc146637cce5f6a862f0776e6ad82e48eb77fdbe2af2d9f4a1"
-    },
-    {
-      "path": "interface/tsconfig.json",
-      "classification": "reviewed_configuration",
-      "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
-      },
-      "sha256": "a2b826a177e7b5d4000b22e7914cf94a12250fc39c3c7458ed8784cd2523386b"
-    },
-    {
       "path": "mk/build_common.mk",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -3861,7 +1957,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "aa3f62d0d969c8b655157656fb91456075e57e7b924b5c40cd35d203a7f1f82f"
+      "sha256": "df9c45c119b5a831bfeb410335a7c936f9a8844511242ebe856615d63ce7bd7b"
     },
     {
       "path": "src/core/generated/nk_title_catalog.c",
@@ -5295,7 +3391,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "abdcd3eee9a67a41310b86f2a7ddb9b889fd122c8f8953f0f65dc90fa653f06f"
+      "sha256": "d749abb9d3dce059b77c6900a36befdca8c334804647be04cb8c5fa5fb096202"
     },
     {
       "path": "src/rt/debug.h",
@@ -6547,7 +4643,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "19d8ba43126f91a511b3049ff23b19739822091c9c378d9483ddf977aa5da487"
+      "sha256": "765974a2144b5e847ae272b24a98e87d2575ec15131147c4b66c256135d7d299"
     },
     {
       "path": "src/rt/watchpoints_file.h",
@@ -6559,7 +4655,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ae80dd565065de5a67b05d9b0a4e8f034eaed9fcb03c0363859a80822466985"
+      "sha256": "691905cbf5e5c07060abe81c22fe3fafbc0299fb4f8ac6758fbfa919b7bbada8"
     },
     {
       "path": "src/rt/watchpoints_file_selftest.c",
@@ -6571,7 +4667,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5f2bd02c31ddfcf12abd4d1651193f380dafd36e84aaa12b923037741b50bd30"
+      "sha256": "5a1c56c01ca0c2a6ec5a35f541176386c6a9c3cd414d962ed414d8dad7ef6fc6"
     },
     {
       "path": "tests/native/argv_echo_helper.c",
@@ -6847,7 +4943,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "67550b44c44c8ca3938fe8de4cd5ec7df1fc7dc1283591387f9ba7f724e27591"
+      "sha256": "71fbc8e97258550e074583e03a29793d6b7109c128cb2b76b2544d1920428ea4"
     },
     {
       "path": "tools/benchmark_codegen_chunks.py",
@@ -6943,7 +5039,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b4f8f1fa29ba8812e822da389aabeae5a2740dbe04e1aea2ee38bf0a25b3bdc4"
+      "sha256": "0f449b92d16c3807ee7cb1ab40feae2ca1741975a653dbd324e0ea93e90cf93f"
     },
     {
       "path": "tools/ci_required.py",
@@ -6955,7 +5051,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bcaa18429b8847cec97300125def058f7bde4f7a3e886b08d4bec239164b673c"
+      "sha256": "46fabe0989cd2b6b5504d6f0ce5726675b1130fada286dcc5e1bdc719ce9ae79"
     },
     {
       "path": "tools/codegen.py",
@@ -6994,18 +5090,6 @@
         "upstream_attribution": null
       },
       "sha256": "491e03fca4f95bf21fe2cb1b3bca66ff28094bf4d1634325061870b0d6be0a82"
-    },
-    {
-      "path": "tools/dashboard_notices.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "third-party-notice-tooling-421",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "78b8e5336762fb78ca6f2f1161eda35c750f6b3eb83aed90f7d53e6315e27139"
     },
     {
       "path": "tools/decompme_export.py",
@@ -7199,7 +5283,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df210f6d80cedb685991c9d049dce2d8cbd8f46f60b766dca816ce88d0edf8c8"
+      "sha256": "a2479cf0fe996a06b64b2d42970ae7665e8d24b7fe87635fd6c7d3fc4b26c402"
     },
     {
       "path": "tools/generate_sbom.py",
@@ -7211,7 +5295,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "66fecd430102e5a225b109225c210de040269f8e21e53da0139942a9973131fd"
+      "sha256": "657804981b54d59ae20c8d8d7a0936f8c15706f609854ac406e6031f5d2f0e48"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -7401,7 +5485,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "701055d1643571b896eed1500bf41306568c214b34fb42ceeeab77a984f94f34"
+      "sha256": "e5a478c448613b41ce7ea1739e70fcb3d2211155e3ac39ff52c1b5a040e5d71a"
     },
     {
       "path": "tools/mem_debug.py",
@@ -7499,7 +5583,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cdc122a968b6ef7478312ef2e9345e1b73321cea39122f497309c4729c0d6c9d"
+      "sha256": "5d9a4a04e1818ffd5e7f3c42f328b077d3c8bd388ba9bb95db1689a101be9830"
     },
     {
       "path": "tools/nk_cli.py",
@@ -7667,7 +5751,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5e5f5840d0988ce60a7221d722fda62a99fddd7b6e64dd6cf47a700f2afa3fc"
+      "sha256": "3c126849eff96d9d91959543044c1f8e32b4cb84fd6f0deede6f1682b130a5dc"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -7703,7 +5787,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48962943fae5b9914a188384e5e5d1d38cef936330a27e66c50c9988db49ca73"
+      "sha256": "1f2f93d908916c309503b00b65387e58cb39b7e32d1efefec6b4e75fa67a1f40"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -7751,7 +5835,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c4c53d9af94ec7234ad5fe364214cd7e8cd3668477959f1022df8d8524e66e42"
+      "sha256": "0c341889660e6a93d41afb1c33dc2f248418cd373f276f24ab788e3c6b2204a5"
     },
     {
       "path": "tools/portability_inventory.py",
@@ -7763,7 +5847,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "53d19b5f2cc39d96d290b6983b19fc8f6a185b0ac38aabbe27dd8249cf623a66"
+      "sha256": "bee56eec022474f5644a34e900a6c27c3ce2aeaaea03fdad1b634d4d10fc03b0"
     },
     {
       "path": "tools/ppm2png.py",
@@ -7801,7 +5885,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a744e619a6f18bf5fbf7c8d473f9467bef884df31e86c56d3db0c3a38e9db8f"
+      "sha256": "03b3e3ed5cb135f2ca4538524ae2801d3d2a64910d2765b58a11a79d0acdd50e"
     },
     {
       "path": "tools/provenance_attest_verify.py",
@@ -7825,7 +5909,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aa55a752017733aa5c94affb8ba9bd9ef3cf00588fe6971131d750c356a5217c"
+      "sha256": "c223240ccad61723eb67a741d95c71f29b69cebc0bca498c8cc5f47cdd51831d"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -7874,7 +5958,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d35dd22e432e3138d5e94d7a842a459d85182c2543b866f055e5aa6051ea96f2"
+      "sha256": "4bab20742079b3ebc553367f43c747a6b3b43537b3e599224a646ddc9dd31aaa"
     },
     {
       "path": "tools/psp_oracle/__init__.py",
@@ -8198,7 +6282,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea5cec6f8d21f0e504b8fa05622a3aab9e8014664a347c973a75af73ac790201"
+      "sha256": "ea934a52812d5ac813a5e3572421741a125f29837a3e456cfe145d66b6b32a91"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -8255,7 +6339,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "490c25df4fc02f133932d2cd799442eb2dd00f313274d7e726d684e89901af6a"
+      "sha256": "cc925461cae0b2441689858562631fc8cf96f5e4e07bb57905b14a240045813d"
     },
     {
       "path": "tools/test_analyze_tailcall.py",
@@ -8369,7 +6453,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f5ab40cead3b7da07770e749fb33065da1d219c52ad75e15592fce8f9c1befa9"
+      "sha256": "f2b2f4a45ec5d733539673622d4789537c9ac928227ae35035a6cc57abdc0449"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -8381,7 +6465,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "de66b8fb2e42cb0898cb1c971f99f0bb1fbe419de4270f18692534c2510a5ecd"
+      "sha256": "17120feac344e1918fa3f107a222c7e9cb9e8f8fe431666cd8425cfbaff72ca7"
     },
     {
       "path": "tools/test_codegen_continuations.py",
@@ -8786,7 +6870,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "675be6dcc876cd3682c7c2960f2da290d9d5a30dbdfa45ce18044f4f77a8af58"
+      "sha256": "33c1de963ebd9b13c5c086fa879512b6469ba4c822d33e46c32f49c546d433b3"
     },
     {
       "path": "tools/test_generic_title_planning_proof.py",
@@ -8891,7 +6975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9db0d8de4383293b693252e42314986997ef626140388dd57ba1849e3cfa76f4"
+      "sha256": "af0de9639b44eeb73e71e5c2effcf9d7b51a077d35216ecafdf801a13c8b775d"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -8996,7 +7080,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b40b6ed23b5a2719a3ebbd7620b2d95ba317ff06c400fd03ec89cc205f158296"
+      "sha256": "1048e246111c1afc452915d54aef0bea146be8123517c03acd39956d2b1c52da"
     },
     {
       "path": "tools/test_manager_safety.ps1",
@@ -9320,7 +7404,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "abd329a815d83e0d7f39f2cdb6350ae2ce06a4b5e8530b5ca94183f78d5edad8"
+      "sha256": "b18e5f7f15bb8f953fac6a799cbe34ea392cc48116fc2b585b39585bdeeb71aa"
     },
     {
       "path": "tools/test_provenance_ledger.py",
@@ -9332,7 +7416,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b39a4eec35a8f6403a5868e50c68a246bc95b3eed8e2d66c62fa257ccba5a3e"
+      "sha256": "a45b1c3feaa73e397c94159e36c8aa4abe29bfa9b7ce130d100ae009c9cc8c32"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -9512,7 +7596,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f841af9a70e731fd67580a65a0c630be2ba12d209d1c411205f1f42a62bd4998"
+      "sha256": "6eb6892f424e1124a0f20585c27fbf55aa0aead9cf228afd8c13cb954e7a3d1a"
     },
     {
       "path": "tools/test_publish_audit.py",
@@ -9524,19 +7608,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93d98b394f738ab9c4129d5d1a0308c607e64882e26f11d8218a43fd712caf59"
-    },
-    {
-      "path": "tools/test_readme_images.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "readme-image-tests",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4169bb28c9ebe3a8b657faf72b8e35f339125aea2ead56ed92663897fa23aa64"
+      "sha256": "1a7635a1b7e5377110613fa1d382d5cca6846dc4f2d9601c9839292ab4320e2e"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -9557,7 +7629,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "02d03baea62b4454c645d7e6cbdfc35580cfbd27c2d65b1bdef761f0492f12e5"
+      "sha256": "5ac91db96bc0dc063dece2a9356da3509a76b3906933ce508ae0797b44300f24"
     },
     {
       "path": "tools/test_savedata_security.py",
@@ -9587,7 +7659,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d52cc113edb333e461e539251435fa1d8edbb12a7407b4eb5f7812adca538e3e"
+      "sha256": "722cef991bb6fd713e62dd86de08d720fdf97d55659b230204e7265e60fe3ee1"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9599,7 +7671,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2e9d8d73c4f7b93376badaa67f59376bee9461ba192e8b1a44769cfb853d9ba8"
+      "sha256": "fbc5ac9aebd839f20f89d0ba68f60164bdf1dcc75f1d088cde8129a7e70de362"
     },
     {
       "path": "tools/test_sbom_fail_closed.py",
@@ -9611,7 +7683,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6567c2bc748f5630be5cc6c4ec401af8470fe97af6cd5efb8788101be3def312"
+      "sha256": "7c984c03b71d7a01e490149214e6a8420930e904b00c978eddb33bf1c50f4d97"
     },
     {
       "path": "tools/test_sched_invariants.py",
@@ -9686,7 +7758,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1af354748a9c6666a0abb10fdf1d1dd6ea351945f243f2d96ed9ea52373fd8c9"
+      "sha256": "ade5b8c919e8f38c412da6701d194a4690f32f5cd60ff7ea06ce07c4cdeff20e"
     },
     {
       "path": "tools/test_telemetry_export_security.py",
@@ -9698,7 +7770,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c0d25873b0560360d92fe12ae6bb2f3afa2630467b9ee956f4b4f01a41495ed"
+      "sha256": "b0f3dfaa0077e2412ec0fd5a631957855407b36b961708f6f5bb3fb5f374a7ac"
     },
     {
       "path": "tools/test_text_write_newlines.py",
@@ -9719,7 +7791,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30829d3617082cff487d420c8ce8f008ed42ab9125302e124df3049e125c84f8"
+      "sha256": "ed8d0720a130452be6109afc19ecde5fec8b3cf7f16a63b51b21d3269e6ed65e"
     },
     {
       "path": "tools/test_title_catalog.py",
@@ -9983,7 +8055,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f25c77eba498fa1bb70216e8c62bec6b5899cd5ce73d0c833eb5fc5f8d994b68"
+      "sha256": "f27f8d3ee3721a8a6e44326e76b44bdcc25c18680ddedd9e44f8921ef9346c7e"
     },
     {
       "path": "tools/test_xb_probe.py",
@@ -10113,7 +8185,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ccdac3d793b9f5df5b82223f4c8898724bb0a4408aa669f4ffee14534aa64259"
+      "sha256": "8df25476c4409cb7cdffcfdc0a92b98f71698926c9e4fbbf66eeecf7def212cf"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",

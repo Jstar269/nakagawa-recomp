@@ -38,7 +38,6 @@ body:
         - Runtime
         - Pipeline tools
         - Reference interpreter
-        - Dashboard
         - Build system
         - Documentation
         - Multiple or unsure

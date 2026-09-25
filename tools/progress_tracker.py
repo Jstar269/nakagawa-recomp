@@ -231,7 +231,7 @@ def _artifact_fresh(path: Path, against: list[Path]) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────
-# Verifier registry — stable IDs consumed by progress.json/dashboard readers
+# Verifier registry — stable IDs consumed by progress.json readers
 # ──────────────────────────────────────────────────────────────
 
 

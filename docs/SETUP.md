@@ -4,8 +4,7 @@ The supported and tested core build is Windows 11 x64; the host-neutral object
 gate is a portability probe, not Linux support. For an ISO/player workflow, start with
 [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). For development, see
 [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) and
-[`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The dashboard is a separate optional web
-project.
+[`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The native player is the repository's only user interface.
 
 ## Supported development baseline
 
@@ -510,21 +509,6 @@ contributor hook. These tools are not core runtime dependencies.
 Do not add any of these large checkouts to this repository, and do not make the eventual player
 download them. They are development/oracle aids; the release path should remain the recompiler,
 its redistributable host dependencies, and user-supplied game input.
-
-## 6. Optional dashboard
-
-The Next.js 16 dashboard is independent of the native build. Use the checked-in npm lockfile:
-
-```powershell
-cd interface
-npm ci
-npm run dev
-```
-
-The development server listens on `127.0.0.1:3000`. Keep it local: the dashboard can launch
-native tooling and is not designed for an untrusted network. Any unavailable build or download
-feature must report that honestly rather than creating a placeholder artifact; see
-[interface/README.md](../interface/README.md).
 
 ## Troubleshooting
 

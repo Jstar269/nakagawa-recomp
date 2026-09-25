@@ -27,8 +27,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 
 #: Machine-readable source of truth for every third-party component that can enter
-#: a release artifact. The native package, the dashboard standalone output, the
-#: SBOM and the release gate all read this one file.
+#: a release artifact. The native package, the SBOM and the release gate all read
+#: this one file.
 COMPONENTS_IDENTITY = "assets/third_party_components.json"
 COMPONENTS_PATH = ROOT / COMPONENTS_IDENTITY
 
