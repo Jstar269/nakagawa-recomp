@@ -101,12 +101,12 @@ def generate_controls(
     if workdir.exists() and not workdir.is_dir():
         raise verifier.VerifyError("OUTPUT_INVALID", "refresh scratch path is not a directory")
     base_commit = verifier._rev_commit(repo, base_rev)
-    try:
-        baseline_bytes = verifier._git(repo, "show", f"{base_commit}:{LEDGER}")
-    except verifier.VerifyError as error:
-        raise verifier.VerifyError(
-            "TRUSTED_BASELINE_MISSING", "the exact base commit has no public provenance ledger",
-        ) from error
+    # The same authority-generated baseline the hosted attestation uses; the
+    # base commit's committed ledger is not an input.
+    baseline_bytes = verifier.generate_authority_baseline(
+        repo=repo, base_rev=base_commit, trusted_ledger=trusted_ledger,
+        workdir=workdir / "baseline-scratch",
+    )
     baseline_path = workdir / "inputs" / "trusted-baseline.json"
     trusted_paths = {trusted_ledger.resolve()}
     if trusted_candidate_policy is not None:
@@ -295,11 +295,6 @@ def main(argv: list[str] | None = None) -> int:
         if not verifier._is_ancestor(repo, base_commit, "HEAD"):
             raise verifier.VerifyError(
                 "TRUSTED_BASE_NOT_ANCESTOR", "the trusted base must be an ancestor of HEAD",
-            )
-        baseline_exists = _run(repo, "git", "cat-file", "-e", f"{base_commit}:{LEDGER}")
-        if baseline_exists.returncode:
-            raise verifier.VerifyError(
-                "TRUSTED_BASELINE_MISSING", "the exact base commit has no public provenance ledger",
             )
         _policy_sync(repo, apply_policy=args.apply_policy)
         tree = _run(repo, "git", "write-tree")

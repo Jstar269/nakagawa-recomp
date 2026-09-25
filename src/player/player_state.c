@@ -152,7 +152,7 @@ int player_app_focus_count(const PlayerApp *app) {
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
-                 * (PLAY/STOP only when actionable), add, remove, then the
+                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, then the
                  * paging stops when the library overflows. The unavailable
                  * pill is never a stop. */
                 int count = 0;
@@ -160,14 +160,19 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                bool game_has_package = game &&
-                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) ==
-                        NK_RUNTIME_PACKAGE_OK;
-                if (game && (game_has_package || app->is_game_running)) count++;
+                NkRuntimePackageStatus pkg_status = game ?
+                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) :
+                    NK_RUNTIME_PACKAGE_MISSING;
+                bool game_has_package = game && pkg_status == NK_RUNTIME_PACKAGE_OK;
+                bool can_build = game && (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
+                                          pkg_status == NK_RUNTIME_PACKAGE_STALE);
+                if (game && (game_has_package || app->is_game_running || can_build)) count++;
                 count += 2; /* add + remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
             }
+        case VIEW_BUILDING_PACKAGE:
+            return 1;
         case VIEW_INSPECTING:
             return 1;
         case VIEW_SUPPORTED_TITLE:
@@ -183,10 +188,21 @@ int player_app_focus_count(const PlayerApp *app) {
              * in draw order. */
             return 14;
         case VIEW_CONTROLLER_SETTINGS:
+            if (input_settings_is_calibrating(&app->input_settings)) {
+                switch (input_settings_get_calibration_stage(&app->input_settings)) {
+                    case CALIBRATION_STAGE_REST:
+                        return 1;
+                    case CALIBRATION_STAGE_EXTREMES:
+                    case CALIBRATION_STAGE_RESULT:
+                        return 2;
+                    default:
+                        return 1;
+                }
+            }
             /* 14 digital controls rebind buttons + deadzone [-]/[+] (2) +
-             * trigger threshold [-]/[+] (2) + save (1) + reset (1) + back (1),
+             * trigger threshold [-]/[+] (2) + guided calibration (1) + save (1) + reset (1) + back (1),
              * in draw order. */
-            return 21;
+            return 22;
         case VIEW_ERROR:
             return 1;
         case VIEW_SETUP_WIZARD:
@@ -623,6 +639,9 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     snprintf(app->last_error.message, sizeof(app->last_error.message), "%s", msg ? msg : "An unexpected error occurred.");
     snprintf(app->last_error.recovery_action_label, sizeof(app->last_error.recovery_action_label), "%s", recovery_label ? recovery_label : "Return to Library");
     app->last_error.return_view = return_view;
+    app->last_error.failed_stage[0] = '\0';
+    app->last_error.boundary_text[0] = '\0';
+    app->last_error.log_file_path[0] = '\0';
     app->active_view = VIEW_ERROR;
 }
 
@@ -792,6 +811,87 @@ void player_app_stop_game(PlayerApp *app) {
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+}
+
+bool player_app_start_package_build(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    const GameRecord *game = &app->games[game_index];
+
+    package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
+
+    char python_path[NK_MAX_PATH];
+    if (!package_builder_find_python(python_path, sizeof(python_path))) {
+        player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
+                             "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
+                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    char cli_path[NK_MAX_PATH];
+    if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
+                             "tools/nk_cli.py could not be located in the current workspace or install root.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    /* Build into the same per-user root that package validation reads. */
+    char user_data_root[NK_MAX_PATH];
+    if (app->runtime_root[0]) {
+        snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
+    } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+                             "The per-user data directory is unavailable, so there is nowhere to build the package.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+    char log_dir[NK_MAX_PATH];
+    snprintf(log_dir, sizeof(log_dir), "%.490s%clogs", user_data_root, nk_platform_path_separator());
+    nk_platform_mkdir_p(log_dir);
+
+    NkResult res = package_builder_start(&app->build_session, python_path, cli_path, user_data_root, log_dir);
+    if (res != NK_OK) {
+        player_app_set_error(app, "SPAWN_FAILED", "Failed to Start Package Builder",
+                             "Failed to spawn the package builder child process.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+    return true;
+}
+
+void player_app_cancel_package_build(PlayerApp *app) {
+    if (!app) return;
+    package_builder_cancel(&app->build_session);
+}
+
+void player_app_set_build_error(
+    PlayerApp *app,
+    const char *failed_stage,
+    const char *boundary_text,
+    const char *log_file_path
+) {
+    if (!app) return;
+    char msg[512];
+    if (boundary_text && boundary_text[0]) {
+        snprintf(msg, sizeof(msg), "%s", boundary_text);
+    } else {
+        snprintf(msg, sizeof(msg), "Package build failed during stage '%s'. Check logs for details.",
+                 failed_stage && failed_stage[0] ? failed_stage : "unknown");
+    }
+    player_app_set_error(app, "PACKAGE_BUILD_FAILED", "Package Build Failed",
+                         msg, "Return to Library", VIEW_LIBRARY);
+    if (failed_stage) {
+        snprintf(app->last_error.failed_stage, sizeof(app->last_error.failed_stage), "%s", failed_stage);
+    }
+    if (boundary_text) {
+        snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text), "%s", boundary_text);
+    }
+    if (log_file_path) {
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path), "%s", log_file_path);
+    }
 }
 
 void player_app_start_setup_wizard(PlayerApp *app) {
