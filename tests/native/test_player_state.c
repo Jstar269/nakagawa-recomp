@@ -701,6 +701,10 @@ int main(int argc, char **argv) {
     assert(settings->settings.resolution_scale == 4);
     player_app_cycle_resolution_scale(settings, -1);
     assert(settings->settings.resolution_scale == 2);
+    /* 8x is no longer offered: the GPU rasterizer caps at 4x, so the setter
+       refuses it instead of letting the UI claim an unsupported preset. */
+    player_app_set_resolution_scale(settings, 8);
+    assert(settings->settings.resolution_scale == 2);
 
     player_app_set_fps_cap(settings, 30);
     assert(settings->settings.fps_cap == 30);
@@ -734,6 +738,37 @@ int main(int argc, char **argv) {
     player_app_adjust_volume(settings, -2000);
     assert(settings->settings.master_volume == 0);
     free(settings);
+
+    /* 9b. The launch-relevant settings map onto the session's runtime config;
+     * reduce_motion is launcher-UI state and must not leak into the child. */
+    printf("[PLAYER_STATE_TEST] Subtest 9b: settings apply to the launch session\n");
+    fflush(stdout);
+    {
+        PlayerSettings applied;
+        memset(&applied, 0, sizeof(applied));
+        player_app_settings_init_default(&applied);
+        applied.resolution_scale = 2;
+        applied.fps_cap = 30;
+        applied.vsync = false;
+        applied.fullscreen = true;
+        applied.master_volume = 55;
+        applied.reduce_motion = true;
+
+        NkRuntimeConfig cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.gui_mode = true;
+        player_app_apply_settings_to_session(&applied, &cfg);
+        assert(cfg.resolution_scale == 2);
+        assert(cfg.fps_cap == 30);
+        assert(cfg.vsync == false);
+        assert(cfg.fullscreen == true);
+        assert(cfg.master_volume == 55);
+        assert(cfg.gui_mode == true);   /* untouched by the mapping */
+        /* NULL arguments are safe no-ops. */
+        player_app_apply_settings_to_session(NULL, &cfg);
+        player_app_apply_settings_to_session(&applied, NULL);
+        assert(cfg.master_volume == 55);
+    }
 
     /* 10. Focus clamps into range so keyboard/gamepad activation can never
      * target a control the view no longer draws. */
@@ -854,7 +889,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 14);
+        assert(player_app_focus_count(stops) == 13); /* 8x preset not offered */
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
         assert(player_app_focus_count(stops) == 22);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
@@ -1377,7 +1412,7 @@ int main(int argc, char **argv) {
         PlayerApp *s_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(s_app != NULL);
         player_app_settings_init_default(&s_app->settings);
-        assert(s_app->settings.resolution_scale == 4);
+        assert(s_app->settings.resolution_scale == 1);
         assert(s_app->settings.fps_cap == 60);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
@@ -1408,7 +1443,7 @@ int main(int argc, char **argv) {
         /* Corrupt JSON file resets to defaults and produces notice */
         write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
-        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == 60);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
@@ -1419,13 +1454,21 @@ int main(int argc, char **argv) {
         /* Unknown / unsupported schema version resets to defaults and produces notice */
         write_text_file(test_settings_path, "{\"schema_version\": 999, \"resolution_scale\": 8}");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
-        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == 60);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
         assert(s_app2->settings.reduce_motion == false);
         assert(s_app2->settings.master_volume == 80);
         assert(strstr(s_app2->settings_notice, "Unsupported settings schema version") != NULL);
+
+        /* A legacy persisted 8x preset is refused at load: the GPU rasterizer
+           caps at 4x, so it falls back to the default instead of pretending. */
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"resolution_scale\": 8}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.resolution_scale == 1);
+        assert(s_app2->settings_notice[0] == '\0');
 
         remove(test_settings_path);
         free(s_app);
