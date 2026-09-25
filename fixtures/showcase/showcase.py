@@ -365,7 +365,6 @@ def _runtime_command(demo: dict[str, object], padscript: Path) -> tuple[list[str
                meta["runtime"]["run_entry"], "none", "none", "--sched"]
     env = os.environ.copy()
     env.update({
-        "SR_DISPATCH_FATAL": "1",
         "SR_AUDIOSTAT": "1",
         "SR_AUDIO_BACKEND": "sdl",
         "SR_GESTAT": "1",

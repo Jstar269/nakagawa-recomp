@@ -206,8 +206,6 @@ jobs:
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
     timeout-minutes: 25
-    env:
-      SR_DISPATCH_FATAL: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

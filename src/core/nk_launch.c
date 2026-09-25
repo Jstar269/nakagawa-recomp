@@ -749,7 +749,6 @@ NkResult nk_launch_prepare_session(
     session->config.fullscreen = false;
     session->config.vsync = true;
     session->config.benchmark_mode = false;
-    session->config.diagnostic_mode = false;
     session->config.gui_mode = false;
 
     NkRuntimePackageInfo package_info;
@@ -1102,7 +1101,6 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_debug[32];
     char env_scale[32];
     char env_vsync[32];
-    char env_fatal[32];
     char env_dataroot[NK_MAX_PATH + 16];
     char env_font[NK_MAX_PATH + 16];
     char env_fs[32];
@@ -1182,10 +1180,6 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         envp[env_count++] = env_debug;
     }
 
-    if (session->config.diagnostic_mode) {
-        snprintf(env_fatal, sizeof(env_fatal), "SR_DISPATCH_FATAL=1");
-        envp[env_count++] = env_fatal;
-    }
     /* The player launch smoke uses this opt-in side channel because a spawned
        runtime's stderr is not a stable API of either platform backend. Normal
        launches do not set it and therefore incur no extra file I/O. */

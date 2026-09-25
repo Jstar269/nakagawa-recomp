@@ -1973,7 +1973,6 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             raise PackageBuildError("The generated package executable is missing.")
         env = os.environ.copy()
         env.update({
-            "SR_DISPATCH_FATAL": "1",
             "SDL_VIDEODRIVER": "dummy",
             "SDL_AUDIODRIVER": "dummy",
             "PSP_ISO": str(iso_path),

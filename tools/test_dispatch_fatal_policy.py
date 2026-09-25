@@ -2,23 +2,32 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Tests for SR_DISPATCH_FATAL fail-closed policy and unknown NID handling.
+"""Tests for fail-closed dispatch and unknown NID handling.
+
+Fail-closed dispatch is unconditional: a dispatch miss executes only inside
+analyzer-owned executable spans (the production interpreter floor) and every
+rejection terminates the run. No environment variable can make a miss
+permissive; SR_DISPATCH_FATAL was removed as vestigial once that floor landed.
 
 Verifies:
 1. Unknown NIDs fail closed: sr_syscall in src/rt/hle.c terminates execution
    (_Exit(7) or longjmp) when a NID is not registered in the HLE table, and never
    returns fake success (0 / H_OK).
 2. Unmapped / non-executable dispatch targets fail closed: dispatch() in src/rt/recomp.c
-   terminates via exit(1) on dispatch miss rather than limping onward.
-3. Native launch session in src/core/nk_launch.c enforces fail-closed dispatch
-   (SR_DISPATCH_FATAL=1) when diagnostic_mode is set, and never injects permissive
-   continuation flags.
-4. Production runner (nk_manager.ps1) defaults to SR_DISPATCH_FATAL=1, requiring
-   the explicit alarmingly-named SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS=1 to override.
+   terminates via exit(1) on dispatch miss rather than limping onward, and the
+   miss path routes to the interpreter floor (dispatch_run_interp).
+3. No dispatch-control environment variable exists: nothing in src/rt or
+   src/core reads or writes one, and the native launch session (src/core/nk_launch.c)
+   injects none into the runtime.
+4. A synthetic unregistered dispatch fails closed with no environment variable
+   set and regardless of any hostile continuation flag.
+5. The production runner (nk_manager.ps1) sets no dispatch control and reports
+   the retired SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS escape as inert.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -107,18 +116,36 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
         self.assertIn("exit(1)", body, "dispatch() must call exit(1) on failure")
         self.assertIn("dispatch_try(s, target) < 0", body)
 
-    def test_nk_launch_diagnostic_mode_sets_fatal_dispatch(self):
-        """nk_launch.c must set SR_DISPATCH_FATAL=1 when diagnostic_mode is enabled."""
-        launch_src = LAUNCH_C.read_text(encoding="utf-8")
-        self.assertIn("session->config.diagnostic_mode", launch_src)
-        self.assertIn("SR_DISPATCH_FATAL=1", launch_src)
-        self.assertNotIn("SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS", launch_src)
+    def test_miss_path_routes_to_interpreter_floor(self):
+        """A non-PLT miss must reach dispatch_run_interp, never a permissive return."""
+        recomp_src = RECOMP_C.read_text(encoding="utf-8")
+        body = function_body(
+            recomp_src,
+            "static int dispatch_try_with_boundary(\n"
+            "    CpuState *s,\n"
+            "    uint32_t target,\n"
+            "    const SrGuestInterpCallBoundary *call_boundary) {",
+        )
+        self.assertTrue(body, "dispatch_try_with_boundary definition not found")
+        self.assertIn("dispatch_run_interp(s, target, call_boundary)", body)
+        self.assertIn("SR_PERF_INTERP_DISPATCH_MISS", body)
 
-    def test_hst_manager_defaults_to_fatal_dispatch(self):
-        """Manager must enforce SR_DISPATCH_FATAL=1 by default."""
+    def test_no_dispatch_control_environment_variable_exists(self):
+        """Dispatch is unconditional: no source may read or write a fatal switch."""
+        for directory in (RT, CORE):
+            for path in sorted(directory.rglob("*.c")) + sorted(directory.rglob("*.h")):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("SR_DISPATCH_FATAL", text, str(path))
+                self.assertNotIn("SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS", text, str(path))
+        launch_src = LAUNCH_C.read_text(encoding="utf-8")
+        self.assertNotIn("diagnostic_mode", launch_src)
+
+    def test_hst_manager_dispatch_override_is_inert(self):
+        """Manager sets no dispatch control and reports the retired escape honestly."""
         mgr_src = MGR.read_text(encoding="utf-8")
-        self.assertIn('$env:SR_DISPATCH_FATAL = "1"', mgr_src)
-        self.assertIn('SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS', mgr_src)
+        self.assertNotIn("SR_DISPATCH_FATAL", mgr_src)
+        self.assertIn("SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS", mgr_src)
+        self.assertIn("unconditionally fail-closed", mgr_src)
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
@@ -162,6 +189,23 @@ int main(void) {
             self.assertEqual(comp.returncode, 0, f"Compilation failed: {comp.stderr}")
             run_res = subprocess.run([str(exe_path)], capture_output=True)
             self.assertEqual(run_res.returncode, 1, "dispatch() must exit with code 1 on miss")
+            hostile = dict(os.environ)
+            hostile.update({
+                "SR_DISPATCH_FATAL": "0",
+                "SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS": "1",
+            })
+            run_res = subprocess.run([str(exe_path)], capture_output=True, env=hostile)
+            self.assertEqual(
+                run_res.returncode, 1,
+                "hostile continuation flags must not make a dispatch miss permissive",
+            )
+            run_res = subprocess.run(
+                [str(exe_path)], capture_output=True, env={"PATH": os.environ.get("PATH", "")}
+            )
+            self.assertEqual(
+                run_res.returncode, 1,
+                "a synthetic unregistered dispatch must fail closed with no environment variable set",
+            )
 
 
 if __name__ == "__main__":
