@@ -1138,7 +1138,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "53c9289e85e67e07e452023f519a319bbd186445098d8f9de10b063244465cfe"
+      "sha256": "2c0421308a038ff1b2be7eb90b8ceaee2ba64aca886700a3d6b6d37b1ad06d86"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1246,7 +1246,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b7d5b1ccf75199e63bdf2256d1b01ff84669dd11ee4541d71f53b69edd1e2692"
+      "sha256": "3e19cb5a473f30471333aa226f722d115c00623be0704ba248f0bde217ac4fe9"
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
