@@ -16,11 +16,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import sys
 import unittest
 
-import gen_nidnames as gen
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
+import gen_nidnames as gen
 
 
 def corpus(entries: list[dict]) -> dict:

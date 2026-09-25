@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -1772,6 +1773,46 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertEqual(sum("write_sdl3_make_fragment" in line for line in makefile_text.splitlines()), 1)
         self.assertNotIn("query_sdl3_info", makefile_text)
+
+
+class ToolsModuleImportPathTests(unittest.TestCase):
+    """Regression tests ensuring test modules under tools/ use path idioms for sibling imports."""
+
+    def test_tools_test_modules_importing_siblings_use_path_idiom(self) -> None:
+        """Every tools/test_*.py importing a tools sibling must insert tools into sys.path."""
+        tools_dir = ROOT / "tools"
+        sibling_modules = {p.stem for p in tools_dir.glob("*.py") if not p.name.startswith("test_")}
+
+        missing: list[tuple[str, list[str]]] = []
+        for path in sorted(tools_dir.glob("test_*.py")):
+            text = path.read_text(encoding="utf-8")
+            has_path_idiom = (
+                "sys.path.insert" in text
+                or "sys.path.append" in text
+                or "except ModuleNotFoundError" in text
+                or "except ImportError" in text
+            )
+            if has_path_idiom:
+                continue
+
+            tree = ast.parse(text)
+            imported: list[str] = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in sibling_modules:
+                            imported.append(alias.name)
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module and node.module in sibling_modules:
+                        imported.append(node.module)
+            if imported:
+                missing.append((path.name, sorted(set(imported))))
+
+        self.assertEqual(
+            missing,
+            [],
+            f"Test modules under tools/ import siblings without sys.path idiom: {missing}",
+        )
 
 
 if __name__ == "__main__":

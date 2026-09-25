@@ -26,12 +26,14 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
-import codegen
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
+import codegen
 FIXTURE = ROOT / "fixtures" / "vfpu_addressing" / "hardware_vfpu_addr_001.json"
 SELFTEST = ROOT / "src" / "rt" / "vfpu_addr_selftest.c"
 
