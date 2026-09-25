@@ -119,7 +119,7 @@
           {
             "file": "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
             "copied_from": "FFmpeg n4.4 upstream COPYING.LGPLv2.1 as imported into src/rt/atrac3p/",
-            "sha256": null
+            "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
           }
         ]
       }
@@ -135,7 +135,8 @@
         {
           "file": "LICENSE",
           "copied_from": "project-authored license text in the repository root",
-          "sha256": null
+          "sha256": null,
+          "digest_policy": "no digest recorded: the project may legitimately revise its own license text, so a fixed digest here would block that; the gate still requires the text to be present and non-empty"
         }
       ]
     },
