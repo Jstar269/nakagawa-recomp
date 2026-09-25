@@ -1133,6 +1133,23 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn("#308", summary)
         nk_cli.validate_bringup_report(report)
 
+    def test_zero_exit_after_self_unload_names_module_lifecycle_boundary(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x8F2DF740}],
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
+        self.assertIn(280, report["issue_numbers"])
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn(308, report["issue_numbers"])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("unloaded itself before PSP display framebuffer setup", summary)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#280", summary)
+        nk_cli.validate_bringup_report(report)
+
     def test_zero_exit_with_lost_framebuffer_evidence_is_display_unverified(self):
         status, report = self._run_case(
             flight_events=[{"class": "hle", "kind": 1, "arg0": 0x446D8DE6}],
