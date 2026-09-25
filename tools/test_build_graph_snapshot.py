@@ -11,13 +11,15 @@ the compiler-neutral build manifest baseline relies on.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import sys
 import tempfile
 import unittest
-from pathlib import Path
-
-import build_graph_snapshot as bgs
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
+import build_graph_snapshot as bgs
 
 # A realistic gcc -MMD file: backslash-continued prereq lines plus -MP phony
 # header rules. Each continuation is one literal backslash at end of line.

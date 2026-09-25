@@ -12,12 +12,14 @@ Vulkan object handles (VK_NULL_HANDLE) or produce nondeterministic output.
 from __future__ import annotations
 
 import json
-import unittest
 from pathlib import Path
-
-import portability_inventory as pi
+import sys
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
+import portability_inventory as pi
 
 
 class ClassificationTests(unittest.TestCase):
