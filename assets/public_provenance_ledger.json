@@ -147,7 +147,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "48a4cdfd4780ffb9fcaae7a0b9a2d863bda5f230b8a598423640876a0eebf20b"
+      "sha256": "74775dd4da5fbb8e98e9619007956bb9b97e2f02eb84bfe3d6d9984a044ceb6b"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
