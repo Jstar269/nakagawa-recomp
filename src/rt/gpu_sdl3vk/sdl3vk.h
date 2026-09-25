@@ -28,6 +28,11 @@ extern "C" {
  * failure (caller falls back to the GDI path). */
 int  sdl3vk_init(const char *title);
 
+/* In-game performance HUD control (F1 / SR_HUD=1) */
+int  sdl3vk_hud_is_enabled(void);
+void sdl3vk_hud_set_enabled(int enabled);
+void sdl3vk_set_audio_active_cb(int (*cb)(void));
+
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
 int  sdl3vk_poll(void);
 

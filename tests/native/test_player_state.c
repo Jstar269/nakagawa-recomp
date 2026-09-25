@@ -765,7 +765,7 @@ int main(int argc, char **argv) {
         stops->games[0] = entry;
         stops->game_count = 1;
         stops->selected_game_index = 0;
-        assert(player_app_focus_count(stops) == 2); /* add + remove */
+        assert(player_app_focus_count(stops) == 2); /* incompatible package: add + remove */
 
         stops->games[0].is_prepared = true;
         assert(player_app_focus_count(stops) == 2); /* no validated package: add + remove */
@@ -786,6 +786,17 @@ int main(int argc, char **argv) {
         stops->game_count = 3;
         assert(player_app_focus_count(stops) == 4);
 
+        /* A title with missing package offers the BUILD PACKAGE button */
+        stops->window_width = 1280;
+        stops->game_count = 1;
+        seed_entry(&entry, "ULUS10041", "Street Supremacy");
+        snprintf(entry.title_id, sizeof(entry.title_id), "ulus-10041");
+        stops->games[0] = entry;
+        assert(player_app_focus_count(stops) == 3); /* build package + add + remove */
+
+        stops->active_view = VIEW_BUILDING_PACKAGE;
+        assert(player_app_focus_count(stops) == 1); /* cancel build */
+
         stops->active_view = VIEW_INSPECTING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SUPPORTED_TITLE;
@@ -797,7 +808,15 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_SETTINGS;
         assert(player_app_focus_count(stops) == 14);
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
-        assert(player_app_focus_count(stops) == 21);
+        assert(player_app_focus_count(stops) == 22);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
+        assert(player_app_focus_count(stops) == 1);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_EXTREMES;
+        assert(player_app_focus_count(stops) == 2);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_RESULT;
+        assert(player_app_focus_count(stops) == 2);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_INACTIVE;
+        assert(player_app_focus_count(stops) == 22);
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 
@@ -1443,6 +1462,38 @@ int main(int argc, char **argv) {
                                        &bytes, &size, &w, &h) == NK_ICON_ERR_MISSING);
         assert(bytes == NULL);
         assert(size == 0);
+    }
+
+    /* 17. Package build session and error presentation. */
+    printf("[PLAYER_STATE_TEST] Subtest 17: package builder state and error reporting\n");
+    fflush(stdout);
+    {
+        PlayerApp *bapp = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(bapp != NULL);
+        nk_library_init(&bapp->library);
+
+        /* Start with invalid index */
+        assert(!player_app_start_package_build(bapp, -1));
+        assert(!player_app_start_package_build(bapp, 0));
+
+        /* Set build error with stage, boundary text, and log path */
+        player_app_set_build_error(bapp, "preflight",
+                                   "Encrypted executable: supply decrypted modules (#295).",
+                                   "C:/logs/build_ULUS10041.log");
+        assert(bapp->active_view == VIEW_ERROR);
+        assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
+        assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
+        assert(strstr(bapp->last_error.boundary_text, "#295") != NULL);
+        assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_ULUS10041.log") == 0);
+
+        /* Cancellation transitions session */
+        bapp->active_view = VIEW_BUILDING_PACKAGE;
+        bapp->build_session.is_building = true;
+        player_app_cancel_package_build(bapp);
+        assert(bapp->build_session.is_cancelled);
+        assert(!bapp->build_session.is_building);
+
+        free(bapp);
     }
 
     free(app);

@@ -1,0 +1,182 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+
+#include "package_builder.h"
+#include "nk_platform.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void test_progress_line_parsing(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 1: progress JSON parsing\n");
+    PackageProgressEvent ev;
+
+    /* 1. Normal valid progress lines */
+    const char *line1 = "{\"stage\": \"preflight\", \"status\": \"START\", \"message\": \"Inspecting disc...\"}\n";
+    assert(package_builder_parse_progress_line(line1, strlen(line1), &ev));
+    assert(strcmp(ev.stage, "preflight") == 0);
+    assert(strcmp(ev.status, "START") == 0);
+    assert(strcmp(ev.message, "Inspecting disc...") == 0);
+    assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PREFLIGHT);
+    assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_START);
+
+    const char *line2 = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"Building native host object\"}";
+    assert(package_builder_parse_progress_line(line2, strlen(line2), &ev));
+    assert(ev.stage_enum == PACKAGE_BUILD_STAGE_COMPILE);
+    assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_RUNNING);
+
+    const char *line3 = "{\"stage\": \"package\", \"status\": \"PASS\", \"message\": \"Runtime package cached\"}";
+    assert(package_builder_parse_progress_line(line3, strlen(line3), &ev));
+    assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PACKAGE);
+    assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_PASS);
+
+    const char *line_fail = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#295)\"}";
+    assert(package_builder_parse_progress_line(line_fail, strlen(line_fail), &ev));
+    assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PREFLIGHT);
+    assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_FAIL);
+    assert(strstr(ev.message, "#295") != NULL);
+
+    /* 2. Malformed or invalid lines */
+    assert(!package_builder_parse_progress_line(NULL, 0, &ev));
+    assert(!package_builder_parse_progress_line("", 0, &ev));
+    assert(!package_builder_parse_progress_line("not json at all", 15, &ev));
+    assert(!package_builder_parse_progress_line("{\"foo\": \"bar\"}", 14, &ev));
+    assert(!package_builder_parse_progress_line("{\"stage\": \"preflight\"}", 22, &ev));
+    assert(!package_builder_parse_progress_line("{truncated", 10, &ev));
+}
+
+static void test_state_machine_transitions(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 2: state machine transitions\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "ULUS10041", "Street Supremacy");
+
+    assert(strcmp(session.disc_id, "ULUS10041") == 0);
+    assert(strcmp(session.title_name, "Street Supremacy") == 0);
+    assert(session.current_stage == PACKAGE_BUILD_STAGE_IDLE);
+    assert(!session.is_building);
+    assert(!session.is_complete);
+    assert(!session.is_failed);
+    assert(!session.is_cancelled);
+
+    /* Event: preflight START */
+    PackageProgressEvent ev;
+    const char *l1 = "{\"stage\": \"preflight\", \"status\": \"START\", \"message\": \"Checking preflight\"}";
+    assert(package_builder_parse_progress_line(l1, strlen(l1), &ev));
+    package_builder_apply_event(&session, &ev);
+    assert(session.current_stage == PACKAGE_BUILD_STAGE_PREFLIGHT);
+    assert(strcmp(session.current_stage_name, "preflight") == 0);
+    assert(strcmp(session.current_message, "Checking preflight") == 0);
+    assert(!session.is_complete);
+    assert(!session.is_failed);
+
+    /* Event: extract RUNNING */
+    const char *l2 = "{\"stage\": \"extract\", \"status\": \"RUNNING\", \"message\": \"Extracting plain modules\"}";
+    assert(package_builder_parse_progress_line(l2, strlen(l2), &ev));
+    package_builder_apply_event(&session, &ev);
+    assert(session.current_stage == PACKAGE_BUILD_STAGE_EXTRACT);
+
+    /* Event: compile RUNNING */
+    const char *l3 = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"Compiling recompiled C\"}";
+    assert(package_builder_parse_progress_line(l3, strlen(l3), &ev));
+    package_builder_apply_event(&session, &ev);
+    assert(session.current_stage == PACKAGE_BUILD_STAGE_COMPILE);
+
+    /* Event: package PASS -> complete */
+    const char *l4 = "{\"stage\": \"package\", \"status\": \"PASS\", \"message\": \"Package validation OK\"}";
+    assert(package_builder_parse_progress_line(l4, strlen(l4), &ev));
+    package_builder_apply_event(&session, &ev);
+    assert(session.current_stage == PACKAGE_BUILD_STAGE_COMPLETE);
+    assert(session.is_complete);
+    assert(!session.is_failed);
+
+    /* Test failure transition */
+    PackageBuildSession fail_session;
+    package_builder_init_session(&fail_session, "ULES00123", "Encrypted Title");
+    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#295). Automatic decryption is in the works.\"}";
+    assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
+    package_builder_apply_event(&fail_session, &ev);
+    assert(fail_session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
+    assert(fail_session.is_failed);
+    assert(!fail_session.is_complete);
+    assert(strcmp(fail_session.failure_boundary, "Encrypted executable (#295). Automatic decryption is in the works.") == 0);
+}
+
+static void test_output_line_circular_buffer(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 3: output circular buffer\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST00001", "Buffer Test");
+
+    assert(session.output_line_count == 0);
+
+    /* Add 3 lines */
+    package_builder_add_output_line(&session, "line 1");
+    package_builder_add_output_line(&session, "line 2");
+    package_builder_add_output_line(&session, "line 3");
+    assert(session.output_line_count == 3);
+    assert(strcmp(package_builder_get_output_line(&session, 0), "line 1") == 0);
+    assert(strcmp(package_builder_get_output_line(&session, 1), "line 2") == 0);
+    assert(strcmp(package_builder_get_output_line(&session, 2), "line 3") == 0);
+
+    /* Fill buffer to capacity (8 lines) */
+    for (int i = 4; i <= 8; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "line %d", i);
+        package_builder_add_output_line(&session, buf);
+    }
+    assert(session.output_line_count == PACKAGE_BUILD_MAX_OUTPUT_LINES);
+    assert(strcmp(package_builder_get_output_line(&session, 0), "line 1") == 0);
+    assert(strcmp(package_builder_get_output_line(&session, 7), "line 8") == 0);
+
+    /* Push 2 more lines -> wraps, dropping lines 1 and 2 */
+    package_builder_add_output_line(&session, "line 9");
+    package_builder_add_output_line(&session, "line 10");
+    assert(session.output_line_count == PACKAGE_BUILD_MAX_OUTPUT_LINES);
+    assert(strcmp(package_builder_get_output_line(&session, 0), "line 3") == 0);
+    assert(strcmp(package_builder_get_output_line(&session, 6), "line 9") == 0);
+    assert(strcmp(package_builder_get_output_line(&session, 7), "line 10") == 0);
+
+    /* Out of bounds returns empty string */
+    assert(strcmp(package_builder_get_output_line(&session, -1), "") == 0);
+    assert(strcmp(package_builder_get_output_line(&session, 8), "") == 0);
+}
+
+static void test_python_and_cli_discovery(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 4: toolchain discovery\n");
+    char python_path[NK_MAX_PATH];
+    bool found_py = package_builder_find_python(python_path, sizeof(python_path));
+    assert(found_py);
+    assert(strlen(python_path) > 0);
+    printf("   Found python at: %s\n", python_path);
+
+    char cli_path[NK_MAX_PATH];
+    bool found_cli = package_builder_find_cli(".", cli_path, sizeof(cli_path));
+    assert(found_cli);
+    assert(strlen(cli_path) > 0);
+    printf("   Found CLI at: %s\n", cli_path);
+}
+
+static void test_session_cancellation(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 5: session cancellation\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "ULUS10041", "Cancel Test");
+    session.is_building = true;
+
+    package_builder_cancel(&session);
+    assert(!session.is_building);
+    assert(session.is_cancelled);
+    assert(session.current_stage == PACKAGE_BUILD_STAGE_CANCELLED);
+    assert(strcmp(session.current_stage_name, "cancelled") == 0);
+}
+
+int main(void) {
+    test_progress_line_parsing();
+    test_state_machine_transitions();
+    test_output_line_circular_buffer();
+    test_python_and_cli_discovery();
+    test_session_cancellation();
+
+    printf("ALL PACKAGE BUILDER TESTS PASSED\n");
+    return 0;
+}

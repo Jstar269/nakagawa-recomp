@@ -59,6 +59,10 @@ void     sr_perf_present_wait(uint64_t started_ns);
 void     sr_perf_present_done(uint64_t started_ns, int result);
 void     sr_perf_present_skip(void);
 
+/* In-game HUD metrics query (reuses SR_PERF counters, zero overhead when inactive) */
+void     sr_perf_enable_counters(void);
+void     sr_perf_get_hud_metrics(double *out_fps, double *out_frame_ms, double *out_vblank_hz);
+
 #ifdef __cplusplus
 }
 #endif

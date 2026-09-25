@@ -77,9 +77,9 @@ def discover_vulkan_sdk(
     root = _resolve(Path(install_root))
     candidates: list[tuple[tuple[int, ...], Path]] = []
     try:
-        directories = (entry for entry in root.iterdir() if entry.is_dir())
+        directories = [entry for entry in root.iterdir() if entry.is_dir()]
     except OSError:
-        directories = ()
+        directories = []
     for directory in directories:
         version = _version_key(directory.name)
         if version is not None:
