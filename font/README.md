@@ -79,8 +79,6 @@ unrecoverable. OFL/Ume licence texts will be added under
 font_load() in ../src/rt/hle.c honors an absolute SR_FONTDIR or the executable's
 sibling font directory. A missing or invalid root is reported as an error.
 
-The public source tree excludes the PGF reader as well as the payloads: its
-build links `src/rt/pgf_unavailable.c`, which rejects every font, so a
-public-source build reports fonts as unavailable even when SR_FONTDIR points at
-a compatible directory. A separately licensed PGF directory only loads in a
-private checkout that contains the excluded backend.
+The public source tree excludes the payloads. Public builds read fonts through
+the project-authored reader (`src/rt/pgf_public.c`, #349), which fails closed on
+malformed or unsupported fonts; point SR_FONTDIR at fonts you supplied yourself.

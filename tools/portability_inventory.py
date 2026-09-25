@@ -58,7 +58,7 @@ CORE_HEADERS = {
 BACKEND_HEADERS = {"pgd_api.h", "pgf_api.h"}
 BACKEND_FILES = {
     "gui.c", "osk_win.c", "h264_mf.c", "h264_null.c", "driver.c",
-    "iso_unavailable.c", "iso_public.c", "iso.c", "pgf_unavailable.c", "pgf.c",
+    "iso_unavailable.c", "iso_public.c", "iso.c", "pgf_public.c", "pgf.c",
     "pgd_unavailable.c", "pgd.c", "audio_unavailable.c", "audio.c",
     "fbcap_policy.c", "ge_capture.c", "atrac3p_bridge.c",
 }

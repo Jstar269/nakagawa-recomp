@@ -289,9 +289,9 @@ PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804028
 # hash so changing it regenerates instead of reusing stale output.
 CODEGEN_USER_ARGS ?=
 
-# A filtered public candidate omits the lineage-sensitive PGF backend and the
-# PGD/amctrl implementation. Full private checkouts default to both backends;
-# candidate trees default to fail-closed project-authored unavailable backends.
+# A filtered public candidate uses the project-authored PGF reader and the
+# fail-closed PGD/amctrl backend. Full private checkouts default to their local
+# backends; candidate trees use only sources admitted to the public profile.
 PUBLIC_SAFE ?= $(if $(and $(wildcard src/rt/pgf.c),$(wildcard src/rt/pgd.c)),0,1)
 ifneq ($(PUBLIC_SAFE),0)
 ifneq ($(PUBLIC_SAFE),1)
@@ -308,7 +308,7 @@ ISO_BACKEND_SRC := src/rt/iso.c
 AUDIO_BACKEND_SRC := src/rt/audio.c
 ASSET_COPY_ARGS :=
 else
-PGF_BACKEND_SRC := src/rt/pgf_unavailable.c
+PGF_BACKEND_SRC := src/rt/pgf_public.c
 PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_public.c
 AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
@@ -1269,7 +1269,7 @@ $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 $(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
-$(BUILD_DIR)/pgf_unavailable.o: src/rt/pgf_unavailable.c src/rt/pgf_api.h
+$(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
 
 runtime-objects: shader-verify $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 
@@ -2032,6 +2032,9 @@ package-builder-test-bin:
 		tests/native/test_package_builder.c -o build/test_package_builder$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
+	$(CC) -std=c99 -Wall -Wextra -Isrc/rt src/rt/pgf_public.c \
+		tests/native/test_pgf_public.c -o build/test_pgf_public$(EXE_EXT)
+	./build/test_pgf_public$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)

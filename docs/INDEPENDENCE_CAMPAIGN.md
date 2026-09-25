@@ -98,9 +98,10 @@ Corrections to the mission list:
    `tools/pgd_decrypt.py`, `src/rt/evf.c`, `src/rt/fp_convert.c` are
    **absent from the public tree**. The public-source profile
    (`assets/public_source_profile.json`, `exclude_paths`) excludes them;
-   the public build links project-authored fail-closed seams instead
-   (`iso_unavailable.c`, `audio_unavailable.c`, `pgf_unavailable.c`,
-   `pgd_unavailable.c`, all `project_authored_attested`). They remain
+   the public build links project-authored seams instead
+   (`iso_unavailable.c`, `audio_unavailable.c` and `pgd_unavailable.c`, all
+   `project_authored_attested`, and the clean-room PGF reader `pgf_public.c`,
+   #349). They remain
    campaign items — a platform without ISO/VFS, audio, fonts, and
    install-data handling is incomplete — but the work is clean-room
    admission of *new* files against the already-public seam headers
