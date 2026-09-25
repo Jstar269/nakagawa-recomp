@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "46e6a6f617995749fa94e74e3c775ea4a6ebacb829171e322fb7311b6351bf51"
+      "sha256": "5a69b72d81b9df4f8f5a82939551406f8949ac9b06f2e09881af48a72f1927bc"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -848,7 +848,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7b28dbce44746c3028ec5e17106daf2bdab876b500dfe6e9d75e3bdb22c3cc30"
+      "sha256": "7c85755e23f4b90775c346665ef44b70a7c3d626db045afd3001e54c36157564"
     },
     {
       "path": "docs/COMPATIBILITY.md",
