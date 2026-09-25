@@ -215,7 +215,7 @@ The runtime executes generated guest functions and implements the host side of P
 | `pgd_unavailable.c` | Public-tree PGD stub linked under `PUBLIC_SAFE=1`; installed-data backend `pgd.c` is private-only |
 | `mpeg.c` | MPEG/SAS/Atrac-related behavior derived in part from PPSSPP lineage |
 | `savedata.c` | Utility savedata mapped to host storage |
-| `pgf_unavailable.c` | Public-tree PGF stub linked under `PUBLIC_SAFE=1`; parsing/rasterization backend `pgf.c` is private-only, with provenance/distribution review separate |
+| `pgf_public.c` | Project-authored public PGF reader linked under `PUBLIC_SAFE=1`, written from `docs/cleanroom/PGF_SPEC.md` (#349); the lineage-sensitive backend `pgf.c` stays private-only, with provenance/distribution review separate |
 | `h264_mf.c` | Windows Media Foundation video-decode integration |
 | `h264_null.c` | Host-neutral/null video-decoder path used by portability/test builds |
 | `osk_win.c` | Win32 on-screen keyboard integration |
