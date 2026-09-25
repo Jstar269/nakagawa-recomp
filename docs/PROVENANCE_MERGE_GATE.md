@@ -145,6 +145,19 @@ must pass the trusted scope, policy, export, CI, dependency, and security
 checks. A path that is in grandfathered debt remains frozen until its claim is
 corrected or an exact trusted record is added.
 
+A record-less executable or security-sensitive path may retain its inherited
+deterministic classification only while its claim and bytes stay frozen to the
+trusted base; a name such as `tools/test_*` never authorizes changed or new
+executable bytes. Every added or changed path under `src/` or `tools/`, with a
+`.c`, `.h`, `.cpp`, `.hpp`, `.cc`, `.cxx`, `.py`, `.ps1`, `.sh`, `.ts`, `.tsx`,
+`.mjs`, `.mts`, `.js`, or `.css` suffix, under `.github/workflows/`,
+`.github/actions/`, or `.pre-commit/`, or named `Makefile`, `CMakeLists.txt`,
+`meson.build`, `.pre-commit-config.yaml`, `.pre-commit-config.yml`, or using a
+`.cmd`, `.bat`, `.cmake`, or `.mk` suffix requires an exact trusted path record
+before refresh or attestation. Pure documentation, configuration, public factual
+metadata, and non-executable fixture data keep deterministic path-based
+handling.
+
 ### Optional strict legacy mode
 
 The former `reviewed_blobs` array is retained as optional, private audit
@@ -247,7 +260,7 @@ what authority actually says about the path, because that decides the remedy:
 | `backing` | meaning | remedy |
 | --- | --- | --- |
 | `exact` | a trusted record names the path verbatim | correct the public entry to what authority derives |
-| `deterministic` | no record needed — documentation/configuration/fixture/metadata by path rule | correct the public entry |
+| `deterministic` | no record for unchanged pure documentation/configuration/non-executable fixture/metadata; changed executable paths require an exact record | correct the public entry or obtain exact authority |
 | `blanket` | only a wildcard record covers it, and wildcards are inert | a trusted record must exist first |
 | `none` | authority says nothing about the path | a trusted record must exist first |
 
@@ -281,20 +294,24 @@ separate from the security mechanism so the trust boundary is reviewable
 without a large metadata diff on top of it. It remains useful hygiene: these
 entries otherwise carry claims that disagree with the generator's own class
 derivation and can become frozen debt when edited. The normal path-authorized
-policy does not demand a separate blob approval for every test edit.
+policy does not demand a separate blob approval for an exactly recorded test
+edit; a record-less executable test now needs exact path authority first.
 
 Each is rewritten to exactly the classification and evidence
 `provenance_ledger.py` derives for it — 101 test files to `synthetic_fixture`,
 7 configuration files, 3 documentation files, 2 title manifests. Every
 transition is a downgrade or a lateral move to the derived class; nothing is
 upgraded and nothing is invented. That leaves **203 paths in debt**, all of
-which need a trusted record before their bytes may change.
+which need a trusted record before their bytes may change; the 101 derived test
+classes are independently frozen until they gain exact records.
 
 ### Deployment consequence, measured
 
 Under the Tier B predicate a pull request that modifies a path still in debt
 fails with `CONTENT_UNATTESTED`. Measured on this branch, **204 of 658 public
-paths are frozen and 454 may change freely**:
+paths are frozen and 454 escape that historical debt rule**; executable paths
+among the latter still require exact authority under the changed-path rule
+above:
 
 | area | frozen | of total |
 | --- | --- | --- |

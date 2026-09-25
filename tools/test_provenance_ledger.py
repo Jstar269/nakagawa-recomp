@@ -627,6 +627,7 @@ class _RefreshFixture:
         self._write("docs/guide.md", "# Guide\n\nSynthetic fixture.\n")
         self._write("src/rt/existing.c", self.source)
         self._write("tools/helper.py", self.helper)
+        self._write(self.test_helper, self.test_helper_source)
         self._write(self.route, self.route_source)
         self._write("assets/release_manifest.json", '{"name": "synthetic", "components": []}\n')
         self._write_policy()
@@ -692,6 +693,12 @@ class _RefreshFixture:
         "# synthetic fixture - not a retail or private input\n"
         "def helper():\n    return 0\n"
     )
+    test_helper = "tools/test_recordless.py"
+    test_helper_source = (
+        "# SPDX-License-Identifier: GPL-3.0-or-later\n"
+        "# synthetic fixture - not a retail or private input\n"
+        "def test_helper():\n    return 0\n"
+    )
     route = "interface/src/app/api/recompiler/profiles/[id]/export/route.ts"
     route_source = (
         "// SPDX-License-Identifier: GPL-3.0-or-later\n"
@@ -719,7 +726,8 @@ class _RefreshFixture:
     def _write_policy(self) -> None:
         included = {
             "LICENSE", "NOTICE.md", "README.md", "AGENTS.md", "docs/guide.md",
-            "src/rt/existing.c", "tools/helper.py", self.route, "assets/release_manifest.json",
+            "src/rt/existing.c", "tools/helper.py", self.test_helper, self.route,
+            "assets/release_manifest.json",
             "assets/public_source_profile.json", "assets/public_provenance_ledger.json",
             "PUBLIC_EXPORT.json", self.PHANTOM_INCLUDE,
         }
@@ -741,6 +749,8 @@ class _RefreshFixture:
             return "reviewed_documentation", {"source": "synthetic publication fixture"}
         if relative.startswith("assets/") or relative == "PUBLIC_EXPORT.json":
             return "reviewed_configuration", {"source": "synthetic publication fixture"}
+        if relative == self.test_helper:
+            return "synthetic_fixture", {"source": "path-reviewed fixture/test census"}
         record_id = {
             "src/rt/existing.c": "PROV-EXISTING",
             "interface/src/app/api/recompiler/profiles/[id]/export/route.ts": "PROV-ROUTE",
@@ -1236,6 +1246,70 @@ class ProvenanceRefreshTests(unittest.TestCase):
         self.assertEqual(new_entries["docs/guide.md"]["classification"], "reviewed_documentation")
         self.assertNotEqual(old_entries["docs/guide.md"]["sha256"], new_entries["docs/guide.md"]["sha256"])
         self.assertEqual(fixture.audit("--provenance-self-consistency").returncode, 0)
+
+    def test_unchanged_recordless_test_helper_keeps_deterministic_status(self) -> None:
+        fixture = _RefreshFixture(self)
+        baseline = json.loads(fixture.trusted_ledger.read_text(encoding="utf-8"))
+        fixture.commit_change("docs/guide.md", "# Changed guide\n", "candidate documentation edit")
+
+        result = fixture.refresh(
+            "docs/guide.md", trusted_ledger=fixture.detailed_ledger(),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        baseline_entry = next(
+            entry for entry in baseline["entries"] if entry["path"] == fixture.test_helper
+        )
+        refreshed_entry = next(
+            entry for entry in json.loads(
+                (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8")
+            )["entries"] if entry["path"] == fixture.test_helper
+        )
+        self.assertEqual(refreshed_entry["classification"], "synthetic_fixture")
+        self.assertEqual(refreshed_entry["sha256"], baseline_entry["sha256"])
+
+    def test_changed_recordless_test_helper_requires_exact_record_before_outputs(self) -> None:
+        fixture = _RefreshFixture(self)
+        ledger_output = fixture.repo / "assets/public_provenance_ledger.json"
+        export_output = fixture.repo / "PUBLIC_EXPORT.json"
+        before = (ledger_output.read_bytes(), export_output.read_bytes())
+        fixture.commit_change(
+            fixture.test_helper,
+            fixture.test_helper_source.replace("return 0", "return 1"),
+            "candidate test helper edit",
+        )
+
+        rejected = fixture.refresh(
+            fixture.test_helper,
+            trusted_ledger=fixture.detailed_ledger(),
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("TRUSTED_PATH_MISSING", rejected.stderr)
+        self.assertEqual(
+            before,
+            (ledger_output.read_bytes(), export_output.read_bytes()),
+        )
+
+        accepted = fixture.refresh(
+            fixture.test_helper,
+            trusted_ledger=fixture.detailed_ledger(extra_records=[{
+                "id": "PROV-TEST-HELPER",
+                "classification": "project-authored-independent",
+                "evidence_tier": "H",
+                "paths": [fixture.test_helper],
+            }]),
+            trusted_baseline_ledger=fixture.trusted_ledger,
+        )
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        entry = next(
+            entry for entry in json.loads(ledger_output.read_text(encoding="utf-8"))["entries"]
+            if entry["path"] == fixture.test_helper
+        )
+        self.assertEqual(entry["classification"], "project_authored_attested")
+        self.assertEqual(entry["evidence"]["record_id"], "PROV-TEST-HELPER")
 
     def test_staged_generated_controls_are_replaced_not_trusted(self) -> None:
         fixture = _RefreshFixture(self)
