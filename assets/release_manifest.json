@@ -514,6 +514,57 @@
       "public_scope_included": false,
       "optional": true,
       "comment": "Font provenance and redistribution terms remain unresolved; the evidence packet is kept private with the optional binaries."
+    },
+    {
+      "id": "readme-showcase-ge-scene-v120",
+      "name": "README screenshot: GE scene demo at vblank 120",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/showcase-ge-scene-v120.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
+      },
+      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
+    },
+    {
+      "id": "readme-showcase-ge-scene-v240",
+      "name": "README screenshot: GE scene demo at vblank 240",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/showcase-ge-scene-v240.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "d258a82c18eb714c30e4cde2402cbe83d20265337231d25feed9c57cd433289b"
+      },
+      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
+    },
+    {
+      "id": "readme-showcase-breakout-v180",
+      "name": "README screenshot: breakout demo at vblank 180",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/showcase-breakout-v180.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "bda0e223bc94c7bd44d2d799953dbde8120d2b16ce9f15d281842f6a6de4874b"
+      },
+      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
     }
   ]
 }
