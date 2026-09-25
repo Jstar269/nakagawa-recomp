@@ -8125,6 +8125,11 @@ int sr_host_data_prepare(void) {
         if (!sr_wide_to_utf8_alloc(root_wide, &s_data_root_utf8)) walk_ok = 0;
         primary_count = sr_archive_vfs_entry_count(&s_archive_vfs);
         if (!data_validate_archive_index(primary_count)) walk_ok = 0;
+        if (walk_ok) {
+            walk_ok = data_loose_content_walk(root_wide, &temporary);
+            if (walk_ok && temporary.count != 0u &&
+                !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+        }
     } else if (walk_ok) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         sr_archive_vfs_init(&s_archive_vfs);
@@ -8149,6 +8154,24 @@ int sr_host_data_prepare(void) {
     }
     free(root_wide);
     if (archive_mode > 0) {
+        int loose_index_present = temporary.count != 0u;
+        if (loose_index_present &&
+            !sr_asset_index_publish(&s_data_index, &temporary)) {
+            fprintf(stderr, "host_data: failed to publish loose-content index\n");
+            sr_asset_index_destroy(&temporary);
+            sr_asset_index_destroy(&s_data_index);
+            sr_asset_index_init(&s_data_index);
+            sr_archive_vfs_destroy(&s_archive_vfs);
+            free(s_data_root_utf8);
+            s_data_root_utf8 = NULL;
+            s_data_archive_mode = 0;
+            atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
+            return SR_DATA_STATE_FAILED;
+        }
+        if (!loose_index_present) {
+            sr_asset_index_destroy(&s_data_index);
+            sr_asset_index_init(&s_data_index);
+        }
         sr_asset_index_destroy(&temporary);
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_READY, memory_order_release);
         fprintf(stderr, "host_data: mounted %zu archives with %zu members under %s\n",
@@ -8310,7 +8333,6 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
         }
         return NULL;
     }
-    if (s_data_archive_mode) return NULL;
     int wanted_variant = -2;
     char *key = data_normalize_guest_key(guest_path, &wanted_variant);
     if (!key) return NULL;
@@ -8332,11 +8354,17 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
     return chosen;
 }
 
+/* Devices whose reads the archive VFS may serve: the disc (disc0:, umd:) and the
+ * development host devices (host0: ... host9:), which the extracted-tree route also
+ * serves through host_data_lookup. Memory-stick paths (ms0:, fatms0:) are excluded, so
+ * save data never resolves to a disc archive member. */
 static int data_archive_guest_path_allowed(const char *guest_path) {
     if (!guest_path || !guest_path[0]) return 0;
     if (!strchr(guest_path, ':')) return 1;
     return _strnicmp(guest_path, "disc0:", 6) == 0 ||
-           _strnicmp(guest_path, "umd:", 4) == 0;
+           _strnicmp(guest_path, "umd:", 4) == 0 ||
+           (_strnicmp(guest_path, "host", 4) == 0 &&
+            guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
 
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
@@ -8429,19 +8457,6 @@ static uint32_t h_IoOpen(CpuState *s) {
                         free(key);
                         return (uint32_t)slot;
                     }
-                    SrArchiveFile archive_file;
-                    if (sr_archive_vfs_lookup(&s_archive_vfs, key, wanted_variant,
-                                              &archive_file)) {
-                        s_fds[slot].used = 1; s_fds[slot].host = NULL; s_fds[slot].lba = 0;
-                        s_fds[slot].size = (uint32_t)archive_file.size; s_fds[slot].off = 0;
-                        s_fds[slot].archive_vfs = &s_archive_vfs;
-                        s_fds[slot].archive_mount = archive_file.mount_index;
-                        s_fds[slot].archive_entry = archive_file.entry_index;
-                        if (getenv("SR_IOLOG")) fprintf(stderr, "Open(%s) -> XB member size=%u\n",
-                                                        path, (unsigned)archive_file.size);
-                        free(key);
-                        return (uint32_t)slot;
-                    }
                     free(key);
                 }
             }
@@ -8473,6 +8488,27 @@ static uint32_t h_IoOpen(CpuState *s) {
                         path, errno);
                 if (in_iso) goto from_iso;
                 return 0x80010002;
+            }
+            if (!writing && !creating && s_data_archive_mode &&
+                data_archive_guest_path_allowed(path)) {
+                int wanted_variant = -2;
+                char *key = data_normalize_guest_key(path, &wanted_variant);
+                if (key) {
+                    SrArchiveFile archive_file;
+                    if (sr_archive_vfs_lookup(&s_archive_vfs, key, wanted_variant,
+                                              &archive_file)) {
+                        s_fds[slot].used = 1; s_fds[slot].host = NULL; s_fds[slot].lba = 0;
+                        s_fds[slot].size = (uint32_t)archive_file.size; s_fds[slot].off = 0;
+                        s_fds[slot].archive_vfs = &s_archive_vfs;
+                        s_fds[slot].archive_mount = archive_file.mount_index;
+                        s_fds[slot].archive_entry = archive_file.entry_index;
+                        if (getenv("SR_IOLOG")) fprintf(stderr, "Open(%s) -> XB member size=%u\n",
+                                                        path, (unsigned)archive_file.size);
+                        free(key);
+                        return (uint32_t)slot;
+                    }
+                    free(key);
+                }
             }
             if (in_iso) goto from_iso;
             fprintf(stderr, "sceIoOpen: not found: %s\n", path);
@@ -9095,6 +9131,13 @@ static uint32_t h_IoDopen(CpuState *s) {
                         return 0x80010005u;
                     }
                     if (loose_found) d->list.exists = 1;
+                    if (sr_asset_index_list_dir(&s_data_index, norm_key,
+                                                wanted_variant, &d->list) < 0) {
+                        free(norm_key);
+                        sr_vfs_dirlist_destroy(&d->list);
+                        free(d->path); memset(d, 0, sizeof(*d));
+                        return 0x80010008u;
+                    }
                     if (sr_archive_vfs_list_dir(&s_archive_vfs, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
@@ -9628,12 +9671,6 @@ static uint32_t h_IoGetstat(CpuState *s) {
                     free(key);
                     return data_stat_write(st, loose_size) ? 0u : 0x80010005u;
                 }
-                SrArchiveFile archive_file;
-                if (sr_archive_vfs_lookup(&s_archive_vfs, key, wanted_variant,
-                                          &archive_file)) {
-                    free(key);
-                    return data_stat_write(st, archive_file.size) ? 0u : 0x80010005u;
-                }
                 free(key);
             }
         }
@@ -9660,6 +9697,19 @@ static uint32_t h_IoGetstat(CpuState *s) {
             MEM_W32(st + 8,  actual_size); /* size low (SceOff is 64-bit at +8) */
             MEM_W32(st + 0x40, 0);                /* st_private[0]: no LBN (host-backed) */
             return 0;
+        }
+        if (s_data_archive_mode && data_archive_guest_path_allowed(path)) {
+            int wanted_variant = -2;
+            char *key = data_normalize_guest_key(path, &wanted_variant);
+            if (key) {
+                SrArchiveFile archive_file;
+                if (sr_archive_vfs_lookup(&s_archive_vfs, key, wanted_variant,
+                                          &archive_file)) {
+                    free(key);
+                    return data_stat_write(st, archive_file.size) ? 0u : 0x80010005u;
+                }
+                free(key);
+            }
         }
         if (getenv("SR_STATLOG")) fprintf(stderr, "Getstat(%s) -> NOT FOUND\n", path);
         return 0x80010002;

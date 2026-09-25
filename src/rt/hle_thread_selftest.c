@@ -3656,6 +3656,275 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     RemoveDirectoryA(root);
 }
 
+typedef struct {
+    char root[MAX_PATH];
+    char dataroot[MAX_PATH];
+    char memstick[MAX_PATH];
+    char legacy[MAX_PATH];
+    char archive[MAX_PATH];
+    char hidden[MAX_PATH];
+} HleArchiveRouteFixture;
+
+static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
+    char cwd[MAX_PATH];
+    if (!fixture || !GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    hle_make_directory("build");
+    _snprintf(fixture->root, sizeof(fixture->root), "%s\\build\\archive_route_%lu_%llu",
+              cwd, (unsigned long)GetCurrentProcessId(),
+              (unsigned long long)GetTickCount64());
+    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\xbdata_extracted",
+             fixture->root);
+    _snprintf(fixture->memstick, sizeof(fixture->memstick), "%s\\memstick", fixture->root);
+    _snprintf(fixture->legacy, sizeof(fixture->legacy), "%s\\legacy", fixture->root);
+    _snprintf(fixture->archive, sizeof(fixture->archive), "%s\\assets.xb", fixture->dataroot);
+    _snprintf(fixture->hidden, sizeof(fixture->hidden), "%s\\assets.xb.hidden", fixture->dataroot);
+
+    static const char *const dirs[] = {
+        "", "\\USRDIR", "\\USRDIR\\xbdata_extracted",
+        "\\USRDIR\\data", "\\USRDIR\\data\\menu",
+        "\\USRDIR\\PSP", "\\USRDIR\\PSP\\SAVEDATA",
+        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
+        "\\memstick", "\\legacy"
+    };
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char path[MAX_PATH];
+        _snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
+        if (!hle_make_directory(path)) return 0;
+    }
+
+    static const uint8_t archived[] = "archive-route";
+    static const uint8_t archive_only[] = "archive-only-route";
+    const HleXbEntry entries[] = {
+        { "data/menu/archive-only.to", archive_only, sizeof(archive_only) - 1u },
+        { "data/menu/archived.to", archived, sizeof(archived) - 1u }
+    };
+    if (!hle_xb_write(fixture->archive, entries,
+                      sizeof(entries) / sizeof(entries[0]))) return 0;
+
+    static const struct {
+        const char *relative;
+        const char *body;
+    } loose_files[] = {
+        { "\\USRDIR\\data\\menu\\loose.to", "loose-route" },
+        { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" }
+    };
+    for (size_t i = 0; i < sizeof(loose_files) / sizeof(loose_files[0]); i++) {
+        char path[MAX_PATH];
+        _snprintf(path, sizeof(path), "%s%s", fixture->root, loose_files[i].relative);
+        FILE *file = fopen(path, "wb");
+        if (!file) return 0;
+        size_t size = strlen(loose_files[i].body);
+        int ok = fwrite(loose_files[i].body, 1u, size, file) == size;
+        if (fclose(file) != 0) ok = 0;
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
+static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixture) {
+    if (!fixture) return;
+    static const char *const files[] = {
+        "\\USRDIR\\xbdata_extracted\\assets.xb",
+        "\\USRDIR\\xbdata_extracted\\assets.xb.hidden",
+        "\\USRDIR\\data\\menu\\loose.to",
+        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL"
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char path[MAX_PATH];
+        _snprintf(path, sizeof(path), "%s%s", fixture->root, files[i]);
+        DeleteFileA(path);
+    }
+    static const char *const dirs[] = {
+        "\\USRDIR\\data\\menu",
+        "\\USRDIR\\data",
+        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
+        "\\USRDIR\\PSP\\SAVEDATA",
+        "\\USRDIR\\PSP",
+        "\\USRDIR\\xbdata_extracted",
+        "\\USRDIR",
+        "\\memstick",
+        "\\legacy"
+    };
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char path[MAX_PATH];
+        _snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
+        RemoveDirectoryA(path);
+    }
+    RemoveDirectoryA(fixture->root);
+}
+
+static char *hle_archive_route_env_copy(const char *value) {
+    if (!value) return NULL;
+    size_t size = strlen(value) + 1u;
+    char *copy = (char *)malloc(size);
+    if (copy) memcpy(copy, value, size);
+    return copy;
+}
+
+static void hle_archive_route_set_env(const char *name, const char *value) {
+    SetEnvironmentVariableA(name, value);
+    _putenv_s(name, value ? value : "");
+}
+
+static uint32_t hle_archive_route_open_result(const char *path) {
+    CpuState cpu;
+    uint32_t fd = disc_route_open(&cpu, path);
+    if (fd < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        sr_hle_test_io_close(&cpu);
+        return 0u;
+    }
+    return fd;
+}
+
+static uint32_t hle_archive_route_stat_result(const char *path, uint32_t *size_out) {
+    CpuState cpu;
+    static const uint32_t path_addr = 0x09109000u;
+    static const uint32_t stat_addr = 0x0910a000u;
+    hle_archive_set_path(&cpu, path_addr, path);
+    cpu.r[5] = stat_addr;
+    uint32_t result = sr_hle_test_io_getstat(&cpu);
+    if (size_out) *size_out = result == 0u ? MEM_R32(stat_addr + 8u) : 0u;
+    return result;
+}
+
+static uint32_t hle_archive_route_dopen_result(const char *path) {
+    CpuState cpu;
+    hle_archive_set_path(&cpu, 0x0910b000u, path);
+    uint32_t fd = sr_hle_test_io_dopen(&cpu);
+    if (fd >= 0x100u && fd < 0x120u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        sr_hle_test_io_dclose(&cpu);
+        return 0u;
+    }
+    return fd;
+}
+
+static void test_archive_mode_preserves_loose_routes(void) {
+    static const char *const paths[] = {
+        "ms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
+        "fatms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
+        "disc0:/PSP_GAME/USRDIR/data/menu/loose.to",
+        "disc0:/PSP_GAME/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL"
+    };
+    const size_t path_count = sizeof(paths) / sizeof(paths[0]);
+    const char *old_data_value = getenv("SR_DATAROOT");
+    const char *old_memstick_value = getenv("SR_MEMSTICK");
+    const char *old_fs_value = getenv("SR_FSDIR");
+    char *old_data = hle_archive_route_env_copy(old_data_value);
+    char *old_memstick = hle_archive_route_env_copy(old_memstick_value);
+    char *old_fs = hle_archive_route_env_copy(old_fs_value);
+    HleArchiveRouteFixture fixture;
+    uint32_t loose_results[sizeof(paths) / sizeof(paths[0])];
+    uint32_t archive_results[sizeof(paths) / sizeof(paths[0])];
+    for (size_t i = 0; i < path_count; i++) {
+        loose_results[i] = UINT32_MAX;
+        archive_results[i] = UINT32_MAX;
+    }
+
+    reset_fixture();
+    sr_hle_init();
+    memset(&fixture, 0, sizeof(fixture));
+    expect(hle_archive_route_fixture_make(&fixture),
+           "the archive/loose route fixture was created");
+    if (fixture.root[0] == '\0') {
+        free(old_data);
+        free(old_memstick);
+        free(old_fs);
+        return;
+    }
+    hle_archive_route_set_env("SR_DATAROOT", fixture.dataroot);
+    hle_archive_route_set_env("SR_MEMSTICK", fixture.memstick);
+    hle_archive_route_set_env("SR_FSDIR", fixture.legacy);
+
+    int loose_ready = 0;
+    int archive_ready = 0;
+    uint32_t loose_stat = UINT32_MAX;
+    uint32_t archive_stat = UINT32_MAX;
+    uint32_t loose_size = 0;
+    uint32_t archive_size = 0;
+    uint32_t loose_dopen = UINT32_MAX;
+    uint32_t archive_dopen = UINT32_MAX;
+    int moved = MoveFileA(fixture.archive, fixture.hidden);
+    expect(moved != 0, "the archive is hidden for the loose-mode comparison");
+    if (moved) {
+        sr_hle_test_data_reset(0);
+        int state = sr_host_data_prepare();
+        expect(state == SR_DATA_TEST_STATE_READY,
+               "the same fixture reaches READY in loose mode");
+        if (state == SR_DATA_TEST_STATE_READY) {
+            loose_ready = 1;
+            for (size_t i = 0; i < path_count; i++)
+                loose_results[i] = hle_archive_route_open_result(paths[i]);
+            loose_stat = hle_archive_route_stat_result(paths[0], &loose_size);
+            loose_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
+        }
+    }
+
+    int restored = MoveFileA(fixture.hidden, fixture.archive);
+    expect(restored != 0, "the archive is restored for archive-mode comparison");
+    if (restored) {
+        sr_hle_test_data_reset(0);
+        int state = sr_host_data_prepare();
+        expect(state == SR_DATA_TEST_STATE_READY,
+               "the same fixture reaches READY in archive mode");
+        if (state == SR_DATA_TEST_STATE_READY) {
+            archive_ready = 1;
+            for (size_t i = 0; i < path_count; i++)
+                archive_results[i] = hle_archive_route_open_result(paths[i]);
+            archive_stat = hle_archive_route_stat_result(paths[0], &archive_size);
+            archive_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
+        }
+    }
+
+    expect(loose_ready && archive_ready,
+           "both modes prepare the same synthetic route tree");
+    if (loose_ready && archive_ready) {
+        uint32_t loose_mask = 0;
+        uint32_t archive_mask = 0;
+        uint32_t expected_mask = 0;
+        for (size_t i = 0; i < path_count; i++) {
+            if (loose_results[i] == 0u) loose_mask |= 1u << i;
+            if (archive_results[i] == 0u) archive_mask |= 1u << i;
+            expected_mask |= 1u << i;
+            expect(loose_results[i] == archive_results[i],
+                   "loose and archive modes return the same guest result code");
+        }
+        expect(loose_mask == archive_mask,
+               "archive mode loses no path resolvable by loose mode");
+        expect(loose_mask == expected_mask && archive_mask == expected_mask,
+               "the shared synthetic route set is resolvable in both modes");
+
+        expect(loose_stat == archive_stat && loose_stat == 0u,
+               "the save-data path has the same stat result in both modes");
+        expect(loose_size == archive_size && loose_size == strlen("savedata-route"),
+               "the save-data path reports the same synthetic size in both modes");
+        expect(loose_dopen == archive_dopen && loose_dopen == 0u,
+               "the save-data directory has the same result in both modes");
+        expect(hle_archive_route_open_result("ms0:/data/menu/archive-only.to") ==
+                   0x80010002u,
+               "archive members still do not shadow the Memory Stick namespace");
+        expect(hle_archive_route_open_result(
+                   "disc0:/PSP_GAME/USRDIR/data/menu/archive-only.to") == 0u,
+               "archive mode still serves an archive-only member");
+        /* The extracted-tree route serves host-device reads through
+         * host_data_lookup; archive mode must serve the same members to them. */
+        expect(hle_archive_route_open_result("host0:data/menu/archive-only.to") == 0u,
+               "archive mode serves an archive-only member to a host0: read");
+    }
+
+    sr_hle_test_data_reset(0);
+    hle_archive_route_set_env("SR_DATAROOT", old_data);
+    hle_archive_route_set_env("SR_MEMSTICK", old_memstick);
+    hle_archive_route_set_env("SR_FSDIR", old_fs);
+    hle_archive_route_fixture_remove(&fixture);
+    free(old_data);
+    free(old_memstick);
+    free(old_fs);
+}
+
 static int prewarm_make_fixture(int with_asset) {
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
@@ -14879,6 +15148,7 @@ int main(int argc, char **argv) {
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
     test_direct_xb_many_members_skip_loose_walk();
+    test_archive_mode_preserves_loose_routes();
     test_unprepared_route_lookup_fails_closed_without_building();
     test_slow_enumeration_completes_before_guest_start();
     test_unapplicable_route_disables_without_scanning();
