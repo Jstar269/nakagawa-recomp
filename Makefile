@@ -629,6 +629,8 @@ PUBLIC_TARGETS := \
 	production-smoke-clean \
 	production-smoke-gap \
 	perf-benchmark \
+	showcase \
+	showcase-smoke \
 	display-smoke \
 	display-smoke-run \
 	display-smoke-gui \
@@ -727,6 +729,8 @@ HELP_DESCRIPTION_production-smoke := run the public production-composition smoke
 HELP_DESCRIPTION_production-smoke-clean := remove production smoke artifacts
 HELP_DESCRIPTION_production-smoke-gap := run the public AOT-gap dispatch smoke test
 HELP_DESCRIPTION_perf-benchmark := run the public source-owned SR_PERF benchmark matrix and overhead check
+HELP_DESCRIPTION_showcase := build packaged source-owned PSP showcase demos (requires PSPDEV)
+HELP_DESCRIPTION_showcase-smoke := run bundled demos headlessly with telemetry checks
 HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run the display smoke fixture
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
@@ -947,6 +951,12 @@ production-smoke:
 
 production-smoke-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_DIR) clean
+
+showcase:
+	$(PYTHON) fixtures/showcase/showcase.py build
+
+showcase-smoke: showcase
+	$(PYTHON) fixtures/showcase/showcase.py smoke
 
 # display-smoke builds the guest and asserts the presented framebuffer word
 # headlessly. display-smoke-gui is the same image in the SDL3/Vulkan window and
