@@ -99,6 +99,16 @@ void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+/* Display-source service-cadence attribution (perf.c owns the real counters). */
+void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_phase_report(int force) { (void)force; }
+int sr_rt_phase;
+uint32_t sr_rt_nid;
+uint32_t (*sr_rt_pc_fn)(void);
+uint32_t (*sr_rt_uid_fn)(void);
+const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
+    "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
+};
 void sr_perf_sched_state(SrPerfSchedState state, uint32_t uid) { (void)state; (void)uid; }
 void sr_perf_sched_switch(uint32_t from_uid, uint32_t to_uid) { (void)from_uid; (void)to_uid; }
 
@@ -1831,9 +1841,13 @@ static void test_paced_vblank_has_one_authority(void) {
     expect(s_vbl_count - vbl0 == 12u,
            "200 ms of host time delivers exactly 12 paced VBLANKs (origin + 11)");
 
-    /* Coalescing is intentional and survives: a host jump across many periods
-     * advances the source timeline past all of them but delivers ONE event -- the
-     * pending set is a bit, not a queue. */
+    /* A host jump across many periods delivers ONE EPISODE PER PERIOD, not one
+     * episode for the whole burst.  The PSP's IF/IE pair is a level that is
+     * re-asserted for every edge that arrives while the CPU is still inside the
+     * previous handler, so a guest that spends N periods without a service point
+     * is owed N handler calls; the source timeline still advances past all of
+     * them.  Coalescing to one was the delivered-rate defect (55.0 Hz against a
+     * 59.94 Hz source on a vblank-paced title). */
     reset_sched();
     begin_clock_fixture(1, 0u);
     vbl0 = s_vbl_count;
@@ -1844,10 +1858,62 @@ static void test_paced_vblank_has_one_authority(void) {
     set_host_us(1000000u);                  /* one host second later, no service between */
     s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
     sr_yield(&g_cpu_store);
-    expect(s_vbl_count - vbl0 == 2u,
-           "a multi-period host jump coalesces into one delivered VBLANK");
+    expect(s_vbl_count - vbl0 == rational_vblanks_through(1000000u),
+           "a multi-period host jump delivers one episode per elapsed period");
     expect(s_vbl_next_us > 1000000u && s_vbl_next_us <= 1016683u,
-           "coalescing still advances the source timeline past every missed period");
+           "the source timeline still advances past every period the jump covered");
+    s_host_ns_fn = NULL;
+}
+
+/* A busy guest must observe EVERY display period, at the full 60000/1001 rate,
+ * however long it holds the CPU between service points.
+ *
+ * This is the public failing-before regression for the delivered-rate defect: a
+ * title whose frame work ran longer than one display period was served one
+ * VBLANK episode for the whole burst (measured 55.0 Hz against a 59.94 Hz
+ * source, with guest VCOUNT exactly right throughout, so nothing else showed
+ * it).  A hardware interrupt is recognized for every edge that arrives while the
+ * CPU is still busy with the previous one, so the owed episode count grows with
+ * the elapsed periods and every one of them is delivered.
+ *
+ * Driven with the controlled host clock the selftest already owns, so the
+ * expectation is an exact period count over a fixed host-time window rather
+ * than a wall-clock rate.  The guest is a RUNNING thread that yields only once
+ * per step and is stepped far more coarsely than a display period (37 ms = 2.2
+ * periods), which is the shape of the defect: the service-point spacing, not the
+ * guest's intent, decided how many periods the guest heard about. */
+static void test_busy_guest_observes_every_display_period(void) {
+    enum { WINDOW_US = 2000000, STEP_US = 37000 };
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    g_test_vblank_delivered = 0;
+    const uint64_t vbl0 = s_vbl_count;
+    int spinner = mk(0x30au, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    int sequence_ok = 1;
+    int first_bad = 0;
+    for (uint64_t t_us = STEP_US; t_us <= (uint64_t)WINDOW_US; t_us += STEP_US) {
+        set_host_us(t_us);
+        s_tcb[spinner].state = TH_RUNNING;
+        s_cur = spinner;
+        sr_yield(&g_cpu_store);            /* the guest's only service point in this step */
+        if (s_vbl_count - vbl0 != rational_vblanks_through(t_us)) {
+            sequence_ok = 0;
+            if (!first_bad) first_bad = (int)(t_us / 1000u);
+        }
+    }
+    expect(sequence_ok,
+           "a busy guest is served every display period it spent CPU without a service point");
+    if (!sequence_ok)
+        fprintf(stderr, "  first divergence at %d ms\n", first_bad);
+    expect(g_test_vblank_delivered == s_vbl_count - vbl0,
+           "the guest handler ran once per delivered period");
+    /* 2 s at 60000/1001 Hz is 119.88 edges, so 120 including the origin.  A
+     * coalescing delivery loses at least one per step and lands far below it. */
+    expect(s_vbl_count - vbl0 == 120u,
+           "the delivered count is 120 periods in 2 s (the 60000/1001 schedule), not fewer");
     s_host_ns_fn = NULL;
 }
 
@@ -2699,6 +2765,7 @@ int main(void) {
     test_interrupt_frame_is_restored();
     test_paced_vtime_is_host_anchored();
     test_paced_vblank_has_one_authority();
+    test_busy_guest_observes_every_display_period();
     test_expired_timed_wait_enters_strict_priority();
     test_liveness_semaphore_handoff();
     test_liveness_event_flag_handoff();
