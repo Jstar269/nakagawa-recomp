@@ -318,7 +318,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4bcdd8080ef3e9704924c64ed4b7be28698c6f36e13584158522cf6a2a80e18c"
+      "sha256": "82a168d31eb4741167b601019dccd2117b3e8c7c117ee8ce7220c8e9d9bc7136"
     },
     {
       "path": "REVIEW.md",
@@ -470,7 +470,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "93cfd91b1d1f3c7f09138bb6babb877bebe2f4ba5c73ec4bea51548d9cfef04a"
+      "sha256": "c7a1f9a6bfcfa095f04afb25b927bf490e017a0ac04b27ed75135da593af183e"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -1314,6 +1314,33 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "8e1d6cb4f6573eccd1903cbdfdaf638dcda1ebc52ff15ccf21c62b09a7fd6ccd"
+    },
+    {
+      "path": "docs/images/showcase-breakout-v180.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "bda0e223bc94c7bd44d2d799953dbde8120d2b16ce9f15d281842f6a6de4874b"
+    },
+    {
+      "path": "docs/images/showcase-ge-scene-v120.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
+    },
+    {
+      "path": "docs/images/showcase-ge-scene-v240.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "d258a82c18eb714c30e4cde2402cbe83d20265337231d25feed9c57cd433289b"
     },
     {
       "path": "docs/provenance/FONT_ORIGINS.md",
@@ -8310,10 +8337,13 @@
     },
     {
       "path": "tools/test_build_truth.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-truth-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d8aac35a9d4b5244403ef577942e6032ee7447f11952caf7f86eeab854789f1b"
     },
@@ -9468,6 +9498,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "93d98b394f738ab9c4129d5d1a0308c607e64882e26f11d8218a43fd712caf59"
+    },
+    {
+      "path": "tools/test_readme_images.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "readme-image-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "4169bb28c9ebe3a8b657faf72b8e35f339125aea2ead56ed92663897fa23aa64"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
