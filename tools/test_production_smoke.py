@@ -373,7 +373,7 @@ class TestProductionSmoke(unittest.TestCase):
             "ge.o", "flight_recorder.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
             "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
-            "iso_public.o", "pgd_unavailable.o", "mpeg.o", "pgf_unavailable.o",
+            "iso_public.o", "pgd_unavailable.o", "mpeg.o", "pgf_public.o",
             "gui.o", "audio_unavailable.o", "h264_mf.o", "h264_null.o", "savedata.o",
             "osk_win.o", "driver.o", "sdl3vk.o", "ge_gpu.o",
             "atrac3p_atrac3p_api.o",
@@ -917,12 +917,14 @@ class TestProductionSmokePackage(unittest.TestCase):
         cached_elf = user_root / "cache" / "packages" / "ULUS99998" / "selected.elf"
         self.assertEqual(cached_elf.read_bytes(), executable_bytes)
         package_dir = user_root / "packages" / "ULUS99998"
-        if completed.returncode == 0:
-            self.assertTrue((package_dir / "package.json").is_file())
-            return
-        self.assertIn("production PGF/PGD runtime backends", completed.stderr)
-        self.assertIn("in the works (#297)", completed.stderr)
-        self.assertFalse((package_dir / "package.json").exists())
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertNotIn("production PGF/PGD runtime backends", completed.stderr)
+        self.assertTrue((package_dir / "package.json").is_file())
+        self.assertTrue((package_dir / "build-report.json").is_file())
+        report = json.loads((package_dir / "build-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report.get("backends"), "public")
+        self.assertIn("fonts: import your own PSP fonts; public font reader in the works (#349)", report.get("limits", []))
+        self.assertIn("PGD-protected data: unavailable (#295)", report.get("limits", []))
 
     def test_bad_executable_is_rejected_with_a_named_reason(self):
         bad_elf = self.root / "bad.elf"
@@ -1129,6 +1131,23 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn("in the works (", summary)
         self.assertIn("#285", summary)
         self.assertIn("#308", summary)
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_after_self_unload_names_module_lifecycle_boundary(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x8F2DF740}],
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
+        self.assertIn(280, report["issue_numbers"])
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn(308, report["issue_numbers"])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("unloaded itself before PSP display framebuffer setup", summary)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#280", summary)
         nk_cli.validate_bringup_report(report)
 
     def test_zero_exit_with_lost_framebuffer_evidence_is_display_unverified(self):
