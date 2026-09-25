@@ -75,7 +75,10 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         game_name=_manifest_game_name(manifest),
         executable_base=manifest["executable"]["base"],
         executable_entry=manifest["executable"]["entry"],
-        fallback_entry=f"0x{manifest['executable']['entry']:08x}",
+        # Where a run starts: a declared runtime_bindings.fallback_entry, else the
+        # executable entry -- the rule title_codegen_plan._resolve_run_entry and the
+        # native catalog's run_entry follow, so every launcher starts the same place.
+        fallback_entry=f"0x{(manifest.get('runtime_bindings') or {}).get('fallback_entry', manifest['executable']['entry']):08x}",
         required_modules=required_modules,
         archive_format=archive_format,
         archive_relpath=data_root,

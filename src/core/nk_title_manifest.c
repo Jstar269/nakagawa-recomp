@@ -72,6 +72,7 @@ typedef struct {
     const char *compat_id_ptrs[MAX_COMPAT_DISC_IDS + 1];
     uint32_t executable_base;
     uint32_t executable_entry;
+    uint32_t run_entry;
     char bss_metadata_source[16];
     char data_root[257];
     char memory_stick_root[129];
@@ -933,6 +934,7 @@ bool nk_title_manifest_parse_buffer(
 
     /* 15. runtime_bindings (optional) */
     uint32_t expected_file_count = 0;
+    uint32_t fallback_entry = 0;
     JsonNode *rb_node = obj_get(root, "runtime_bindings");
     if (rb_node) {
         if (rb_node->type != JSON_OBJECT) {
@@ -978,6 +980,7 @@ bool nk_title_manifest_parse_buffer(
                     json_free(root);
                     return false;
                 }
+                if (strcmp(scalar_binding_fields[s], "fallback_entry") == 0) fallback_entry = bind_addr;
             }
         }
 
@@ -1134,6 +1137,8 @@ bool nk_title_manifest_parse_buffer(
 
     temp.executable_base = exe_base;
     temp.executable_entry = exe_entry; /* Canonical projection: represents executable.entry */
+    /* Where a run starts: a declared fallback entry wins, as in the Python planner. */
+    temp.run_entry = fallback_entry ? fallback_entry : exe_entry;
     snprintf(temp.bss_metadata_source, sizeof(temp.bss_metadata_source), "%s", bss_src);
     snprintf(temp.data_root, sizeof(temp.data_root), "%s", dr_node->u.str_val);
     snprintf(temp.memory_stick_root, sizeof(temp.memory_stick_root), "%s", ms_node->u.str_val);
@@ -1172,6 +1177,7 @@ bool nk_title_manifest_parse_buffer(
     temp.entry.compatible_disc_ids = temp.compat_id_ptrs[0] ? temp.compat_id_ptrs : NULL;
     temp.entry.executable_base = temp.executable_base;
     temp.entry.executable_entry = temp.executable_entry;
+    temp.entry.run_entry = temp.run_entry;
     temp.entry.bss_metadata_source = temp.bss_metadata_source;
     temp.entry.data_root = temp.data_root;
     temp.entry.memory_stick_root = temp.memory_stick_root;
@@ -1344,6 +1350,7 @@ bool nk_title_manifest_parse_buffer(
     dest->entry.compatible_disc_ids = dest->compat_id_ptrs[0] ? dest->compat_id_ptrs : NULL;
     dest->entry.executable_base = dest->executable_base;
     dest->entry.executable_entry = dest->executable_entry;
+    dest->entry.run_entry = dest->run_entry;
     dest->entry.bss_metadata_source = dest->bss_metadata_source;
     dest->entry.data_root = dest->data_root;
     dest->entry.memory_stick_root = dest->memory_stick_root;
@@ -1443,6 +1450,81 @@ bool nk_title_manifest_load_overlay_ext(
         }
     }
     return ok;
+}
+
+typedef struct {
+    char names[NK_MANIFEST_MAX_OVERLAYS * 4][256];
+    int count;
+    bool truncated;
+} OverlayDirListing;
+
+static bool overlay_dir_collect(const char *name, void *ctx) {
+    OverlayDirListing *listing = (OverlayDirListing *)ctx;
+    size_t len = strlen(name);
+    if (len < 6 || len >= sizeof(listing->names[0])) return true;
+    const char *ext = name + len - 5;
+    if (!(tolower((unsigned char)ext[0]) == '.' && tolower((unsigned char)ext[1]) == 'j' &&
+          tolower((unsigned char)ext[2]) == 's' && tolower((unsigned char)ext[3]) == 'o' &&
+          tolower((unsigned char)ext[4]) == 'n')) return true;
+    if (listing->count >= (int)(sizeof(listing->names) / sizeof(listing->names[0]))) {
+        listing->truncated = true;
+        return false;
+    }
+    memcpy(listing->names[listing->count++], name, len + 1);
+    return true;
+}
+
+static int overlay_name_compare(const void *a, const void *b) {
+    return strcmp((const char *)a, (const char *)b);
+}
+
+static void overlay_report_line(char *report, size_t report_len, const char *line) {
+    if (!report || report_len == 0) return;
+    size_t used = strlen(report);
+    if (used + 1 >= report_len) return;
+    snprintf(report + used, report_len - used, "%s\n", line);
+}
+
+int nk_title_manifest_load_overlay_dir(const char *dir, char *report, size_t report_len) {
+    if (report && report_len) report[0] = '\0';
+    if (!dir || !*dir || !nk_platform_dir_exists(dir)) return 0;
+    OverlayDirListing *listing = (OverlayDirListing *)calloc(1, sizeof(*listing));
+    if (!listing) {
+        overlay_report_line(report, report_len, "manifests: out of memory listing the folder");
+        return 0;
+    }
+    if (!nk_platform_list_files(dir, overlay_dir_collect, listing)) {
+        overlay_report_line(report, report_len, "manifests: the folder could not be read");
+        free(listing);
+        return 0;
+    }
+    qsort(listing->names, (size_t)listing->count, sizeof(listing->names[0]), overlay_name_compare);
+    int loaded = 0;
+    char line[1024];
+    for (int i = 0; i < listing->count; i++) {
+        if (loaded >= NK_MANIFEST_MAX_OVERLAYS) {
+            snprintf(line, sizeof(line), "%s: skipped, at most %d title manifests are loaded",
+                     listing->names[i], NK_MANIFEST_MAX_OVERLAYS);
+            overlay_report_line(report, report_len, line);
+            continue;
+        }
+        char path[4096];
+        int written = snprintf(path, sizeof(path), "%s%c%s", dir, nk_platform_path_separator(),
+                               listing->names[i]);
+        if (written < 0 || (size_t)written >= sizeof(path)) continue;
+        char error[512];
+        if (nk_title_manifest_load_overlay(path, error, sizeof(error))) {
+            loaded++;
+        } else {
+            snprintf(line, sizeof(line), "%s: %s", listing->names[i], error);
+            overlay_report_line(report, report_len, line);
+        }
+    }
+    if (listing->truncated) {
+        overlay_report_line(report, report_len, "manifests: too many files; the rest were not read");
+    }
+    free(listing);
+    return loaded;
 }
 
 bool nk_title_manifest_load_overlay(
