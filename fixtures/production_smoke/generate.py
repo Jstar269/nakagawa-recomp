@@ -738,7 +738,7 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         "iso_public.o",
         "pgd_unavailable.o",
         "mpeg.o",
-        "pgf_unavailable.o",
+        "pgf_public.o",
         "gui.o",
         "audio_unavailable.o",
         "h264_mf.o",
