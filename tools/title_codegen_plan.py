@@ -1311,7 +1311,7 @@ def build_package(
         backends_mode = "public" if public_safe else "private"
         backend_limits = (
             [
-                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
                 "PGD-protected data: unavailable (#295)",
             ]
             if public_safe
