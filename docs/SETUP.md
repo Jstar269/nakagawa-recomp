@@ -65,6 +65,22 @@ This installs the declared tooling dependencies, including `compiledb`.
 
 `glslc` from the Vulkan SDK is only needed when regenerating the checked-in shader headers. LLD, Clang, CMake, Ninja, and Node.js are not required for the Windows core build (a staged CMake target for portability work is tracked separately in [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)).
 
+### Deliberate path conventions
+
+Absolute paths in first-party tooling are limited to platform defaults, never a
+developer's machine layout. The conventions in force are:
+
+- `C:\msys64\ucrt64\bin` — the MSYS2 UCRT64 install root used above. Tools accept
+  an explicit location first (`-MsysPath`, `MSYS_PATH`, or a `gcc` already on
+  `PATH`) and otherwise assume this default install.
+- `C:\VulkanSDK` — the default Vulkan SDK root, after `-VulkanSdk` and `VULKAN_SDK`.
+- `C:\Windows` — the Windows system directory, used only when `WINDIR` is unset
+  (system font discovery).
+
+Any other absolute path must come from the repository root, an environment
+variable, or an explicit flag. `tools/test_workspace_paths.py` fails the tracked
+tree when a user-profile path or a workspace root appears in a first-party file.
+
 ### Runtime DLLs (SDL3.dll & vulkan-1.dll)
 
 Since `hst.exe` is a native 64-bit Windows application, it relies on two dynamic libraries at runtime: `SDL3.dll` and `vulkan-1.dll`. Because binary DLLs are ignored by this repository's `.gitignore` to keep the Git history clean, you must locate or acquire them manually.
