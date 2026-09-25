@@ -1417,7 +1417,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a46b8cce332eb5b0dbae00259a3c9bfcd414cb673ad51b44fd0a16b39b9120ba"
+      "sha256": "12f12eb5b9cf05068e7d35d6672fea38ea6e421361efdf428e1a98fca5349137"
     },
     {
       "path": "fixtures/nakagawa_minimal/Makefile",
@@ -1492,7 +1492,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "38a7661a2e4ef343744d6672a4318cdaf7b648c20a59c933b90dfe19573bccda"
+      "sha256": "8bbb0002e294a905de65e3204247843e37ccb4def87a734497a67f0c66019494"
     },
     {
       "path": "fixtures/production_smoke/README.md",
