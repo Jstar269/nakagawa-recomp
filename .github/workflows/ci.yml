@@ -590,6 +590,7 @@ jobs:
           set -euo pipefail
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-tests
 
       # Run the same smoke with the executable staged outside its build tree
       # (#294): a launcher/staging path bug must fail in CI, not only in the
