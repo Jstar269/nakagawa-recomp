@@ -26,23 +26,9 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   links `src/rt/audio_unavailable.c` instead.
 - **Vulkan** — Apache-2.0 loader/header ecosystem; this repository does not
   redistribute a Vulkan SDK or loader binary.
-- **shadcn/ui** — MIT notice for the dashboard primitives is preserved in
-  `THIRD_PARTY_LICENSES/SHADCN_UI.txt`.
 - **VFPU tables** — PPSSPP-origin lookup data with the exact source and checksums
   recorded in `assets/vfpu/PROVENANCE.json`; inclusion is a provenance decision,
   not a claim about PSP firmware ownership.
-
-### Dashboard dependency boundary
-
-The public preview carries the dashboard's source, `interface/package.json`, and
-the checked-in `interface/package-lock.json`; it does not carry `node_modules`,
-an npm package cache, or a standalone Next.js runtime. The lockfile is the exact
-inventory for the dashboard dependency graph: it records resolved versions,
-integrity values, and license metadata for all 708 locked package entries.
-The copied shadcn/ui primitives have the separate MIT text in
-`THIRD_PARTY_LICENSES/SHADCN_UI.txt`. A future package that bundles fetched npm
-code must ship the corresponding package notices rather than treating this
-source-only boundary as bundled-dependency attribution.
 
 ## Generated third-party notices
 
@@ -51,28 +37,24 @@ of truth, `assets/third_party_components.json` (schema:
 `assets/third_party_components.schema.json`), records every component that can
 enter a release artifact: its SPDX identifier, its disposition, the packaging
 route that copies it, and the license texts copied verbatim into
-`third_party/licenses/`. The native package, the dashboard standalone output,
-the SBOM, and the release gate all read that one file.
+`third_party/licenses/`. The native package, the SBOM, and the release gate all
+read that one file.
 
 - The native package route (`tools/package_notices.py`, invoked by the package
   build and by `copy_build_assets.ps1`) emits `THIRD_PARTY_NOTICES.txt`,
-  `THIRD_PARTY_NOTICES/index.json`, and `RELINK.md` beside the package, and
-  fails closed when a bundled binary has no license record or no license text.
-- The dashboard standalone route (`tools/dashboard_notices.py`, invoked by
-  `interface/scripts/prepare-standalone.mjs`) emits the same bundle for the
-  traced npm packages, and fails closed on a package with no license expression
-  or a license expression with no recorded obligation.
+  `THIRD_PARTY_NOTICES/index.json`, `SOURCE.txt`, and `RELINK.md` beside the
+  package, and fails closed when a bundled binary has no license record or no
+  license text.
 - `tools/generate_sbom.py` lists the shipped DLLs and the recorded Python tool
   licenses from the same file, so the SBOM cannot drift from the notices.
 - `tools/test_third_party_notices.py` is the gate: it fails when a DLL a
   packaging route can copy, or any component in the source of truth, lacks a
   license record or a license text.
 
-Two classes of obligation are recorded as unresolved and are not decided here:
-the LGPL relink mechanism for the FFmpeg ATRAC3+ subset and for libvips in the
-dashboard's traced sharp packages, and the EPL-2.0 Secondary License and CC-BY
-attribution wording. See the `license_obligations` section of
-`assets/third_party_components.json` and issue #421.
+The FFmpeg ATRAC3+ subset (LGPL-2.1-or-later) is statically linked. The whole
+program is distributed under GPL-3.0-or-later with its complete corresponding
+source, and `SOURCE.txt` names the exact repository commit or tag of each
+package, which is what lets a user modify and relink it (issue #421).
 
 ## Public-safe exclusions
 

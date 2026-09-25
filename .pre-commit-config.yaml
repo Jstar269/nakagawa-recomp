@@ -14,8 +14,6 @@ exclude: |
       fs/|
       memstick/|
       logs/|
-      interface/node_modules/|
-      interface/\.next/
   )
 
 repos:

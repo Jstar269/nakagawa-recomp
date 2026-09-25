@@ -1293,14 +1293,14 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "Executable decryption is in the works (#295). Runtime package is missing (#296/#297).");
+                     "Executable decryption is in the works (#295). Build the runtime package from the library (#296/#297).");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "%s selected. Runtime package is missing (#296/#297).",
+                     "%s selected. Build the runtime package from the library (#296/#297).",
                      game->selected_executable);
         } else {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "No analyzable executable selected. Runtime package is missing (#296/#297).");
+                     "No analyzable executable selected. Build the runtime package from the library (#296/#297).");
         }
         unsigned int issues[5] = { 285, 308, 296, 297, 0 };
         size_t issue_count = 4;
@@ -2887,8 +2887,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • Lawfully obtained PSP game ISO\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "This build does not decrypt encrypted executables (#295) or create runtime packages "
-                              "(#296/#297). Verify also lists font (#300) and audio (#301) status.",
+                              "This build does not decrypt encrypted executables (#295). It builds runtime "
+                              "packages from the library (#296/#297). Verify also lists font (#300) and audio "
+                              "(#301) status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 
             bool get_started_foc = (app->focus_index == focus++);

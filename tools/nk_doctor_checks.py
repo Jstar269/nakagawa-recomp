@@ -1792,7 +1792,6 @@ def check_repository_contract(report: Report) -> None:
         report.fail("LICENSE_ROOT", "Root LICENSE does not appear to contain the canonical GPLv3 text", path=license_path)
 
     metadata_paths = {
-        "interface/package.json": ("license", "GPL-3.0-or-later"),
         "assets/release_manifest.json": ("license", "GPL-3.0-or-later"),
     }
     for rel, (field_name, expected) in metadata_paths.items():
