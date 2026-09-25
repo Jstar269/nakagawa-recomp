@@ -6081,14 +6081,13 @@ uint32_t sr_hle_test_atrac_release_count(void) { return s_atrac_release_count; }
 void sr_hle_test_atrac_release_reset(void) { s_atrac_release_count = 0u; }
 #endif
 
-/* sceUtility dialogs (savedata/msg/osk). Faithful to PPSSPP's PSPDialog status machine
- * (Core/Dialog/PSPDialog.cpp): status enum NONE=0, INITIALIZE=1, RUNNING=2, FINISHED=3,
- * SHUTDOWN=4. InitStart -> INITIALIZE; GetStatus returns the current status and then auto-advances
- * INITIALIZE->RUNNING and SHUTDOWN->NONE; the (real-hardware) utility thread completes the
- * autoload, modelled here by RUNNING->FINISHED after a few polls; ShutdownStart -> SHUTDOWN. The
- * earlier guess jumped straight to RUNNING and to NONE, skipping INITIALIZE(1) and SHUTDOWN(4),
- * which a game that waits to observe those states would hang on. result is the common-header
- * field at param+0x1c. */
+/* sceUtility dialogs (savedata/msg). The public contract is a poll-driven status machine:
+ * InitStart arms it, Update refreshes it, GetStatus reports where it is and ShutdownStart
+ * removes it, and result is the common-header field at param+0x1c. A game that polls is
+ * entitled to see every step on the way, so the status only ever advances one step per
+ * GetStatus call: an earlier guess jumped straight to RUNNING and to NONE, skipping steps a
+ * game that waits to observe them would hang on. The OSK is a separate utility with its own
+ * state enum and is handled with the rest of it below. */
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* sceUtilitySavedata: real persistence on a virtual memory stick (src/rt/savedata.c). */
@@ -6282,20 +6281,120 @@ UTILITY_DIALOG_HANDLERS(h_NetDialog, s_net_dialog)
 UTILITY_DIALOG_HANDLERS(h_GamedataDialog, s_gamedata_dialog)
 UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
 
-/* ---- sceUtilityOsk: the on-screen keyboard, backed by a native input box (osk_win.c).
- * Same PSPDialog status machine as the other utilities. When the dialog reaches RUNNING the
- * native modal input box collects the text (the game is parked polling OskGetStatus, exactly
- * as it would be while the real OSK overlay is up), then the result is written back into each
- * SceUtilityOskData field as UTF-16 and the status advances to FINISHED. */
+/* ---- sceUtilityOsk: the on-screen keyboard, answered by a person through a native input
+ * box (osk_win.c) or, for automation, from a scripted answer.
+ *
+ * The public contract (PSPSDK psputility_osk.h) owns the flow: InitStart creates the
+ * keyboard, Update refreshes it, GetStatus reports the local state, ShutdownStart removes
+ * it. SceUtilityOskState is NONE=0, INITING=1, INITED=2, VISIBLE=3, QUIT=4, FINISHED=5,
+ * SceUtilityOskResult is UNCHANGED=0, CANCELLED=1, CHANGED=2, and SceUtilityOskParams.state
+ * is the same state enum mirrored in the caller's block. A game drives the keyboard by
+ * polling GetStatus, so what it sees must not depend on how often it polls: each call
+ * reports the state it was in and advances at most one step, so every step is observable
+ * however fast the poll, and the terminal step a game waits for stays standing until
+ * ShutdownStart. The earlier machine reported 3 (VISIBLE) forever once the text was
+ * collected and never reported QUIT or FINISHED at all, so a game waiting for the state
+ * the contract ends on waited for it forever.
+ *
+ * sceUtilityOskUpdate keeps its named no-dialog compatibility result (#281), so the
+ * runtime owns the progression. The text is collected on the poll that leaves INITED --
+ * the first poll after the keyboard is usable, and the same point the native box has
+ * always opened -- so the field results are in place before VISIBLE is reported. */
 int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap);
-static int s_osk_status = 0;
+enum { OSK_NONE = 0, OSK_INITING = 1, OSK_INITED = 2, OSK_VISIBLE = 3, OSK_QUIT = 4, OSK_FINISHED = 5 };
+static int s_osk_status = OSK_NONE;
+static int s_osk_quit = 0;                                /* ShutdownStart seen */
+static int s_osk_finished = 1;                            /* every field answered CHANGED */
 static uint32_t s_osk_param = 0;
-/* PPSSPP keeps a "current dialog type": OskGetStatus is WRONG_TYPE only while a DIFFERENT
- * utility dialog owns the slot. After an OSK shuts down it stays the current dialog and
- * GetStatus returns NONE(0) — a game spinning "while (OskGetStatus() != 0)" after name entry
- * hangs forever if we keep returning WRONG_TYPE there. */
+/* A keyboard keeps the dialog slot after it shuts down, so GetStatus reports NONE(0)
+ * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
+ * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
 static int s_osk_current = 0;
 static int s_osk_current_clear(void) { s_osk_current = 0; return 0; }
+
+/* SceUtilityOskParams.state is documented as the local OSK state, so a game that reads the
+ * block instead of calling GetStatus sees the same value. */
+static void osk_publish_state(void) {
+    if (s_osk_param) MEM_W32(s_osk_param + 0x38, (uint32_t)s_osk_status);
+}
+
+/* ---- Scripted answers, for automation. SR_OSK_SCRIPT=<file> supplies one answer per
+ * field in order: the line's UTF-8 text, or the keyword CANCEL to answer that field as
+ * cancelled. SR_OSK_TEXT=<text> answers every field with the same text (CANCEL cancels
+ * every field). While either is set no native box is opened, because an automated route
+ * that reaches an unanswered keyboard would block on host UI: a field the script does not
+ * cover is answered CANCELLED and the shortfall is named on stderr. With neither set the
+ * keyboard is answered by a person, exactly as before. */
+#define OSK_SCRIPT_FIELDS 8
+#define OSK_SCRIPT_BYTES  255
+static char s_osk_answers[OSK_SCRIPT_FIELDS][OSK_SCRIPT_BYTES + 1];
+static int s_osk_answer_count;
+static const char *s_osk_repeat;                          /* SR_OSK_TEXT */
+static int s_osk_script_read;
+
+static int osk_answer_is_cancel(const char *t) {
+    return (t[0] | 0x20) == 'c' && (t[1] | 0x20) == 'a' && (t[2] | 0x20) == 'n' &&
+           (t[3] | 0x20) == 'c' && (t[4] | 0x20) == 'e' && (t[5] | 0x20) == 'l' && t[6] == '\0';
+}
+
+/* The script file is UTF-8; SceUtilityOskData.outtext holds UTF-16. A malformed byte becomes
+ * U+FFFD so a bad script shows up in the guest's text instead of vanishing, and a character
+ * that needs a surrogate pair is dropped rather than split when one unit of field is left. */
+static void osk_decode_utf8(const char *text, wchar_t *out, int max) {
+    const unsigned char *p = (const unsigned char *)text;
+    int n = 0;
+    while (*p && n < max) {
+        unsigned cp;
+        int extra;
+        if (*p < 0x80)                 { cp = *p++; extra = 0; }
+        else if ((*p & 0xe0) == 0xc0)  { cp = (unsigned)(*p++ & 0x1f); extra = 1; }
+        else if ((*p & 0xf0) == 0xe0)  { cp = (unsigned)(*p++ & 0x0f); extra = 2; }
+        else if ((*p & 0xf8) == 0xf0)  { cp = (unsigned)(*p++ & 0x07); extra = 3; }
+        else                           { p++; cp = 0xfffdu; extra = 0; }
+        while (extra-- > 0) {
+            if ((*p & 0xc0) != 0x80) { cp = 0xfffdu; break; }
+            cp = (cp << 6) | (unsigned)(*p++ & 0x3f);
+        }
+        if (cp < 0x10000u) {
+            out[n++] = (wchar_t)cp;
+        } else if (n + 1 < max) {
+            cp -= 0x10000u;
+            out[n++] = (wchar_t)(0xd800u + (cp >> 10));
+            out[n++] = (wchar_t)(0xdc00u + (cp & 0x3ffu));
+        } else {
+            break;
+        }
+    }
+    out[n] = 0;
+}
+
+static void osk_script_load(void) {
+    const char *path = getenv("SR_OSK_SCRIPT");
+    s_osk_script_read = 1;
+    s_osk_answer_count = 0;
+    s_osk_repeat = getenv("SR_OSK_TEXT");
+    if (!path || !*path) return;
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "osk: SR_OSK_SCRIPT=%s cannot be read; every field is answered CANCEL\n",
+                path);
+        return;
+    }
+    char line[OSK_SCRIPT_BYTES + 2];
+    while (s_osk_answer_count < OSK_SCRIPT_FIELDS && fgets(line, (int)sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+        if (!n || line[0] == '#') continue;               /* blank and comment lines */
+        memcpy(s_osk_answers[s_osk_answer_count++], line, n + 1);
+    }
+    fclose(f);
+}
+
+static int osk_script_configured(void) {
+    const char *path = getenv("SR_OSK_SCRIPT");
+    if (!s_osk_script_read) osk_script_load();
+    return (path && *path) || s_osk_repeat;
+}
 
 static void osk_read_utf16(uint32_t addr, wchar_t *out, int max) {
     int i = 0;
@@ -6310,9 +6409,11 @@ static void osk_read_utf16(uint32_t addr, wchar_t *out, int max) {
 static void osk_run(void) {
     uint32_t p = s_osk_param;
     if (!p) return;
-    int nf = (int)MEM_R32(p + 0x30);                       /* fieldCount */
+    int nf = (int)MEM_R32(p + 0x30);                       /* datacount */
     uint32_t fields = MEM_R32(p + 0x34);                   /* SceUtilityOskData[] */
     if (nf < 1 || nf > 8 || !fields) return;
+    int scripted = osk_script_configured();
+    s_osk_finished = 1;
     for (int i = 0; i < nf; i++) {
         uint32_t f = fields + (uint32_t)i * 0x34;
         uint32_t descA = MEM_R32(f + 0x1c), inA = MEM_R32(f + 0x20);
@@ -6325,13 +6426,24 @@ static void osk_run(void) {
         if (outLimit && (int)outLimit + 1 < cap) cap = (int)outLimit + 1;
         if (cap > 256) cap = 256;
         wcscpy(out, intext);
-        int ok = sr_osk_input(desc, intext, out, cap);
+        int ok;
+        if (!scripted) {
+            ok = sr_osk_input(desc, intext, out, cap);
+        } else {
+            const char *ans = i < s_osk_answer_count ? s_osk_answers[i] : s_osk_repeat;
+            if (ans) osk_decode_utf8(ans, out, cap - 1);
+            ok = ans && !osk_answer_is_cancel(ans);
+            if (!ans)
+                fprintf(stderr, "osk: no scripted answer for field %d of %d; answered CANCEL\n",
+                        i, nf);
+        }
         if (outA) {
             const wchar_t *w = ok ? out : intext;
             int j = 0;
             for (; w[j] && j < cap - 1; j++) MEM_W16(outA + (uint32_t)j * 2, (uint16_t)w[j]);
             MEM_W16(outA + (uint32_t)j * 2, 0);
         }
+        if (!ok) s_osk_finished = 0;
         MEM_W32(f + 0x2c, ok ? 2u : 1u);                   /* result: CHANGED / CANCELLED */
         if (getenv("SR_DLGLOG"))
             fprintf(stderr, "osk: field %d desc='%ls' in='%ls' -> %s '%ls'\n",
@@ -6341,24 +6453,53 @@ static void osk_run(void) {
 }
 
 static uint32_t h_OskInitStart(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
     s_osk_param = A0;
-    s_osk_status = 1;                                      /* INITIALIZE */
-    s_osk_current = 1;                                     /* OSK owns the dialog slot */
+    s_osk_status = OSK_INITING;
+    s_osk_quit = 0;
+    s_osk_finished = 1;
+    s_osk_current = 1;                                     /* the OSK owns the dialog slot */
+    s_osk_script_read = 0;                                 /* a new keyboard re-reads its answers */
+    osk_publish_state();
     return 0;
 }
-/* sceUtilityOskGetStatus: with no OSK ever started (e.g. polled every boot frame while a
- * savedata dialog is up) PPSSPP returns SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005). Once an
- * OSK ran, NONE(0) is a real status games wait for after shutdown. */
+/* GetStatus with no OSK ever started (e.g. polled every boot frame while a savedata dialog
+ * is up) is SCE_ERROR_UTILITY_WRONG_TYPE; once one has run NONE(0) is a real status. */
 static uint32_t h_OskGetStatus(CpuState *s) {
     (void)s;
     if (!s_osk_current) return 0x80110005u;
     int ret = s_osk_status;
-    if (s_osk_status == 1) s_osk_status = 2;               /* INITIALIZE -> RUNNING */
-    else if (s_osk_status == 2) { osk_run(); s_osk_status = 3; }   /* RUNNING -> FINISHED */
-    else if (s_osk_status == 4) { s_osk_status = 0; s_osk_param = 0; }
+    if (s_osk_quit) {
+        s_osk_quit = 0;
+        s_osk_status = OSK_NONE;
+    } else if (s_osk_status == OSK_INITING) {
+        s_osk_status = OSK_INITED;
+    } else if (s_osk_status == OSK_INITED) {
+        osk_run();
+        s_osk_status = OSK_VISIBLE;
+    } else if (s_osk_status == OSK_VISIBLE) {
+        s_osk_status = s_osk_finished ? OSK_FINISHED : OSK_QUIT;
+    }
+    if (s_osk_status != ret) osk_publish_state();
+    if (!s_osk_status) s_osk_param = 0;                    /* nothing left to publish into */
     return (uint32_t)ret;
 }
-static uint32_t h_OskShutdown(CpuState *s) { (void)s; if (s_osk_status) s_osk_status = 4; return 0; }
+static uint32_t h_OskShutdown(CpuState *s) {
+    (void)s;
+    if (s_osk_status) s_osk_quit = 1;                      /* the next poll reports NONE */
+    return 0;
+}
+
+/* Single definition, called by both registry branches, so the executable HLE harness
+ * dispatches the same OSK mapping the game build does instead of carrying a second,
+ * drifting test mapping. */
+void hle_register_osk_handlers(void) {
+    sr_hle_register(0xf3f76017, "sceUtilityOskGetStatus", h_OskGetStatus);
+    sr_hle_register(0x3dfaeba9, "sceUtilityOskShutdownStart", h_OskShutdown);
+    /* 0xf6269b82 is OskInitStart, NOT GetSystemParamString -- the old string handler wrote
+     * A2 bytes through A1, both garbage for this signature. */
+    sr_hle_register(0xf6269b82, "sceUtilityOskInitStart", h_OskInitStart);
+}
 
 /* sceWlanGetEtherAddr: 6-byte MAC out through a0. Fixed value so save/profile stamps stay
  * stable across runs. */
@@ -15759,6 +15900,7 @@ void sr_hle_init(void) {
     hle_register_mpeg_shared_handlers();
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
+    hle_register_osk_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -15794,12 +15936,7 @@ void sr_hle_init(void) {
     /* sceImpose language/confirm-button mode: retained state shared with the system-param table
      * above (the getter had no registration at all before this). */
     hle_register_impose_handlers();
-    /* sceUtility dialogs (OSK / savedata / netconf): no dialog active -> status 0, calls ok. */
-    sr_hle_register(0xf3f76017, "sceUtilityOskGetStatus", h_OskGetStatus);
-    sr_hle_register(0x3dfaeba9, "sceUtilityOskShutdownStart", h_OskShutdown);
-    /* 0xf6269b82 is OskInitStart, NOT GetSystemParamString -- the old string handler wrote
-     * A2 bytes through A1, both garbage for this signature. */
-    sr_hle_register(0xf6269b82, "sceUtilityOskInitStart", h_OskInitStart);
+    hle_register_osk_handlers();
     /* sceUtilitySavedataInitStart registered via hle_register_partition_savedata_handlers() */
     sr_hle_register(0x9790b33c, "sceUtilitySavedataShutdownStart", h_DlgShutdown);
     sr_hle_register(0x8874dbe0, "sceUtilitySavedataGetStatus", h_DlgGetStatus);
