@@ -43,15 +43,15 @@ const NkTitleEntry *nk_title_catalog_get_overlay(void) {
     return s_private_overlay_count > 0 ? s_private_overlay_entries[s_private_overlay_count - 1] : NULL;
 }
 
-static const NkModuleDefinition s_modules_title_2[] = {
+static const NkModuleDefinition s_modules_title_4[] = {
     { "synthetic.prx", 0x08c00000U, false },
 };
 
-static const NkModuleDefinition s_modules_title_3[] = {
+static const NkModuleDefinition s_modules_title_5[] = {
     { "synthetic2.prx", 0x0a800000U, false },
 };
 
-const int nk_title_catalog_count = 4;
+const int nk_title_catalog_count = 6;
 const NkTitleEntry nk_title_catalog_entries[] = {
     {
         "display-smoke-v1",
@@ -94,6 +94,46 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0
     },
     {
+        "showcase-breakout-v1",
+        "showcase-breakout",
+        "Nakagawa Breakout Showcase",
+        NK_TITLE_KIND_SYNTHETIC,
+        "TEST00008",
+        NULL,
+        0x08804000U,
+        0x088040ecU,
+        "elf",
+        "data/showcase-breakout-v1",
+        "build/showcase/memstick/TEST00008",
+        "synthetic-minimal",
+        "none",
+        0U,
+        false,
+        false,
+        NULL,
+        0
+    },
+    {
+        "showcase-scene-v1",
+        "showcase-scene",
+        "Nakagawa 3D Showcase",
+        NK_TITLE_KIND_SYNTHETIC,
+        "TEST00007",
+        NULL,
+        0x08804000U,
+        0x088040ecU,
+        "elf",
+        "data/showcase-scene-v1",
+        "build/showcase/memstick/TEST00007",
+        "synthetic-minimal",
+        "none",
+        0U,
+        false,
+        false,
+        NULL,
+        0
+    },
+    {
         "synthetic-allegrex-v1",
         "synthetic",
         "Nakagawa Synthetic Allegrex Fixture",
@@ -110,7 +150,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0U,
         false,
         false,
-        s_modules_title_2,
+        s_modules_title_4,
         1
     },
     {
@@ -130,7 +170,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0U,
         false,
         false,
-        s_modules_title_3,
+        s_modules_title_5,
         1
     },
 };
