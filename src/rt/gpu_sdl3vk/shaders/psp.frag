@@ -86,10 +86,16 @@ void main() {
     if ((flags & 32) == 0) {
         if ((flags & 1) != 0) {
             /* Recover texel coords (u*rw interpolated affinely, divided per pixel; in
-             * through mode rw==1). Nearest filtering matches (int)(u+0.5) via the shift. */
+             * through mode rw==1). An integer texel coordinate names that texel's CENTRE,
+             * so the normalized coordinate is (u + 0.5)/size for BOTH filters: nearest then
+             * takes floor(u+0.5) == u, and linear takes taps floor(u) and floor(u)+1 with
+             * weight frac(u), which reproduces the texel exactly at integer coordinates.
+             * The half-texel shift is required by the nearest filter and must not be
+             * conditional: omitting it under linear filtering moved the filter window half
+             * a texel earlier, so the first/last row and column of a linearly filtered
+             * sprite blended 50/50 with a texel OUTSIDE the sampled region. */
             float rw = max(abs(v_rw), 1e-20);
-            vec2 uv = v_uv / rw;
-            if ((flags & 64) != 0) uv += vec2(0.5);
+            vec2 uv = v_uv / rw + vec2(0.5);
             uv += pc.texsize.zw;
             vec4 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
             int  tf    = pc.cfg.x & 7;

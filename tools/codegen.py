@@ -986,7 +986,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             body = (f"float _a[4],_b[4]; sr_vread(_a,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                     f"sr_vread(_b,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
                     f"int _cc=0,_or=0,_and=1,_aff=(1<<4)|(1<<5); "
-                    f"for(int _i=0;_i<{n};_i++){{ float _x=_a[_i],_y=_b[_i]; int _c=({_C}); "
+                    f"for(int _i=0;_i<{n};_i++){{ float _x=_a[_i],_y=_b[_i]; (void)_x; (void)_y; int _c=({_C}); "
                     f"_cc|=(_c<<_i);_or|=_c;_and&=_c;_aff|=1<<_i; }} "
                     f"s->vfpuCtrl[3]=(s->vfpuCtrl[3]&~_aff)|((_cc|(_or<<4)|(_and<<5))&_aff);{_EAT}")
             return "{ " + body + " }", None, 0

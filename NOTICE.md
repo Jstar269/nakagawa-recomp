@@ -44,6 +44,36 @@ The copied shadcn/ui primitives have the separate MIT text in
 code must ship the corresponding package notices rather than treating this
 source-only boundary as bundled-dependency attribution.
 
+## Generated third-party notices
+
+Release notices are generated, never hand-written. One machine-readable source
+of truth, `assets/third_party_components.json` (schema:
+`assets/third_party_components.schema.json`), records every component that can
+enter a release artifact: its SPDX identifier, its disposition, the packaging
+route that copies it, and the license texts copied verbatim into
+`third_party/licenses/`. The native package, the dashboard standalone output,
+the SBOM, and the release gate all read that one file.
+
+- The native package route (`tools/package_notices.py`, invoked by the package
+  build and by `copy_build_assets.ps1`) emits `THIRD_PARTY_NOTICES.txt`,
+  `THIRD_PARTY_NOTICES/index.json`, and `RELINK.md` beside the package, and
+  fails closed when a bundled binary has no license record or no license text.
+- The dashboard standalone route (`tools/dashboard_notices.py`, invoked by
+  `interface/scripts/prepare-standalone.mjs`) emits the same bundle for the
+  traced npm packages, and fails closed on a package with no license expression
+  or a license expression with no recorded obligation.
+- `tools/generate_sbom.py` lists the shipped DLLs and the recorded Python tool
+  licenses from the same file, so the SBOM cannot drift from the notices.
+- `tools/test_third_party_notices.py` is the gate: it fails when a DLL a
+  packaging route can copy, or any component in the source of truth, lacks a
+  license record or a license text.
+
+Two classes of obligation are recorded as unresolved and are not decided here:
+the LGPL relink mechanism for the FFmpeg ATRAC3+ subset and for libvips in the
+dashboard's traced sharp packages, and the EPL-2.0 Secondary License and CC-BY
+attribution wording. See the `license_obligations` section of
+`assets/third_party_components.json` and issue #421.
+
 ## Public-safe exclusions
 
 The public source profile excludes the PGF parser/font payloads and PGD/amctrl
