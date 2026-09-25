@@ -65,7 +65,13 @@ tools/vfpu_game_*.txt
 **/EBOOT.BIN.dec.*
 
 # Local third-party checkouts and redistributable runtime binaries
-/third_party/
+/third_party/*
+# The tracked license texts under third_party/licenses/ are the notice source of
+# truth for release packaging (assets/third_party_components.json records each
+# one's digest and where it was copied from), so they must travel with the source.
+# Git does not descend into a directory it has already excluded, so the exclusion
+# is narrowed to /third_party/* and the licenses directory is re-included here.
+!/third_party/licenses/
 
 # Runtime state, logs, captures, and reports
 /logs/

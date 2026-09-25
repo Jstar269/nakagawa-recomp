@@ -11,13 +11,49 @@ process: live-process access is never exercised here.
 """
 
 import os
+from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mem_debug as md
+
+
+class ExecutablePathResolutionTest(unittest.TestCase):
+    """The attached executable is resolved before any tool is spawned (#294)."""
+
+    def test_nm_receives_an_absolute_executable_path(self):
+        with tempfile.TemporaryDirectory(prefix="mem_debug_exe_") as tmp_dir:
+            exe_dir = Path(tmp_dir)
+            (exe_dir / "game.exe").write_bytes(b"MZ-stub")
+            captured = {}
+
+            def fake_run(argv, **kwargs):
+                argv = [str(arg) for arg in argv]
+                if "--version" in argv:
+                    return subprocess.CompletedProcess(argv, 0, stdout="nm", stderr="")
+                captured["argv"] = argv
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(exe_dir)
+                with mock.patch.dict(os.environ, {"NM": "nm-fake"}):
+                    with mock.patch.object(md.subprocess, "run", side_effect=fake_run):
+                        _rvas, provenance = md.get_symbol_rvas("game.exe")
+            finally:
+                os.chdir(previous_cwd)
+            self.assertEqual(provenance, "fallback")  # empty nm output
+            self.assertEqual(captured["argv"][0], "nm-fake")
+            self.assertTrue(os.path.isabs(captured["argv"][1]))
+            self.assertEqual(
+                os.path.normpath(captured["argv"][1]),
+                os.path.normpath(str(exe_dir / "game.exe")),
+            )
 
 
 class GuestSpanValidationTest(unittest.TestCase):

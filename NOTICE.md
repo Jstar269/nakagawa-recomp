@@ -30,6 +30,31 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   recorded in `assets/vfpu/PROVENANCE.json`; inclusion is a provenance decision,
   not a claim about PSP firmware ownership.
 
+## Generated third-party notices
+
+Release notices are generated, never hand-written. One machine-readable source
+of truth, `assets/third_party_components.json` (schema:
+`assets/third_party_components.schema.json`), records every component that can
+enter a release artifact: its SPDX identifier, its disposition, the packaging
+route that copies it, and the license texts copied verbatim into
+`third_party/licenses/`. The native package, the SBOM, and the release gate all
+read that one file.
+
+- The native package route (`tools/package_notices.py`, invoked by the package
+  build and by `copy_build_assets.ps1`) emits `THIRD_PARTY_NOTICES.txt`,
+  `THIRD_PARTY_NOTICES/index.json`, `SOURCE.txt`, and `RELINK.md` beside the
+  package, and fails closed when a bundled binary has no license record or no
+  license text.
+- `tools/generate_sbom.py` lists the shipped DLLs and the recorded Python tool
+  licenses from the same file, so the SBOM cannot drift from the notices.
+- `tools/test_third_party_notices.py` is the gate: it fails when a DLL a
+  packaging route can copy, or any component in the source of truth, lacks a
+  license record or a license text.
+
+The FFmpeg ATRAC3+ subset (LGPL-2.1-or-later) is statically linked. The whole
+program is distributed under GPL-3.0-or-later with its complete corresponding
+source, and `SOURCE.txt` names the exact repository commit or tag of each
+package, which is what lets a user modify and relink it (issue #421).
 ## Public-safe exclusions
 
 The public source profile excludes the PGF parser/font payloads and PGD/amctrl

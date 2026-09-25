@@ -618,11 +618,12 @@ extern int g_prof_enabled;
 void sr_profile_init(void);
 void sr_profile_dump(void);
 void sr_profile_block(uint32_t target_pc);
-#ifdef SR_PROFILER_SELFTEST
+/* Test accessors: defined only in SR_PROFILER_SELFTEST builds (recomp.c), but
+ * declared unconditionally so no translation unit ever sees an implicit
+ * declaration under any flag combination. */
 void sr_profile_test_reset(void);
 uint64_t sr_profile_test_block_count(uint32_t pc);
 uint64_t sr_profile_test_lookup_drops(void);
-#endif
 
 #define SR_YIELD(s, target_pc) do { \
     if (__builtin_expect(g_prof_enabled, 0)) { \

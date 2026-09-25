@@ -105,8 +105,9 @@ with explicit target and unbuilt boundaries.
   runtime PSP module (PRX) loader for clean-room rewrite unit G3.
 - [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
   PGF reader for clean-room rewrite unit G4. The public reader built from it
-  landed as `src/rt/pgf_public.c` (PR #474); composite glyphs and the remaining
-  spec variants are still in the works (#349).
+  landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs;
+  the remaining composite-glyph and spec-variant boundaries are named in that
+  specification's §4.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies

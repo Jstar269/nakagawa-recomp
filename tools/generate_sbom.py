@@ -438,11 +438,29 @@ def _normalize_spdx_license(raw: str) -> str:
     return mapping.get(cleaned.lower(), cleaned if cleaned in mapping.values() else "NOASSERTION")
 
 
+def recorded_python_package_licenses(repo_root: Path = ROOT) -> dict[str, str]:
+    """Return the checked-in name -> SPDX license map for the declared Python lockfile.
+
+    The release SBOM must not depend on whichever Python environment happens to
+    run generation, so the recorded value from the component inventory is
+    authoritative; the live environment lookup stays a fallback for a package
+    that was added to the lockfile without a recorded license.
+    """
+    from package_notices import load_component_inventory
+
+    inventory = load_component_inventory()
+    recorded = inventory.get("python_packages", {}).get("packages", {})
+    return {name: entry["spdx_id"] for name, entry in recorded.items() if entry.get("spdx_id")}
+
+
 def _resolve_python_package_license(name: str) -> str:
     """Resolve an SPDX license identifier for an installed Python package from local dist-info metadata.
 
     Reads locally from the current Python environment using importlib.metadata; never uses the network.
     """
+    recorded = recorded_python_package_licenses().get(_normalize_python_name(name))
+    if recorded:
+        return recorded
     try:
         import importlib.metadata as md
         dist_meta = md.metadata(name)
@@ -646,10 +664,33 @@ def resolve_shipped_dlls(
 ) -> list[dict[str, Any]]:
     """Resolve the list of shipped native DLLs with their SPDX license identifiers.
 
-    Reads from package_dir/THIRD_PARTY_NOTICES/index.json if present, or resolves known
-    shipped runtime DLLs (SDL3.dll, MinGW/UCRT runtimes) and manifest components.
+    Reads from package_dir/THIRD_PARTY_NOTICES/index.json when a built package is
+    available, and otherwise from the checked-in component inventory
+    (assets/third_party_components.json), which is the source of truth for every
+    DLL a packaging route can copy. Versions come from the toolchain's own pacman
+    database; no version is a literal here.
     """
+    from package_notices import (
+        installed_package_version,
+        load_component_inventory,
+        resolve_toolchain_root,
+    )
+
     shipped: dict[str, dict[str, Any]] = {}
+
+    def add(name: str, license_id: str, version: str, origin: str, source_path: str) -> None:
+        key = name.lower()
+        if key in shipped:
+            return
+        slug = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+        shipped[key] = {
+            "name": name,
+            "spdx_id": f"SPDXRef-dll-{slug}",
+            "version": version,
+            "license": license_id,
+            "downloadLocation": origin,
+            "source_path": source_path,
+        }
 
     if package_dir is not None and package_dir.is_dir():
         index_path = package_dir / "THIRD_PARTY_NOTICES" / "index.json"
@@ -659,68 +700,52 @@ def resolve_shipped_dlls(
                 for comp in index_data.get("components", []):
                     bin_name = comp.get("binary")
                     if bin_name and bin_name.lower().endswith(".dll"):
-                        slug = re.sub(r"[^A-Za-z0-9._-]", "_", bin_name)
-                        shipped[bin_name.lower()] = {
-                            "name": bin_name,
-                            "spdx_id": f"SPDXRef-dll-{slug}",
-                            "version": comp.get("version", "unknown"),
-                            "license": comp.get("spdx_id", "NOASSERTION"),
-                            "downloadLocation": comp.get("upstream_origin", "NOASSERTION"),
-                            "source_path": comp.get("source_path", bin_name),
-                        }
+                        add(bin_name, comp.get("spdx_id", "NOASSERTION"),
+                            comp.get("version", "unknown"),
+                            comp.get("upstream_origin", "NOASSERTION"),
+                            comp.get("source_path", bin_name))
             except (OSError, json.JSONDecodeError):
                 pass
 
-        for dll_file in package_dir.glob("*.dll"):
-            dll_lower = dll_file.name.lower()
-            if dll_lower not in shipped:
-                from package_notices import (
-                    KNOWN_RUNTIME_DLLS,
-                    installed_package_version,
-                    resolve_toolchain_root,
-                )
-                if dll_lower in KNOWN_RUNTIME_DLLS:
-                    record = KNOWN_RUNTIME_DLLS[dll_lower]
-                    name = dll_file.name
-                    lic = record["spdx_id"]
-                    ver = installed_package_version(resolve_toolchain_root(), record.get("pacman_package"))
-                    orig = record.get("upstream_origin", "NOASSERTION")
-                    slug = re.sub(r"[^A-Za-z0-9._-]", "_", name)
-                    shipped[dll_lower] = {
-                        "name": name,
-                        "spdx_id": f"SPDXRef-dll-{slug}",
-                        "version": ver,
-                        "license": lic,
-                        "downloadLocation": orig,
-                        "source_path": name,
-                    }
+        inventory = load_component_inventory()
+        for dll_key, record in sorted(inventory["native"]["dlls"].items()):
+            if (package_dir / dll_key).is_file():
+                add(dll_key, record["spdx_id"],
+                    installed_package_version(resolve_toolchain_root(), record.get("pacman_package")),
+                    record.get("upstream_origin", "NOASSERTION"),
+                    record["license_texts"][0]["file"])
+        for record in inventory["native"].get("host_resolved_components", []):
+            dll = record.get("dll")
+            if dll and (package_dir / dll).is_file():
+                add(dll, record["spdx_id"],
+                    installed_package_version(resolve_toolchain_root(), record.get("pacman_package")),
+                    record.get("upstream_origin", "NOASSERTION"),
+                    record["license_texts"][0]["file"])
 
     if manifest_data:
         for comp in manifest_data.get("components", []):
             src_path = comp.get("source_path", "")
             if src_path.lower().endswith(".dll") or comp.get("id") == "sdl3-runtime":
                 dll_name = Path(src_path).name if src_path else "SDL3.dll"
-                dll_lower = dll_name.lower()
-                if dll_lower not in shipped:
-                    slug = re.sub(r"[^A-Za-z0-9._-]", "_", dll_name)
-                    shipped[dll_lower] = {
-                        "name": dll_name,
-                        "spdx_id": f"SPDXRef-dll-{slug}",
-                        "version": comp.get("version", ">=3.0.0"),
-                        "license": comp.get("license", "Zlib"),
-                        "downloadLocation": comp.get("upstream_origin", "https://github.com/libsdl-org/SDL"),
-                        "source_path": src_path or dll_name,
-                    }
+                add(dll_name, comp.get("license", "Zlib"), comp.get("version", ">=3.0.0"),
+                    comp.get("upstream_origin", "https://github.com/libsdl-org/SDL"),
+                    src_path or dll_name)
 
     if not shipped:
-        shipped["sdl3.dll"] = {
-            "name": "SDL3.dll",
-            "spdx_id": "SPDXRef-dll-SDL3",
-            "version": ">=3.0.0",
-            "license": "Zlib",
-            "downloadLocation": "https://github.com/libsdl-org/SDL",
-            "source_path": "SDL3.dll",
-        }
+        # No built package and no manifest override: the SBOM still has to name
+        # every DLL a packaging route can copy, so it falls back to the inventory
+        # rather than to a single hardcoded entry that would under-report the set.
+        inventory = load_component_inventory()
+        toolchain_root = resolve_toolchain_root()
+        records = dict(inventory["native"]["dlls"])
+        for record in inventory["native"].get("host_resolved_components", []):
+            if record.get("dll"):
+                records[record["dll"]] = record
+        for dll_key, record in sorted(records.items()):
+            add(dll_key, record["spdx_id"],
+                installed_package_version(toolchain_root, record.get("pacman_package")),
+                record.get("upstream_origin", "NOASSERTION"),
+                record["license_texts"][0]["file"])
 
     return [shipped[k] for k in sorted(shipped)]
 

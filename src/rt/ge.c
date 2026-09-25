@@ -1124,7 +1124,16 @@ static void sample_tex_f(float fu, float fv_coord, int *r, int *g, int *b, int *
     static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
     int use_linear = !nobil && ((ge.tex_filter & 1) || ((ge.tex_filter >> 8) & 1));
     if (!use_linear) { sample_tex((int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a); return; }
-    fu -= 0.5f; fv_coord -= 0.5f;
+    /* An integer texel coordinate names that texel's CENTRE -- that is the convention the
+     * nearest branch above implements by rounding. The filter window is centred on the
+     * same texel: taps are floor(fu) and floor(fu)+1, so a 1:1 sprite reproduces its
+     * texels exactly and nothing outside its region can reach the result.
+     *
+     * The previous half-texel shift centred the window half a texel EARLIER, so at every
+     * integer coordinate it blended the previous texel 50/50 into the result. For a
+     * region-relative sprite the previous texel row is OUTSIDE the sampled region, which
+     * drew a one-pixel line along the sprite's top edge from texture the draw never
+     * addressed, and it contradicted the nearest branch in the same function. */
     int u0 = (int)floorf(fu), v0 = (int)floorf(fv_coord);
     int fx = (int)((fu - u0) * 256.0f), fy = (int)((fv_coord - v0) * 256.0f);
     if (fx < 0) fx = 0;
@@ -2458,6 +2467,25 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float v_start = (p0->y <= p1->y) ? v0 : v1 - step_v;
     float u_dir = (p0->x <= p1->x) ? step_u : -step_u;
     float v_dir = (p0->y <= p1->y) ? step_v : -step_v;
+
+    /* SR_PIXWHO probe: the sprite path owned only its clear-mode case, so a misrendered
+     * row owned by a textured sprite had no way to name the draw. Name the full sampling
+     * state here -- rectangle, the texel coordinate the probe pixel actually reads, the
+     * texture window, and the filter/wrap bits that decide what happens outside it. */
+    who_init();
+    if (s_who_x >= xa && s_who_x < xb && s_who_y >= ya && s_who_y < yb && s_pixwho_n < 400) {
+        s_pixwho_n++;
+        fprintf(stderr,
+                "PIXWHO f=%u SPRITE persp=%d rect=(%d,%d)-(%d,%d) uv=(%.2f,%.2f) "
+                "tex=0x%08x fmt=%u size=%ux%u bufw=%u filter=0x%08x wrap=0x%08x "
+                "rgba=(%d,%d,%d,%d) scissor=%d,%d-%d,%d\n",
+                s_ge_frame, persp, xa, ya, xb, yb,
+                u_start + (float)(s_who_x - xa) * u_dir,
+                v_start + (float)(s_who_y - ya) * v_dir,
+                ge.tex_addr, ge.tex_fmt & 0xFu, ge.tex_w, ge.tex_h, ge.tex_bufw,
+                ge.tex_filter, ge.tex_wrap, p1->r, p1->g, p1->b, p1->a,
+                ge.scis_x1, ge.scis_y1, ge.scis_x2, ge.scis_y2);
+    }
 
     for (int y = ya; y < yb; y++) {
         float fv = v_start + (float)(y - ya) * v_dir;
