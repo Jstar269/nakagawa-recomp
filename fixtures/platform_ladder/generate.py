@@ -2279,8 +2279,13 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
                 (fs_root / TITLE2_PATH_BYTES.decode("ascii").rstrip("\0").replace("/", "_").replace(":", "_")).write_bytes(title2_payload_bytes())
 
         environment = os.environ.copy()
-        for key in ("SR_DATAROOT", "SR_FSDIR", "SR_MEMSTICK"):
-            environment.pop(key, None)
+        # The ladder owns the complete SR_* runtime-control surface. Inheriting
+        # even a developer's output path or early-exit switch makes this proof
+        # depend on ambient state; only the roots and plan contract below may
+        # configure the child.
+        for key in tuple(environment):
+            if key.startswith("SR_"):
+                del environment[key]
         environment.update(root_environment)
         for key, value in plan.env.items():
             environment[key] = value

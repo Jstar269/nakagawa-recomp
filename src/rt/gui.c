@@ -48,11 +48,16 @@ static int      s_present_cap = -1;
  * whether the platform process backend inherits stderr. The file is opt-in and
  * is otherwise not opened by the runtime. */
 static void sr_gui_boot_event(const char *format, ...) {
+    uint64_t timestamp_ns = sr_perf_now_ns();
     va_list args;
     va_start(args, format);
     vfprintf(stderr, format, args);
     va_end(args);
-    fputc('\n', stderr);
+    if (timestamp_ns) {
+        fprintf(stderr, " t_ns=%llu\n", (unsigned long long)timestamp_ns);
+    } else {
+        fputc('\n', stderr);
+    }
     fflush(stderr);
 
     const char *path = getenv("SR_BOOT_EVENT_FILE");
@@ -63,7 +68,11 @@ static void sr_gui_boot_event(const char *format, ...) {
     va_start(args, format);
     vfprintf(file, format, args);
     va_end(args);
-    fputc('\n', file);
+    if (timestamp_ns) {
+        fprintf(file, " t_ns=%llu\n", (unsigned long long)timestamp_ns);
+    } else {
+        fputc('\n', file);
+    }
     fclose(file);
 }
 

@@ -491,6 +491,35 @@ int main(int argc, char **argv) {
     assert(player_app_find_game_by_disc_id(app, "TEST00001") == 0);
     assert(strcmp(app->games[0].title_name, "First, revisited") == 0);
 
+    /* 2b. Re-adding the same disc keeps its completed extraction.
+     *
+     * Re-inspecting an ISO that is already in the library produced a fresh
+     * record with assets_staged=false and no prepared root, and the update
+     * replaced the staged record wholesale, so the next launch had no data root. */
+    printf("[PLAYER_STATE_TEST] Subtest 2b: re-adding a disc keeps its staged assets\n");
+    fflush(stdout);
+    {
+        GameRecord staged;
+        seed_entry(&staged, "TEST00001", "First");
+        staged.assets_staged = true;
+        snprintf(staged.prepared_root, sizeof(staged.prepared_root), "games%cTEST00001",
+                 nk_platform_path_separator());
+        staged.extracted_asset_count = 42;
+        snprintf(staged.last_played, sizeof(staged.last_played), "2026-09-25");
+        GameRecord again;
+        seed_entry(&again, "TEST00001", "First");
+        assert(player_merge_readded_game(&staged, &again));
+        assert(again.assets_staged && strcmp(again.prepared_root, staged.prepared_root) == 0);
+        assert(again.extracted_asset_count == 42);
+        assert(strcmp(again.last_played, "2026-09-25") == 0);
+
+        GameRecord other_disc;
+        seed_entry(&other_disc, "TEST00001", "First");
+        other_disc.iso_size_bytes = staged.iso_size_bytes + 2048;
+        assert(!player_merge_readded_game(&staged, &other_disc));
+        assert(!other_disc.assets_staged && other_disc.prepared_root[0] == '\0');
+    }
+
     /* 3. Unknown and malformed disc IDs report absence, not index 0. */
     printf("[PLAYER_STATE_TEST] Subtest 3: absent disc IDs\n");
     fflush(stdout);
@@ -1575,6 +1604,79 @@ int main(int argc, char **argv) {
         assert(player_app_launch_game(dev_app, disp_idx) == false);
 
         free(dev_app);
+    }
+
+    {
+        printf("[PLAYER_STATE_TEST] Subtest 19: package validation cache hit and invalidation\n");
+        fflush(stdout);
+
+        char cache_root[512];
+        char validation_root[640];
+        char package_dir[800];
+        char package_json[960];
+        char completion_json[960];
+        char report_json[960];
+        char executable[960];
+        char image[960];
+        const NkTitleEntry *cached_title = nk_title_catalog_find_by_id(
+            "synthetic-allegrex-v1");
+        assert(cached_title && cached_title->primary_disc_id);
+        const char *cached_disc_id = cached_title->primary_disc_id;
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+        snprintf(validation_root, sizeof(validation_root), "%s%cpackage-validation-cache",
+                 cache_root, nk_platform_path_separator());
+        snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s",
+                 validation_root, nk_platform_path_separator(),
+                 nk_platform_path_separator(), cached_disc_id);
+        snprintf(package_json, sizeof(package_json), "%s%cpackage.json", package_dir,
+                 nk_platform_path_separator());
+        snprintf(completion_json, sizeof(completion_json),
+                 "%s%ccompletion-manifest.json", package_dir,
+                 nk_platform_path_separator());
+        snprintf(report_json, sizeof(report_json), "%s%cbuild-report.json", package_dir,
+                 nk_platform_path_separator());
+        snprintf(executable, sizeof(executable), "%s%csynthetic-allegrex-v1.exe",
+                 package_dir, nk_platform_path_separator());
+        snprintf(image, sizeof(image), "%s%csynthetic-allegrex-v1_image.bin",
+                 package_dir, nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(package_dir));
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+
+        NkGameEntry game;
+        memset(&game, 0, sizeof(game));
+        snprintf(game.disc_id, sizeof(game.disc_id), "%s", cached_disc_id);
+        snprintf(game.title_id, sizeof(game.title_id), "synthetic-allegrex-v1");
+        snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
+
+        NkRuntimePackageInfo first_info;
+        NkRuntimePackageInfo cached_info;
+        char reason[1024];
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &first_info, reason, sizeof(reason)) ==
+               NK_RUNTIME_PACKAGE_OK);
+        assert(!first_info.validation_cache_hit);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &cached_info, reason, sizeof(reason)) ==
+               NK_RUNTIME_PACKAGE_OK);
+        assert(cached_info.validation_cache_hit);
+        assert(strcmp(first_info.package_root, cached_info.package_root) == 0);
+        assert(strcmp(first_info.executable_path, cached_info.executable_path) == 0);
+        assert(strcmp(first_info.image_path, cached_info.image_path) == 0);
+
+        write_text_file(executable, "modified package executable");
+        NkRuntimePackageInfo changed_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &changed_info, reason, sizeof(reason)) ==
+               NK_RUNTIME_PACKAGE_STALE);
+        assert(!changed_info.validation_cache_hit);
+
+        remove(package_json);
+        remove(completion_json);
+        remove(report_json);
+        remove(executable);
+        remove(image);
     }
 
     free(app);

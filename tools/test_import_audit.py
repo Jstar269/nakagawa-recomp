@@ -12,7 +12,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import struct
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
 import import_audit
 import import_audit_gate
@@ -26,8 +30,6 @@ from import_fixtures import (
 )
 import psp_import_table
 from psp_import_table import ImportTableError, UNATTRIBUTED_LIBRARY, parse_import_table
-
-ROOT = Path(__file__).resolve().parents[1]
 
 SIMPLE_LIBS = [
     ("SynthAlpha", [0x11111111, 0x22222222]),

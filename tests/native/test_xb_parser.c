@@ -318,6 +318,121 @@ static void test_roundtrip_all_compression_modes(void) {
     printf("[XB_TEST] RAW/LZS/HUFFMAN/DEFLATE in-memory roundtrip PASSED\n");
 }
 
+static void test_file_backed_archive_is_lazy(void) {
+    static const uint8_t raw_data[] = "lazy raw bytes";
+    static const uint8_t lzs_data[] = "lazy lzs bytes";
+    static const uint8_t huffman_data[] = "lazy huffman bytes";
+    const FixtureEntry entries[] = {
+        { "data/raw.bin", raw_data, sizeof(raw_data) - 1u, NK_XB_COMPRESSION_NONE },
+        { "data/lzs.bin", lzs_data, sizeof(lzs_data) - 1u, NK_XB_COMPRESSION_LZS },
+        { "data/huffman.bin", huffman_data, sizeof(huffman_data) - 1u,
+          NK_XB_COMPRESSION_HUFFMAN }
+    };
+    ByteBuffer bytes = make_archive(entries, sizeof(entries) / sizeof(entries[0]), false);
+    const char *path = "build/test_xb_lazy.xb";
+    write_file_bytes(path, bytes.data, bytes.size);
+    NkXbArchive strict;
+    char error[256];
+    assert(nk_xb_open_file(path, false, NULL, &strict, error, sizeof(error)) == NK_OK);
+    assert(strict.data != NULL);
+    nk_xb_close(&strict);
+    NkXbArchive archive;
+    assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
+    assert(archive.data == NULL);
+    assert(archive.data_size == 0u);
+    for (size_t i = 0; i < archive.entry_count; i++) {
+        uint8_t output[128];
+        size_t output_size = 0;
+        assert(nk_xb_read_entry(&archive, i, output, sizeof(output), &output_size,
+                                error, sizeof(error)) == NK_OK);
+        assert(output_size == entries[i].size);
+        assert(memcmp(output, entries[i].data, entries[i].size) == 0);
+    }
+    SrArchiveVfs vfs;
+    SrArchiveFile file;
+    sr_archive_vfs_init(&vfs);
+    assert(sr_archive_vfs_mount_file(&vfs, path, false, -1, NULL) == NK_OK);
+    assert(sr_archive_vfs_lookup(&vfs, "data/raw.bin", -2, &file));
+    uint8_t vfs_output[128];
+    size_t vfs_output_size = 0;
+    assert(sr_archive_vfs_read(&vfs, &file, 2u, vfs_output, 5u,
+                               &vfs_output_size) == NK_OK);
+    assert(vfs_output_size == 5u && memcmp(vfs_output, raw_data + 2u, 5u) == 0);
+    assert(sr_archive_vfs_lookup(&vfs, "data/lzs.bin", -2, &file));
+    assert(sr_archive_vfs_read(&vfs, &file, 0u, vfs_output, sizeof(vfs_output),
+                               &vfs_output_size) == NK_OK);
+    assert(vfs_output_size == sizeof(lzs_data) - 1u &&
+           memcmp(vfs_output, lzs_data, vfs_output_size) == 0);
+    sr_archive_vfs_destroy(&vfs);
+    remove(path);
+    uint8_t output[128];
+    assert(nk_xb_read_entry(&archive, 0u, output, sizeof(output), NULL,
+                            error, sizeof(error)) != NK_OK);
+    nk_xb_close(&archive);
+    free(bytes.data);
+    printf("[XB_TEST] file-backed metadata-only mount and lazy member reads PASSED\n");
+}
+
+static void test_file_backed_duplicate_validation(void) {
+    static const uint8_t first[] = "same";
+    static const uint8_t second[] = "same";
+    static const uint8_t different[] = "different";
+    const FixtureEntry identical[] = {
+        { "data/shared.bin", first, sizeof(first) - 1u, NK_XB_COMPRESSION_NONE },
+        { "data/shared.bin", second, sizeof(second) - 1u, NK_XB_COMPRESSION_NONE }
+    };
+    ByteBuffer bytes = make_archive(identical, 2u, false);
+    const char *path = "build/test_xb_lazy_duplicate.xb";
+    write_file_bytes(path, bytes.data, bytes.size);
+    NkXbArchive archive;
+    char error[256];
+    assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
+    assert(archive.data == NULL && archive.entry_count == 2u);
+    nk_xb_close(&archive);
+    free(bytes.data);
+
+    FixtureEntry conflict[2];
+    memcpy(conflict, identical, sizeof(conflict));
+    conflict[1].data = different;
+    conflict[1].size = sizeof(different) - 1u;
+    bytes = make_archive(conflict, 2u, false);
+    write_file_bytes(path, bytes.data, bytes.size);
+    assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) != NK_OK);
+    remove(path);
+    free(bytes.data);
+    printf("[XB_TEST] file-backed duplicate-path validation PASSED\n");
+}
+
+static void test_lazy_payload_failure_is_deferred(void) {
+    static const uint8_t data[] = "lazy payload";
+    const FixtureEntry entry = {
+        "data/payload.bin", data, sizeof(data) - 1u, NK_XB_COMPRESSION_LZS
+    };
+    ByteBuffer bytes = make_archive(&entry, 1u, false);
+    size_t header_offset = 0u;
+    for (size_t i = bytes.size - 8u; i > 8u; i--) {
+        if (read_le32_test(bytes.data + i) == entry.size) {
+            header_offset = i;
+            break;
+        }
+    }
+    assert(header_offset != 0u);
+    bytes.data[header_offset] = 0u;
+    const char *path = "build/test_xb_lazy_bad_payload.xb";
+    write_file_bytes(path, bytes.data, bytes.size);
+    NkXbArchive archive;
+    char error[256];
+    assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
+    uint8_t output[64];
+    assert(nk_xb_read_entry(&archive, 0u, output, sizeof(output), NULL,
+                            error, sizeof(error)) != NK_OK);
+    nk_xb_close(&archive);
+    assert(nk_xb_open_file(path, false, NULL, &archive, error, sizeof(error)) != NK_OK);
+    remove(path);
+    free(bytes.data);
+    printf("[XB_TEST] deferred payload validation fails closed on first read\n");
+}
+
 static void test_huffman_final_buffered_bits(void) {
     uint8_t data[32];
     for (size_t i = 0; i < sizeof(data); i++) data[i] = (uint8_t)(i + 32);
@@ -931,6 +1046,135 @@ static int archive_list_has(const SrVfsDirList *list, const char *name) {
     return 0;
 }
 
+static void test_archive_vfs_mount_scaling(void) {
+    static const size_t archive_counts[] = { 250u, 500u, 1000u, 2000u };
+    const size_t members_per_archive = 8u;
+    uint8_t payload[8] = { 0 };
+    FixtureEntry entries[8];
+    char paths[8][64];
+
+    for (size_t scale = 0; scale < sizeof(archive_counts) / sizeof(archive_counts[0]); scale++) {
+        size_t archive_count = archive_counts[scale];
+        ByteBuffer *archives = (ByteBuffer *)calloc(archive_count, sizeof(*archives));
+        assert(archives != NULL);
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            for (size_t member_index = 0; member_index < members_per_archive; member_index++) {
+                snprintf(paths[member_index], sizeof(paths[member_index]),
+                         "data/gen/a%04zu/f%02zu.bin", archive_index, member_index);
+                entries[member_index].path = paths[member_index];
+                entries[member_index].data = payload + member_index;
+                entries[member_index].size = 1u;
+                entries[member_index].compression = NK_XB_COMPRESSION_NONE;
+            }
+            archives[archive_index] = make_archive(entries, members_per_archive, false);
+        }
+
+        SrArchiveVfs vfs;
+        sr_archive_vfs_init(&vfs);
+        clock_t started = clock();
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            assert(sr_archive_vfs_mount_memory(&vfs, archives[archive_index].data,
+                                               archives[archive_index].size, "scale.xb", false,
+                                               -1, NULL) == NK_OK);
+        }
+        clock_t finished = clock();
+        assert(sr_archive_vfs_mount_count(&vfs) == archive_count);
+        assert(sr_archive_vfs_entry_count(&vfs) == archive_count * members_per_archive);
+        assert(sr_archive_vfs_index_sort_count(&vfs) == 0u);
+        clock_t finalize_started = clock();
+        assert(sr_archive_vfs_finalize(&vfs));
+        clock_t finalize_finished = clock();
+        assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            for (size_t member_index = 0; member_index < members_per_archive; member_index++) {
+                char query[64];
+                SrArchiveFile file;
+                snprintf(query, sizeof(query), "data/gen/a%04zu/f%02zu.bin",
+                         archive_index, member_index);
+                assert(sr_archive_vfs_lookup(&vfs, query, -2, &file));
+                assert(file.mount_index == archive_index);
+                assert(file.entry_index == member_index);
+                assert(file.size == 1u);
+            }
+        }
+        assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+        printf("[ARCHIVE_VFS] mount scaling N=%zu M=%zu mount=%.6f finalize=%.6f total=%.6f CPU seconds sorts=%zu\n",
+               archive_count, members_per_archive,
+               (double)(finished - started) / CLOCKS_PER_SEC,
+               (double)(finalize_finished - finalize_started) / CLOCKS_PER_SEC,
+               (double)(finalize_finished - started) / CLOCKS_PER_SEC,
+               sr_archive_vfs_index_sort_count(&vfs));
+        sr_archive_vfs_destroy(&vfs);
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            free(archives[archive_index].data);
+        }
+        free(archives);
+    }
+}
+
+static void test_archive_vfs_precedence(void) {
+    static const uint8_t unqualified_data[] = "unqualified";
+    static const uint8_t variant_two_data[] = "variant-two-first";
+    static const uint8_t variant_two_again_data[] = "variant-two-second";
+    static const uint8_t variant_zero_data[] = "variant-zero";
+    const FixtureEntry unqualified_entry = {
+        "Data/Shared.BIN", unqualified_data, sizeof(unqualified_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    const FixtureEntry variant_two_entry = {
+        "data/shared.bin", variant_two_data, sizeof(variant_two_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    const FixtureEntry variant_two_again_entry = {
+        "DATA/SHARED.BIN", variant_two_again_data, sizeof(variant_two_again_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    const FixtureEntry variant_zero_entry = {
+        "data/shared.bin", variant_zero_data, sizeof(variant_zero_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    ByteBuffer archives[4] = { { 0 }, { 0 }, { 0 }, { 0 } };
+    archives[0] = make_archive(&unqualified_entry, 1u, false);
+    archives[1] = make_archive(&variant_two_entry, 1u, false);
+    archives[2] = make_archive(&variant_two_again_entry, 1u, false);
+    archives[3] = make_archive(&variant_zero_entry, 1u, false);
+
+    SrArchiveVfs vfs;
+    sr_archive_vfs_init(&vfs);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[0].data, archives[0].size,
+                                       "shared.xb", false, -1, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[1].data, archives[1].size,
+                                       "shared.xb2", false, 2, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[2].data, archives[2].size,
+                                       "shared.xb2", false, 2, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[3].data, archives[3].size,
+                                       "shared.xb0", false, 0, NULL) == NK_OK);
+    assert(sr_archive_vfs_index_sort_count(&vfs) == 0u);
+    assert(sr_archive_vfs_finalize(&vfs));
+    assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+
+    SrArchiveFile file;
+    assert(sr_archive_vfs_lookup(&vfs, "DaTa/ShArEd.BiN", -2, &file));
+    assert(file.mount_index == 0u && file.size == sizeof(unqualified_data) - 1u);
+    assert(sr_archive_vfs_lookup(&vfs, "data/shared.bin", 2, &file));
+    assert(file.mount_index == 1u && file.size == sizeof(variant_two_data) - 1u);
+    assert(sr_archive_vfs_lookup(&vfs, "data/shared.bin", 0, &file));
+    assert(file.mount_index == 3u && file.size == sizeof(variant_zero_data) - 1u);
+
+    SrVfsDirList list;
+    sr_vfs_dirlist_init(&list);
+    assert(sr_archive_vfs_list_dir(&vfs, "DATA", -2, &list) == 1);
+    assert(list.exists && list.count == 1u);
+    assert(archive_list_has(&list, "Shared.BIN"));
+    sr_vfs_dirlist_destroy(&list);
+    assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+
+    sr_archive_vfs_destroy(&vfs);
+    for (size_t i = 0; i < sizeof(archives) / sizeof(archives[0]); i++) {
+        free(archives[i].data);
+    }
+}
+
 static void test_archive_vfs_provider(void) {
     static const uint8_t raw_data[] = "raw archive bytes";
     static const uint8_t lzs_data[] = "lzs archive bytes";
@@ -1040,6 +1284,9 @@ static void test_archive_vfs_many_members(void) {
 int main(void) {
     printf("[XB_TEST] Starting native clean-room XB parser tests...\n");
     test_roundtrip_all_compression_modes();
+    test_file_backed_archive_is_lazy();
+    test_file_backed_duplicate_validation();
+    test_lazy_payload_failure_is_deferred();
     test_huffman_final_buffered_bits();
     test_big_endian_fields();
     test_truncated_header();
@@ -1051,8 +1298,10 @@ int main(void) {
     test_compressed_header_expansion_limit();
     test_duplicate_canonical_path();
     test_deterministic_mutation_fuzz();
+    test_archive_vfs_precedence();
     test_archive_vfs_provider();
     test_archive_vfs_many_members();
+    test_archive_vfs_mount_scaling();
     test_staging_cleanup_boundary();
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();

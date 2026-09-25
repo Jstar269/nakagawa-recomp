@@ -33,8 +33,10 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
   with the library entry as staging facts.
 - A completed worker promotion registers the inspected title in `app.games` and
   enters `PLAYER_VIEW_READY_LIBRARY`. The card shows the disc ID and staged
-  asset census, with `PLAY NOW` only for a resolved runtime and
-  `LAUNCH PREPARED` for staged-but-not-yet-runtime-ready entries.
+  asset census, with `PLAY NOW` for a validating package or a resolvable
+  non-experimental catalog runtime ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)),
+  `BUILD PACKAGE`/`REBUILD PACKAGE` when the package is missing or stale, and
+  a `RUNTIME REQUIRED` status for a staged entry with no runnable runtime.
 - `--iso=<path> --stage-only` is a headless path through the same native staging,
   atomic promotion, registration, and state transition. `--stage` starts the
   same transaction from the interactive wizard.
@@ -69,7 +71,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 | ISO Inspecting | `native_03_iso_inspecting.png` | 1280×720 | Captured with no `--iso=`, so the inspector renders "No disc image selected" and a cancel action. With a disc it shows an indeterminate indicator: this build's inspector reports no percentage |
 | Recognized Title | `native_04_supported_game.png` | 1280×720 | The synthetic fixture `TEST00001`, which is what `--view=supported` populates — no retail disc is involved; honest LLE font requirement note |
 | Unsupported Title | `native_05_unsupported_game.png` | 1280×720 | Fail-closed boundary preventing unregistered execution |
-| Legacy Preparation View | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" remains an honest fallback for non-wizard preparation requests; wizard Step 3 now has a separate bounded staging progress view |
+| Legacy Preparation View | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" remains an honest unavailable state; it is reachable today only as the captured `--view=preparing` input, while wizard Step 3 has a separate bounded staging progress view |
 | Ready Library | `native_07_ready_library.png` | 1280×720 | Hero game card with "PLAY NOW" & Quick Specs Rail |
 | Settings Dialog | `native_08_settings.png` | 1280×720 | Live resolution/FPS presets, display toggles, reduce-motion switch and volume stepper (persisted to settings.json); keyboard/gamepad focus on every control; single-column flow on narrow windows |
 | Visual Craft | n/a | all | Runtime system-font typography (SDL3_ttf dlopen, zero bundled fonts, DebugText fallback), rounded cards/buttons/pills with shadows, disc ICON0.PNG runtime texture extraction with monogram fallback, dimmed PIC1.PNG hero backdrop, density-aware raster |
@@ -84,7 +86,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 The matrix distinguishes between architectural staging, implementation completeness, and verified execution:
 
 - `PIPELINE_STAGE_EXISTS`: A state/step is declared in UI/data structures, but backend execution is not yet integrated.
-- `NOT_IMPLEMENTED`: Underlying engine functionality (e.g. archive-backed VFS) does not yet exist.
+- `NOT_IMPLEMENTED`: Underlying engine functionality (e.g. retail-disc hash validation) does not yet exist.
 - `PLAN_VERIFIED`: Launch session data/environment parameters construct correctly in unit tests.
 - `EXECUTED_VERIFIED`: Real process spawned, child landmarks observed on host.
 
@@ -93,7 +95,7 @@ The matrix distinguishes between architectural staging, implementation completen
 | 1 | ISO Drag & Drop | Sandbox only | Full native filesystem read | **PASS** (Direct OS path handoff) |
 | 2 | Disc Identification | Web Worker sector parse | Direct C ISO9660 PVD + SFO parse | **PASS** (Project-authored C PVD parser) |
 | 3 | Title Qualification | Profile match in JS | Single authoritative manifest catalog | **PASS** (Derived from `assets/titles`) |
-| 4 | Asset Extraction | External PowerShell script | Native ISO/XB staging worker | **PARTIAL** (synthetic native path is verified; decryption/VFS integration pending) |
+| 4 | Asset Extraction | External PowerShell script | Native ISO/XB staging worker | **PARTIAL** (synthetic native path is verified; module decryption pending; the runtime also serves the read-only archive-backed VFS ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298))) |
 | 5 | Module Decryption | External toolchain | **NOT_SUPPORTED** (open maintainer legal decision, #295) | **NOT_SUPPORTED** (plain inputs only) |
 | 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
 | 7 | Graphics Settings | Web localStorage | Native JSON configuration (`settings.json`) & CLI env | **PASS** (Atomically persisted and round-trip verified) |
@@ -136,16 +138,21 @@ What this establishes, exactly:
 The native-player path is exercised separately by
 `mingw32-make display-smoke-player`. It runs the player with
 `--demo --runtime-root=<repository> --launch-index=1`, so the entry must first
-be marked `Prepared` by the same resolver the launch uses; the driver then
-asserts the generated `--gui` argument and the child runtime's
+resolve through the same predicate the launch uses — a validating package or,
+for a non-experimental catalog title, the developer runtime under the
+repository build tree ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483));
+the driver then asserts the generated `--gui` argument and the child runtime's
 `window_ready`/`first_frame` boot events. This is a display-dependent developer
 gate, not a retail-title claim.
 
 What it does not establish: any commercial-title compatibility, PSP timing or
 rendering correctness, GE/graphics-pipeline behaviour (this guest writes the
 framebuffer directly and submits no display list), audio, or that any other
-title in the catalog can be launched — none of them are built under the layout
-the launcher resolves.
+title in the catalog can be launched by this test — the showcase demos are
+built and packaged under their own title IDs and launch through the same
+package validator ([#477](https://github.com/Jstar269/nakagawa-recomp/pull/477)),
+but this driver does not exercise them, and a commercial title still needs a
+plain executable plus a built package.
 
 ---
 

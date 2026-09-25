@@ -13,6 +13,9 @@ import sys
 import tempfile
 import unittest
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
 from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk, is_usable_vulkan_sdk
 
 
@@ -176,7 +179,7 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
             proc = subprocess.run(
                 [make, "--no-print-directory", "-n", "CC=gcc", "player",
                  "PLAYER_EXE=build/td33-override-player.exe"],
-                capture_output=True, text=True, env=env, check=False, cwd=os.getcwd(),
+                capture_output=True, text=True, env=env, check=False, cwd=str(ROOT),
             )
             blob = proc.stdout + proc.stderr
             self.assertEqual(proc.returncode, 0, blob)

@@ -184,6 +184,21 @@ static void archive_index_rollback(SrArchiveVfs *vfs, size_t first) {
     }
 }
 
+static int archive_index_finalize(SrArchiveVfs *vfs) {
+    if (!vfs) return 0;
+    if (!vfs->index_dirty) return 1;
+    if (vfs->index_count > 1u) {
+        qsort(vfs->index, vfs->index_count, sizeof(*vfs->index), archive_index_cmp);
+    }
+    vfs->index_dirty = 0;
+    vfs->index_sort_count++;
+    return 1;
+}
+
+int sr_archive_vfs_finalize(SrArchiveVfs *vfs) {
+    return archive_index_finalize(vfs);
+}
+
 void sr_archive_vfs_init(SrArchiveVfs *vfs) {
     if (!vfs) return;
     memset(vfs, 0, sizeof(*vfs));
@@ -249,7 +264,7 @@ static NkResult archive_adopt(SrArchiveVfs *vfs, NkXbArchive *archive, int varia
     }
     vfs->mounts[vfs->mount_count++] = *archive;
     memset(archive, 0, sizeof(*archive));
-    qsort(vfs->index, vfs->index_count, sizeof(*vfs->index), archive_index_cmp);
+    vfs->index_dirty = 1;
     return NK_OK;
 }
 
@@ -263,8 +278,8 @@ NkResult sr_archive_vfs_mount_file(SrArchiveVfs *vfs, const char *path,
     }
     if (actual_variant < -1) return NK_ERROR_INVALID_XB;
     NkXbArchive archive;
-    NkResult result = nk_xb_open_file(path, big_endian, limits, &archive,
-                                      NULL, 0);
+    NkResult result = nk_xb_open_file_lazy(path, big_endian, limits, &archive,
+                                           NULL, 0);
     if (result != NK_OK) return result;
     result = archive_adopt(vfs, &archive, actual_variant);
     if (result != NK_OK) nk_xb_close(&archive);
@@ -301,6 +316,7 @@ static int archive_file_from_index(const SrArchiveVfs *vfs,
 int sr_archive_vfs_lookup(const SrArchiveVfs *vfs, const char *key,
                           int wanted_variant, SrArchiveFile *file_out) {
     if (!vfs || !key || !file_out) return 0;
+    if (!archive_index_finalize((SrArchiveVfs *)vfs)) return 0;
     memset(file_out, 0, sizeof(*file_out));
     char normalized[NK_XB_MAX_NAME_BYTES + 1u];
     if (!archive_normalize_key(key, normalized, sizeof(normalized), 0)) return 0;
@@ -442,10 +458,16 @@ NkResult sr_archive_vfs_read(const SrArchiveVfs *vfs, const SrArchiveFile *file,
     }
 
     if (entry->compression == NK_XB_COMPRESSION_NONE) {
-        if (entry->offset > mount->data_size ||
-            entry->expanded_size > mount->data_size - (size_t)entry->offset ||
+        if (entry->offset > mount->source_size ||
+            entry->expanded_size > mount->source_size - entry->offset ||
             offset > entry->expanded_size ||
             amount > entry->expanded_size - (size_t)offset) return NK_ERROR_INVALID_XB;
+        if (mount->file_backed) {
+            NkResult result = nk_xb_read_entry_range(mount, file->entry_index, offset,
+                                                     output, output_capacity,
+                                                     output_size, NULL, 0);
+            return result;
+        }
         memcpy(output, mount->data + (size_t)entry->offset + (size_t)offset, amount);
         if (output_size) *output_size = amount;
         return NK_OK;
@@ -508,6 +530,7 @@ static void archive_original_child(const char *path, size_t depth,
 int sr_archive_vfs_list_dir(const SrArchiveVfs *vfs, const char *dir_key,
                             int wanted_variant, SrVfsDirList *list) {
     if (!vfs || !list) return -1;
+    if (!archive_index_finalize((SrArchiveVfs *)vfs)) return -1;
     char normalized[NK_XB_MAX_NAME_BYTES + 1u];
     if (!archive_normalize_directory(dir_key, normalized, sizeof(normalized))) return -1;
     int wanted = wanted_variant == SR_ARCHIVE_VARIANT_AUTO ? -2 : wanted_variant;
@@ -558,6 +581,10 @@ size_t sr_archive_vfs_mount_count(const SrArchiveVfs *vfs) {
 
 size_t sr_archive_vfs_entry_count(const SrArchiveVfs *vfs) {
     return vfs ? vfs->index_count : 0u;
+}
+
+size_t sr_archive_vfs_index_sort_count(const SrArchiveVfs *vfs) {
+    return vfs ? vfs->index_sort_count : 0u;
 }
 
 size_t sr_archive_vfs_cache_bytes(const SrArchiveVfs *vfs) {

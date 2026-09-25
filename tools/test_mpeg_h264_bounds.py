@@ -10,10 +10,12 @@ evidence labels.
 """
 
 from pathlib import Path
+import sys
 import unittest
 
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+
 MPEG = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
 H264 = (ROOT / "src" / "rt" / "h264_mf.c").read_text(encoding="utf-8")
 PSMF_MEDIA = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
