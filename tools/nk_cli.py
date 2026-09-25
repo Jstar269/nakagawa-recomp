@@ -304,13 +304,28 @@ def _copy_decrypted_elf(source: Path, destination: Path) -> str:
         raise PackageBuildError(f"Could not copy user-supplied decrypted EBOOT.elf: {exc}") from exc
 
 
-def _find_public_manifest(title_id: str) -> tuple[Path, dict]:
-    manifest_root = ROOT / "assets" / "titles"
-    for path in sorted(manifest_root.glob("*.json")):
-        manifest = title_manifest.load_manifest(path)
-        if manifest["id"] == title_id:
-            return path, manifest
-    raise PackageBuildError(f"No public title manifest matches library identity {title_id!r} (#308).")
+def _find_public_manifest(title_id: str, user_root: Path | None = None) -> tuple[Path, dict]:
+    """The manifest for title_id: the repository's titles first, then the user's.
+
+    The player loads every manifest in <user data>/manifests at start-up, so a
+    title it recognizes from there must resolve to the same manifest here.
+    """
+    roots = [ROOT / "assets" / "titles"]
+    if user_root is not None:
+        roots.append(user_root / "manifests")
+    for manifest_root in roots:
+        if not manifest_root.is_dir():
+            continue
+        for path in sorted(manifest_root.glob("*.json")):
+            try:
+                manifest = title_manifest.load_manifest(path)
+            except (OSError, ValueError):
+                if manifest_root == roots[0]:
+                    raise
+                continue
+            if manifest["id"] == title_id:
+                return path, manifest
+    raise PackageBuildError(f"No title manifest matches library identity {title_id!r} (#308).")
 
 
 def _load_library_entry(user_root: Path, disc_id: str) -> dict:
@@ -341,7 +356,8 @@ def _load_library_entry(user_root: Path, disc_id: str) -> dict:
     return entry
 
 
-def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: str) -> tuple[Path, dict, str | None]:
+def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: str,
+                         uses_decrypted_eboot: bool = False) -> tuple[Path, dict, str | None]:
     title_id = entry["title_id"]
     profile_path = user_root / "experimental" / disc_id / "profile.json"
     if entry.get("is_experimental"):
@@ -358,6 +374,15 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
         if not isinstance(identity, dict) or identity.get("disc_id") != disc_id:
             raise PackageBuildError(f"Experimental profile identity is stale for {disc_id}.")
         profile_selected = str(identity.get("selected_executable", "")).rsplit("/", 1)[-1]
+        if uses_decrypted_eboot and profile_selected == "" and identity.get("executable_sha256") is None:
+            # The profile was written while the disc's executable was still
+            # encrypted, so it binds no executable. The user has since supplied
+            # EBOOT.elf in the per-title decrypted folder; that file is the
+            # executable, validated as a plain MIPS ELF32 when it is copied.
+            manifest = title_manifest.validate_manifest(profile.get("manifest"))
+            if manifest["id"] != title_id or manifest["disc"]["id"] != disc_id:
+                raise PackageBuildError(f"Experimental profile title identity does not match {disc_id}.")
+            return profile_path, manifest, None
         if profile_selected != selected:
             raise PackageBuildError(f"Experimental profile selected executable is stale for {disc_id}.")
         digest = identity.get("executable_sha256")
@@ -367,7 +392,7 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
         if manifest["id"] != title_id or manifest["disc"]["id"] != disc_id:
             raise PackageBuildError(f"Experimental profile title identity does not match {disc_id}.")
         return profile_path, manifest, digest
-    manifest_path, manifest = _find_public_manifest(title_id)
+    manifest_path, manifest = _find_public_manifest(title_id, user_root)
     if manifest.get("disc", {}).get("id") != disc_id and disc_id not in manifest.get("disc", {}).get("compatible_revisions", []):
         raise PackageBuildError(f"Public manifest identity does not match library disc {disc_id}.")
     return manifest_path, manifest, None
@@ -384,8 +409,13 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     for module in modules:
         name = module["name"]
+        # Users name a decrypted module after the file on the disc (psp_game/usrdir/
+        # module/psmf.prx), while the manifest names it by its module name
+        # (scePsmf_library.prx). Accept either spelling in the decrypted folder.
+        disc_name = _module_disc_file_name(module)
         module_dir = module_dir_arg or default_module_dir
-        candidates = (module_dir / name,) if module_dir else ()
+        names = [name] + ([disc_name] if disc_name and disc_name != name else [])
+        candidates = tuple(module_dir / candidate for candidate in names) if module_dir else ()
         source_path = next((path for path in candidates if path.is_file()), None)
         if source_path is not None and module_dir_arg is None and default_module_dir is not None:
             try:
@@ -411,8 +441,8 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             if not is_elf:
                 suggested = module_dir_arg or default_module_dir
                 raise PackageBuildError(
-                    f"Required guest PRX {name} is not a decrypted ELF; supply decrypted modules "
-                    f"at {suggested} (#295). Decrypted module intake is in the works."
+                    f"Required guest PRX {_module_label(name, disc_name)} is not a decrypted ELF; "
+                    f"supply decrypted modules at {suggested} (#295). Decrypted module intake is in the works."
                 )
             _write_private_file(destination, source_path.read_bytes())
             continue
@@ -457,8 +487,8 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                         temporary.unlink(missing_ok=True)
                         suggested = module_dir_arg or default_module_dir
                         raise PackageBuildError(
-                            f"Required guest PRX {name} is encrypted or not a plain ELF; "
-                            f"supply decrypted modules at {suggested} (#295). "
+                            f"Required guest PRX {_module_label(name, disc_name)} is encrypted or not a "
+                            f"plain ELF; supply decrypted modules at {suggested} (#295). "
                             "Decrypted module intake is in the works."
                         )
                     os.replace(temporary, destination)
@@ -469,10 +499,26 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
         if not extracted and source_path is None:
             suggested = module_dir_arg or default_module_dir
             raise PackageBuildError(
-                f"Required guest PRX {name} is unavailable; supply decrypted modules at "
-                f"{suggested} (#295). Decrypted module intake is in the works."
+                f"Required guest PRX {_module_label(name, disc_name)} is unavailable; supply "
+                f"decrypted modules at {suggested} (#295). Decrypted module intake is in the works."
             )
     return output
+
+
+def _module_disc_file_name(module: dict) -> str | None:
+    """The module's file name on the disc, from its declared guest path."""
+    guest_path = module.get("guest_path")
+    if not isinstance(guest_path, str) or not guest_path:
+        return None
+    leaf = guest_path.replace("\\", "/").rsplit("/", 1)[-1].split(":")[-1]
+    return leaf or None
+
+
+def _module_label(name: str, disc_name: str | None) -> str:
+    """Name a module for the user: its disc file first, since that is what they can find."""
+    if disc_name and disc_name.lower() != name.lower():
+        return f"{disc_name} ({name})"
+    return name
 
 
 def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, str]:
@@ -775,7 +821,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(f"Selected executable changed from library entry {library_selected!r} to {selected!r}; re-import the ISO (#297).")
 
         manifest_source, manifest, expected_hash = _load_entry_manifest(
-            user_root, entry, disc_id, manifest_selected
+            user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
         )
         reporter.report("preflight", "PASS", "Library entry and manifest validated")
         reporter.report("extract", "START", "Extracting executable and guest modules...")
@@ -806,12 +852,24 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _write_private_file(manifest_cache_path, canonical)
 
         psp_header = args.psp_header.expanduser().resolve(strict=True) if args.psp_header else None
-        if manifest["executable"].get("bss_metadata_source") == "psp-header" and psp_header is None:
-            raise PackageBuildError("This manifest requires a PSP header input; provide --psp-header or use a route that exposes it (#296).")
         cached_header = None
         if psp_header is not None:
             cached_header = cache_dir / "selected.psp"
             shutil.copyfile(psp_header, cached_header)
+        elif manifest["executable"].get("bss_metadata_source") == "psp-header":
+            # The header is the disc's own ~PSP-wrapped executable: its metadata
+            # carries the true BSS size. Read it from the ISO instead of asking
+            # the user for a file they already have inside the disc image.
+            cached_header = cache_dir / "selected.psp"
+            _extract_iso_executable(iso_path, manifest_selected, cached_header)
+            with cached_header.open("rb") as header_file:
+                magic = header_file.read(4)
+            if magic != b"~PSP":
+                cached_header.unlink(missing_ok=True)
+                raise PackageBuildError(
+                    "This manifest reads BSS metadata from the disc's ~PSP executable header, "
+                    f"but {manifest_selected} on this disc has no such header; provide --psp-header (#296)."
+                )
         module_dir = _copy_optional_modules(
             iso_path,
             manifest,
@@ -992,6 +1050,15 @@ def _build_package(args: argparse.Namespace, stage_observer,
         reporter.report("package", "START", "Staging runtime assets and validating package...")
         package_started = time.perf_counter()
         _stage_runtime_assets(build_dir)
+        if module_dir is not None:
+            # The runtime loads each guest PRX's data at run time from SR_MODULE_DIR,
+            # by its manifest name. Ship the modules the build compiled against
+            # inside the package so a launch needs nothing outside it.
+            package_modules = build_dir / "modules"
+            package_modules.mkdir(parents=True, exist_ok=True)
+            for module_file in sorted(module_dir.iterdir()):
+                if module_file.is_file():
+                    shutil.copyfile(module_file, package_modules / module_file.name)
         backends_mode = "public" if public_safe else "private"
         backend_limits = (
             [

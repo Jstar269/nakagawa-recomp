@@ -833,7 +833,10 @@ NkResult nk_launch_prepare_session(
        launch at 0 0 as documented -- not an unknown-address guess, and the
        Python planner reads the same fields identically. */
     session->base_address = entry->executable_base;
-    session->entry_point = entry->executable_entry;
+    /* The run entry, not the raw executable.entry: a title that declares a
+       fallback entry must start there (the manager and package planner do the
+       same through title_codegen_plan._resolve_run_entry). */
+    session->entry_point = entry->run_entry;
 
     /* A completed native staging transaction carries the source EBOOT under
      * prepared_root. Validate it before any launch environment is assembled;
@@ -1148,7 +1151,21 @@ NkResult nk_launch_start(NkLaunchSession *session) {
      * the selected game's private root. Tell the runtime's late-import loader
      * where that exact tree lives; otherwise it falls back to the repository
      * development path and silently ignores the modules just staged. */
-    if (session->prepared_root[0]) {
+    char package_modules[NK_MAX_PATH * 2];
+    bool have_package_modules = session->package_launch && session->working_directory[0] &&
+        launch_join_path(session->working_directory, "modules", package_modules,
+                         sizeof(package_modules)) &&
+        nk_platform_dir_exists(package_modules);
+    if (have_package_modules) {
+        /* A runtime package ships the decrypted guest modules it was compiled
+         * against (build-package copies them into <package>/modules under their
+         * manifest names); those are the ones this runtime must load. */
+        int module_written = snprintf(env_modules, sizeof(env_modules),
+                                      "SR_MODULE_DIR=%s", package_modules);
+        if (module_written > 0 && (size_t)module_written < sizeof(env_modules)) {
+            envp[env_count++] = env_modules;
+        }
+    } else if (session->prepared_root[0]) {
         char module_dir[NK_MAX_PATH * 2];
         if (launch_join_path(session->prepared_root, "EXTRACTED/decrypted",
                              module_dir, sizeof(module_dir))) {
