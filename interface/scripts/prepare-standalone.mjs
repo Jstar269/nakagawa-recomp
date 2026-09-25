@@ -19,10 +19,14 @@ for (const name of readdirSync(out)) {
 // The standalone output redistributes the traced npm packages, so it must ship the
 // generated third-party notices. Fail closed: a standalone tree without notices
 // stops the build rather than shipping an unrecorded binary distribution.
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// `out` is relative to this package directory (the npm script's working
+// directory), so anchor it to the interface root, not the repository root.
+const interfaceRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = join(interfaceRoot, "..");
 const generator = join(repoRoot, "tools", "dashboard_notices.py");
+const standalone = join(interfaceRoot, out);
 const python = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
-const notices = spawnSync(python, [generator, "--standalone", out], {
+const notices = spawnSync(python, [generator, "--standalone", standalone], {
   cwd: repoRoot,
   stdio: "inherit",
 });

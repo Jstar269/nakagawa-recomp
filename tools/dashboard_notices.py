@@ -275,6 +275,9 @@ def write_dashboard_notices(
     lock_path: Path | None = None,
 ) -> dict[str, Any]:
     """Write THIRD_PARTY_NOTICES.txt and index.json into the standalone output."""
+    # Resolved so a caller that passes a relative path with a different working
+    # directory cannot scatter the bundle outside the output it belongs to.
+    output_dir = output_dir.resolve()
     bundle = build_dashboard_notices(repo_root=repo_root, lock_path=lock_path)
     notices_dir = output_dir / "THIRD_PARTY_NOTICES"
     notices_dir.mkdir(parents=True, exist_ok=True)
@@ -308,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(
         f"Generated dashboard third-party notices for {bundle['package_count']} locked "
-        f"packages in {args.standalone}"
+        f"packages in {args.standalone.resolve()}"
     )
     return 0
 
