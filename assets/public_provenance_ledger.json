@@ -997,7 +997,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fdc7e6bd3cf3bd64bd37edd33c98c7edf8ff6abe9c8b358373200be79e51f54e"
+      "sha256": "871702982f4c1490f3a0d1746115ce50ce0ccda581b845c866abe6964e98ad6b"
     },
     {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
