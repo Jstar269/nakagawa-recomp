@@ -460,6 +460,29 @@ even while a frame is slow.
 
 The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
 
+### Player BUILD PACKAGE prerequisites
+
+**BUILD PACKAGE** in the native player re-runs this toolchain from inside the app, so
+it needs all of the following:
+
+- `tools/nk_cli.py` reachable. The player searches, in order: the `NK_INSTALL_ROOT`
+  environment variable (a folder containing `tools/`), `<player exe>/tools`,
+  `<player exe>/../tools`, `<player exe>/../source/tools` (the v0.0.1 release
+  layout), the working directory, and its parent. Running the player from the
+  repository root or from `build/` finds it automatically.
+- `python`, `gcc`, and `mingw32-make` on `PATH` — the UCRT64 toolchain installed in
+  section 1. The spawned build inherits the player's `PATH`, so a tool your shell
+  cannot see is a tool the build cannot see either.
+
+Missing pieces are named on the error card instead of failing deep inside the build:
+`CLI_NOT_FOUND` lists every searched location and the `NK_INSTALL_ROOT` fix,
+`BUILD_TOOLCHAIN_MISSING` names the missing tool (`python`, `gcc`, or
+`mingw32-make`), and `PYTHON_NOT_FOUND` names the interpreter.
+
+The player's UI typography loads `SDL3_ttf.dll` from beside the executable first,
+then from `PATH`; without it the built-in readable debug font is used. Placing
+`SDL3_ttf.dll` next to `nakagawa_player.exe` is enough — no rebuild required.
+
 ### Build lifecycle and cleanup targets
 
 The build system provides scoped and explicit cleanup targets:
