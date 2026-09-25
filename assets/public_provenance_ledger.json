@@ -502,7 +502,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "df5e4b28a53de4d54148169b0e486efba2aea67f0203ef6233548b242aa73e3c"
+      "sha256": "dd9e2228813bbf256df361412e5fe688ed3e8733b9ab6d1141521640d166e2f0"
     },
     {
       "path": "assets/titles/display-smoke.json",
@@ -1111,7 +1111,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "81fbe29e29947dd0921f8ae98891265df2740923178aff5a36de9ba3352085a3"
+      "sha256": "36fde27b26ee0b232c05d017e779dce763d7b628c2dc5d1c914cb67eebe764f7"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
