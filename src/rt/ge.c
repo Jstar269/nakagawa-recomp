@@ -846,9 +846,23 @@ static uint32_t ge_transition_draw_id(uint32_t vtype, uint32_t vbase, int prim, 
     return h;
 }
 
+/* One JSON-safe number. printf renders a non-finite float as `-nan(ind)` or
+ * `inf`, neither of which is JSON, so a real #69 trace aborted
+ * tools/ge_transition_diff.py at the first corrupted bone matrix. Non-finite
+ * values are emitted as JSON `null`; the diff tool treats a null as a value
+ * that differs from every finite one and flags it as NON_FINITE. Finite values
+ * keep the exact `%.9g` rendering they always had, so existing traces of
+ * uncorrupted frames are unchanged. */
+static void ge_json_float(FILE *fp, float v) {
+    if (isfinite(v)) fprintf(fp, "%.9g", v);
+    else fputs("null", fp);
+}
+
 static void ge_transition_trace_floats(FILE *fp, const float *v, int n) {
-    for (int i = 0; i < n; i++)
-        fprintf(fp, "%s%.9g", i ? "," : "", v[i]);
+    for (int i = 0; i < n; i++) {
+        if (i) fputc(',', fp);
+        ge_json_float(fp, v[i]);
+    }
 }
 
 static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsigned long prim_index,

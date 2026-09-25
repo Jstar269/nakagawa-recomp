@@ -20,6 +20,18 @@ relocations show up alongside matrix, VTYPE, and target changes. Matrix arrays
 are summarized (changed count, max abs delta, first indices) rather than dumped
 whole. ``--recovered`` pins the recovery frame; otherwise the first frame after
 BAD whose compared fields all equal GOOD is reported (``--end`` caps the scan).
+
+Non-finite matrix entries
+-------------------------
+The GE transition trace emits every non-finite float as JSON ``null``: printf
+renders NaN and Inf as ``-nan(ind)`` and ``inf``, neither of which is JSON, so a
+real corrupted trace used to abort this tool at the first bad bone matrix (see
+``ge_json_float`` in ``src/rt/ge.c``). A ``null`` entry is a real recorded value,
+not a missing one: it compares unequal to every finite value and equal only to
+another ``null``, and every field that carries one is additionally flagged on its
+own line as ``NON_FINITE in <field>[<index ranges>]``. The max-delta summary is
+computed over the finite entries only, so a NaN cannot hide the size of a
+simultaneous real change.
 """
 
 from __future__ import annotations
@@ -31,6 +43,33 @@ from pathlib import Path
 
 #: Positional counters excluded from comparison and recovery matching.
 POSITIONAL_FIELDS = frozenset({"frame", "draw"})
+
+
+def index_runs(indices: list[int]) -> str:
+    """Collapse sorted indices into ``0..35`` / ``0,3,7`` run notation."""
+    compact: list[str] = []
+    for index in sorted(indices):
+        if compact and index == int(compact[-1].split("..")[-1]) + 1:
+            compact[-1] = f"{compact[-1].split('..')[0]}..{index}"
+        else:
+            compact.append(str(index))
+    return ",".join(compact)
+
+
+def nonfinite_runs(good, bad) -> list[int]:
+    """Indices where either side of a compared field is a non-finite (``null``) entry.
+
+    A scalar field reports index 0 so a scalar is flagged the same way as an
+    array element.
+    """
+    if isinstance(good, list) and isinstance(bad, list):
+        if len(good) != len(bad):
+            return []
+        return [i for i, (g, b) in enumerate(zip(good, bad, strict=False))
+                if g is None or b is None]
+    if good is None or bad is None:
+        return [0]
+    return []
 
 
 def parse_frames(spec: str) -> tuple[int, int]:
@@ -106,6 +145,24 @@ def diff_records(good: dict, bad: dict) -> list[str]:
             if changed:
                 changes.append(f"{key}: {detail}")
     return changes
+
+
+def nonfinite_report(good: dict, bad: dict) -> list[str]:
+    """Explicit ``NON_FINITE`` lines for every compared field carrying a null.
+
+    Reported independently of whether the field *changed*: a draw whose bone
+    matrices are NaN in both the LAST_GOOD and the FIRST_BAD record is still the
+    state the maintainer must see, and a null must never be folded into a
+    max-abs-delta summary over the remaining finite entries.
+    """
+    flagged = []
+    for key in sorted(set(good) & set(bad)):
+        if key in POSITIONAL_FIELDS:
+            continue
+        runs = nonfinite_runs(good[key], bad[key])
+        if runs:
+            flagged.append(f"NON_FINITE in {key}[{index_runs(runs)}]")
+    return flagged
 
 
 def records_equal(good: dict, bad: dict) -> bool:
@@ -189,6 +246,10 @@ def main(argv: list[str] | None = None) -> int:
                 lines.append(f"  FIRST_RECOVERED frame={recovered_frame} draw={recovered.get('draw')} "
                              f"list={recovered.get('list')} cmd={recovered.get('cmd')}")
             good_bad = diff_records(good, bad)
+            good_nf = nonfinite_report(good, bad)
+            if good_nf:
+                lines.append("  good->bad NON_FINITE:")
+                lines.extend(f"    {entry}" for entry in good_nf)
             if good_bad:
                 lines.append("  good->bad changed:")
                 lines.extend(f"    {change}" for change in good_bad)
@@ -196,6 +257,10 @@ def main(argv: list[str] | None = None) -> int:
                 lines.append("  good->bad changed: <none>")
             if recovered is not None:
                 bad_rec = diff_records(bad, recovered)
+                bad_nf = nonfinite_report(bad, recovered)
+                if bad_nf:
+                    lines.append("  bad->recovered NON_FINITE:")
+                    lines.extend(f"    {entry}" for entry in bad_nf)
                 if bad_rec:
                     lines.append("  bad->recovered changed:")
                     lines.extend(f"    {change}" for change in bad_rec)
