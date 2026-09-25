@@ -31,6 +31,86 @@ is 3,600 vblanks (about one minute at the intended cadence); tune it with
 correlate guest hot paths with `logs/perf.csv`; compare the unprofiled Benchmark run first because
 guest instrumentation and profile output have measurable overhead.
 
+## SR_PERF subsystem attribution
+
+`SR_PERF` is an opt-in aggregate profiler. It records one-second stderr/CSV intervals and writes a
+machine-readable `nakagawa-perf-v1` summary at process shutdown. Set an explicit JSON path when
+using a direct runtime invocation:
+
+```powershell
+$env:SR_PERF = "1"
+$env:SR_PERF_JSON = "build/perf/baseline.json"
+$env:SR_PERF_CSV = "build/perf/baseline.csv"
+& .\build\hst\hst.exe --image build\hst\hst_image.bin 0 0 none none
+```
+
+`SR_PERF_CSV` derives a sibling `.json` path when `SR_PERF_JSON` is unset. The manager's
+`Benchmark` profile sets both paths and copies both artifacts. With `SR_PERF` unset or set to `0`,
+clock reads, aggregation, interval output, summary writing, and generated AOT per-instruction hooks
+are disabled. Runtime seams use one predicted `sr_perf_enabled` branch; `PERF_AOT_INSTRUCTIONS=0`
+removes the generated per-instruction hook entirely. The benchmark command measures the remaining
+runtime branch cost rather than assuming a zero-cost binary.
+
+The summary fields mean:
+
+- `guest.ns` is inclusive guest execution time. `guest.aot_ns` and `guest.interpreter_ns` are
+  nested tier intervals and must not be added to `guest.ns` or to scheduler time. AOT instruction
+  count is `null` unless generated chunks were built with `PERF_AOT_INSTRUCTIONS=1`; a compiled
+  hook reports zero for a run that executed no AOT instruction rather than claiming an unobserved
+  value.
+- `aot_to_interpreter_count` and `interpreter_to_aot_count` count completed tier hand-offs. Each
+  direction retains a deterministic, bounded top-16 table keyed by guest PC and reason. The table
+  is an aggregate heavy-hitter sample, not a per-transition log; the total counts remain exact.
+- `vfpu` counts fallback operations, family classification, fallback time, and failures. Native AOT
+  VFPU execution has no separate per-instruction timer yet, so AOT VFPU time is not inferred from
+  total guest time; this boundary is in the works (#282).
+- `scheduler` is global execution residency: running, runnable, blocked, and idle intervals, plus
+  context-switch selections. It is sampled at scheduler boundaries, not a sum of simultaneous
+  per-thread lifetimes; a wake that remains preempted is accounted for at the next scheduler
+  boundary.
+- `ge.cpu_ns` covers the GE command-list CPU boundary. `transform_sample_ns` and `primitive_ns`
+  are only the existing sampled GE CPU profiler's deltas; they are not inferred from frame time and
+  are in the works for a complete phase breakdown (#282).
+- `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
+  API regions. Readback and general wait can overlap and are intentionally not additive;
+  `readbacks` counts completed CPU readback commits, not every fence poll.
+- `textures` counts cache hits/misses and central decode calls. `storage` separates public ISO and
+  VFS byte/read/failure counters. `media` counts H.264 and ATRAC decode calls, elapsed time, and
+  failures. If the host H.264 backend is unavailable, the runtime reports its named boundary
+  (`H.264 backend unavailable; in the works (#283)`) instead of manufacturing a decode result.
+  `audio` separates SAS mix time from host output-enqueue time and frames; unavailable public audio
+  output remains an explicit product boundary (#301).
+
+For exact AOT instruction counts, rebuild generated chunks with the compile-time profile:
+
+```powershell
+mingw32-make GAME_NAME=... GAME_ELF=... PERF_AOT_INSTRUCTIONS=1 production-smoke-gap
+```
+
+The default summary reports `aot_instruction_count: null` when that hook was not compiled. The
+runtime profiler is not a correctness oracle and does not alter guest-visible results.
+
+The public source-owned benchmark matrix is repeatable without private title data:
+
+```powershell
+mingw32-make BUILD_DIR=build/perf-282 perf-benchmark
+```
+
+It runs the AOT-gap production smoke, cosimulation, PSMF media, audio, ATRAC bridge, platform-ladder
+AOT-gap, platform-ladder scheduler, and platform-ladder VFS workloads, records per-run status and
+JSON paths, and
+measures disabled/enabled overhead from repeated direct runs of one public production-smoke build
+in `build/perf-282/perf-benchmark/benchmark.json`. Exit 77 is reported as `SKIP`, never as a pass.
+Compare two summaries without treating wall-clock metadata as a regression:
+
+```powershell
+python tools/perf_summary_diff.py before.json after.json --tolerance 0.02
+```
+
+The diff tool compares transition PCs by `(pc, reason)`, preserves `null` as not compiled, and
+ranks non-zero subsystem costs without summing overlapping intervals. A private HST profile may
+add a real-workload route, but it is supplemental and must not replace the public matrix.
+
 ## Debug Categories (SR_DEBUG bitmask)
 
 The `SR_DEBUG` environment variable accepts a hex bitmask to enable multiple categories at once:
@@ -583,6 +663,22 @@ INPUT: buttons=0x00000000
 FS: Open(./sce_lbn0x0e0f) -> 0x00000000
 VIDEO: present fb=0x04000000 fmt=3 stride=512
 ```
+
+## In-Game Performance Overlay (HUD)
+
+The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance overlay (HUD) that can be toggled at runtime or enabled at process start:
+
+- **Startup Switch**: Launch with `SR_HUD=1` to have the overlay enabled at startup.
+- **Runtime Toggle**: Press `F1` while the game window is focused to toggle the overlay on or off.
+- **Telemetry Displayed**:
+  - **FPS & Frame Time**: Presented frames per second and average millisecond latency per presented frame.
+  - **VBlank Rate**: Cadence of the scheduler's VBlank ticks in Hertz.
+  - **Audio Status**: Whether the host audio stream is actively producing output (`Active` vs. `Inactive`).
+- **Timing and Performance Guarantees**:
+  - Reuses the low-overhead counters already tracked by `SR_PERF`; no parallel measurement system or polling thread is introduced.
+  - When disabled, overhead is a single branch check (`if (s_hud_enabled && ...)`), executing zero extra Vulkan commands and performing zero extra GPU work.
+  - When enabled, host-side drawing renders text onto an SDL3 surface after the guest frame is composed and copies it directly into the swapchain staging buffer, guaranteeing zero impact on guest-visible timing or emulation clocks.
+  - Snapshot captures (`SR_FBSNAP` / visual evidence capture) capture the pristine guest framebuffer before the presentation blit, keeping automated tests and snapshots free of HUD artifacts.
 
 ## Troubleshooting
 

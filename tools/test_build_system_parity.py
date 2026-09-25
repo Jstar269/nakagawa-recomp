@@ -57,6 +57,7 @@ class BuildSystemParityTests(unittest.TestCase):
             "src/player/input_settings.c",
             "src/player/iso_reader.c",
             "src/player/ui_renderer.c",
+            "src/player/package_builder.c",
         ]
         for src in expected_player:
             self.assertIn(src, self.makefile_text, f"Missing {src} in Makefile")
@@ -87,10 +88,19 @@ class BuildSystemParityTests(unittest.TestCase):
             "test_parsers_hostile",
             "test_manifest_parser",
             "test_win32_process",
+            "test_pgf_public",
         ]
         for target in test_targets:
             self.assertIn(target, self.makefile_text, f"Missing test target {target} in Makefile")
             self.assertIn(target, self.cmake_text, f"Missing test target {target} in CMakeLists.txt")
+
+    def test_public_pgf_backend_and_test_sources(self) -> None:
+        """Public Make builds and both test systems compile the same reader test."""
+        self.assertIn("PGF_BACKEND_SRC := src/rt/pgf_public.c", self.makefile_text)
+        self.assertIn("src/rt/pgf_public.c", self.makefile_text)
+        self.assertIn("src/rt/pgf_public.c", self.cmake_text)
+        self.assertIn("tests/native/test_pgf_public.c", self.makefile_text)
+        self.assertIn("tests/native/test_pgf_public.c", self.cmake_text)
 
     def test_compiler_noise_suppression_classification(self) -> None:
         """Verify _CRT_SECURE_NO_WARNINGS is classified as compiler noise suppression, not portable architecture."""

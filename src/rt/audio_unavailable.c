@@ -22,6 +22,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_audio.h>
 
+#include "perf.h"
+
 #define SR_AUDIO_CHANNELS 9
 #define SR_AUDIO_OUTPUT2_CH 8
 #define SR_AUDIO_SAMPLE_RATE 44100
@@ -187,6 +189,7 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     }
 
     /* Volume scaling and submission */
+    uint64_t perf_started = sr_perf_now_ns();
     if (volL == 0x8000 && volR == 0x8000) {
         SDL_PutAudioStreamData(s_streams[ch], lr, nframes * 4);
     } else {
@@ -207,6 +210,7 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
             free(buf);
         }
     }
+    if (perf_started) sr_perf_audio_output(perf_started, (uint32_t)nframes);
 
     s_stats.total_pushed_frames += (uint64_t)nframes;
     s_stats.channel_pushed_frames[ch] += (uint64_t)nframes;
@@ -256,6 +260,10 @@ void sr_audio_dump_stats(void) {
             (unsigned long long)s_stats.overrun_events,
             (unsigned long long)s_stats.backpressure_events,
             (unsigned)peak);
+}
+
+int sr_audio_is_active(void) {
+    return s_audio_state == AUDIO_STATE_ACTIVE;
 }
 
 #ifdef SR_AUDIO_SELFTEST
@@ -361,6 +369,7 @@ static void test_null_backend_env(void) {
 }
 
 int main(int argc, char **argv) {
+    sr_perf_init();
     (void)argc;
     (void)argv;
     printf("--- Running audio selftest ---\n");

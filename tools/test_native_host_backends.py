@@ -130,9 +130,17 @@ class NativeHostBackendTests(unittest.TestCase):
         cls._objects["src/player/iso_reader.c"] = _compile_object(
             cls, "src/player/iso_reader.c", "iso_reader.o", ("-Isrc/player",)
         )
+        cls._objects["src/player/package_builder.c"] = _compile_object(
+            cls, "src/player/package_builder.c", "package_builder.o", ("-Isrc/player",)
+        )
+        cls._objects["src/rt/pgf_public.c"] = _compile_object(
+            cls, "src/rt/pgf_public.c", "pgf_public.o", ("-Isrc/rt",)
+        )
         harnesses = {
             "tests/native/test_launch_resolution.c": (),
             "tests/native/test_player_state.c": ("-Isrc/player",),
+            "tests/native/test_package_builder.c": ("-Isrc/player",),
+            "tests/native/test_pgf_public.c": ("-Isrc/rt",),
         }
         if not _WINDOWS:
             harnesses["tests/native/test_posix_process.c"] = ()
@@ -163,9 +171,62 @@ class NativeHostBackendTests(unittest.TestCase):
                 "src/player/player_state.c",
                 "src/player/input_settings.c",
                 "src/player/iso_reader.c",
+                "src/player/package_builder.c",
             ),
         )
         self.assertIn("ALL PLAYER STATE TESTS PASSED", stdout)
+
+    def test_package_builder(self) -> None:
+        """Package builder progress line parser and state machine."""
+        stdout = _build_and_run(
+            self, "tests/native/test_package_builder.c", "test_package_builder",
+            extra_sources=("src/player/package_builder.c",),
+        )
+        self.assertIn("ALL PACKAGE BUILDER TESTS PASSED", stdout)
+
+    def test_public_pgf_reader(self) -> None:
+        """Synthetic PGF reader contract on the current host compiler."""
+        stdout = _build_and_run(
+            self, "tests/native/test_pgf_public.c", "test_pgf_public",
+            extra_sources=("src/rt/pgf_public.c",),
+        )
+        self.assertIn("ALL PUBLIC PGF READER TESTS PASSED", stdout)
+
+    def test_synthetic_pgf_passes_public_validator(self) -> None:
+        """The C-side base fixture also passes the public structural validator."""
+        from tools.nk_core.fonts import validate_pgf_data
+
+        owner = type(self)
+        tmp = self.enterContext(tempfile.TemporaryDirectory(prefix="nk_backend_pgf_fixture_"))
+        executable = Path(tmp) / f"test_pgf_fixture{EXE_EXT}"
+        fixture = Path(tmp) / "synthetic.pgf"
+        build = subprocess.run(
+            [
+                "gcc", "-o", str(executable),
+                str(owner._objects["src/rt/pgf_public.c"]),
+                str(owner._objects["tests/native/test_pgf_public.c"]),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            build.returncode, 0,
+            f"linking the synthetic PGF fixture writer failed:\n{build.stdout}\n{build.stderr}",
+        )
+        write = subprocess.run(
+            [str(executable), "--write-base", str(fixture)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            write.returncode, 0,
+            f"writing the synthetic PGF fixture failed:\n{write.stdout}\n{write.stderr}",
+        )
+        result = validate_pgf_data(fixture.read_bytes(), filename=fixture.name)
+        self.assertGreater(result["size"], 392)
+        self.assertEqual(len(result["sha256"]), 64)
 
     @unittest.skipIf(_WINDOWS, "the POSIX process backend is not built on Windows")
     def test_posix_process_backend(self) -> None:
@@ -191,7 +252,7 @@ class NativeHostBackendTests(unittest.TestCase):
         cmd = [
             "gcc", "-std=c99", "-Wall", "-Wextra",
             "-Isrc/rt", "-DSR_AUDIO_SELFTEST",
-            "src/rt/audio_unavailable.c",
+            "src/rt/audio_unavailable.c", "src/rt/perf.c",
             "-lSDL3", "-lm",
             "-o", str(out),
         ]

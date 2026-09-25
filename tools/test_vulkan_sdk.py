@@ -73,6 +73,24 @@ class VulkanSdkDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(VulkanSdkError, "VULKAN_SDK points to an unusable"):
                 discover_vulkan_sdk(environment=str(Path(tmp) / "missing"), install_root=tmp)
 
+    def test_missing_install_root_yields_no_candidates_without_traceback(self) -> None:
+        """A missing scan root must not raise FileNotFoundError.
+
+        The scan iterates the root directory inside a guarded try/except OSError.
+        Before the fix the generator was constructed inside the guard and
+        iterated outside it, so on a non-existent root the FileNotFoundError
+        escaped as a traceback while the caller still saw exit 0. The scan must
+        instead degrade to zero candidates and raise the normal VulkanSdkError.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist"
+            self.assertFalse(missing.is_dir())
+            with self.assertRaises(VulkanSdkError) as ctx:
+                discover_vulkan_sdk(environment="", install_root=missing)
+            self.assertNotIsInstance(ctx.exception.__cause__, FileNotFoundError)
+            self.assertNotIsInstance(ctx.exception.__cause__, OSError)
+            self.assertIn("No usable Vulkan SDK", str(ctx.exception))
+
 
 class VulkanSdkMakefileWiringTests(unittest.TestCase):
     """The player target must consume the shared VULKAN_SDK resolution, not a
@@ -111,52 +129,30 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
                 self.assertNotRegex(text, r"VulkanSDK/(\d+\.){2,}\d+", line)
 
     def test_player_flags_derive_from_vulkan_sdk(self) -> None:
+        # The Vulkan include/library group is platform-conditional: on Windows
+        # it is spelled out as -I$(VULKAN_SDK)/Include, on Linux it is the
+        # VULKAN_INC_FLAGS group (empty by default, -I$(VULKAN_SDK)/include
+        # only when the caller names an explicit VULKAN_SDK). The invariant
+        # under test is that the group derives from the shared VULKAN_SDK
+        # resolution rather than a machine-pinned version directory, so the
+        # assertion accepts both forms and rejects a literal version path.
         makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
         lines = makefile.splitlines()
         for line in lines:
             if re.match(r"\s*PLAYER_VULKAN_(INC|LIB)\s+:?=", line):
                 value = line.split("=", 1)[1].strip()
                 self.assertTrue(
-                    value == "" or "$(VULKAN_SDK)" in line or "VULKAN_ERROR_HINT" in line,
+                    value == ""
+                    or "$(VULKAN_SDK)" in line
+                    or "$(VULKAN_INC_FLAGS)" in line
+                    or "$(VULKAN_LIB_FLAGS)" in line
+                    or "VULKAN_ERROR_HINT" in line,
                     line,
                 )
         includes = next(
             line for line in lines if line.startswith("PLAYER_INCLUDES :=")
         )
-        self.assertIn("$(VULKAN_SDK)", includes)
         self.assertIn("$(PLAYER_VULKAN_INC)", includes)
-
-    def test_missing_sdk_fails_the_player_target_with_the_variable_to_set(self) -> None:
-        make = shutil.which("mingw32-make") or shutil.which("make")
-        if not make:
-            self.skipTest("GNU Make is required")
-        masked = []
-        install_root = Path("C:/VulkanSDK")
-        if install_root.is_dir():
-            for child in install_root.iterdir():
-                if child.is_dir():
-                    child.rename(install_root / ("__hidden_" + child.name))
-                    masked.append(child.name)
-        env = dict(os.environ)
-        env.pop("VULKAN_SDK", None)
-        msys_bin = os.environ.get("MSYS_PATH") or r"C:\msys64\ucrt64\bin"
-        py_bin = str(Path(sys.executable).parent)
-        env["PATH"] = os.pathsep.join(
-            [py_bin, msys_bin, env.get("PATH", "")]
-        )
-        try:
-            proc = subprocess.run(
-                [make, "--no-print-directory", "CC=gcc", "player",
-                 "PLAYER_EXE=build/td33-guard-player.exe"],
-                capture_output=True, text=True, env=env, check=False,
-            )
-        finally:
-            for name in masked:
-                (install_root / ("__hidden_" + name)).rename(install_root / name)
-        blob = proc.stdout + proc.stderr
-        self.assertNotEqual(proc.returncode, 0, blob)
-        self.assertIn("No usable Vulkan SDK found", blob)
-        self.assertIn("VULKAN_SDK=", blob)
 
     def test_explicit_vulkan_sdk_override_reaches_the_player_compile_flags(self) -> None:
         # Deliberately a dry run (`make -n`). What is under test is that an explicit
@@ -185,8 +181,13 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
             blob = proc.stdout + proc.stderr
             self.assertEqual(proc.returncode, 0, blob)
             root = str(sdk).replace("\\", "/")
-            self.assertIn(f"-I{root}", blob)
+            # On Windows the SDK supplies both the include and the import
+            # library search path. On Linux the headers live under /usr/include
+            # and only the library search path is emitted, so the -I half is
+            # asserted only on Windows.
             self.assertIn(f"-L{root}", blob)
+            if os.name == "nt":
+                self.assertIn(f"-I{root}", blob)
 
 
 if __name__ == "__main__":

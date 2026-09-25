@@ -1229,6 +1229,17 @@ class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
             + "\n".join(offenders),
         )
 
+    def test_makefile_recipes_do_not_use_unix_mkdir_p(self) -> None:
+        offenders = []
+        for line_no, line in enumerate(self.makefile_text.splitlines(), start=1):
+            if line.startswith("\t") and re.search(r"\bmkdir\s+-p\b", line):
+                offenders.append(f"Makefile:{line_no}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "Makefile recipes contain 'mkdir -p' which fails under Windows cmd.exe:\n"
+            + "\n".join(offenders),
+        )
+
     def test_makefile_recipes_do_not_use_raw_rm(self) -> None:
         """Recipes must not rely on Unix `rm` for cleanup when Python is available."""
         offenders = []
@@ -1478,7 +1489,12 @@ class MachinePortabilityTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("CFLAGS=", proc.stdout)
-        self.assertIn("Include", proc.stdout)
+        if os.name == "nt":
+            self.assertIn("Include", proc.stdout)
+        else:
+            # Linux uses the system Vulkan loader and headers: an unset SDK must
+            # not leave a dangling -I/Include in the compiler flags.
+            self.assertNotIn("-I/Include", proc.stdout)
 
     def test_mem_debug_nm_discovery_prefers_environment_and_path(self) -> None:
         """get_symbol_rvas in mem_debug.py must probe NM environment variable and shutil.which before hardcoded paths."""
@@ -1524,7 +1540,10 @@ class MachinePortabilityTests(unittest.TestCase):
         cflags = cflags_match.group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", cflags)
         sdl3_cflags_pos = cflags.index("$(SDL3_INC_FLAGS)")
-        vulkan_cflags_pos = cflags.index("-I$(VULKAN_SDK)")
+        # CFLAGS carries the Vulkan include flags through VULKAN_INC_FLAGS, whose
+        # Windows definition derives from $(VULKAN_SDK).
+        self.assertRegex(makefile_text, r"VULKAN_INC_FLAGS\s*:=\s*-I\$\(VULKAN_SDK\)/Include")
+        vulkan_cflags_pos = cflags.index("$(VULKAN_INC_FLAGS)")
         self.assertLess(sdl3_cflags_pos, vulkan_cflags_pos, "SDL3 includes must precede Vulkan SDK in CFLAGS")
 
         ldflags_match = re.search(r"LDFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
@@ -1540,7 +1559,7 @@ class MachinePortabilityTests(unittest.TestCase):
         player_inc = player_inc_match.group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", player_inc)
         sdl3_pinc_pos = player_inc.index("$(SDL3_INC_FLAGS)")
-        vulkan_pinc_pos = player_inc.index("-I$(VULKAN_SDK)")
+        vulkan_pinc_pos = player_inc.index("$(PLAYER_VULKAN_INC)")
         self.assertLess(sdl3_pinc_pos, vulkan_pinc_pos, "SDL3 includes must precede Vulkan SDK in PLAYER_INCLUDES")
 
     def test_sdl3_discovery_fails_closed_with_actionable_remediation(self) -> None:

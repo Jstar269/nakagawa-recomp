@@ -451,6 +451,25 @@ int main(int argc, char **argv) {
     player_app_sync_library(app);
     assert(app->game_count == 3);
 
+    /* Bundled showcase entries are merged into the visible view only. They
+       survive library resyncs without entering or leaving the user's library. */
+    memset(&app->showcase_games[0], 0, sizeof(app->showcase_games[0]));
+    snprintf(app->showcase_games[0].disc_id, sizeof(app->showcase_games[0].disc_id),
+             "TEST00007");
+    snprintf(app->showcase_games[0].title_id, sizeof(app->showcase_games[0].title_id),
+             "showcase-scene-v1");
+    app->showcase_count = 1;
+    player_app_sync_library(app);
+    assert(app->game_count == 4 && app->library.count == 3);
+    assert(player_game_is_showcase(&app->games[3]));
+    assert(!player_app_remove_game(app, 3));
+    assert(app->library.count == 3 && app->game_count == 4);
+    player_app_sync_library(app);
+    assert(app->game_count == 4 && strcmp(app->games[3].disc_id, "TEST00007") == 0);
+    app->showcase_count = 0;
+    player_app_sync_library(app);
+    assert(app->game_count == 3 && app->library.count == 3);
+
     /* 1. An entry that is NOT last is found at its real index.
      *
      * This is the case --launch-now got wrong: re-adding TEST00001 updates it
@@ -765,7 +784,7 @@ int main(int argc, char **argv) {
         stops->games[0] = entry;
         stops->game_count = 1;
         stops->selected_game_index = 0;
-        assert(player_app_focus_count(stops) == 2); /* add + remove */
+        assert(player_app_focus_count(stops) == 2); /* incompatible package: add + remove */
 
         stops->games[0].is_prepared = true;
         assert(player_app_focus_count(stops) == 2); /* no validated package: add + remove */
@@ -786,6 +805,17 @@ int main(int argc, char **argv) {
         stops->game_count = 3;
         assert(player_app_focus_count(stops) == 4);
 
+        /* A title with missing package offers the BUILD PACKAGE button */
+        stops->window_width = 1280;
+        stops->game_count = 1;
+        seed_entry(&entry, "ULUS10041", "Street Supremacy");
+        snprintf(entry.title_id, sizeof(entry.title_id), "ulus-10041");
+        stops->games[0] = entry;
+        assert(player_app_focus_count(stops) == 3); /* build package + add + remove */
+
+        stops->active_view = VIEW_BUILDING_PACKAGE;
+        assert(player_app_focus_count(stops) == 1); /* cancel build */
+
         stops->active_view = VIEW_INSPECTING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SUPPORTED_TITLE;
@@ -797,7 +827,15 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_SETTINGS;
         assert(player_app_focus_count(stops) == 14);
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
-        assert(player_app_focus_count(stops) == 21);
+        assert(player_app_focus_count(stops) == 22);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
+        assert(player_app_focus_count(stops) == 1);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_EXTREMES;
+        assert(player_app_focus_count(stops) == 2);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_RESULT;
+        assert(player_app_focus_count(stops) == 2);
+        stops->input_settings.calib.stage = CALIBRATION_STAGE_INACTIVE;
+        assert(player_app_focus_count(stops) == 22);
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 
@@ -1443,6 +1481,100 @@ int main(int argc, char **argv) {
                                        &bytes, &size, &w, &h) == NK_ICON_ERR_MISSING);
         assert(bytes == NULL);
         assert(size == 0);
+    }
+
+    /* 17. Package build session and error presentation. */
+    printf("[PLAYER_STATE_TEST] Subtest 17: package builder state and error reporting\n");
+    fflush(stdout);
+    {
+        PlayerApp *bapp = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(bapp != NULL);
+        nk_library_init(&bapp->library);
+
+        /* Start with invalid index */
+        assert(!player_app_start_package_build(bapp, -1));
+        assert(!player_app_start_package_build(bapp, 0));
+
+        /* Set build error with stage, boundary text, and log path */
+        player_app_set_build_error(bapp, "preflight",
+                                   "Encrypted executable: supply decrypted modules (#295).",
+                                   "C:/logs/build_ULUS10041.log");
+        assert(bapp->active_view == VIEW_ERROR);
+        assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
+        assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
+        assert(strstr(bapp->last_error.boundary_text, "#295") != NULL);
+        assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_ULUS10041.log") == 0);
+
+        /* Cancellation transitions session */
+        bapp->active_view = VIEW_BUILDING_PACKAGE;
+        bapp->build_session.is_building = true;
+        player_app_cancel_package_build(bapp);
+        assert(bapp->build_session.is_cancelled);
+        assert(!bapp->build_session.is_building);
+
+        free(bapp);
+    }
+
+    /* 18. Developer-layout catalog title launchability without a package. */
+    printf("[PLAYER_STATE_TEST] Subtest 18: developer-layout catalog title launchability\n");
+    fflush(stdout);
+    {
+        PlayerApp *dev_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(dev_app != NULL);
+        nk_library_init(&dev_app->library);
+
+        char cache_dir[NK_MAX_PATH];
+        char dev_root[576];
+        char build_dir[640];
+        char dev_exe[768];
+        char dev_image[768];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(dev_root, sizeof(dev_root), "%s%cdev_layout_root",
+                 cache_dir, nk_platform_path_separator());
+        snprintf(build_dir, sizeof(build_dir), "%s%cbuild%cdisplay-smoke-v1",
+                 dev_root, nk_platform_path_separator(), nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(build_dir));
+
+        snprintf(dev_exe, sizeof(dev_exe), "%s%cdisplay-smoke-v1.exe",
+                 build_dir, nk_platform_path_separator());
+        snprintf(dev_image, sizeof(dev_image), "%s%cdisplay-smoke-v1_image.bin",
+                 build_dir, nk_platform_path_separator());
+
+        write_text_file(dev_exe, "executable_stub");
+        write_text_file(dev_image, "image_stub");
+
+        player_app_set_runtime_root(dev_app, dev_root);
+        player_app_populate_sample_games(dev_app);
+
+        int disp_idx = player_app_find_game_by_disc_id(dev_app, "TEST00006");
+        assert(disp_idx >= 0);
+        /* Without a package in packages/TEST00006, the developer binary is discovered
+           and marks the title prepared. */
+        assert(dev_app->games[disp_idx].is_prepared == true);
+        assert(dev_app->games[disp_idx].status == NK_STATUS_PREPARED);
+        assert(player_app_game_has_runtime(dev_app, &dev_app->games[disp_idx]) == true);
+
+        /* Session preparation succeeds with the developer layout executable and image */
+        NkResult prep_res = nk_launch_prepare_session(
+            &dev_app->launch_session, &dev_app->games[disp_idx], dev_root);
+        assert(prep_res == NK_OK);
+        assert(dev_app->launch_session.package_launch == false);
+        assert(strcmp(dev_app->launch_session.executable_path, dev_exe) == 0);
+        assert(strcmp(dev_app->launch_session.image_path, dev_image) == 0);
+
+        /* Cleanup stub files and verify fallback to unprepared when binary is removed */
+        assert(remove(dev_exe) == 0);
+        assert(remove(dev_image) == 0);
+
+        nk_library_init(&dev_app->library);
+        dev_app->game_count = 0;
+        player_app_populate_sample_games(dev_app);
+        assert(dev_app->games[disp_idx].is_prepared == false);
+        assert(dev_app->games[disp_idx].status == NK_STATUS_IDENTIFIED);
+        assert(player_app_game_has_runtime(dev_app, &dev_app->games[disp_idx]) == false);
+        assert(player_app_launch_game(dev_app, disp_idx) == false);
+
+        free(dev_app);
     }
 
     free(app);

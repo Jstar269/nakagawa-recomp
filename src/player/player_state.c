@@ -27,6 +27,26 @@ static const char *player_runtime_root(const PlayerApp *app) {
     return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
 }
 
+bool player_game_is_showcase(const GameRecord *game) {
+    return game && strncmp(game->title_id, "showcase-", 9) == 0;
+}
+
+static const char *player_package_root(const PlayerApp *app, const GameRecord *game) {
+    if (app && game && player_game_is_showcase(game) && app->showcase_root[0]) {
+        return app->showcase_root;
+    }
+    return player_runtime_root(app);
+}
+
+static bool player_join_path(char *out, size_t out_size, const char *root,
+                             const char *relative) {
+    char sep = nk_platform_path_separator();
+    int written;
+    if (!out || !out_size || !root || !root[0] || !relative || !relative[0]) return false;
+    written = snprintf(out, out_size, "%s%c%s", root, sep, relative);
+    return written > 0 && (size_t)written < out_size;
+}
+
 void player_app_init(PlayerApp *app) {
     if (!app) return;
     memset(app, 0, sizeof(*app));
@@ -75,7 +95,7 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     size_t reason_size
 ) {
     char default_root[NK_MAX_PATH];
-    const char *root = app && app->runtime_root[0] ? app->runtime_root : NULL;
+    const char *root = player_package_root(app, game);
     if (!root) {
         if (!nk_platform_get_app_data_dir(default_root, sizeof(default_root))) {
             if (reason && reason_size) snprintf(reason, reason_size,
@@ -88,12 +108,36 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
                                               reason_size);
 }
 
+bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game) {
+    if (!game) return false;
+    NkRuntimePackageStatus status = player_app_validate_runtime_package(
+        app, game, NULL, NULL, 0);
+    if (status == NK_RUNTIME_PACKAGE_OK) {
+        return true;
+    }
+    if (status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+        nk_launch_runtime_available(player_package_root(app, game), game->title_id)) {
+        return true;
+    }
+    return false;
+}
+
 void player_app_sync_library(PlayerApp *app) {
     if (!app) return;
     app->game_count = 0;
     for (int i = 0; i < app->library.count && i < MAX_LIBRARY_GAMES; i++) {
         app->games[i] = app->library.entries[i];
         app->game_count++;
+    }
+    for (int i = 0; i < app->showcase_count && app->game_count < MAX_LIBRARY_GAMES; i++) {
+        bool already_present = false;
+        for (int j = 0; j < app->game_count; j++) {
+            if (strcmp(app->games[j].disc_id, app->showcase_games[i].disc_id) == 0) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) app->games[app->game_count++] = app->showcase_games[i];
     }
     if (app->game_count <= 0) {
         app->selected_game_index = -1;
@@ -104,6 +148,49 @@ void player_app_sync_library(PlayerApp *app) {
             app->selected_game_index = app->game_count - 1;
         }
     }
+}
+
+bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
+    if (!app || !executable_directory || !executable_directory[0]) return false;
+    int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
+                           "%sdemos", executable_directory);
+    if (written <= 0 || (size_t)written >= sizeof(app->showcase_root)) {
+        app->showcase_root[0] = '\0';
+        return false;
+    }
+
+    app->showcase_count = 0;
+    for (int i = 0; i < nk_title_catalog_count && app->showcase_count < MAX_SHOWCASE_GAMES; i++) {
+        const NkTitleEntry *title = &nk_title_catalog_entries[i];
+        if (!title->id || strncmp(title->id, "showcase-", 9) != 0 ||
+            !title->primary_disc_id || !title->display_name) continue;
+        GameRecord game;
+        memset(&game, 0, sizeof(game));
+        snprintf(game.disc_id, sizeof(game.disc_id), "%s", title->primary_disc_id);
+        snprintf(game.title_name, sizeof(game.title_name), "%s", title->display_name);
+        snprintf(game.title_id, sizeof(game.title_id), "%s", title->id);
+        snprintf(game.disc_version, sizeof(game.disc_version), "1.00");
+        snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
+        if (!player_join_path(game.iso_path, sizeof(game.iso_path), app->showcase_root,
+                              "images")) continue;
+        size_t image_root_len = strlen(game.iso_path);
+        int image_written = snprintf(game.iso_path + image_root_len,
+            sizeof(game.iso_path) - image_root_len, "%c%s.iso",
+            nk_platform_path_separator(), title->primary_disc_id);
+        if (image_written <= 0 ||
+            (size_t)image_written >= sizeof(game.iso_path) - image_root_len ||
+            !nk_platform_file_exists(game.iso_path)) continue;
+        snprintf(game.prepared_root, sizeof(game.prepared_root), "%s", app->showcase_root);
+        game.iso_size_bytes = (uint64_t)nk_platform_get_file_size(game.iso_path);
+        game.is_prepared = nk_launch_validate_runtime_package(
+            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
+        if (!game.is_prepared) continue;
+        game.status = NK_STATUS_PREPARED;
+        snprintf(game.last_played, sizeof(game.last_played), "Never");
+        app->showcase_games[app->showcase_count++] = game;
+    }
+    player_app_sync_library(app);
+    return app->showcase_count > 0;
 }
 
 bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
@@ -152,7 +239,7 @@ int player_app_focus_count(const PlayerApp *app) {
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
-                 * (PLAY/STOP only when actionable), add, remove, then the
+                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, then the
                  * paging stops when the library overflows. The unavailable
                  * pill is never a stop. */
                 int count = 0;
@@ -160,14 +247,20 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                bool game_has_package = game &&
-                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) ==
-                        NK_RUNTIME_PACKAGE_OK;
-                if (game && (game_has_package || app->is_game_running)) count++;
-                count += 2; /* add + remove */
+                NkRuntimePackageStatus pkg_status = game ?
+                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) :
+                    NK_RUNTIME_PACKAGE_MISSING;
+                bool game_ready = game && player_app_game_has_runtime(app, game);
+                bool can_build = game && !game_ready &&
+                                 (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
+                                  pkg_status == NK_RUNTIME_PACKAGE_STALE);
+                if (game && (game_ready || app->is_game_running || can_build)) count++;
+                count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
             }
+        case VIEW_BUILDING_PACKAGE:
+            return 1;
         case VIEW_INSPECTING:
             return 1;
         case VIEW_SUPPORTED_TITLE:
@@ -183,10 +276,21 @@ int player_app_focus_count(const PlayerApp *app) {
              * in draw order. */
             return 14;
         case VIEW_CONTROLLER_SETTINGS:
+            if (input_settings_is_calibrating(&app->input_settings)) {
+                switch (input_settings_get_calibration_stage(&app->input_settings)) {
+                    case CALIBRATION_STAGE_REST:
+                        return 1;
+                    case CALIBRATION_STAGE_EXTREMES:
+                    case CALIBRATION_STAGE_RESULT:
+                        return 2;
+                    default:
+                        return 1;
+                }
+            }
             /* 14 digital controls rebind buttons + deadzone [-]/[+] (2) +
-             * trigger threshold [-]/[+] (2) + save (1) + reset (1) + back (1),
+             * trigger threshold [-]/[+] (2) + guided calibration (1) + save (1) + reset (1) + back (1),
              * in draw order. */
-            return 21;
+            return 22;
         case VIEW_ERROR:
             return 1;
         case VIEW_SETUP_WIZARD:
@@ -589,6 +693,7 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const char *disc_id = app->games[game_index].disc_id;
     if (!disc_id || disc_id[0] == '\0') return false;
+    if (player_game_is_showcase(&app->games[game_index])) return false;
     /* Only the library entry is removed. The user's ISO file on disk is
      * never touched. */
     if (nk_library_remove(&app->library, disc_id) != NK_OK) return false;
@@ -623,6 +728,9 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     snprintf(app->last_error.message, sizeof(app->last_error.message), "%s", msg ? msg : "An unexpected error occurred.");
     snprintf(app->last_error.recovery_action_label, sizeof(app->last_error.recovery_action_label), "%s", recovery_label ? recovery_label : "Return to Library");
     app->last_error.return_view = return_view;
+    app->last_error.failed_stage[0] = '\0';
+    app->last_error.boundary_text[0] = '\0';
+    app->last_error.log_file_path[0] = '\0';
     app->active_view = VIEW_ERROR;
 }
 
@@ -676,8 +784,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
     snprintf(disp.prepared_root, sizeof(disp.prepared_root), "fixtures/display_smoke");
     snprintf(disp.title_id, sizeof(disp.title_id), "display-smoke-v1");
     disp.iso_size_bytes = 0ULL;
-    disp.is_prepared = player_app_validate_runtime_package(app, &disp, NULL, NULL, 0) ==
-                       NK_RUNTIME_PACKAGE_OK;
+    disp.is_prepared = player_app_game_has_runtime(app, &disp);
     disp.status = disp.is_prepared ? NK_STATUS_PREPARED : NK_STATUS_IDENTIFIED;
     snprintf(disp.last_played, sizeof(disp.last_played), "Never");
 
@@ -694,9 +801,9 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     app->launch_session.config.gui_mode = true;
 
     char package_error[2048] = "";
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+    player_app_validate_runtime_package(
         app, game, NULL, package_error, sizeof(package_error));
-    if (package_status != NK_RUNTIME_PACKAGE_OK) {
+    if (!player_app_game_has_runtime(app, game)) {
         player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
                              package_error[0] ? package_error :
                                  "Runtime package is missing or incompatible (#297).",
@@ -706,7 +813,8 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
-    NkResult res = nk_launch_prepare_session(&app->launch_session, game, player_runtime_root(app));
+    NkResult res = nk_launch_prepare_session(&app->launch_session, game,
+                                              player_package_root(app, game));
     /* nk_launch defaults gui_mode to false for headless harnesses. */
     app->launch_session.config.gui_mode = true;
     if (res != NK_OK) {
@@ -792,6 +900,87 @@ void player_app_stop_game(PlayerApp *app) {
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+}
+
+bool player_app_start_package_build(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    const GameRecord *game = &app->games[game_index];
+
+    package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
+
+    char python_path[NK_MAX_PATH];
+    if (!package_builder_find_python(python_path, sizeof(python_path))) {
+        player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
+                             "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
+                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    char cli_path[NK_MAX_PATH];
+    if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
+                             "tools/nk_cli.py could not be located in the current workspace or install root.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    /* Build into the same per-user root that package validation reads. */
+    char user_data_root[NK_MAX_PATH];
+    if (app->runtime_root[0]) {
+        snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
+    } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+                             "The per-user data directory is unavailable, so there is nowhere to build the package.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+    char log_dir[NK_MAX_PATH];
+    snprintf(log_dir, sizeof(log_dir), "%.490s%clogs", user_data_root, nk_platform_path_separator());
+    nk_platform_mkdir_p(log_dir);
+
+    NkResult res = package_builder_start(&app->build_session, python_path, cli_path, user_data_root, log_dir);
+    if (res != NK_OK) {
+        player_app_set_error(app, "SPAWN_FAILED", "Failed to Start Package Builder",
+                             "Failed to spawn the package builder child process.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+    return true;
+}
+
+void player_app_cancel_package_build(PlayerApp *app) {
+    if (!app) return;
+    package_builder_cancel(&app->build_session);
+}
+
+void player_app_set_build_error(
+    PlayerApp *app,
+    const char *failed_stage,
+    const char *boundary_text,
+    const char *log_file_path
+) {
+    if (!app) return;
+    char msg[512];
+    if (boundary_text && boundary_text[0]) {
+        snprintf(msg, sizeof(msg), "%s", boundary_text);
+    } else {
+        snprintf(msg, sizeof(msg), "Package build failed during stage '%s'. Check logs for details.",
+                 failed_stage && failed_stage[0] ? failed_stage : "unknown");
+    }
+    player_app_set_error(app, "PACKAGE_BUILD_FAILED", "Package Build Failed",
+                         msg, "Return to Library", VIEW_LIBRARY);
+    if (failed_stage) {
+        snprintf(app->last_error.failed_stage, sizeof(app->last_error.failed_stage), "%s", failed_stage);
+    }
+    if (boundary_text) {
+        snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text), "%s", boundary_text);
+    }
+    if (log_file_path) {
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path), "%s", log_file_path);
+    }
 }
 
 void player_app_start_setup_wizard(PlayerApp *app) {

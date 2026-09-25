@@ -36,6 +36,7 @@
 #include "cosim_cells.h"         /* generated: cell addresses and the guest layout */
 #include "cosim_fpu_corpus.h"    /* generated: deterministic scalar-FPU boundary corpus */
 #include "fpu_reference.h"       /* verification-only integer binary32 evaluator */
+#include "perf.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1807,6 +1808,7 @@ static int run_negative_corpus(void) {
 }
 
 int main(int argc, char **argv) {
+    sr_perf_init();
     if (argc < 4) {
         fprintf(stderr,
                 "usage: cosim_selftest <guest_image.bin> <image_base_hex> <trace_dir>\n");

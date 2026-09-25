@@ -133,6 +133,12 @@ void gui_init(const char *title) {
         const char *v = getenv("SR_VIDEO");
         if (!v || strcmp(v, "gdi") != 0) {
             if (sdl3vk_init(title)) {
+#ifdef SR_PUBLIC_SAFE
+                /* Only the public audio backend exports this query; without a
+                   callback the HUD reports audio status as unknown. */
+                extern int sr_audio_is_active(void);
+                sdl3vk_set_audio_active_cb(sr_audio_is_active);
+#endif
                 s_sdl3 = 1;
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
                 s_last_ns = SDL_GetTicksNS();
@@ -273,7 +279,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (stride == 0) stride = 512;
 
     if (!present_slot_due()) {
-        sr_perf_present_skip();
+        if (sr_perf_enabled) sr_perf_present_skip();
 #ifdef SR_SDL3VK
         /* A host present that never runs must not service an armed capture: otherwise a
          * later present would publish the old path with newer pixels. Resolve it as

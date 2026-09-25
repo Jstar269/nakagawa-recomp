@@ -44,6 +44,8 @@ override.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -2218,11 +2220,45 @@ def validate_title2_negative_output(completed) -> None:
         raise RuntimeError("title2 negative evidence contains: " + ", ".join(present))
 
 
+@contextmanager
+def hermetic_host_roots(workload: str) -> Iterator[tuple[dict[str, str], Path | None]]:
+    """Own the disposable host storage of one ladder run, and the env that selects it.
+
+    Every run gets a fresh EMPTY extracted-data root, so runtime init can never
+    fall back to an executable-relative tree and no workload can inherit a title's
+    data layout.  The file-touching workloads additionally get a fresh unified
+    Memory Stick root -- #334 made SR_MEMSTICK the root every sceIo* read/write
+    path serves -- plus a DISTINCT fresh legacy fs root, which is now only the
+    one-time import source.  Keeping the two separate is what makes the positive
+    run import its payload across the boundary, and what stops the negative run
+    from being answered by a stale file in a developer's `memstick/`.
+
+    Teardown happens when the block exits, including a failure while staging, so
+    a run never leaves host state behind.  Yields the env additions and the legacy
+    root to stage into (None for workloads that touch no files).
+    """
+    with ExitStack() as resources:
+
+        def temporary(prefix: str) -> Path:
+            return Path(resources.enter_context(tempfile.TemporaryDirectory(prefix=prefix)))
+
+        environment = {"SR_DATAROOT": str(temporary("platform_ladder_empty_root_"))}
+        fs_root: Path | None = None
+        if workload in ("ladder-fs", "ladder-title2"):
+            environment["SR_MEMSTICK"] = str(temporary("platform_ladder_memstick_"))
+            fs_root = temporary("platform_ladder_fs_")
+            environment["SR_FSDIR"] = str(fs_root)
+        yield environment, fs_root
+
+
 def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     plan = effective_plan(workload)
     stem = game_name_of(workload)
+    # The runtime is spawned with cwd=ROOT, so every path handed to the child is
+    # absolute: a relative program path is resolved by CreateProcess against THIS
+    # process's cwd, which is not the frame the child runs in.
     executable = (build_dir / f"{stem}.exe").resolve()
-    image_path = build_dir / f"{stem}_image.bin"
+    image_path = (build_dir / f"{stem}_image.bin").resolve()
 
     if workload == "ladder-title2-negative":
         if not negative:
@@ -2235,60 +2271,42 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
         if negative:
             expected = L5_FAIL_SENTINEL
 
-    fs_root: tempfile.TemporaryDirectory | None = None
-    payload: Path | None = None
-    empty_dataroot: tempfile.TemporaryDirectory | None = None
-    environment = os.environ.copy()
-    for key in ("SR_DATAROOT", "SR_FSDIR"):
-        environment.pop(key, None)
-    # Hostile-configuration default for every ladder run: declare an explicit
-    # EMPTY extracted-data root so runtime init can never fall back to an
-    # executable-relative retail tree. A generic workload must not depend on,
-    # or even name, any title's data layout.
-    empty_dataroot = tempfile.TemporaryDirectory(prefix="platform_ladder_empty_root_")
-    environment["SR_DATAROOT"] = empty_dataroot.name
-    if workload == "ladder-fs":
-        fs_root = tempfile.TemporaryDirectory(prefix="platform_ladder_fs_")
-        if not negative:
-            payload = Path(fs_root.name) / ("ms0__" + L5_PAYLOAD_NAME)
-            payload.write_bytes(L5_PAYLOAD_BYTES)
-        environment["SR_FSDIR"] = fs_root.name
-    if workload == "ladder-title2":
-        fs_root = tempfile.TemporaryDirectory(prefix="platform_ladder_title2_")
-        payload = Path(fs_root.name) / TITLE2_PATH_BYTES.decode("ascii").rstrip("\0").replace("/", "_").replace(":", "_")
-        payload.write_bytes(title2_payload_bytes())
-        environment["SR_FSDIR"] = fs_root.name
-    for key, value in plan.env.items():
-        environment[key] = value
+    with hermetic_host_roots(workload) as (root_environment, fs_root):
+        if fs_root is not None:
+            if workload == "ladder-fs" and not negative:
+                (fs_root / ("ms0__" + L5_PAYLOAD_NAME)).write_bytes(L5_PAYLOAD_BYTES)
+            elif workload == "ladder-title2":
+                (fs_root / TITLE2_PATH_BYTES.decode("ascii").rstrip("\0").replace("/", "_").replace(":", "_")).write_bytes(title2_payload_bytes())
 
-    command = [
-        str(executable),
-        "--image",
-        str(image_path),
-        f"0x{plan.base:08x}",
-        f"0x{plan.entry:08x}",
-        "none",
-        "none",
-        "--sched",
-    ]
-    if workload == "ladder-title2-negative":
-        pass
-    elif workload == "ladder-title2":
-        command.extend(
-            f"--expect-u32=0x{address:08x}:0x{value:08x}"
-            for address, value in title2_result_expectations(plan)
-        )
-    else:
-        command.append(f"--expect-u32=0x{plan.result_addr():08x}:0x{expected:08x}")
-    try:
+        environment = os.environ.copy()
+        for key in ("SR_DATAROOT", "SR_FSDIR", "SR_MEMSTICK"):
+            environment.pop(key, None)
+        environment.update(root_environment)
+        for key, value in plan.env.items():
+            environment[key] = value
+
+        command = [
+            str(executable),
+            "--image",
+            str(image_path),
+            f"0x{plan.base:08x}",
+            f"0x{plan.entry:08x}",
+            "none",
+            "none",
+            "--sched",
+        ]
+        if workload == "ladder-title2-negative":
+            pass
+        elif workload == "ladder-title2":
+            command.extend(
+                f"--expect-u32=0x{address:08x}:0x{value:08x}"
+                for address, value in title2_result_expectations(plan)
+            )
+        else:
+            command.append(f"--expect-u32=0x{plan.result_addr():08x}:0x{expected:08x}")
         completed = subprocess.run(
             command, cwd=ROOT, env=environment, capture_output=True, text=True, timeout=120
         )
-    finally:
-        if fs_root is not None:
-            fs_root.cleanup()
-        if empty_dataroot is not None:
-            empty_dataroot.cleanup()
     log_suffix = "" if not negative else ".negative"
     write_if_changed(build_dir / f"{stem}.run{log_suffix}.stdout.log", completed.stdout.encode("utf-8"))
     write_if_changed(build_dir / f"{stem}.run{log_suffix}.stderr.log", completed.stderr.encode("utf-8"))

@@ -64,6 +64,15 @@ add_executable(test_launch_resolution tests/native/test_launch_resolution.c)
 target_link_libraries(test_launch_resolution PRIVATE nakagawa_core)
 add_test(NAME launch_resolution_test COMMAND test_launch_resolution)
 
+add_executable(test_pgf_public
+    tests/native/test_pgf_public.c
+    src/rt/pgf_public.c
+)
+target_include_directories(test_pgf_public PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rt
+)
+add_test(NAME pgf_public_test COMMAND test_pgf_public)
+
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
     src/player/setup_staging.c
@@ -82,6 +91,7 @@ add_executable(test_player_state
     src/player/player_state.c
     src/player/input_settings.c
     src/player/iso_reader.c
+    src/player/package_builder.c
 )
 target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
@@ -89,6 +99,20 @@ target_include_directories(test_player_state PRIVATE
 )
 target_link_libraries(test_player_state PRIVATE nakagawa_core)
 add_test(NAME player_state_test COMMAND test_player_state)
+
+add_executable(test_package_builder
+    tests/native/test_package_builder.c
+    src/player/package_builder.c
+)
+target_include_directories(test_package_builder PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+)
+target_link_libraries(test_package_builder PRIVATE nakagawa_core)
+# The test resolves the CLI relative to the working directory, so it must run
+# from the repository root (where tools/nk_cli.py lives), not from the build dir.
+add_test(NAME package_builder_test COMMAND test_package_builder)
+set_tests_properties(package_builder_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(test_input_settings
     tests/native/test_input_settings.c
@@ -150,6 +174,7 @@ if(BUILD_PLAYER)
         src/player/iso_reader.c
         src/player/setup_staging.c
         src/player/ui_renderer.c
+        src/player/package_builder.c
     )
 
     add_executable(nakagawa_player ${PLAYER_SOURCES})

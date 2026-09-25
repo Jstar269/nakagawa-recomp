@@ -442,6 +442,26 @@ def write_if_changed(path: Path, data: bytes) -> bool:
     return True
 
 
+def evidence_failure(
+    evidence: str, required: tuple[str, ...], forbidden: tuple[str, ...]
+) -> str | None:
+    """Describe how `evidence` misses the gate's contract, or None when it holds.
+
+    Every runtime/player gate in this recipe asks the same two questions of the
+    text it captured -- did the lifecycle prove itself, and did it stay clear of
+    the forbidden markers?  Keeping the judgement here means a new gate cannot
+    quietly check only one half of it, and the caller decides how much evidence to
+    echo before it fails.
+    """
+    missing = [marker for marker in required if marker not in evidence]
+    if missing:
+        return "omits: " + ", ".join(missing)
+    present = [marker for marker in forbidden if marker in evidence]
+    if present:
+        return "contains: " + ", ".join(present)
+    return None
+
+
 def manifest_bytes(prx: bytes, psp_header: bytes, frames: int) -> bytes:
     manifest = {
         "schema": 1,
@@ -534,14 +554,18 @@ def verify(build_dir: Path) -> int:
 
 
 def run(build_dir: Path, gui: bool = False) -> int:
+    # The runtime is spawned with cwd=ROOT, so a relative build_dir would make the
+    # CHILD resolve the executable/image paths against ROOT rather than the
+    # caller's cwd. Resolve once so every path handed to subprocess is absolute.
+    build_dir = build_dir.resolve()
     fixture = build_dir / "fixture"
     manifest = _read_manifest(fixture)
     frames = int(manifest["frames"])
     expected = final_frame_first_pixel(frames)
-    executable = build_dir / f"{ARTIFACT_STEM}.exe"
+    executable = (build_dir / f"{ARTIFACT_STEM}.exe").resolve()
     if not executable.exists():
-        executable = build_dir / ARTIFACT_STEM
-    image_path = build_dir / f"{ARTIFACT_STEM}_image.bin"
+        executable = (build_dir / ARTIFACT_STEM).resolve()
+    image_path = (build_dir / f"{ARTIFACT_STEM}_image.bin").resolve()
     command = [
         str(executable),
         "--image",
@@ -571,15 +595,10 @@ def run(build_dir: Path, gui: bool = False) -> int:
             f"expected=0x{expected:08x} status=PASS"
         ),
     )
-    missing = [marker for marker in markers if marker not in combined]
-    if missing:
-        sys.stderr.write(combined)
-        raise RuntimeError("runtime evidence omits: " + ", ".join(missing))
     forbidden = ("UNKNOWN NID", "NONPLT_MISS", "INTERP_REJECT", "status=FAIL")
-    present = [marker for marker in forbidden if marker in combined]
-    if present:
+    if failure := evidence_failure(combined, markers, forbidden):
         sys.stderr.write(combined)
-        raise RuntimeError("runtime evidence contains: " + ", ".join(present))
+        raise RuntimeError(f"runtime evidence {failure}")
     print(
         f"DISPLAY_SMOKE_RUN status=PASS mode={'gui' if gui else 'headless'} "
         f"frames={frames} framebuffer=0x{FRAMEBUFFER:08x} value=0x{expected:08x}"
@@ -630,9 +649,8 @@ def run_player(build_dir: Path) -> int:
             "[PLAYER] Launch index 1: PLAY NOW available",
             "[PLAYER] Launch argv contains --gui: yes",
         )
-        missing_parent = [marker for marker in required_parent if marker not in combined]
-        if missing_parent:
-            raise RuntimeError("player evidence omits: " + ", ".join(missing_parent))
+        if failure := evidence_failure(combined, required_parent, ()):
+            raise RuntimeError(f"player evidence {failure}")
 
         required_events = (
             "BOOT_EVENT phase=init public_safe=1",
@@ -642,9 +660,8 @@ def run_player(build_dir: Path) -> int:
             "BOOT_EVENT phase=window_ready",
             "BOOT_EVENT phase=first_frame",
         )
-        missing_events = [marker for marker in required_events if marker not in events]
-        if missing_events:
-            raise RuntimeError("child boot evidence omits: " + ", ".join(missing_events))
+        if failure := evidence_failure(events, required_events, ()):
+            raise RuntimeError(f"child boot evidence {failure}")
 
         forbidden = (
             "SR_DATAROOT is configured but is not a valid absolute path",
@@ -653,9 +670,8 @@ def run_player(build_dir: Path) -> int:
             "NONPLT_MISS",
             "INTERP_REJECT",
         )
-        present = [marker for marker in forbidden if marker in combined or marker in events]
-        if present:
-            raise RuntimeError("native player launch evidence contains: " + ", ".join(present))
+        if failure := evidence_failure(combined + events, (), forbidden):
+            raise RuntimeError(f"native player launch evidence {failure}")
 
         write_if_changed(build_dir / "nakagawa_player.stdout.log", completed.stdout.encode("utf-8"))
         write_if_changed(build_dir / "nakagawa_player.stderr.log", completed.stderr.encode("utf-8"))

@@ -4,8 +4,8 @@ This is engineering evidence for qualified review, not legal advice or legal
 clearance. Every origin claim below carries a URL + commit/hash, or is marked
 UNKNOWN. No font payload, upstream source file, or retail-derived data is
 added by this record: the four payloads remain excluded by
-`assets/public_source_profile.json` (`font/*.pgf`), and the fail-closed PGF
-boundary (`src/rt/pgf_unavailable.c`) stays in force.
+`assets/public_source_profile.json` (`font/*.pgf`). Public builds read fonts
+through the project-authored reader (`src/rt/pgf_public.c`, #349).
 
 Analyst note: I am an engineering-provenance analyst, not a lawyer. Section 6
 lists the questions that genuinely need counsel.
@@ -202,12 +202,10 @@ PGFs from pinned OFL sources with a project-owned reproducible converter,
   the metric targets discussed upstream. The converter is a planned clean-room item (its independence contract is
   not yet published) so that it carries no emulator-derived code.
   No converter or payload is added by this change.
-- **(3) is the interim.** Payloads stay excluded. The public source tree also
-  excludes the PGF reader: its build links `src/rt/pgf_unavailable.c`, whose
-  open functions always fail, so supplying fonts through `SR_FONTDIR` has no
-  effect there and font-dependent guest UI stays unavailable. Locally supplied
-  fonts only load in a private checkout that contains the excluded backend.
-  A public PGF reader is part of the same clean-room plan. A converter-produced
+- **(3) is the interim.** Payloads stay excluded. The public source tree reads
+  user-supplied fonts through the project-authored reader
+  (`src/rt/pgf_public.c`, written from `docs/cleanroom/PGF_SPEC.md`, #349); the
+  lineage-sensitive reader stays excluded. A converter-produced
   payload may only enter the tree after: pinned OFL inputs with SHA-256, OFL
   §2 texts shipped alongside, an honest non-RFN name, qualified review, and a
   path-specific provenance record.
