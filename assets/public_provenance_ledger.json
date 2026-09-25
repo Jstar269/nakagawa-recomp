@@ -398,7 +398,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17238e0eab1cfcdf9efc603189f24f93e713bddfc1e605328a0ca74cd16a2066"
+      "sha256": "0b9a95aaee72507df28bdb58d720badb0efbb1c62948a5c5ad3b8b1ac3d545f0"
     },
     {
       "path": "assets/enhancement_package.schema.json",
@@ -7361,7 +7361,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2617670afb257c5a764118f985602c7e7bf327c5183ef5d13051b023dc3dd685"
+      "sha256": "591d5b9876976dd966ded4445512600fb50ef4802850c8f8b6f1ef140b8aa0cb"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -9101,7 +9101,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "02896f625aee7d8bcc028ae5db02fd3f36e824e2d91529acf7d4b23f9fe07299"
+      "sha256": "df4bc13b9340ecc262b1fb686df25ab9b7bae4b4501cc6d10910204fe8ab6c00"
     },
     {
       "path": "tools/test_progress_evidence.py",
