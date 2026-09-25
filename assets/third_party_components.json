@@ -9,11 +9,18 @@
       {
         "id": "compile-asset-copy",
         "file": "copy_build_assets.ps1",
-        "copies": ["SDL3.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "libstdc++-6.dll"],
+        "copies": [
+          "SDL3.dll",
+          "libgcc_s_seh-1.dll",
+          "libwinpthread-1.dll",
+          "libstdc++-6.dll"
+        ],
         "note": "The three MinGW/UCRT runtime DLLs are copied only when a bundled .exe/.dll in the build directory actually imports them (objdump -p 'DLL Name' match). The conditional does not narrow the notice obligation: every DLL this route can copy must carry a license record."
       }
     ],
-    "host_resolved_dlls": ["vulkan-1.dll"],
+    "host_resolved_dlls": [
+      "vulkan-1.dll"
+    ],
     "system_dll_patterns": [
       "^api-ms-win-.*\\.dll$",
       "^ext-ms-win-.*\\.dll$",
@@ -45,7 +52,7 @@
         "disposition": "copied_into_package",
         "license_texts": [
           {
-            "file": "third_party/licenses/winpthreads/COPYING",
+            "file": "third_party/licenses/winpthreads/COPYING.txt",
             "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-winpthreads: ucrt64/share/licenses/winpthreads/COPYING",
             "toolchain_license_rel": "share/licenses/winpthreads/COPYING",
             "sha256": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177"
@@ -61,13 +68,13 @@
         "disposition": "copied_into_package",
         "license_texts": [
           {
-            "file": "third_party/licenses/gcc-libs/COPYING3",
+            "file": "third_party/licenses/gcc-libs/COPYING3.txt",
             "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-gcc-libs: ucrt64/share/licenses/gcc-libs/COPYING3",
             "toolchain_license_rel": "share/licenses/gcc-libs/COPYING3",
             "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
           },
           {
-            "file": "third_party/licenses/gcc-libs/COPYING.RUNTIME",
+            "file": "third_party/licenses/gcc-libs/COPYING.RUNTIME.txt",
             "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-gcc-libs: ucrt64/share/licenses/gcc-libs/COPYING.RUNTIME",
             "toolchain_license_rel": "share/licenses/gcc-libs/COPYING.RUNTIME",
             "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
@@ -83,13 +90,13 @@
         "disposition": "copied_into_package",
         "license_texts": [
           {
-            "file": "third_party/licenses/gcc-libs/COPYING3",
+            "file": "third_party/licenses/gcc-libs/COPYING3.txt",
             "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-gcc-libs: ucrt64/share/licenses/gcc-libs/COPYING3",
             "toolchain_license_rel": "share/licenses/gcc-libs/COPYING3",
             "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
           },
           {
-            "file": "third_party/licenses/gcc-libs/COPYING.RUNTIME",
+            "file": "third_party/licenses/gcc-libs/COPYING.RUNTIME.txt",
             "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-gcc-libs: ucrt64/share/licenses/gcc-libs/COPYING.RUNTIME",
             "toolchain_license_rel": "share/licenses/gcc-libs/COPYING.RUNTIME",
             "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
@@ -143,7 +150,7 @@
         "note": "No route copies this DLL. It is recorded so that a user who drops a loader beside the package still receives a named notice instead of a silent unrecorded binary.",
         "license_texts": [
           {
-            "file": "third_party/licenses/vulkan-loader/LICENSE",
+            "file": "third_party/licenses/vulkan-loader/LICENSE.txt",
             "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-vulkan-loader: ucrt64/share/licenses/vulkan-loader/LICENSE",
             "toolchain_license_rel": "share/licenses/vulkan-loader/LICENSE",
             "sha256": "43c0a37e6a0fa7ff3c843b3ec5a4fac84b712558ddac103fbd4c1649662a9ece"
@@ -220,37 +227,61 @@
         "resolved": true
       },
       "Unlicense": {
-        "applies_to": ["postgres", "robust-predicates"],
+        "applies_to": [
+          "postgres",
+          "robust-predicates"
+        ],
         "obligation": "Public-domain dedication. The notices bundle records the dedication; no further attribution is required.",
         "resolved": true
       },
       "Python-2.0": {
-        "applies_to": ["argparse"],
+        "applies_to": [
+          "argparse"
+        ],
         "obligation": "PSF License 2.0 requires the copyright notice and license to travel with the distribution.",
         "resolved": true
       },
       "Apache-2.0": {
-        "applies_to": ["@img/sharp-*", "next", "framer-motion", "recharts", "lightningcss (MPL-2.0 companion)"],
+        "applies_to": [
+          "@img/sharp-*",
+          "next",
+          "framer-motion",
+          "recharts",
+          "lightningcss (MPL-2.0 companion)"
+        ],
         "obligation": "Apache-2.0 requires the NOTICE/attribution text to travel with the distribution where the upstream project supplies one. The per-package copyright and NOTICE text is carried by the traced package itself under its own node_modules directory; the notices bundle names the exact package directories to keep.",
         "resolved": true
       },
       "MPL-2.0": {
-        "applies_to": ["lightningcss", "lightningcss-*", "axe-core"],
+        "applies_to": [
+          "lightningcss",
+          "lightningcss-*",
+          "axe-core"
+        ],
         "obligation": "File-level copyleft. Redistribution of the unmodified files is permitted with the license text and a statement that the files were not modified.",
         "resolved": true
       },
       "LGPL-3.0-or-later": {
-        "applies_to": ["@img/sharp-libvips-*", "@img/sharp-win32-*", "@img/sharp-wasm32", "@img/sharp-darwin-*"],
+        "applies_to": [
+          "@img/sharp-libvips-*",
+          "@img/sharp-win32-*",
+          "@img/sharp-wasm32",
+          "@img/sharp-darwin-*"
+        ],
         "obligation": "libvips and the sharp prebuilt binary packages are LGPL-3.0-or-later and are shipped as prebuilt shared libraries inside the standalone output. The relink mechanism (relinkable object files plus a relink script, dynamic linking against a replaceable library, or exclusion of these packages from the release) is a maintainer decision; see issue #421.",
         "resolved": false
       },
       "EPL-2.0": {
-        "applies_to": ["elkjs"],
+        "applies_to": [
+          "elkjs"
+        ],
         "obligation": "EPL-2.0 section 3 permits a Secondary License (for example GPL-2.0-or-later) for the GPL-incompatible modules. Whether this distribution designates a Secondary License is a maintainer legal decision and is NOT made here.",
         "resolved": false
       },
       "CC-BY-4.0": {
-        "applies_to": ["caniuse-lite"],
+        "applies_to": [
+          "caniuse-lite"
+        ],
         "obligation": "Creative Commons Attribution 4.0 requires attribution to the creator, a link to the license, and an indication of whether changes were made. caniuse-lite carries the data set compiled from the Can I Use project; the exact attribution string to publish is a maintainer decision.",
         "resolved": false
       }

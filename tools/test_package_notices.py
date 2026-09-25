@@ -245,9 +245,9 @@ class TestPackageNotices(unittest.TestCase):
         # Both texts came from the checked-in third_party/licenses/ copies.
         for name in (gcc["license_file"], gcc["additional_license_files"][0]):
             self.assertTrue((notices_dir / name).is_file())
-        self.assertEqual(gcc["source_path"], "third_party/licenses/gcc-libs/COPYING3")
+        self.assertEqual(gcc["source_path"], "third_party/licenses/gcc-libs/COPYING3.txt")
         self.assertEqual(
-            gcc["additional_license_files"][0], "gcc-libs-libgcc-COPYING.RUNTIME"
+            gcc["additional_license_files"][0], "gcc-libs-libgcc-COPYING.RUNTIME.txt"
         )
 
     def test_toolchain_root_requires_license_directory(self) -> None:
