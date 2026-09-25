@@ -36,7 +36,6 @@ maintainer then admits the path.
 | Python tooling gates (0–3) | The `tools/` unit tests, split into four shards | Run the failing test module with `python -m unittest tools.<module>` |
 | Native and translation gates | Strict C builds (`-std=c99`/`c11 -Werror`) and runtime selftests on Linux | Compile the changed C file with the flags shown in the log |
 | Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
-| Dashboard checks | Only when `interface/` changes | Run the dashboard commands below |
 | Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
 | dependency-review, OSV, CodeQL | Dependency and static security scans | Read the finding; ask if unsure |
 | CI required | The aggregate of the required jobs above | Fix the failing job it names |
@@ -47,7 +46,7 @@ Kilo Code Review is an advisory AI review and never blocks a merge.
 
 1. Read [AGENTS.md](AGENTS.md) and the maintained documentation relevant to your subsystem.
 2. Search **GitHub Issues**, which are the canonical source of truth for actionable work and acceptance criteria, before opening a duplicate.
-3. Use [ISSUES.md](ISSUES.md) as the concise status dashboard, not as a competing detailed issue tracker.
+3. Use [ISSUES.md](ISSUES.md) as the concise project status summary, not as a competing detailed issue tracker.
 4. Never submit game binaries/assets, decrypted PRXs, private oracle traces, generated asset hashes, local databases, logs containing private paths, or files under the private-input directories documented by the project.
 5. Do not edit generated `build/<game>/<game>_recomp_*.c`; change the generator/runtime and rebuild.
 6. Follow [docs/AI_USAGE.md](docs/AI_USAGE.md) when using AI-assisted development tools.
@@ -72,16 +71,15 @@ Signed-off-by: Real Name <email@example.com>
 
 Follow the [authoritative development baseline in docs/SETUP.md](docs/SETUP.md). The core toolchain
 is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.14.x, current MSYS2 UCRT64, and a current
-auto-detected Vulkan SDK/loader. The separate dashboard uses npm and Next.js.
+auto-detected Vulkan SDK/loader. The native player is the repository's only user interface.
 
 ## Make a focused change
 
 - Runtime C: follow `.clang-format`, use `sr_` for public symbols and `s_` for file-static state, and preserve the `CpuState` ABI.
 - Python: follow `pyproject.toml`; update or add a focused test when changing codegen/tooling behavior.
-- Dashboard: keep changes inside `interface/` and do not make the core build depend on Node.js.
 - Documentation: update the maintained document, not an archived investigation. Keep `ISSUES.md`
   concise and link the canonical GitHub issue. When adding a confirmed defect or known limitation,
-  update the canonical issue and its `ISSUES.md` dashboard link in the same change when applicable;
+  update the canonical issue and its `ISSUES.md` status entry in the same change when applicable;
   label hypotheses and informational notes explicitly.
 - Preserve existing SPDX, copyright, and provenance notices. For a new file, use an SPDX identifier only when its origin/license are actually known; do not invent a copyright owner or provenance claim.
 - For project-authored source, use `GPL-3.0-or-later`; for inherited/upstream-derived source, preserve the SPDX identifier and notices required by its provenance record.
@@ -102,17 +100,6 @@ python tools/publish_audit.py --tracked-only --worktree
 Pass `--worktree` when auditing by hand: it reads the bytes on disk. The bare `--tracked-only`
 form reads staged Git blobs, which is correct for the pre-commit hook (it stashes unstaged
 changes first) but silently skips anything you have edited and not staged.
-
-For dashboard changes:
-
-```powershell
-cd interface
-npm ci
-npm test
-npm run lint
-npm run typecheck
-npm run build
-```
 
 For documentation changes:
 
@@ -147,7 +134,7 @@ evidence. In every substantive pull request:
 - list exact tests/routes and results;
 - call out anything blocked or unavailable;
 - keep generated `build/` output and private/proprietary inputs out of Git;
-- update the linked `ISSUES.md` dashboard state when the current milestone materially changes;
+- update the linked `ISSUES.md` status when the current milestone materially changes;
 - certify DCO 1.1 sign-off status;
 - disclose any new third-party source/data with exact source/revision/license; and
 - disclose material AI-assisted translation/reimplementation so provenance can be reviewed.

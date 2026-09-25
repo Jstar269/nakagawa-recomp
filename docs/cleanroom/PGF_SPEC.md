@@ -689,6 +689,15 @@ system. The product must use the following named boundaries verbatim enough to
 make “in the works” and its tracker visible; none may be hidden behind a
 generic font error or an apparently successful blank render.
 
+Status note: the table below is the specification session’s frozen record of the
+boundaries required at spec time, and it is not current product copy. The public
+runtime reader has since shipped in `src/rt/pgf_public.c` (PR
+[#474](https://github.com/Jstar269/nakagawa-recomp/pull/474), closing
+[#349](https://github.com/Jstar269/nakagawa-recomp/issues/349)) and is available
+for supported inputs; the remaining rows are still open boundaries whose only
+tracker is that now-closed issue. See
+[`../YOUR_OWN_GAMES.md`](../YOUR_OWN_GAMES.md) for the current product statement.
+
 | Named boundary | Required product meaning | Tracking |
 | --- | --- | --- |
 | Public PGF runtime reader | “PSP PGF reader support is in the works.” This document is a draft specification, not shipped capability. | #349 |

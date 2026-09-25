@@ -54,7 +54,6 @@ CURRENT_FACING_DOCS = {
     "docs/PGF_LICENSE_REVIEW_PACKET.md",
     "docs/PGD_KEYS.md",
     "font/README.md",
-    "interface/README.md",
     "src/rt/gpu_sdl3vk/README.md",
     "tools/README.md",
 }

@@ -173,7 +173,10 @@ def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.P
             text=True,
             check=True,
         )
-        files = [repo_root / line for line in res.stdout.splitlines() if line.strip()]
+        files = [
+            repo_root / line for line in res.stdout.splitlines()
+            if line.strip() and (repo_root / line).is_file()
+        ]
         if files:
             return sorted(files)
     except (OSError, subprocess.SubprocessError):
@@ -202,7 +205,7 @@ def lint_readme(readme_path: pathlib.Path) -> list[str]:
             if pattern.search(line):
                 errors.append(
                     f"README.md:{idx}: contains volatile dated status claim ('{line.strip()}'); "
-                    "move it to the current status dashboard or a dated private record"
+                    "move it to the current project status summary or a dated private record"
                 )
     return errors
 
@@ -425,7 +428,7 @@ def lint_docs_index_completeness(repo_root: pathlib.Path = ROOT) -> list[str]:
         tracked_docs = [
             line.strip().replace("\\", "/")
             for line in res.stdout.splitlines()
-            if line.strip()
+            if line.strip() and (repo_root / line.strip().replace("\\", "/")).is_file()
         ]
     except (OSError, subprocess.SubprocessError):
         tracked_docs = [

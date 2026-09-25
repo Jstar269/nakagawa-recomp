@@ -24,11 +24,11 @@ The release is a Windows public-source and reproducibility package built from th
 - **Native player application:** `mingw32-make player` builds `build/nakagawa_player.exe` from `src/player/`. The standalone SDL3 desktop application provides direct C ISO9660 PVD reading, `PARAM.SFO` metadata parsing (`DISC_ID`, `TITLE`), asset census staging, gamepad navigation, and structured error views.
 - **Display smoke & player launch:** `mingw32-make display-smoke` and `mingw32-make display-smoke-player` prove the two-phase pipeline, loader, NID imports, vblank delivery, display latch, and child runtime launch via the native player without proprietary inputs.
 - **Media subsystem:** PSMF MPEG-PS demuxing and H.264 video decoding pipelines for in-game cutscenes.
-- **Developer studio source:** The `interface/` tree is included as dashboard source with its checked-in npm lockfile. It builds as an independent Next.js project and provides developer diagnostic tooling.
+- **User interface:** The native player is the only UI in the public repository.
 
 The package includes both `nakagawa_player.exe` (native player desktop application) and `production_smoke.exe` (synthetic verification binary) under `bin/`.
 
-The package also includes the public documentation selected by the packaging command, `LICENSE`, `NOTICE.md`, and the reviewed third-party notice files. It does not include `interface/node_modules`, a `.next` tree, or fetched npm packages.
+The package also includes the public documentation selected by the packaging command, `LICENSE`, `NOTICE.md`, and the reviewed third-party notice files. It excludes generated build intermediates and title inputs.
 
 ## What this release does not do
 
@@ -59,8 +59,6 @@ The verified native host contract is the Windows contract in [`SETUP.md`](SETUP.
 - Explicit SDL3 dependency discovery ([#331](https://github.com/Jstar269/nakagawa-recomp/issues/331)).
 - A current Vulkan SDK and Vulkan-capable GPU.
 
-The optional dashboard additionally requires Node.js 24.21.0 or newer within the supported 24.x line and npm 11.17.0 or newer. Keep it bound to `127.0.0.1`; it is not an untrusted-network service.
-
 ## Reproduce from a clean checkout
 
 The following is the source-owned Windows sequence. It uses no retail input:
@@ -80,22 +78,6 @@ mingw32-make --no-print-directory hle-thread-selftest
 mingw32-make --no-print-directory public-safe-verify
 mingw32-make --no-print-directory player
 mingw32-make --no-print-directory display-smoke
-```
-
-The dashboard checks are separate from the native build:
-
-```powershell
-npm ci --prefix interface
-npm --prefix interface run test
-npm --prefix interface run lint
-npm --prefix interface run typecheck
-npm --prefix interface run build
-```
-
-For a local dashboard smoke, use an ephemeral port rather than a shared fixed debug port:
-
-```powershell
-npm --prefix interface run dev -- --hostname 127.0.0.1 -p 0
 ```
 
 ## Recreate the package
@@ -134,7 +116,7 @@ Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $Zip -Force
 Write-Output $Zip
 ```
 
-The package copies the native player and synthetic verification binary. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, SDL or Vulkan DLLs, local databases, or dashboard installation output.
+The package copies the native player and synthetic verification binary. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, SDL or Vulkan DLLs, local databases, or generated build output.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 
@@ -166,4 +148,4 @@ python tools/publish_audit.py --tracked-only --worktree --public-scope --provena
 
 ## Attribution boundary
 
-`NOTICE.md`, `THIRD_PARTY_LICENSES/`, `assets/release_manifest.json`, `assets/upstream/`, the vendored ATRAC3+ license, and `interface/package-lock.json` are the attribution and dependency inventory for this preview. The dashboard's fetched dependency graph is not bundled: the package contains its source and lockfile, not `node_modules` or a standalone Next.js runtime. The lockfile carries the exact versions, integrity values, and license metadata for the dashboard graph; `THIRD_PARTY_LICENSES/SHADCN_UI.txt` covers the copied shadcn/ui primitives. A future package that bundles fetched npm code must add the corresponding package notices before publication.
+`NOTICE.md`, `THIRD_PARTY_LICENSES/`, `assets/release_manifest.json`, `assets/upstream/`, and the vendored ATRAC3+ license record the attribution and third-party notices for this preview. Any release that redistributes third-party components must carry their applicable notices.

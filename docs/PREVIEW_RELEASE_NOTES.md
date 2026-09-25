@@ -17,7 +17,6 @@ The public, game-input-free verification suite and native player are the centerp
 - **Platform ladder:** `mingw32-make platform-ladder` exercises relocations, scheduler threading, scalar FPU, and filesystem semantics across synthetic workloads.
 - **Core runtime selftests:** `selftest`, `sched-selftest`, `hle-thread-selftest`, and `public-safe-verify` pass on the verified Windows host.
 - **Media subsystem:** PSMF demuxing and H.264 video decoding pipelines process video cutscenes.
-- **Developer studio:** The Next.js dashboard (`interface/`) builds, lints, typechecks, and passes source tests as developer diagnostic tooling.
 
 ## What this release does not do
 
