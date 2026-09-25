@@ -336,6 +336,7 @@ def _run_interpreter_probe(words: tuple[int, ...]) -> dict[int, tuple[int, int]]
                 f"production VFPU decoder probe failed with status {ran.returncode} after {last_word}"
             )
     results: dict[int, tuple[int, int]] = {}
+    words_set = set(words)
     for line in ran.stdout.splitlines():
         fields = line.split(",")
         if len(fields) != 3:
@@ -343,7 +344,7 @@ def _run_interpreter_probe(words: tuple[int, ...]) -> dict[int, tuple[int, int]]
         word = int(fields[0], 16)
         kind = int(fields[1], 10)
         return_line = int(fields[2], 10)
-        if word not in words or kind not in INTERPRETER_KINDS or return_line <= 0:
+        if word not in words_set or kind not in INTERPRETER_KINDS or return_line <= 0:
             raise CensusError(
                 f"production VFPU decoder probe emitted invalid word={word:08x} kind={kind} line={return_line}"
             )
