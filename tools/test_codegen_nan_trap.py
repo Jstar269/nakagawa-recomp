@@ -98,7 +98,7 @@ class TestEmissionShape(unittest.TestCase):
         ("vrcp.s", lambda: codegen.effect(0x0000BEEF,
                                           ((0x34 << 26) | (0 << 21) | (16 << 16)
                                            | (2 << 8) | 3))[0],
-         0x0000BEEF, "vrcp.s", ['SR_NAN_TRAP_V2(0x0000beefu,"vrcp.s",3u,_d,1,_s,1)']),
+         0x0000BEEF, "vrcp.s", ['SR_NAN_TRAP_V(0x0000beefu,"vrcp.s",3u,_d,1,_s,1)']),
         ("vscl.s", lambda: codegen.effect(0x0000BEEF,
                                           vfpu_lane(0x19, 2, 1, 2, 3, 2))[0],
          0x0000BEEF, "vscl.s", ['SR_NAN_TRAP_V2(0x0000beefu,"vscl.s",3u,_d,2,_s,2,(&_sc),1)']),
@@ -109,6 +109,36 @@ class TestEmissionShape(unittest.TestCase):
             with self.subTest(op=label):
                 text = produce()
                 self.assertNotIn("SR_NAN_TRAP", text)
+
+    def test_every_check_matches_its_macro_arity(self):
+        """SR_NAN_TRAP_V takes 7 arguments and SR_NAN_TRAP_V2 takes 9.
+
+        A 7-argument SR_NAN_TRAP_V2 compiled nowhere in the unit fixtures but
+        failed every one-source VFPU form in a real title build.
+        """
+        arity = {"SR_NAN_TRAP_V": 7, "SR_NAN_TRAP_V2": 9}
+        with nan_trap_codegen_state():
+            for label, produce, _pc, _op, _want in self.CASES:
+                text = produce()
+                for name, want in arity.items():
+                    start = 0
+                    while True:
+                        i = text.find(name + "(", start)
+                        if i < 0:
+                            break
+                        start = i + len(name) + 1
+                        depth, args, j = 1, 1, start
+                        while depth:
+                            ch = text[j]
+                            if ch in "([{":
+                                depth += 1
+                            elif ch in ")]}":
+                                depth -= 1
+                            elif ch == "," and depth == 1:
+                                args += 1
+                            j += 1
+                        with self.subTest(op=label, macro=name):
+                            self.assertEqual(args, want, text[i:j])
 
     def test_option_on_names_pc_op_and_destination(self):
         with nan_trap_codegen_state():

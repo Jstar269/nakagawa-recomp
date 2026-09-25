@@ -385,9 +385,14 @@ def _nanv(pc, op, vd, out, nout, a, na, b=None, nb=0):
     """
     if not NAN_TRAP:
         return ""
-    tail = f",{b},{nb}" if b is not None else ""
+    if b is None:
+        # One source vector: the 7-argument form. SR_NAN_TRAP_V2 takes 9, and
+        # emitting it with 7 failed to compile every one-source form (vrcp, the
+        # transcendentals, vmov/vabs/vneg, ...) in a real title build.
+        return (f' SR_NAN_TRAP_V(0x{pc:08x}u,"{op}",{vd}u,{out},{nout},'
+                f'{a},{na});')
     return (f' SR_NAN_TRAP_V2(0x{pc:08x}u,"{op}",{vd}u,{out},{nout},'
-            f'{a},{na}{tail});')
+            f'{a},{na},{b},{nb});')
 
 
 def _nan_matrix(pc, op, vd, out_exprs, in_exprs):
