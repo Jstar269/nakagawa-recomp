@@ -5,9 +5,14 @@
 
 import json
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools"))
 
 from tools.audit_public_issue_links import (
     audit_markdown_files,

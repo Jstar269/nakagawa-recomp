@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from nk_core.fonts import (  # noqa: E402

@@ -14,7 +14,12 @@ bytes both ways and reported the two lanes entering different callees.  These
 tests pin the emission order so it cannot regress without an executable gate run.
 """
 
+from pathlib import Path
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 
