@@ -13,6 +13,11 @@ from pathlib import Path
 import re
 import subprocess
 
+try:
+    from .nk_core.git_isolation import isolated_git_env
+except ImportError:
+    from nk_core.git_isolation import isolated_git_env
+
 ROOT = Path(__file__).resolve().parent.parent
 
 HEX_16_BYTES = re.compile(r"\b[0-9a-fA-F]{32}\b")
@@ -104,7 +109,13 @@ class HistoryFinding:
 
 
 def _git(cmd: list[str], repo_root: Path = ROOT) -> str:
-    res = subprocess.run(["git", *cmd], cwd=repo_root, capture_output=True, check=False)
+    res = subprocess.run(
+        ["git", *cmd],
+        cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
+        capture_output=True,
+        check=False,
+    )
     if res.returncode != 0:
         err = res.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"git {' '.join(cmd)} failed: {err}")
@@ -199,6 +210,7 @@ def _reachable_blob_ids(repo_root: Path) -> dict[str, str]:
     ids = list(candidates)
     checked = subprocess.run(
         ["git", "cat-file", "--batch-check"], cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
         input=("".join(f"{object_id}\n" for object_id in ids)).encode("ascii"),
         capture_output=True, check=True,
     ).stdout.decode("ascii", errors="replace").splitlines()
@@ -231,8 +243,11 @@ def audit_history_blob_contents(repo_root: Path = ROOT) -> list[HistoryFinding]:
     blobs = _reachable_blob_ids(repo_root)
     if not blobs:
         return findings
-    proc = subprocess.Popen(["git", "cat-file", "--batch"], cwd=repo_root,
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc = subprocess.Popen(
+        ["git", "cat-file", "--batch"], cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    )
     assert proc.stdin and proc.stdout
     output, _ = proc.communicate(("".join(f"{object_id}\n" for object_id in blobs)).encode("ascii"))
     pos = 0
@@ -335,7 +350,11 @@ def audit_large_blobs(repo_root: Path = ROOT, size_threshold: int = 500 * 1024) 
 
     # Query cat-file for object sizes
     try:
-        proc = subprocess.Popen(["git", "cat-file", "--batch-check"], cwd=repo_root, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        proc = subprocess.Popen(
+            ["git", "cat-file", "--batch-check"], cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        )
         assert proc.stdin and proc.stdout
         stdin_text = "\n".join(sha_to_path.keys()) + "\n"
         stdout_data, _ = proc.communicate(input=stdin_text.encode("utf-8"))

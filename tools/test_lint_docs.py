@@ -4,12 +4,16 @@
 """Offline deterministic tests for tools/lint_docs.py."""
 
 import pathlib
-import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
 from tools import lint_docs
+from tools.nk_core.git_isolation import run_git
 from tools.lint_docs import (
     ROOT,
     get_tracked_markdown_files,
@@ -173,17 +177,16 @@ class TestDocTruthInvariants(unittest.TestCase):
     def test_dead_repo_commit_link_is_rejected_and_live_passes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            run_git(["init", "-q"], cwd=root, check=True)
             (root / "a.txt").write_text("x", encoding="utf-8")
-            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
-            subprocess.run(
-                ["git", "-C", str(root), "-c", "user.email=t@t",
-                 "-c", "user.name=t", "commit", "-qm", "x"],
+            run_git(["add", "."], cwd=root, check=True)
+            run_git(["commit", "-qm", "x"], cwd=root, check=True)
+            live = run_git(
+                ["rev-parse", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
                 check=True,
-            )
-            live = subprocess.run(
-                ["git", "-C", str(root), "rev-parse", "HEAD"],
-                capture_output=True, text=True, check=True,
             ).stdout.strip()
             doc = self._write_doc(
                 root, "docs/NOTE.md",
@@ -211,12 +214,12 @@ class TestDocTruthInvariants(unittest.TestCase):
     def test_titles_readme_must_name_tracked_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            run_git(["init", "-q"], cwd=root, check=True)
             titles = root / "assets" / "titles"
             titles.mkdir(parents=True)
             (titles / "synthetic.json").write_text("{}\n", encoding="utf-8")
             (titles / "README.md").write_text("no inventory here\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            run_git(["add", "."], cwd=root, check=True)
             errors = lint_titles_readme(root)
             self.assertTrue(any("synthetic.json" in e for e in errors))
             (titles / "README.md").write_text("inventory: synthetic.json\n", encoding="utf-8")

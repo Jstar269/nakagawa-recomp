@@ -2,7 +2,6 @@
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 from pathlib import Path
-import subprocess
 import tempfile
 import sys
 import unittest
@@ -10,6 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import history_audit
+from nk_core.git_isolation import run_git
 
 
 class TestHistoryAudit(unittest.TestCase):
@@ -49,12 +49,11 @@ class TestHistoryAudit(unittest.TestCase):
         """Commit ``content`` into a throwaway repository and scan it."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for argv in (("init", "-q"), ("config", "user.email", "t@example.invalid"),
-                         ("config", "user.name", "test")):
-                subprocess.run(["git", *argv], cwd=root, check=True, capture_output=True)
+            for argv in (("init", "-q"),):
+                run_git(argv, cwd=root, check=True, capture_output=True)
             (root / "note.md").write_text(content, encoding="utf-8")
-            subprocess.run(["git", "add", "note.md"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=root, check=True)
+            run_git(["add", "note.md"], cwd=root, check=True)
+            run_git(["commit", "-qm", "fixture"], cwd=root, check=True)
             return history_audit.audit_history_blob_contents(root)
 
     def test_quoted_armour_delimiter_without_a_body_is_not_a_secret(self):
@@ -99,18 +98,17 @@ class TestHistoryAudit(unittest.TestCase):
     def test_ancestor_only_sensitive_blob_is_scanned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for argv in (("init", "-q"), ("config", "user.email", "t@example.invalid"),
-                         ("config", "user.name", "test")):
-                subprocess.run(["git", *argv], cwd=root, check=True, capture_output=True)
+            for argv in (("init", "-q"),):
+                run_git(argv, cwd=root, check=True, capture_output=True)
             (root / "safe.txt").write_text("safe\n", encoding="utf-8")
-            subprocess.run(["git", "add", "safe.txt"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-qm", "safe"], cwd=root, check=True)
+            run_git(["add", "safe.txt"], cwd=root, check=True)
+            run_git(["commit", "-qm", "safe"], cwd=root, check=True)
             sensitive_fixture = " ".join(("private", "save", "baseline", "capture")) + "\n"
             (root / "private.txt").write_text(sensitive_fixture, encoding="utf-8")
-            subprocess.run(["git", "add", "private.txt"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-qm", "temporary"], cwd=root, check=True)
-            subprocess.run(["git", "rm", "-q", "private.txt"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-qm", "remove"], cwd=root, check=True)
+            run_git(["add", "private.txt"], cwd=root, check=True)
+            run_git(["commit", "-qm", "temporary"], cwd=root, check=True)
+            run_git(["rm", "-q", "private.txt"], cwd=root, check=True)
+            run_git(["commit", "-qm", "remove"], cwd=root, check=True)
 
             findings = history_audit.audit_history_blob_contents(root)
             self.assertTrue(

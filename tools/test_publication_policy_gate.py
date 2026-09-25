@@ -45,6 +45,7 @@ AUDIT = TOOLS / "publish_audit.py"
 CANONICAL_POLICY = ROOT / "assets" / "public_source_profile.json"
 
 sys.path.insert(0, str(TOOLS))
+from nk_core.git_isolation import isolated_git_env, run_git  # noqa: E402
 import publication_policy  # noqa: E402
 from publication_policy import PolicyError, canonical_digest, load_policy  # noqa: E402
 from public_export import build_document, write_document  # noqa: E402
@@ -120,7 +121,13 @@ def run_audit(candidate: Path, *extra: str, policy: Path | None = None) -> subpr
     ledger = candidate / "assets" / "public_provenance_ledger.json"
     if ledger.is_file() and "--provenance-ledger" not in extra:
         argv += ["--provenance-ledger", str(ledger)]
-    return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    return subprocess.run(
+        argv,
+        cwd=ROOT,
+        env=isolated_git_env(root=candidate),
+        capture_output=True,
+        text=True,
+    )
 
 
 def run_audit_no_anchor(candidate: Path, *extra: str, policy: Path | None = None) -> subprocess.CompletedProcess:
@@ -133,7 +140,13 @@ def run_audit_no_anchor(candidate: Path, *extra: str, policy: Path | None = None
     argv = [sys.executable, str(AUDIT), "--candidate-root", str(candidate), *extra]
     if policy is not None:
         argv += ["--policy", str(policy)]
-    return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    return subprocess.run(
+        argv,
+        cwd=ROOT,
+        env=isolated_git_env(root=candidate),
+        capture_output=True,
+        text=True,
+    )
 
 
 def findings_of(result: subprocess.CompletedProcess) -> list[tuple[str, str]]:
@@ -660,29 +673,31 @@ class TestTreeBinding(unittest.TestCase):
     def _scratch_repo(self) -> Path:
         root = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "repo"
         root.mkdir()
-        for argv in (("init", "-q", "."), ("config", "user.email", "t@example.invalid"),
-                     ("config", "user.name", "test")):
-            subprocess.run(["git", *argv], cwd=root, check=True, capture_output=True)
+        for argv in (("init", "-q", "."),):
+            run_git(argv, cwd=root, check=True, capture_output=True)
         (root / "a.txt").write_text("a\n", encoding="utf-8")
-        subprocess.run(["git", "add", "a.txt"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "one"], cwd=root, check=True, capture_output=True)
+        run_git(["add", "a.txt"], cwd=root, check=True, capture_output=True)
+        run_git(["commit", "-qm", "one"], cwd=root, check=True, capture_output=True)
         return root
 
     def _git(self, root: Path, *argv: str) -> str:
-        return subprocess.run(["git", *argv], cwd=root, check=True,
-                              capture_output=True, text=True).stdout.strip()
+        return run_git(argv, cwd=root, check=True,
+                       capture_output=True, text=True).stdout.strip()
 
     def _bind(self, root: Path, tree: str, *extra: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, str(AUDIT), "--repo-root", str(root), "--tracked-only", "--expect-tree", tree, *extra],
-            cwd=root, capture_output=True, text=True,
+            cwd=root,
+            env=isolated_git_env(root=root),
+            capture_output=True,
+            text=True,
         )
 
     def test_safe_head_unsafe_index_is_not_cleared_by_head(self):
         root = self._scratch_repo()
         head_tree = self._git(root, "rev-parse", "HEAD^{tree}")
         (root / "smuggled.bin").write_bytes(b"\x00\x00\x88\x01PGF0")
-        subprocess.run(["git", "add", "smuggled.bin"], cwd=root, check=True, capture_output=True)
+        run_git(["add", "smuggled.bin"], cwd=root, check=True, capture_output=True)
         index_tree = self._git(root, "write-tree")
         self.assertNotEqual(head_tree, index_tree)
         result = self._bind(root, head_tree)
@@ -691,10 +706,10 @@ class TestTreeBinding(unittest.TestCase):
     def test_unsafe_head_safe_index_binds_to_the_index(self):
         root = self._scratch_repo()
         (root / "smuggled.bin").write_bytes(b"\x00\x00\x88\x01PGF0")
-        subprocess.run(["git", "add", "smuggled.bin"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "two"], cwd=root, check=True, capture_output=True)
+        run_git(["add", "smuggled.bin"], cwd=root, check=True, capture_output=True)
+        run_git(["commit", "-qm", "two"], cwd=root, check=True, capture_output=True)
         head_tree = self._git(root, "rev-parse", "HEAD^{tree}")
-        subprocess.run(["git", "rm", "-q", "--cached", "smuggled.bin"], cwd=root, check=True, capture_output=True)
+        run_git(["rm", "-q", "--cached", "smuggled.bin"], cwd=root, check=True, capture_output=True)
         index_tree = self._git(root, "write-tree")
         self.assertNotIn("POLICY_TREE_MISMATCH", {c for c, _ in findings_of(self._bind(root, index_tree))})
         self.assertIn("POLICY_TREE_MISMATCH", {c for c, _ in findings_of(self._bind(root, head_tree))})

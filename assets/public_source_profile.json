@@ -760,6 +760,7 @@
     "tools/nk_cli.py",
     "tools/nk_core/__init__.py",
     "tools/nk_core/fonts.py",
+    "tools/nk_core/git_isolation.py",
     "tools/nk_core/iso_inspect.py",
     "tools/nk_core/launcher.py",
     "tools/nk_core/package_cache.py",
