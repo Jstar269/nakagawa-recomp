@@ -113,6 +113,11 @@ Titles that omit the key are unaffected.
   that exercises the display/vblank/present path at all. Its address family
   (`0x0881xxxx`) is distinct from the other synthetics and from HST.
   Publication-safe and deterministic.
+- `showcase-scene.json` (TEST00007) and `showcase-breakout.json` (TEST00008) are
+  the source-owned showcase demos: a lit, textured 3D scene and Breakout, built
+  from `fixtures/showcase/` with PSPDEV and packaged by `fixtures/showcase/showcase.py`
+  (see [`docs/SHOWCASE.md`](../../docs/SHOWCASE.md)). Their acceptance profiles are
+  scaffold until #309 evidence exists. Publication-safe and deterministic.
 
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable

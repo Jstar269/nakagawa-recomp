@@ -129,6 +129,7 @@ in this slice; classification comes first, directory moves separately.
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
 | `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
+| `SHOWCASE.md` | CURRENT | Source-owned showcase demos: sources, packaging, player discovery and notices (#309) |
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
 | `DEBUGGING.md` | CURRENT | Diagnostics and safe local troubleshooting |
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
