@@ -51,8 +51,8 @@ Every user-visible feature and backend route in `interface/src` is evaluated bel
 
 | Capability | Web Source Component | Backend / Tools Called | Native Equivalent | Classification | Notes & Gaps |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Graphics & Display Settings** | `components/studio/graphics-panel.tsx`, `app/api/recompiler/config/route.ts` | Prisma SQLite (`dev.db`), `defaults.ts` | `src/player/player_state.c` (`PLAYER_VIEW_SETTINGS`), `src/player/ui_renderer.c` | `NATIVE_PARTIAL` | Resolution scale, FPS limit, VSync, fullscreen, reduce-motion, and volume exist in-memory; disk persistence to a JSON config file is missing. |
-| **Controller Remapping & Calibration** | `components/studio/controllers-panel.tsx`, `hooks/use-gamepads.ts` | Browser Gamepad API | `src/player/input_settings.c`, `src/player/player_state.c` (`VIEW_CONTROLLER_SETTINGS`), `src/core/nk_input_profile.c` | `NATIVE_EQUIVALENT_EXISTS` | Native SDL3 screen rebinding 14 digital controls + analog stick, live input monitor, deadzone/trigger steppers, conflict detection, and atomic persistence (`<config>/input_profile.json`). Resting/extreme calibration in progress (#357). |
+| **Graphics & Display Settings** | `components/studio/graphics-panel.tsx`, `app/api/recompiler/config/route.ts` | Prisma SQLite (`dev.db`), `defaults.ts` | `src/player/player_state.c` (`PLAYER_VIEW_SETTINGS`), `src/player/ui_renderer.c` | `NATIVE_EQUIVALENT_EXISTS` | Resolution scale, FPS limit, VSync, fullscreen, reduce-motion, and volume persist to a versioned `settings.json` in the player config folder ([#458](https://github.com/Jstar269/nakagawa-recomp/pull/458)). |
+| **Controller Remapping & Calibration** | `components/studio/controllers-panel.tsx`, `hooks/use-gamepads.ts` | Browser Gamepad API | `src/player/input_settings.c`, `src/player/player_state.c` (`VIEW_CONTROLLER_SETTINGS`), `src/core/nk_input_profile.c` | `NATIVE_EQUIVALENT_EXISTS` | Native SDL3 screen rebinding 14 digital controls + analog stick, live input monitor, deadzone/trigger steppers, conflict detection, and atomic persistence (`<config>/input_profile.json`), and guided trigger and stick calibration ([#465](https://github.com/Jstar269/nakagawa-recomp/pull/465)). |
 | **Multi-Profile Management & Diffs** | `components/studio/profile-switcher.tsx`, `components/studio/config-diff.tsx`, `app/api/recompiler/profiles/` | Prisma SQLite (`dev.db`), `profile-store.ts` | None | `NOT_NEEDED` | Complex profile switcher and JSON diffs were developer prototype artifacts. End-user recompiler relies on persistent configuration files. |
 | **Configuration Sharing & ZIP Export** | `components/studio/share-dialog.tsx`, `app/api/recompiler/telemetry/export/route.ts` | `lib/recompiler/zip.ts` packing `dev.db` and reports | None | `NOT_NEEDED` | Web-specific export packaging local SQLite databases. |
 | **Game Patches / Cheats Toggles** | `components/studio/patches-panel.tsx` | Web config toggles | Title manifests (`assets/titles/`) and CLI runtime flags | `NOT_NEEDED` | Patches are authored and loaded as title manifest enhancements or CLI arguments; a standalone web patch editor is obsolete. |
@@ -94,27 +94,24 @@ To enable full retirement of `interface/`, the `MISSING` and `NATIVE_PARTIAL` it
 
 ```mermaid
 flowchart TD
-    W1["1. Persistent Player Settings JSON (Size: S)"] --> W2["2. Continuous Trigger Calibration #357 (Size: S)"]
-    W2 --> W3["3. In-Game Settings & Telemetry Overlay (Size: M)"]
+    W3["3. In-Game Settings & Telemetry Overlay (Size: M)"]
     W3 --> W4["4. In-Engine VRAM / Texture Debug Viewer (Size: M)"]
     W4 --> W5["5. Complete Retail Module Decryption Integration (Size: L)"]
 ```
 
 ### Work Items
 
-1. **Persistent Player Settings File Serialization**
-   - **Status**: `NATIVE_PARTIAL`
-   - **Rough Size**: `S` (Small, 1–2 days)
-   - **Description**: Currently `src/player/player_state.c` stores `PlayerSettings` in-memory. Implement atomic JSON serialization to `%LOCALAPPDATA%/Nakagawa/config/player_settings.json` (on Windows) and `$XDG_CONFIG_HOME/nakagawa-recomp/player_settings.json` (on Linux), matching the atomic pattern used in `src/core/nk_input_profile.c`.
-   - **Requirements**: Save and reload resolution scale, FPS limit, VSync, fullscreen toggle, motion toggle, and volume.
+1. **Persistent player settings:** done in [#458](https://github.com/Jstar269/nakagawa-recomp/pull/458)
+   (versioned `settings.json` in the player config folder).
 
-2. **Continuous Trigger Calibration Completion (#357)**
-   - **Status**: `NATIVE_PARTIAL`
-   - **Rough Size**: `S` (Small, 1–2 days)
-   - **Description**: Complete the resting and extreme value calibration for analog triggers in `src/player/input_settings.c` and `ui_renderer.c` as tracked under issue #357.
+2. **Trigger and stick calibration (#357):** done in
+   [#465](https://github.com/Jstar269/nakagawa-recomp/pull/465) (guided calibration screen).
 
 3. **In-Engine Pause Overlay & Telemetry HUD**
-   - **Status**: `MISSING` / `NATIVE_PARTIAL`
+   - **Status**: `NATIVE_PARTIAL`. The opt-in `F1` performance overlay (live FPS, frame
+     time, VBlank rate and audio status) landed in
+     [#465](https://github.com/Jstar269/nakagawa-recomp/pull/465); a pause menu with settings
+     toggles is still missing.
    - **Rough Size**: `M` (Medium, 3–5 days)
    - **Description**: Embed an in-engine overlay hook into the SDL3 Vulkan swapchain (`src/rt/gpu_sdl3vk/`) triggered via keyboard (`F1` / `Escape`) or Gamepad (`Guide` / `Home`).
    - **Requirements**: Display live FPS, frame times, VBlank rate, and basic audio/graphics toggles without leaving the running game window.
@@ -187,12 +184,12 @@ The retirement will proceed through three explicit stages:
 
 ```mermaid
 flowchart LR
-    S1["Stage 1: Parity & Settings Persistence"] --> S2["Stage 2: Deprecation Notice"]
+    S1["Stage 1: Parity"] --> S2["Stage 2: Deprecation Notice"]
     S2 --> S3["Stage 3: Atomic Removal PR"]
 ```
 
-1. **Stage 1: Parity & Settings Persistence (In Progress)**
-   - Land persistent player settings serialization to `<config>/player_settings.json`.
+1. **Stage 1: Parity (In Progress)**
+   - Settings persistence has landed ([#458](https://github.com/Jstar269/nakagawa-recomp/pull/458)).
    - Verify all regression gates in `docs/NATIVE_UI_REGRESSION_MATRIX.md` continue to pass.
    - Confirm command-line developer workflows (`tools/nk_cli.py`, `tools/nk_doctor.py`, `tools/mem_debug.py`) cover necessary developer tasks.
 
