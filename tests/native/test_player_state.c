@@ -491,6 +491,35 @@ int main(int argc, char **argv) {
     assert(player_app_find_game_by_disc_id(app, "TEST00001") == 0);
     assert(strcmp(app->games[0].title_name, "First, revisited") == 0);
 
+    /* 2b. Re-adding the same disc keeps its completed extraction.
+     *
+     * Re-inspecting an ISO that is already in the library produced a fresh
+     * record with assets_staged=false and no prepared root, and the update
+     * replaced the staged record wholesale, so the next launch had no data root. */
+    printf("[PLAYER_STATE_TEST] Subtest 2b: re-adding a disc keeps its staged assets\n");
+    fflush(stdout);
+    {
+        GameRecord staged;
+        seed_entry(&staged, "TEST00001", "First");
+        staged.assets_staged = true;
+        snprintf(staged.prepared_root, sizeof(staged.prepared_root), "games%cTEST00001",
+                 nk_platform_path_separator());
+        staged.extracted_asset_count = 42;
+        snprintf(staged.last_played, sizeof(staged.last_played), "2026-09-25");
+        GameRecord again;
+        seed_entry(&again, "TEST00001", "First");
+        assert(player_merge_readded_game(&staged, &again));
+        assert(again.assets_staged && strcmp(again.prepared_root, staged.prepared_root) == 0);
+        assert(again.extracted_asset_count == 42);
+        assert(strcmp(again.last_played, "2026-09-25") == 0);
+
+        GameRecord other_disc;
+        seed_entry(&other_disc, "TEST00001", "First");
+        other_disc.iso_size_bytes = staged.iso_size_bytes + 2048;
+        assert(!player_merge_readded_game(&staged, &other_disc));
+        assert(!other_disc.assets_staged && other_disc.prepared_root[0] == '\0');
+    }
+
     /* 3. Unknown and malformed disc IDs report absence, not index 0. */
     printf("[PLAYER_STATE_TEST] Subtest 3: absent disc IDs\n");
     fflush(stdout);

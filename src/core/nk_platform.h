@@ -30,6 +30,11 @@ int64_t nk_ftell64(FILE *f);
 char nk_platform_path_separator(void);
 bool nk_platform_file_exists(const char *path);
 bool nk_platform_dir_exists(const char *path);
+/* Call fn(name, ctx) for each regular file directly inside dir (names in UTF-8,
+ * unsorted; subdirectories are skipped). Stops early when fn returns false.
+ * Returns false when dir cannot be opened. */
+typedef bool (*NkDirFileFn)(const char *name, void *ctx);
+bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx);
 int64_t nk_platform_get_file_size(const char *path);
 bool nk_platform_mkdir_p(const char *dir_path);
 /* Create a directory tree and private files for user-owned source material.
