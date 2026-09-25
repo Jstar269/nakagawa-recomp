@@ -35,11 +35,16 @@ void sr_register_all(void);
  * spawned child's stderr on every host backend. The normal runtime only writes
  * stderr; SR_BOOT_EVENT_FILE is used by the native-player launch smoke. */
 static void sr_driver_boot_event(const char *format, ...) {
+    uint64_t timestamp_ns = sr_perf_now_ns();
     va_list args;
     va_start(args, format);
     vfprintf(stderr, format, args);
     va_end(args);
-    fputc('\n', stderr);
+    if (timestamp_ns) {
+        fprintf(stderr, " t_ns=%llu\n", (unsigned long long)timestamp_ns);
+    } else {
+        fputc('\n', stderr);
+    }
     fflush(stderr);
 
     const char *path = getenv("SR_BOOT_EVENT_FILE");
@@ -50,7 +55,11 @@ static void sr_driver_boot_event(const char *format, ...) {
     va_start(args, format);
     vfprintf(file, format, args);
     va_end(args);
-    fputc('\n', file);
+    if (timestamp_ns) {
+        fprintf(file, " t_ns=%llu\n", (unsigned long long)timestamp_ns);
+    } else {
+        fputc('\n', file);
+    }
     fclose(file);
 }
 
