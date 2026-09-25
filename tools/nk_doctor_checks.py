@@ -245,7 +245,7 @@ def check_long_paths(
             f"Deepest expected build path ({total_len} chars) exceeds 260 characters and Windows LongPathsEnabled policy is disabled",
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
-            remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem or move the repository to a shorter path (such as C:\\nk).",
+            remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem or move the repository to a shorter path (for example directly under the drive root).",
             metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": True, "max_path": 260},
         )
     elif exceeds_260 and long_paths_enabled:

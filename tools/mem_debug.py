@@ -7,6 +7,10 @@ Interactive Memory and CpuState Query / Mutation Tool.
 Attaches to hst.exe on Windows using ctypes APIs. Mock state is available only with
 an explicit ``--simulate`` flag; an absent process is otherwise reported as offline.
 
+Private flagship-only tooling (#368): this tool serves the HST/Product-1 title,
+whose managed executable is ``build/hst/hst.exe``. It is not advertised as a
+generic runtime facility; any other title must be named explicitly with ``--exe``.
+
 Safety contract (issue #180):
 
 * Read-only by default.  Mutating actions (``pause``, ``resume``, ``write_mem``,
