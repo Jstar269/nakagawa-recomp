@@ -1606,6 +1606,79 @@ int main(int argc, char **argv) {
         free(dev_app);
     }
 
+    {
+        printf("[PLAYER_STATE_TEST] Subtest 19: package validation cache hit and invalidation\n");
+        fflush(stdout);
+
+        char cache_root[512];
+        char validation_root[640];
+        char package_dir[800];
+        char package_json[960];
+        char completion_json[960];
+        char report_json[960];
+        char executable[960];
+        char image[960];
+        const NkTitleEntry *cached_title = nk_title_catalog_find_by_id(
+            "synthetic-allegrex-v1");
+        assert(cached_title && cached_title->primary_disc_id);
+        const char *cached_disc_id = cached_title->primary_disc_id;
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+        snprintf(validation_root, sizeof(validation_root), "%s%cpackage-validation-cache",
+                 cache_root, nk_platform_path_separator());
+        snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s",
+                 validation_root, nk_platform_path_separator(),
+                 nk_platform_path_separator(), cached_disc_id);
+        snprintf(package_json, sizeof(package_json), "%s%cpackage.json", package_dir,
+                 nk_platform_path_separator());
+        snprintf(completion_json, sizeof(completion_json),
+                 "%s%ccompletion-manifest.json", package_dir,
+                 nk_platform_path_separator());
+        snprintf(report_json, sizeof(report_json), "%s%cbuild-report.json", package_dir,
+                 nk_platform_path_separator());
+        snprintf(executable, sizeof(executable), "%s%csynthetic-allegrex-v1.exe",
+                 package_dir, nk_platform_path_separator());
+        snprintf(image, sizeof(image), "%s%csynthetic-allegrex-v1_image.bin",
+                 package_dir, nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(package_dir));
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+
+        NkGameEntry game;
+        memset(&game, 0, sizeof(game));
+        snprintf(game.disc_id, sizeof(game.disc_id), "%s", cached_disc_id);
+        snprintf(game.title_id, sizeof(game.title_id), "synthetic-allegrex-v1");
+        snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
+
+        NkRuntimePackageInfo first_info;
+        NkRuntimePackageInfo cached_info;
+        char reason[1024];
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &first_info, reason, sizeof(reason)) ==
+               NK_RUNTIME_PACKAGE_OK);
+        assert(!first_info.validation_cache_hit);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &cached_info, reason, sizeof(reason)) ==
+               NK_RUNTIME_PACKAGE_OK);
+        assert(cached_info.validation_cache_hit);
+        assert(strcmp(first_info.package_root, cached_info.package_root) == 0);
+        assert(strcmp(first_info.executable_path, cached_info.executable_path) == 0);
+        assert(strcmp(first_info.image_path, cached_info.image_path) == 0);
+
+        write_text_file(executable, "modified package executable");
+        NkRuntimePackageInfo changed_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &changed_info, reason, sizeof(reason)) ==
+               NK_RUNTIME_PACKAGE_STALE);
+        assert(!changed_info.validation_cache_hit);
+
+        remove(package_json);
+        remove(completion_json);
+        remove(report_json);
+        remove(executable);
+        remove(image);
+    }
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     return 0;

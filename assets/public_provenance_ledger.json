@@ -4004,7 +4004,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3bcfd9e89f68ea76b718f393d7ccf35d1bd3bd649a554f6f6c8e8e4f75822940"
+      "sha256": "69d460ca52e0a14cc288ff24dda52739a411e5f41506f8fb1b08c6f326d4b1d7"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -4016,7 +4016,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5fb461dbce5ba1d9918698cadd7634004a116cc402649d880af492804f49a410"
+      "sha256": "56e112f62314229d9ba0f1f46f3ddf2170c7618f045b4ff50fc4f4ef74440ec4"
     },
     {
       "path": "src/core/nk_types.h",
@@ -5331,7 +5331,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ae2007290ab2f9fb3d37b7c9de2d02848d9f2d88deaf6d7f73769859a1c717a9"
+      "sha256": "ee41645e6435155a37d9cb968c28f96387a4e4a38e455c165f8491465a8f2425"
     },
     {
       "path": "src/rt/evf.h",
@@ -5741,7 +5741,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6e09e1103a4297f9d52265bb3a29c89e8ac691d7540f60a663cef9c961b9002a"
+      "sha256": "c201f91c42ac61ea3019a5bd52025000c41a6a27504e570f5e5dd79c0930cb41"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -6630,7 +6630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f9e5a60fcadaa4afdbf9b072c21c6c96f2248c1d57f5cdaf3914e21a4f72dd8"
+      "sha256": "37ed1060d306c60a2746d0a3d2d0eed70e4fb45f36342f9d8ce5a2b87a4eac34"
     },
     {
       "path": "tests/native/test_posix_process.c",
