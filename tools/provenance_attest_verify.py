@@ -117,9 +117,10 @@ is accepted as optional audit history.  ``--require-reviewed-blobs`` restores
 the former exact-digest gate for a deliberately higher-assurance run, but is
 not part of the normal merge/readiness path.
 
-Only implementation classes require an exact trusted record.  Documentation,
-configuration, fixtures and public metadata are classified by what a file
-*is*, re-derived every run, and need no per-revision approval.
+Implementation classes and added or changed executable/security-sensitive paths
+require an exact trusted path record. Documentation, configuration,
+non-executable fixtures and public metadata are classified by what a file *is*,
+re-derived every run, and need no per-revision approval.
 
 Tier C -- reported, non-fatal:
 
@@ -161,7 +162,7 @@ try:
     from .provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        is_implementation_path, validate_ledger,
+        validate_ledger,
     )
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
@@ -170,7 +171,7 @@ except ImportError:
     from provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        is_implementation_path, validate_ledger,
+        validate_ledger,
     )
     from public_export import build_document as _build_export_document
     from publication_policy import PolicyError, load_policy
@@ -205,6 +206,26 @@ IMPLEMENTATION_CLASSES = frozenset({
     "upstream_derived",
     "generated_from_public_source",
 })
+
+
+def _exact_record_finding_for_change(
+    path: str,
+    *,
+    base_blobs: dict[str, bytes],
+    candidate_blobs: dict[str, bytes],
+    exact_records: dict[str, dict],
+) -> str | None:
+    if path in base_blobs and base_blobs[path] == candidate_blobs.get(path):
+        return None
+    if not _admission_requires_implementation(path):
+        return None
+    record = exact_records.get(path)
+    if record is None:
+        return "TRUSTED_PATH_MISSING"
+    classification, _ = _class_for(path, record)
+    if classification not in IMPLEMENTATION_CLASSES:
+        return "TRUSTED_PATH_UNQUALIFIED"
+    return None
 
 
 class VerifyError(RuntimeError):
@@ -1243,31 +1264,24 @@ def _ephemeral_verdict_findings(
         content_frozen = path in base_blobs and base_blobs[path] == candidate_blobs[path]
         is_new = path not in base_blobs
 
-        # A newly admitted executable/source/build path cannot use a
-        # deterministic filename class as an escape hatch.  Existing
-        # Makefile/configuration edits retain their deterministic treatment;
-        # the hardened predicate is an admission rule for genuinely new paths.
-        requires_path_authority = (
-            is_new and _admission_requires_implementation(path)
-        ) or (
-            not is_new and expected_class in IMPLEMENTATION_CLASSES and not content_frozen
+        record_finding = _exact_record_finding_for_change(
+            path,
+            base_blobs=base_blobs,
+            candidate_blobs=candidate_blobs,
+            exact_records=exact_records,
         )
-        if requires_path_authority:
-            if expected_class == "unresolved" and path not in exact_records:
-                findings.append(Finding(
-                    "TRUSTED_PATH_MISSING", path,
-                    "trusted detailed authority has no exact path-specific record for this implementation path",
-                ))
-            elif expected_class == "unresolved":
-                findings.append(Finding(
-                    "TRUSTED_PATH_UNQUALIFIED", path,
-                    "trusted detailed authority names this path but does not derive a qualifying public class",
-                ))
-            elif expected_class not in IMPLEMENTATION_CLASSES:
-                findings.append(Finding(
-                    "TRUSTED_PATH_UNQUALIFIED", path,
-                    "trusted detailed authority does not classify this implementation path as implementation-grade",
-                ))
+        if record_finding == "TRUSTED_PATH_MISSING":
+            findings.append(Finding(
+                record_finding, path,
+                "trusted detailed authority has no exact path-specific record for this added or changed "
+                "executable/security-sensitive path",
+            ))
+        elif record_finding == "TRUSTED_PATH_UNQUALIFIED":
+            findings.append(Finding(
+                record_finding, path,
+                "the exact trusted record for this added or changed executable/security-sensitive path "
+                "is not implementation-grade",
+            ))
 
         # Optional exact-blob authorization is independent of the candidate
         # ledger.  It is deliberately disabled for the normal path-authorized
@@ -1277,13 +1291,16 @@ def _ephemeral_verdict_findings(
             not content_frozen
             and (
                 expected_class in IMPLEMENTATION_CLASSES
-                or (is_new and _admission_requires_implementation(path))
+                or _admission_requires_implementation(path)
             )
         )
         if require_exact_blob_approvals and blob_gate:
             digest = hashlib.sha256(candidate_blobs[path]).hexdigest()
             approval = approvals.get((path, digest))
-            reason = "new implementation path" if is_new else "implementation bytes changed"
+            reason = (
+                "new executable/security-sensitive path" if is_new
+                else "executable/security-sensitive bytes changed"
+            )
             if approval is None:
                 findings.append(Finding(
                     "BLOB_UNAPPROVED", path,
@@ -1981,7 +1998,7 @@ def verify(
     # legitimately out only if the TRUSTED policy's own exclusion rules cover
     # it -- the candidate cannot except itself.
     for path in sorted(set(candidate_blobs) - set(base_blobs) - candidate_included):
-        if not is_implementation_path(path):
+        if not _admission_requires_implementation(path):
             continue
         if trusted_policy.resolve(path).disposition == "excluded":
             continue
@@ -2102,16 +2119,42 @@ def verify(
         claim_frozen = base_claim == claim
         content_frozen = path in base_blobs and base_blobs[path] == candidate_blobs[path]
 
+        record_finding = _exact_record_finding_for_change(
+            path,
+            base_blobs=base_blobs,
+            candidate_blobs=candidate_blobs,
+            exact_records=exact_records,
+        )
+        if record_finding == "TRUSTED_PATH_MISSING":
+            findings.append(Finding(
+                record_finding, path,
+                "trusted detailed authority has no exact path-specific record for this added or changed "
+                "executable/security-sensitive path",
+            ))
+        elif record_finding == "TRUSTED_PATH_UNQUALIFIED":
+            findings.append(Finding(
+                record_finding, path,
+                "the exact trusted record for this added or changed executable/security-sensitive path "
+                "is not implementation-grade",
+            ))
+
         # -- optional exact-blob authorization ----------------------------
         #
         # Path authority is the normal policy.  The former per-revision blob
         # gate remains available only when a caller explicitly requests the
         # higher-assurance mode, and it still runs before the claim ratchet's
         # early exit.
-        if require_exact_blob_approvals and classification in IMPLEMENTATION_CLASSES and not content_frozen:
+        if (
+            require_exact_blob_approvals
+            and not content_frozen
+            and (classification in IMPLEMENTATION_CLASSES or _admission_requires_implementation(path))
+        ):
             digest = hashlib.sha256(candidate_blobs[path]).hexdigest()
             approval = approvals.get((path, digest))
-            reason = "new implementation path" if path not in base_blobs else "implementation bytes changed"
+            reason = (
+                "new executable/security-sensitive path" if path not in base_blobs
+                else "executable/security-sensitive bytes changed"
+            )
             if approval is None:
                 findings.append(Finding(
                     "BLOB_UNAPPROVED", path,
