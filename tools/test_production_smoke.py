@@ -179,6 +179,37 @@ class TestProductionSmoke(unittest.TestCase):
             {generator.IMPORT_STUB: (generator.LIBRARY, generator.NID)},
         )
 
+    def test_plain_elf_without_section_names_keeps_imports_as_hle_stubs(self):
+        image = bytearray(build_synthetic_original_elf())
+        entry = 0x08804000
+        stub = entry + 0x80
+        struct.pack_into("<I", image, 0x100, 0x0C000000 | ((stub >> 2) & 0x03FFFFFF))
+        struct.pack_into("<I", image, 0x104, 0)
+        struct.pack_into("<2I", image, 0x108, 0x03E00008, 0)
+        elf_path = self.out_dir / "plain_import.elf"
+        elf_path.write_bytes(image)
+
+        elf = analyze.Elf(elf_path)
+        self.assertIsNone(elf.reloc)
+        self.assertIsNone(elf.sec(".sceStub.text"))
+        self.assertIsNotNone(elf.sec(".lib.stub"))
+        imports = imports_tool.parse_imports(elf)
+        self.assertEqual(len(imports), 1)
+        stub, (_library, nid) = next(iter(imports.items()))
+
+        output = self.out_dir / "plain_import_recomp.c"
+        generated = subprocess.run(
+            [sys.executable, str(TOOLS / "codegen.py"), str(elf_path), str(output)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        code = output.read_text(encoding="ascii") + "\n".join(
+            path.read_text(encoding="ascii")
+            for path in sorted(self.out_dir.glob("plain_import_recomp_*.c"))
+        )
+        self.assertIn(f"void f_{stub:08x}(CpuState *s)", code)
+        self.assertIn(f"sr_syscall(s, 0x{nid:08x}u);", code)
+
     def test_gap_mode_discovers_but_can_omit_the_seam_region(self):
         """Analyzer still discovers the helper; codegen omission is emission-only."""
         gap_dir = self.out_dir / "gap"
@@ -886,12 +917,14 @@ class TestProductionSmokePackage(unittest.TestCase):
         cached_elf = user_root / "cache" / "packages" / "ULUS99998" / "selected.elf"
         self.assertEqual(cached_elf.read_bytes(), executable_bytes)
         package_dir = user_root / "packages" / "ULUS99998"
-        if completed.returncode == 0:
-            self.assertTrue((package_dir / "package.json").is_file())
-            return
-        self.assertIn("production PGF/PGD runtime backends", completed.stderr)
-        self.assertIn("in the works (#297)", completed.stderr)
-        self.assertFalse((package_dir / "package.json").exists())
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertNotIn("production PGF/PGD runtime backends", completed.stderr)
+        self.assertTrue((package_dir / "package.json").is_file())
+        self.assertTrue((package_dir / "build-report.json").is_file())
+        report = json.loads((package_dir / "build-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report.get("backends"), "public")
+        self.assertIn("fonts: import your own PSP fonts; public font reader in the works (#349)", report.get("limits", []))
+        self.assertIn("PGD-protected data: unavailable (#295)", report.get("limits", []))
 
     def test_bad_executable_is_rejected_with_a_named_reason(self):
         bad_elf = self.root / "bad.elf"
@@ -925,7 +958,10 @@ class TestSanitizedBringup(unittest.TestCase):
             title="Synthetic Bring-up",
         )
 
-    def _run_case(self, failure=None, *, launch_code=0, launch_output="", timeout=False):
+    def _run_case(
+        self, failure=None, *, launch_code=0, launch_output="", timeout=False,
+        flight_events=None, flight_dropped=0, instruction_trace=False,
+    ):
         case_root = self.root / (failure or "success")
         report_path = case_root / "bringup.json"
         args = argparse.Namespace(
@@ -933,6 +969,7 @@ class TestSanitizedBringup(unittest.TestCase):
             work_dir=str(case_root / "work"),
             report=str(report_path),
             launch_timeout=1,
+            instruction_trace=instruction_trace,
         )
         globals_timeout = timeout
         launch_commands = []
@@ -950,6 +987,7 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.returncode = -9
 
         def fake_package_build(build_args, stage_observer=None):
+            self.last_build_arguments = build_args
             if failure == "compile":
                 stage_observer("compile", "FAIL", 3)
                 return 1
@@ -971,8 +1009,17 @@ class TestSanitizedBringup(unittest.TestCase):
             stage_observer("build_package", "PASS", 2)
             return 0
 
-        def fake_popen(command, **_kwargs):
+        def fake_popen(command, **kwargs):
             launch_commands.append(list(command))
+            flight_path = kwargs.get("env", {}).get("SR_FLIGHT_OUTPUT")
+            if flight_path:
+                events = flight_events
+                if events is None:
+                    events = [{"class": "hle", "kind": 1, "arg0": 0x289D82FE}]
+                Path(flight_path).write_text(json.dumps({
+                    "recorder": {"dropped": flight_dropped},
+                    "events": events,
+                }), encoding="utf-8")
             return FakeProcess()
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
@@ -1017,6 +1064,88 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertRegex(command[3], r"^(?:0|0x[0-9a-f]{8})$")
         self.assertRegex(command[4], r"^0x[0-9a-f]{8}$")
         self.assertEqual(command[5:], ["none", "none", "--sched"])
+        self.assertFalse(self.last_build_arguments.instruction_trace)
+        nk_cli.validate_bringup_report(report)
+
+    def test_instruction_trace_is_opt_in_and_stays_under_private_work_dir(self):
+        status, report = self._run_case(instruction_trace=True)
+
+        self.assertEqual(status, 0, report)
+        command = self.last_launch_command
+        trace_path = Path(command[6])
+        self.assertEqual(command[5], "none")
+        self.assertTrue(self.last_build_arguments.instruction_trace)
+        self.assertEqual(
+            trace_path,
+            self.root / "success" / "work" / "instructions.trace",
+        )
+        self.assertEqual(command[7:], ["--sched"])
+        self.assertNotIn(str(trace_path), json.dumps(report))
+
+    def test_instruction_trace_uses_make_trace_flag(self):
+        with mock.patch.dict(os.environ, {"TRACE": "0"}):
+            env = nk_cli._runtime_build_environment(instruction_trace=True)
+
+        self.assertEqual(env["TRACE"], "1")
+
+    def test_zero_exit_before_first_hle_is_a_named_in_works_boundary(self):
+        status, report = self._run_case(flight_events=[])
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_HLE")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn(308, report["issue_numbers"])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("before its first PSP kernel import", summary)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#285", summary)
+        self.assertIn("#308", summary)
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_dropped_flight_events_is_unverified(self):
+        status, report = self._run_case(flight_events=[], flight_dropped=1)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "GUEST_ACTIVITY_UNVERIFIED")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn("telemetry did not verify a PSP kernel import",
+                      nk_cli._bringup_human_summary(report))
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_after_hle_before_framebuffer_setup_is_a_named_boundary(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x446D8DE6}],
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn(308, report["issue_numbers"])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("before PSP display framebuffer setup", summary)
+        self.assertIn("in the works (", summary)
+        self.assertIn("#285", summary)
+        self.assertIn("#308", summary)
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_lost_framebuffer_evidence_is_display_unverified(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x446D8DE6}],
+            flight_dropped=1,
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "DISPLAY_PROGRESS_UNVERIFIED")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertIn(285, report["issue_numbers"])
+        self.assertIn(308, report["issue_numbers"])
+        self.assertIn("did not verify PSP display framebuffer setup",
+                      nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
 
     def _run_module_fixture(
@@ -1062,13 +1191,20 @@ class TestSanitizedBringup(unittest.TestCase):
             stage_observer("build_package", "PASS", 1)
             return 0
 
+        def fake_popen(_command, **kwargs):
+            Path(kwargs["env"]["SR_FLIGHT_OUTPUT"]).write_text(json.dumps({
+                "recorder": {"dropped": 0},
+                "events": [{"class": "hle", "kind": 1, "arg0": 0x289D82FE}],
+            }), encoding="utf-8")
+            return FakeProcess()
+
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 0, "", "")
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(
                 nk_cli.subprocess, "run", return_value=completed
             ))
             stack.enter_context(mock.patch.object(
-                nk_cli.subprocess, "Popen", return_value=FakeProcess()
+                nk_cli.subprocess, "Popen", side_effect=fake_popen
             ))
             stack.enter_context(mock.patch.object(
                 nk_cli, "cmd_build_package", side_effect=fake_package_build

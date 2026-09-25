@@ -22,6 +22,11 @@ import sys
 import tempfile
 import zipfile
 
+try:
+    from .nk_core.git_isolation import run_git
+except ImportError:
+    from nk_core.git_isolation import run_git
+
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / ".betterleaks.toml"
@@ -205,20 +210,16 @@ def run(binary: str) -> int:
             value_fixture,
             f'token = "{"gh" + "p_" + _material("different-fixture-value", 36)}"\n',
         )
-        for args in (
-            ("init", "-q"),
-            ("config", "user.name", "Betterleaks Canary"),
-            ("config", "user.email", "betterleaks-canary@example.invalid"),
-        ):
-            subprocess.run(["git", *args], cwd=value_repo, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "add", "tools/test_history_audit.py"],
+        for args in (("init", "-q"),):
+            run_git(args, cwd=value_repo, check=True, capture_output=True)
+        run_git(
+            ["add", "tools/test_history_audit.py"],
             cwd=value_repo,
             check=True,
             capture_output=True,
         )
-        subprocess.run(
-            ["git", "commit", "-qm", "different synthetic fixture"],
+        run_git(
+            ["commit", "-qm", "different synthetic fixture"],
             cwd=value_repo,
             check=True,
         )
@@ -243,20 +244,16 @@ keywords = ["ghp_"]
         rule_fixture = rule_repo / "tools" / "test_history_audit.py"
         rule_fixture.parent.mkdir(parents=True)
         _write_synthetic_fixture(rule_fixture, f'token = "{deliberate_value}"\n')
-        for args in (
-            ("init", "-q"),
-            ("config", "user.name", "Betterleaks Canary"),
-            ("config", "user.email", "betterleaks-canary@example.invalid"),
-        ):
-            subprocess.run(["git", *args], cwd=rule_repo, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "add", "tools/test_history_audit.py"],
+        for args in (("init", "-q"),):
+            run_git(args, cwd=rule_repo, check=True, capture_output=True)
+        run_git(
+            ["add", "tools/test_history_audit.py"],
             cwd=rule_repo,
             check=True,
             capture_output=True,
         )
-        subprocess.run(
-            ["git", "commit", "-qm", "exact synthetic fixture"],
+        run_git(
+            ["commit", "-qm", "exact synthetic fixture"],
             cwd=rule_repo,
             check=True,
         )
@@ -276,15 +273,11 @@ keywords = ["ghp_"]
         # so a future CLI/config change cannot silently alter the contract.
         ignored_repo = temp_root / "ignored-repo"
         ignored_repo.mkdir()
-        for args in (
-            ("init", "-q"),
-            ("config", "user.name", "Betterleaks Canary"),
-            ("config", "user.email", "betterleaks-canary@example.invalid"),
-        ):
-            subprocess.run(["git", *args], cwd=ignored_repo, check=True, capture_output=True)
+        for args in (("init", "-q"),):
+            run_git(args, cwd=ignored_repo, check=True, capture_output=True)
         (ignored_repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
-        subprocess.run(["git", "add", ".gitignore"], cwd=ignored_repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "ignore synthetic canary"], cwd=ignored_repo, check=True)
+        run_git(["add", ".gitignore"], cwd=ignored_repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "ignore synthetic canary"], cwd=ignored_repo, check=True)
         ignored = ignored_repo / "ignored.txt"
         ignored.write_text(
             f'api_key = "{_material("ignored-untracked", 48)}"\n', encoding="utf-8"
@@ -297,18 +290,14 @@ keywords = ["ghp_"]
         # scanning the resulting repository.
         ancestor = temp_root / "ancestor-repo"
         ancestor.mkdir()
-        for args in (
-            ("init", "-q"),
-            ("config", "user.name", "Betterleaks Canary"),
-            ("config", "user.email", "betterleaks-canary@example.invalid"),
-        ):
-            subprocess.run(["git", *args], cwd=ancestor, check=True, capture_output=True)
+        for args in (("init", "-q"),):
+            run_git(args, cwd=ancestor, check=True, capture_output=True)
         historical = ancestor / "historical.txt"
         historical.write_text(f'api_key = "{_material("ancestor", 48)}"\n', encoding="utf-8")
-        subprocess.run(["git", "add", "historical.txt"], cwd=ancestor, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "synthetic canary"], cwd=ancestor, check=True)
+        run_git(["add", "historical.txt"], cwd=ancestor, check=True, capture_output=True)
+        run_git(["commit", "-qm", "synthetic canary"], cwd=ancestor, check=True)
         historical.unlink()
-        subprocess.run(["git", "commit", "-qam", "remove synthetic canary"], cwd=ancestor, check=True)
+        run_git(["commit", "-qam", "remove synthetic canary"], cwd=ancestor, check=True)
         _require("ancestor-only-secret", _scan(binary, "git", str(ancestor)), 1)
     return 0
 

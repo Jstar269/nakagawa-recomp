@@ -65,6 +65,8 @@
 #include <stdatomic.h>
 #include <errno.h>
 #include <limits.h>
+#include <io.h>          /* _open_osfhandle/_fdopen for contained FILE* opens */
+#include <fcntl.h>       /* _O_BINARY/_O_RDWR/_O_APPEND */
 
 uint32_t sr_last_nid = 0;
 
@@ -378,7 +380,12 @@ static uint32_t stack_arg(CpuState *s, int idx) {
 #define SCE_KERNEL_ERROR_UNKNOWN_SEMID 0x80020199u
 #define SCE_KERNEL_ERROR_ILLEGAL_COUNT 0x800201bdu
 #define SCE_KERNEL_ERROR_WAIT_TIMEOUT  0x800201a8u
+#ifndef SCE_KERNEL_ERROR_WAIT_DELETE
 #define SCE_KERNEL_ERROR_WAIT_DELETE   0x800201b5u
+#endif
+#ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
+#define SCE_KERNEL_ERROR_WAIT_CANCEL   0x800201a9u
+#endif
 
 /* ---- kernel object UID + user-memory bump allocator ---- */
 
@@ -4111,66 +4118,141 @@ static char *sr_utf8_join_alloc(const char *left, const char *right, char separa
     return joined;
 }
 
+/* Unified Memory Stick root (issue #334): ordinary sceIo* and savedata share
+ * sr_ms0_root/sr_ms0_resolve so one guest path maps to one host path. Foreign
+ * devices (disc0:, ...) fail closed (NULL). Empty file guests are rejected;
+ * empty directory guests resolve to the root itself. */
 static char *host_path_alloc(const char *guest) {
-    char *configured = NULL;
-    int configured_present = 0;
-    if (!sr_utf8_env_alloc(L"SR_FSDIR", &configured, &configured_present)) return NULL;
-    const char *dir = configured_present && configured[0] ? configured : "fs";
-    if (!guest || !sr_ensure_directory_utf8(dir)) {
-        free(configured);
-        return NULL;
-    }
-    size_t root_len = strlen(dir), guest_len = strlen(guest);
-    if (guest_len == 0 || root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) {
-        free(configured);
-        return NULL;
-    }
-    char *path = (char *)malloc(root_len + guest_len + 2u);
-    if (!path) {
-        free(configured);
-        return NULL;
-    }
-    /* Flatten the guest string into a single filename beneath the fs root
-     * (sr_vfs_host_flat_path); "." and ".." are rejected as directory
-     * references. See vfs_path.h for the containment contract. */
-    if (!sr_vfs_host_flat_path(dir, guest, path, root_len + guest_len + 2u)) {
+    if (!guest || !guest[0]) return NULL;
+    const char *root = sr_ms0_root();
+    if (!sr_ensure_directory_utf8(root)) return NULL;
+    size_t root_len = strlen(root), guest_len = strlen(guest);
+    if (root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) return NULL;
+    size_t cap = root_len + guest_len + 2u;
+    char *path = (char *)malloc(cap);
+    if (!path) return NULL;
+    if (!sr_ms0_resolve(root, guest, path, cap, '\\')) {
         free(path);
-        free(configured);
         return NULL;
     }
-    free(configured);
     return path;
 }
 
 static char *host_dir_path_alloc(const char *guest) {
-    char *configured = NULL;
-    int configured_present = 0;
-    if (!sr_utf8_env_alloc(L"SR_FSDIR", &configured, &configured_present)) return NULL;
-    const char *root = configured_present && configured[0] ? configured : "fs";
-    if (!guest) {
-        free(configured);
+    if (!guest) return NULL;
+    const char *root = sr_ms0_root();
+    if (!sr_ensure_directory_utf8(root)) return NULL;
+    size_t root_len = strlen(root), guest_len = strlen(guest);
+    if (root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) return NULL;
+    size_t cap = root_len + guest_len + 2u;
+    char *out = (char *)malloc(cap);
+    if (!out) return NULL;
+    if (!sr_ms0_resolve(root, guest, out, cap, '\\')) {
+        free(out);
         return NULL;
     }
-    size_t cap;
-    size_t root_len = strlen(root), guest_len = strlen(guest);
+    return out;
+}
+
+/* Contained FILE* open under the unified Memory Stick root: OPEN -> HANDLE ->
+ * FINAL PATH VERIFY, then hand the verified handle to the CRT. Maps the wide
+ * fopen mode onto CreateFileW access/disposition (r/w/a/+ and binary). */
+static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+    if (!host_path || !mode || !mode[0]) return NULL;
+    wchar_t canonical[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
+                               sizeof(canonical) / sizeof(wchar_t)))
+        return NULL;
+    int has_w = 0, has_a = 0, has_plus = 0;
+    for (const wchar_t *p = mode; *p; p++) {
+        if (*p == L'r') { /* read implied by access default */ }
+        else if (*p == L'w') has_w = 1;
+        else if (*p == L'a') has_a = 1;
+        else if (*p == L'+') has_plus = 1;
+    }
+    DWORD access = GENERIC_READ;
+    if (has_w || has_a || has_plus) access |= GENERIC_WRITE;
+    DWORD disposition = OPEN_EXISTING;
+    if (has_w) disposition = CREATE_ALWAYS;
+    else if (has_a) disposition = OPEN_ALWAYS;
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (!sr_vfs_open_contained_utf8(host_path, access, 0, disposition, canonical, &h))
+        return NULL;
+    int oflag = _O_BINARY | ((access & GENERIC_WRITE) ? _O_RDWR : _O_RDONLY);
+    if (has_a) oflag |= _O_APPEND;
+    int fd = _open_osfhandle((intptr_t)h, oflag);
+    if (fd < 0) {
+        CloseHandle(h);
+        return NULL;
+    }
+    char narrow[16];
+    size_t i = 0;
+    for (; mode[i] && i + 1 < sizeof(narrow); i++) narrow[i] = (char)mode[i];
+    narrow[i] = '\0';
+    FILE *fp = _fdopen(fd, narrow);
+    if (!fp) {
+        _close(fd);
+        return NULL;
+    }
+    return fp;
+}
+
+/* Atomic count of successful legacy flat fs/ -> unified-ms-root imports so
+ * source-owned tests can assert the copy-only path without parsing logs. */
+static atomic_ulong s_ms0_legacy_import_count;
+
+/* Copy-only legacy import (read-open miss, never write/create): if the guest
+ * file exists under the old flat SR_FSDIR mapping, copy it into the unified
+ * hierarchical host path so prior flat saves remain visible. */
+static int ms0_try_legacy_flat_import(const char *guest_path, const char *host_path) {
+    if (!guest_path || !host_path) return 0;
+    char *configured = NULL;
+    int present = 0;
+    if (!sr_utf8_env_alloc(L"SR_FSDIR", &configured, &present)) return 0;
+    const char *dir = present && configured[0] ? configured : "fs";
+    size_t root_len = strlen(dir), guest_len = strlen(guest_path);
     if (root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) {
         free(configured);
-        return NULL;
+        return 0;
     }
-    cap = root_len + guest_len + 2u;
-    char *out = (char *)malloc(cap);
-    if (!out) {
+    size_t cap = root_len + guest_len + 2u;
+    char *flat = (char *)malloc(cap);
+    if (!flat) {
         free(configured);
-        return NULL;
+        return 0;
     }
-    int n = sr_vfs_host_dir_path(root, guest, out, cap, '\\');
-    if (n <= 0 || !sr_ensure_directory_utf8(root)) {
-        free(out);
-        free(configured);
-        return NULL;
-    }
+    int n = sr_vfs_host_flat_path(dir, guest_path, flat, cap);
     free(configured);
-    return out;
+    if (n <= 0) {
+        free(flat);
+        return 0;
+    }
+    FILE *src = sr_fopen_utf8(flat, L"rb");
+    free(flat);
+    if (!src) return 0;
+    FILE *dst = ms0_fopen_utf8(host_path, L"w+b");
+    if (!dst) {
+        fclose(src);
+        return 0;
+    }
+    char buf[4096];
+    size_t got;
+    int ok = 1;
+    while ((got = fread(buf, 1, sizeof(buf), src)) > 0) {
+        if (fwrite(buf, 1, got, dst) != got) {
+            ok = 0;
+            break;
+        }
+    }
+    if (ferror(src)) ok = 0;
+    fclose(src);
+    if (fclose(dst) != 0) ok = 0;
+    if (!ok) return 0;
+    atomic_fetch_add_explicit(&s_ms0_legacy_import_count, 1u, memory_order_release);
+    fprintf(stderr,
+            "ms0: imported legacy flat file '%s' from SR_FSDIR into unified Memory Stick root\n",
+            guest_path);
+    return 1;
 }
 
 /* sceLibFont. The PSP firmware fonts (flash0 font PGFs) are not on the game ISO, so we load the
@@ -7965,8 +8047,10 @@ static uint32_t h_IoOpen(CpuState *s) {
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
         else if (writing || creating) mode = L"r+b"; /* update; fall back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
-        FILE *fp = hp ? sr_fopen_utf8(hp, mode) : NULL;
-        if (!fp && (writing || creating) && hp) fp = sr_fopen_utf8(hp, L"w+b");
+        FILE *fp = hp ? ms0_fopen_utf8(hp, mode) : NULL;
+        if (!fp && (writing || creating) && hp) fp = ms0_fopen_utf8(hp, L"w+b");
+        if (!fp && !writing && !creating && hp && ms0_try_legacy_flat_import(path, hp))
+            fp = ms0_fopen_utf8(hp, mode);
         free(hp);
         if (!fp) {
             /* Try the extracted-XB data-root cache (game asks for "data/menu/text/<X>.to"
@@ -8340,9 +8424,12 @@ static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) 
  * `*found` reports whether the overlay actually has this directory; the return
  * value is 0 on success or a PSP error when the overlay has the directory but
  * it cannot be enumerated safely.  Containment stays fail-closed AND loud: a
- * host directory whose final path resolves outside SR_FSDIR's canonical root
- * is refused here and the refusal is the caller's answer, so a planted
- * junction can never be quietly papered over by the index leg.
+ * host directory whose final path resolves outside the unified Memory Stick
+ * root's canonical root is refused here and the refusal is the caller's
+ * answer, so a planted junction can never be quietly papered over by the
+ * index leg.  A missing unified-root directory that still exists as a
+ * hierarchical tree under legacy SR_FSDIR is reported as a refused migration
+ * (found stays 0) rather than silently listed from the old root.
  *
  * A single child the guest namespace cannot represent (an overlong name, or a
  * size the guest's 32-bit stat field cannot carry) is skipped and counted, not
@@ -8358,25 +8445,24 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
     uint32_t rc = 0;
     if (sr_wide_path_alloc(hp, &root) && sr_wide_join_alloc(root, L"*", &pattern)) {
 #ifdef _WIN32
-        char *configured_fs = NULL;
-        int configured_fs_present = 0;
-        sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
-        const char *fs_dir = configured_fs_present && configured_fs[0] ? configured_fs : "fs";
-        wchar_t canonical_fs[MAX_PATH * 2];
-        int fs_ok = sr_vfs_canonical_root(fs_dir, canonical_fs,
-                                          sizeof(canonical_fs) / sizeof(wchar_t));
-        free(configured_fs);
+        /* Canonical containment root is the unified Memory Stick root (issue
+         * #334), not the legacy flat SR_FSDIR. SR_FSDIR remains only as the
+         * legacy hierarchical-dir migration source checked below. */
+        wchar_t canonical_ms[MAX_PATH * 2];
+        const char *ms_root = sr_ms0_root();
+        int ms_ok = sr_vfs_canonical_root(ms_root, canonical_ms,
+                                          sizeof(canonical_ms) / sizeof(wchar_t));
 
         HANDLE h_dir = CreateFileW(root, FILE_READ_ATTRIBUTES,
                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
         if (h_dir != INVALID_HANDLE_VALUE) {
-            int contained = fs_ok && sr_vfs_handle_is_contained(h_dir, canonical_fs);
+            int contained = ms_ok && sr_vfs_handle_is_contained(h_dir, canonical_ms);
             CloseHandle(h_dir);
             if (!contained) {
                 fprintf(stderr,
                         "sceIoDopen: refusing '%s': host directory resolves outside the "
-                        "configured VFS root\n", guest_path);
+                        "configured Memory Stick root\n", guest_path);
                 fflush(stderr);
                 rc = 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
             } else {
@@ -8430,6 +8516,50 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
                                 guest_path, (unsigned long)first_error);
                     }
                 }
+            }
+        } else {
+            DWORD open_err = GetLastError();
+            if (open_err == ERROR_FILE_NOT_FOUND || open_err == ERROR_PATH_NOT_FOUND) {
+                /* Unified-root directory missing: if the same relative path
+                 * still exists as a hierarchical tree under legacy SR_FSDIR,
+                 * log the refused migration once per attempt. *found stays 0
+                 * so the guest sees not-found, never a silent dual-root list. */
+                char *configured_fs = NULL;
+                int configured_fs_present = 0;
+                sr_utf8_env_alloc(L"SR_FSDIR", &configured_fs, &configured_fs_present);
+                const char *fs_dir = configured_fs_present && configured_fs[0]
+                                         ? configured_fs
+                                         : "fs";
+                const char *rel = NULL;
+                if (sr_ms0_classify(guest_path, &rel) == SR_MS0_OWNED && rel) {
+                    while (*rel == '/' || *rel == '\\') rel++;
+                    if (*rel) {
+                        size_t fs_len = strlen(fs_dir), rel_len = strlen(rel);
+                        if (fs_len <= SIZE_MAX - rel_len - 2u) {
+                            size_t lcap = fs_len + rel_len + 2u;
+                            char *legacy = (char *)malloc(lcap);
+                            if (legacy &&
+                                sr_vfs_host_dir_path(fs_dir, rel, legacy, lcap, '\\') > 0) {
+                                wchar_t *wlegacy = NULL;
+                                if (sr_wide_path_alloc(legacy, &wlegacy)) {
+                                    DWORD lattrs = GetFileAttributesW(wlegacy);
+                                    if (lattrs != INVALID_FILE_ATTRIBUTES &&
+                                        (lattrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                                        fprintf(stderr,
+                                                "sceIoDopen: '%s' exists under legacy SR_FSDIR "
+                                                "but not the unified Memory Stick root; "
+                                                "automatic migration is refused\n",
+                                                guest_path);
+                                        fflush(stderr);
+                                    }
+                                    free(wlegacy);
+                                }
+                            }
+                            free(legacy);
+                        }
+                    }
+                }
+                free(configured_fs);
             }
         }
 #else
@@ -8601,8 +8731,8 @@ static uint32_t h_IoDclose(CpuState *s) {
 }
 /* PSPSDK's SceDevctlCmd contains a pointer to SceDevInf for SCE_PR_GETDEV
  * (0x02425818); its five words are maxClusters, freeClusters, maxSectors,
- * sectorSize, and sectorCount. The host root is the same SR_FSDIR namespace
- * used by ordinary sceIo* ms0: operations until the broader #334 VFS work. */
+ * sectorSize, and sectorCount. The host root is the unified Memory Stick
+ * root (issue #334) shared with ordinary sceIo* ms0: operations and savedata. */
 static int io_memstick_capacity(uint32_t info[5]) {
     char *host_root = host_dir_path_alloc("");
     wchar_t *host_root_wide = NULL;
@@ -8762,10 +8892,44 @@ static uint32_t h_IoCloseAsync(CpuState *s) {
     s_closed_res[fd] = 0;
     return 0;
 }
-/* sceIoRename(oldname, newname). Both names resolve beneath the writable fs
- * root (host_path_alloc), never the disc. UNMEASURED: whether firmware lets
- * the target already exist; replacing it matches the common write-temp-then-
- * rename save pattern. */
+/* Parent directory of a host path (last separator). Returns 0 if no parent. */
+static int ms0_parent_path(const char *host_path, char *out, size_t cap) {
+    if (!host_path || !out || cap == 0) return 0;
+    const char *slash = strrchr(host_path, '\\');
+    const char *slash_fwd = strrchr(host_path, '/');
+    if (slash_fwd && (!slash || slash_fwd > slash)) slash = slash_fwd;
+    if (!slash) return 0;
+    size_t n = (size_t)(slash - host_path);
+    if (n == 0 || n + 1u > cap) return 0;
+    memcpy(out, host_path, n);
+    out[n] = '\0';
+    return 1;
+}
+
+/* Parent must exist, be a directory, and stay inside the canonical ms root.
+ * Missing parent -> not-found; non-directory parent -> is-a-directory;
+ * outside root -> illegal path. Residual TOCTOU: containment is a by-path
+ * check immediately before the subsequent Create/Move/Delete. */
+static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canonical) {
+    char parent[512];
+    if (!ms0_parent_path(hp, parent, sizeof(parent))) return 0x80010005u;
+    wchar_t *wp = NULL;
+    if (!sr_wide_path_alloc(parent, &wp)) return 0x80010005u;
+    DWORD attrs = GetFileAttributesW(wp);
+    free(wp);
+    if (attrs == INVALID_FILE_ATTRIBUTES) return 0x80010002u;
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) return 0x80010015u;
+    if (!sr_vfs_dir_is_contained(parent, canonical)) return 0x80010016u;
+    return 0;
+}
+
+/* sceIoRename(oldname, newname). Both names resolve beneath the unified
+ * Memory Stick root (host_path_alloc), never the disc. Foreign devices and
+ * traversal fail closed with EINVAL (0x80010016). An existing regular-file
+ * destination is removed through the contained delete before MoveFileEx
+ * WITHOUT MOVEFILE_REPLACE_EXISTING (directories refuse with EISDIR). Parent
+ * directories are pre-verified for existence and containment; residual TOCTOU
+ * on those by-path checks is documented here rather than hidden. */
 static uint32_t h_IoRename(CpuState *s) {
     char oldpath[256], newpath[256];
     if (!guest_cstr(A0, oldpath, sizeof(oldpath)) || !guest_cstr(A1, newpath, sizeof(newpath)))
@@ -8775,17 +8939,52 @@ static uint32_t h_IoRename(CpuState *s) {
     if (!old_hp || !new_hp) {
         free(old_hp);
         free(new_hp);
-        return 0x80010002;
+        return 0x80010016u;
     }
-    wchar_t *w_old = NULL, *w_new = NULL;
+    wchar_t canonical[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
+                               sizeof(canonical) / sizeof(wchar_t))) {
+        free(old_hp);
+        free(new_hp);
+        return 0x80010005u;
+    }
+    uint32_t rc = ms0_parent_contained_check(old_hp, canonical);
+    if (rc == 0) rc = ms0_parent_contained_check(new_hp, canonical);
+    if (rc != 0) {
+        free(old_hp);
+        free(new_hp);
+        return rc;
+    }
+    wchar_t *w_new = NULL;
+    if (sr_wide_path_alloc(new_hp, &w_new)) {
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        if (GetFileAttributesExW(w_new, GetFileExInfoStandard, &fad)) {
+            if (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                free(w_new);
+                free(old_hp);
+                free(new_hp);
+                return 0x80010015u;
+            }
+            int was_dir = 0;
+            if (!sr_vfs_delete_contained_leaf(new_hp, canonical, &was_dir)) {
+                free(w_new);
+                free(old_hp);
+                free(new_hp);
+                return 0x80010005u;
+            }
+        }
+        free(w_new);
+    }
+    wchar_t *w_old = NULL;
+    w_new = NULL;
     if (!sr_wide_path_alloc(old_hp, &w_old) || !sr_wide_path_alloc(new_hp, &w_new)) {
         free(w_old);
         free(w_new);
         free(old_hp);
         free(new_hp);
-        return 0x80010005;
+        return 0x80010005u;
     }
-    BOOL ok = MoveFileExW(w_old, w_new, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+    BOOL ok = MoveFileExW(w_old, w_new, MOVEFILE_COPY_ALLOWED);
     DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     free(w_old);
     free(w_new);
@@ -8793,10 +8992,87 @@ static uint32_t h_IoRename(CpuState *s) {
     free(new_hp);
     if (!ok) {
         if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
-            return 0x80010002;
-        return 0x80010005;
+            return 0x80010002u;
+        return 0x80010005u;
     }
     return 0;
+}
+
+/* sceIoMkdir(path): create the final component under the unified Memory Stick
+ * root. Foreign/traversal -> EINVAL; missing parent -> ENOENT; already exists
+ * -> EEXIST; CreateDirectoryW failure -> EIO. Intermediate components are not
+ * created (PSP mkdir does not create parents). */
+static uint32_t h_IoMkdir(CpuState *s) {
+    char path[256];
+    if (!guest_cstr(A0, path, sizeof(path)))
+        return 0x80010016u;
+    char *hp = host_path_alloc(path);
+    if (!hp) return 0x80010016u;
+    wchar_t canonical[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
+                               sizeof(canonical) / sizeof(wchar_t))) {
+        free(hp);
+        return 0x80010005u;
+    }
+    uint32_t prc = ms0_parent_contained_check(hp, canonical);
+    if (prc != 0) {
+        free(hp);
+        return prc;
+    }
+    wchar_t *wh = NULL;
+    if (!sr_wide_path_alloc(hp, &wh)) {
+        free(hp);
+        return 0x80010005u;
+    }
+    DWORD attrs = GetFileAttributesW(wh);
+    if (attrs != INVALID_FILE_ATTRIBUTES) {
+        free(wh);
+        free(hp);
+        return 0x80010011u; /* EEXIST */
+    }
+    BOOL made = CreateDirectoryW(wh, NULL);
+    DWORD err = made ? ERROR_SUCCESS : GetLastError();
+    free(wh);
+    free(hp);
+    if (made) return 0;
+    if (err == ERROR_ALREADY_EXISTS) return 0x80010011u;
+    return 0x80010005u;
+}
+
+/* sceIoRemove(path): delete one regular file under the unified Memory Stick
+ * root through the contained-delete seam. Foreign/traversal -> EINVAL;
+ * missing -> ENOENT; directory -> EISDIR; delete failure -> EIO. */
+static uint32_t h_IoRemove(CpuState *s) {
+    char path[256];
+    if (!guest_cstr(A0, path, sizeof(path)))
+        return 0x80010016u;
+    char *hp = host_path_alloc(path);
+    if (!hp) return 0x80010016u;
+    wchar_t canonical[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
+                               sizeof(canonical) / sizeof(wchar_t))) {
+        free(hp);
+        return 0x80010005u;
+    }
+    wchar_t *wh = NULL;
+    if (!sr_wide_path_alloc(hp, &wh)) {
+        free(hp);
+        return 0x80010005u;
+    }
+    DWORD attrs = GetFileAttributesW(wh);
+    free(wh);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        free(hp);
+        return 0x80010002u;
+    }
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        free(hp);
+        return 0x80010015u;
+    }
+    int was_dir = 0;
+    int ok = sr_vfs_delete_contained_leaf(hp, canonical, &was_dir);
+    free(hp);
+    return ok ? 0 : 0x80010005u;
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -8830,6 +9106,8 @@ uint32_t sr_hle_test_io_close(CpuState *s) { return h_IoClose(s); }
 uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }
 uint32_t sr_hle_test_io_close_async(CpuState *s) { return h_IoCloseAsync(s); }
 uint32_t sr_hle_test_io_rename(CpuState *s) { return h_IoRename(s); }
+uint32_t sr_hle_test_io_mkdir(CpuState *s) { return h_IoMkdir(s); }
+uint32_t sr_hle_test_io_remove(CpuState *s) { return h_IoRemove(s); }
 int sr_hle_test_fd_kind(uint32_t fd) {
     return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) ? (int)s_fds[fd].kind : -1;
 }
@@ -8845,6 +9123,36 @@ static uint32_t h_IoGetstat(CpuState *s) {
         return 0x80010016u;
     uint32_t lba, size, st = A1;
     if (iso_lookup(path, &lba, &size) != 0) {
+        /* Host-backed path under the unified Memory Stick root (ordinary ms0:
+         * sceIoGetstat). Foreign devices fail closed here and fall through. */
+        char *hp = host_path_alloc(path);
+        if (hp) {
+            wchar_t *wh = NULL;
+            if (sr_wide_path_alloc(hp, &wh)) {
+                WIN32_FILE_ATTRIBUTE_DATA fad;
+                if (GetFileAttributesExW(wh, GetFileExInfoStandard, &fad)) {
+                    free(wh);
+                    free(hp);
+                    int is_dir = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                    uint64_t fsize = ((uint64_t)fad.nFileSizeHigh << 32) |
+                                     (uint64_t)fad.nFileSizeLow;
+                    if (getenv("SR_STATLOG"))
+                        fprintf(stderr, "Getstat(%s) -> ms0 host size=0x%llx dir=%d\n",
+                                path, (unsigned long long)fsize, is_dir);
+                    for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
+                    MEM_W32(st + 0, is_dir ? (0x1000u | 0x0124u) : (0x2000u | 0x0124u));
+                    MEM_W32(st + 4, is_dir ? 0x0010u : (0x0004u | 0x0001u));
+                    if (!is_dir) {
+                        MEM_W32(st + 8, (uint32_t)fsize);
+                        MEM_W32(st + 12, (uint32_t)(fsize >> 32));
+                    }
+                    MEM_W32(st + 0x40, 0); /* st_private[0]: no LBN (host-backed) */
+                    return 0;
+                }
+                free(wh);
+            }
+            free(hp);
+        }
         /* Not on the ISO -- try the extracted-XB data-root (graphical/text data the game
          * expects to read from paths like "data/menu/text/<X>.to", which are packed inside
          * XB archives on the real ISO; dev workflow extracts them onto a host tree). */
@@ -8880,6 +9188,14 @@ static uint32_t h_IoGetstat(CpuState *s) {
     MEM_W32(st + 0x40, iso_physical_lba(lba));  /* st_private[0]: physical UMD start LBN */
     return 0;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_io_getstat(CpuState *s) { return h_IoGetstat(s); }
+uint32_t sr_hle_test_ms0_legacy_import_count(void) {
+    return (uint32_t)atomic_load_explicit(&s_ms0_legacy_import_count,
+                                          memory_order_acquire);
+}
+#endif
 
 /* ---- audio / control / display / GE / SAS: functional stubs ----
  * These return success and neutral data so the boot reaches and runs its main loop without an
@@ -12571,6 +12887,306 @@ uint32_t sr_hle_test_msgpipe_max_capacity(void) { return MSG_PIPE_MAX_CAPACITY; 
 
 #endif /* SR_HLE_THREAD_SELFTEST */
 
+/* ---- mailboxes (sceKernel*Mbx), campaign psp-hw-20260917 + PSPSDK ABI ---- */
+
+#define MBX_MAX 32
+#define MBX_MAX_WAITERS 64
+#define MBX_MAX_MSGS 128
+#define SCE_KERNEL_ERROR_UNKNOWN_MBXID 0x8002019bu
+#define SCE_KERNEL_ERROR_MBX_EMPTY     0x800201b2u
+#define PSP_MBX_ATTR_PRIORITY          0x400u
+
+typedef struct {
+    int used;
+    uint32_t uid;
+    uint32_t attr;
+    char name[32];
+    uint32_t msgs[MBX_MAX_MSGS];   /* guest SceKernelMsgPacket addresses, delivery order */
+    int nmsgs;
+    uint32_t waiters[MBX_MAX_WAITERS];
+    int nwaiters;
+} Mbx;
+static Mbx s_mbx[MBX_MAX];
+
+static Mbx *mbx_find(uint32_t uid) {
+    for (int i = 0; i < MBX_MAX; i++)
+        if (s_mbx[i].used && s_mbx[i].uid == uid) return &s_mbx[i];
+    return NULL;
+}
+
+/* Rewrite guest-visible circular next links so first->...->last->first matches
+ * host delivery order (HARDWARE_ORACLE.md: FIFO mailboxes link packets circularly). */
+static void mbx_relink(Mbx *m) {
+    if (m->nmsgs <= 0) return;
+    for (int i = 0; i < m->nmsgs; i++)
+        MEM_W32(m->msgs[i] + 0, m->msgs[(i + 1) % m->nmsgs]);
+}
+
+static void mbx_remove_waiter(Mbx *m, uint32_t thid) {
+    for (int i = 0; i < m->nwaiters; i++) {
+        if (m->waiters[i] == thid) {
+            for (int j = i; j + 1 < m->nwaiters; j++) m->waiters[j] = m->waiters[j + 1];
+            m->nwaiters--;
+            break;
+        }
+    }
+}
+
+/* Attr 0x400 delivers by ascending msgPriority, FIFO among equals; otherwise append. */
+static void mbx_enqueue(Mbx *m, uint32_t msg) {
+    if (m->nmsgs >= MBX_MAX_MSGS) return;
+    int pos = m->nmsgs;
+    if (m->attr & PSP_MBX_ATTR_PRIORITY) {
+        int32_t pri = (int32_t)MEM_R32(msg + 4);
+        for (int i = 0; i < m->nmsgs; i++) {
+            if (pri < (int32_t)MEM_R32(m->msgs[i] + 4)) { pos = i; break; }
+        }
+    }
+    for (int j = m->nmsgs; j > pos; j--) m->msgs[j] = m->msgs[j - 1];
+    m->msgs[pos] = msg;
+    m->nmsgs++;
+    mbx_relink(m);
+}
+
+static uint32_t mbx_dequeue(Mbx *m) {
+    if (m->nmsgs <= 0) return 0;
+    uint32_t msg = m->msgs[0];
+    for (int i = 0; i + 1 < m->nmsgs; i++) m->msgs[i] = m->msgs[i + 1];
+    m->nmsgs--;
+    mbx_relink(m);
+    return msg;
+}
+
+static uint32_t h_CreateMbx(CpuState *s) {
+    /* a0=name, a1=attr, a2=option (PSPSDK SceKernelMbxOptParam, unused). */
+    (void)A2;
+    char name[32];
+    name[0] = '\0';
+    if (A0) {
+        if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    for (int i = 0; i < MBX_MAX; i++) {
+        Mbx *m = &s_mbx[i];
+        if (m->used) continue;
+        memset(m, 0, sizeof *m);
+        m->used = 1;
+        m->uid = sr_alloc_uid();
+        m->attr = A1;
+        memcpy(m->name, name, sizeof m->name);
+        return m->uid;
+    }
+    return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+}
+
+static uint32_t h_DeleteMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    int waiters = m->nwaiters;
+    m->used = 0;
+    if (waiters) {
+        sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_DELETE);
+        sched_preempt();
+    }
+    return 0;
+}
+
+static uint32_t h_SendMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t msg = A1;
+    /* Validate the whole accessed packet span: the circular relink writes
+     * next@0 and priority mailboxes read msgPriority@4. */
+    if (!msg || !sr_guest_span_writable(msg, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (m->nmsgs >= MBX_MAX_MSGS) return 0x80020190u;
+    mbx_enqueue(m, msg);
+    if (m->nwaiters > 0) {
+        uint32_t thid = m->waiters[0];
+        for (int j = 0; j + 1 < m->nwaiters; j++) m->waiters[j] = m->waiters[j + 1];
+        m->nwaiters--;
+        sched_wake_one_object_waiter(A0, thid);
+        sched_preempt();
+    }
+    return 0;
+}
+
+static uint32_t h_PollMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t pmsg = A1;
+    if (!pmsg || !sr_guest_span_writable(pmsg, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (m->nmsgs <= 0) return SCE_KERNEL_ERROR_MBX_EMPTY;
+    MEM_W32(pmsg, mbx_dequeue(m));
+    return 0;
+}
+
+static uint32_t receive_mbx_common(CpuState *s, int is_cb) {
+    uint32_t uid = A0, pmsg = A1, toptr = A2;
+    Mbx *m = mbx_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    if (!pmsg || !sr_guest_span_writable(pmsg, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    if (m->nmsgs > 0) {
+        MEM_W32(pmsg, mbx_dequeue(m));
+        return 0;
+    }
+
+    uint64_t end_time = 0;
+    int has_timeout = 0;
+    if (toptr) {
+        if (!sr_guest_span_writable(toptr, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        uint32_t usec = MEM_R32(toptr);
+        if (usec == 0) {
+            MEM_W32(toptr, 0u);
+            return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+        }
+        sched_vtime_refresh();
+        end_time = sched_vtime_deadline_after((uint64_t)usec);
+        has_timeout = 1;
+    }
+
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+
+    uint32_t cur_thid = sched_current_uid();
+    if (cur_thid == 0) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    if (m->nwaiters >= MBX_MAX_WAITERS) return 0x80020190u;
+    m->waiters[m->nwaiters++] = cur_thid;
+
+    for (;;) {
+        if (is_cb && sr_thread_has_pending_callbacks(cur_thid)) {
+            sr_thread_dispatch_callbacks();
+            m = mbx_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            sched_vtime_refresh();
+            continue;
+        }
+
+        sched_set_current_wait_kind(5); /* PSP waitType 5 = mailbox */
+
+        if (has_timeout) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= end_time) {
+                m = mbx_find(uid);
+                if (m) mbx_remove_waiter(m, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+            uint32_t remaining = (uint32_t)(end_time - now);
+            if (is_cb) sched_set_current_cb_wait(1);
+            int timed_out = sched_block_on_timeout(uid, remaining);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) {
+                m = mbx_find(uid);
+                if (m) mbx_remove_waiter(m, cur_thid);
+                return woken;
+            }
+
+            m = mbx_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (m->nmsgs > 0) {
+                mbx_remove_waiter(m, cur_thid);
+                MEM_W32(pmsg, mbx_dequeue(m));
+                sched_vtime_refresh();
+                now = sched_vtime_us();
+                uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0u;
+                MEM_W32(toptr, rem);
+                return 0;
+            }
+
+            if (timed_out) {
+                mbx_remove_waiter(m, cur_thid);
+                MEM_W32(toptr, 0u);
+                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            }
+            /* Spurious wake: requeue at head so FIFO order is preserved. */
+            mbx_remove_waiter(m, cur_thid);
+            if (m->nwaiters < MBX_MAX_WAITERS) {
+                for (int j = m->nwaiters; j > 0; j--) m->waiters[j] = m->waiters[j - 1];
+                m->waiters[0] = cur_thid;
+                m->nwaiters++;
+            }
+        } else {
+            if (is_cb) sched_set_current_cb_wait(1);
+            sched_block_on(uid);
+            if (is_cb) sched_set_current_cb_wait(0);
+
+            uint32_t woken = 0;
+            if (sched_take_wake_result(&woken)) {
+                m = mbx_find(uid);
+                if (m) mbx_remove_waiter(m, cur_thid);
+                return woken;
+            }
+
+            m = mbx_find(uid);
+            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+
+            if (m->nmsgs > 0) {
+                mbx_remove_waiter(m, cur_thid);
+                MEM_W32(pmsg, mbx_dequeue(m));
+                return 0;
+            }
+
+            mbx_remove_waiter(m, cur_thid);
+            if (m->nwaiters < MBX_MAX_WAITERS) {
+                for (int j = m->nwaiters; j > 0; j--) m->waiters[j] = m->waiters[j - 1];
+                m->waiters[0] = cur_thid;
+                m->nwaiters++;
+            }
+        }
+    }
+}
+
+static uint32_t h_ReceiveMbx(CpuState *s) { return receive_mbx_common(s, 0); }
+static uint32_t h_ReceiveMbxCB(CpuState *s) { return receive_mbx_common(s, 1); }
+
+static uint32_t h_CancelReceiveMbx(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t nump = A1;
+    if (nump && !sr_guest_span_writable(nump, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    int waiters = m->nwaiters;
+    m->nwaiters = 0;
+    if (nump) MEM_W32(nump, (uint32_t)waiters);
+    if (waiters) {
+        sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
+        sched_preempt();
+    }
+    return 0;
+}
+
+/* sceKernelReferMbxStatus: SceKernelMbxInfo is 52 bytes — size(0), name[32](4),
+ * attr(36), numWaitThreads(40), numMessages(44), firstMessage(48). */
+static uint32_t h_ReferMbxStatus(CpuState *s) {
+    Mbx *m = mbx_find(A0);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MBXID;
+    uint32_t info = A1;
+    if (!info || !sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(info + 0, 52u);
+    for (int i = 0; i < 32; i++) MEM_W8(info + 4 + (uint32_t)i, 0);
+    for (int i = 0; i < 31 && m->name[i]; i++) MEM_W8(info + 4 + (uint32_t)i, (uint8_t)m->name[i]);
+    MEM_W32(info + 36, m->attr);
+    MEM_W32(info + 40, (uint32_t)m->nwaiters);
+    MEM_W32(info + 44, (uint32_t)m->nmsgs);
+    MEM_W32(info + 48, m->nmsgs ? m->msgs[0] : 0u);
+    return 0;
+}
+
+/* Shared by production and the executable HLE selftest so both dispatch the
+ * same NID→handler mapping (issue #339). */
+static void hle_register_mbx_handlers(void) {
+    sr_hle_register(0x8125221d, "sceKernelCreateMbx", h_CreateMbx);
+    sr_hle_register(0x86255ada, "sceKernelDeleteMbx", h_DeleteMbx);
+    sr_hle_register(0xe9b3061e, "sceKernelSendMbx", h_SendMbx);
+    sr_hle_register(0x18260574, "sceKernelReceiveMbx", h_ReceiveMbx);
+    sr_hle_register(0xf3986382, "sceKernelReceiveMbxCB", h_ReceiveMbxCB);
+    sr_hle_register(0x0d81716a, "sceKernelPollMbx", h_PollMbx);
+    sr_hle_register(0x87d4dd36, "sceKernelCancelReceiveMbx", h_CancelReceiveMbx);
+    sr_hle_register(0xa8e8c846, "sceKernelReferMbxStatus", h_ReferMbxStatus);
+}
+
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */
 
 typedef struct {
@@ -14524,6 +15140,7 @@ void sr_hle_init(void) {
     hle_register_utility_module_handlers();
     hle_register_kernel_module_handlers();
     hle_register_msgpipe_handlers();
+    hle_register_mbx_handlers();
     /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
      * branches so the selftest exercises the production mapping. */
     hle_register_cancel_release_handlers();
@@ -14699,6 +15316,8 @@ void sr_hle_init(void) {
     sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoWaitAsync);
     sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
     sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
+    sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
+    sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
     /* sceAudio regular channels share one production mapping with the executable
      * contract harness. Output2 remains production-only and otherwise unchanged. */
     hle_register_regular_audio_handlers();
@@ -14771,6 +15390,7 @@ void sr_hle_init(void) {
     /* InterruptManager Disable/Release pair: shared with the executable harness
      * through hle_register_wait_conformance_handlers(), next to Register/Enable. */
     hle_register_msgpipe_handlers();
+    hle_register_mbx_handlers();
     /* semaphores */
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */

@@ -28,6 +28,7 @@ from nk_core import (
     RuntimeLauncher,
     inspect_iso,
 )
+from nk_core import package_cache
 from nk_core.iso_inspect import (
     MAX_EXECUTABLE_BYTES,
     IsoInspectionError,
@@ -87,14 +88,25 @@ def _require_child(root: Path, child: Path, label: str) -> Path:
 
 def _write_private_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    if os.name != "nt":
-        temporary.chmod(0o600)
-    os.replace(temporary, path)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
+        ) as stream:
+            temporary_path = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            temporary_path.chmod(0o600)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) -> str:
@@ -463,12 +475,14 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
     return output
 
 
-def _runtime_build_environment() -> dict[str, str]:
+def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, str]:
     env = os.environ.copy()
     if os.name == "nt":
         ucrt_bin = Path("C:/msys64/ucrt64/bin")
         if ucrt_bin.is_dir():
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
+    if instruction_trace:
+        env["TRACE"] = "1"
     return env
 
 
@@ -485,12 +499,232 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         shutil.copyfile(found, package_dir / "SDL3.dll")
 
 
+def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:
+    removed, remaining = package_cache.prune_cache(
+        cache_dir,
+        max_entries=package_cache.cache_entry_limit(),
+        protected_entry=protected_entry,
+    )
+    if removed:
+        print(f"CACHE_PRUNED: removed {removed} old entries; retained {remaining}")
+
+
+def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dict:
+    executable = manifest["executable"]
+    spans = executable.get("extra_executable_spans", [])
+    title_extra_spans = ""
+    if spans:
+        title_extra_spans = ",".join(
+            f"0x{int(span['start']):08x},0x{int(span['end']):08x}" for span in spans
+        )
+    return {
+        "base": f"0x{int(executable['base']):08x}",
+        "entry": f"0x{int(executable['entry']):08x}",
+        "title_extra_spans": title_extra_spans,
+        "profile": manifest.get("codegen_profile", "none"),
+        "funcs_per_chunk": 2000,
+        "optional_modules": [],
+        "codegen_tool": environment.get("CODEGEN_TOOL", "tools/codegen.py"),
+        "codegen_user_args": environment.get("CODEGEN_USER_ARGS", ""),
+        "lle_cpu": environment.get("LLE_CPU", ""),
+        "stale_code_policy": environment.get(
+            "STALE_CODE_POLICY", environment.get("SR_STALE_POLICY", "")
+        ),
+        "chunk_target_bytes": environment.get("CHUNK_TARGET_BYTES", ""),
+    }
+
+
+def _has_private_backends(root: Path = ROOT) -> bool:
+    return (root / "src" / "rt" / "pgf.c").is_file() and (root / "src" / "rt" / "pgd.c").is_file()
+
+
+def _current_package_cache_key(
+    manifest: dict,
+    manifest_path: Path,
+    executable_sha256: str,
+    module_dir: Path | None,
+    psp_header: Path | None,
+    *,
+    public_safe: bool | None = None,
+) -> dict:
+    if public_safe is None:
+        public_safe = not _has_private_backends()
+    selected_modules = [
+        module for module in manifest.get("modules", [])
+        if module.get("role") == "guest-prx" and module.get("required", False)
+    ]
+    module_hashes = []
+    for module in sorted(selected_modules, key=lambda item: item["name"]):
+        if module_dir is None:
+            raise PackageBuildError(f"Required guest PRX {module['name']} is unavailable for cache identity.")
+        module_path = module_dir / module["name"]
+        if not module_path.is_file():
+            raise PackageBuildError(f"Required guest PRX {module['name']} is unavailable for cache identity.")
+        module_hashes.append({
+            "name": module["name"],
+            "load_address": f"0x{int(module['load_address']):08x}",
+            "sha256": package_cache.sha256_file(module_path),
+        })
+    input_hashes = {
+        "manifest": {"sha256": package_cache.sha256_file(manifest_path)},
+        "executable": {"sha256": executable_sha256},
+        "modules": module_hashes,
+        "psp_header": (
+            {"sha256": package_cache.sha256_file(psp_header)}
+            if psp_header is not None else None
+        ),
+    }
+    environment = _runtime_build_environment()
+    options = _package_codegen_options(manifest, environment)
+    return package_cache.build_cache_key(
+        input_hashes=input_hashes,
+        codegen_options=options,
+        analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
+        compiler=package_cache.compiler_identity(
+            environment.get("CC", "gcc"), repository_root=ROOT, environment=environment
+        ),
+        target=package_cache.compiler_target(environment),
+        runtime_source_digest=package_cache.source_tree_digest(ROOT),
+        compile_flags=package_cache.native_compile_flags(
+            public_safe=public_safe, environment=environment
+        ),
+        link_flags=environment.get("LDFLAGS", ""),
+    )
+
+
+def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
+                         cache_key: dict, user_root: Path, disc_id: str) -> None:
+    """Copy a validated cache entry into place, re-validating the copy before promotion."""
+    if target_dir.parent.is_symlink():
+        raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
+    target_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _require_child(user_root, target_dir.parent, "Package destination root")
+    staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
+    shutil.rmtree(staging)
+    shutil.copytree(entry_package, staging)
+    staged_valid, staged_reason = package_cache.validate_package_cache(
+        staging, expected_key=cache_key
+    )
+    if not staged_valid:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise PackageBuildError(
+            f"Copied package cache entry failed validation ({staged_reason}); refusing to promote it."
+        )
+    if target_dir.exists() and target_dir.is_symlink():
+        raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
+    backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
+    if backup is not None:
+        os.replace(target_dir, backup)
+    try:
+        os.replace(staging, target_dir)
+    except OSError:
+        if backup is not None and not target_dir.exists():
+            os.replace(backup, target_dir)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+
+
+def _report_reused_package_stages(stage_observer) -> None:
+    # A validated cache entry satisfies codegen, compile and packaging: report them as
+    # passed so a bring-up run that reuses a package still records every stage.
+    if stage_observer is None:
+        return
+    for stage in ("codegen", "compile", "build_package"):
+        stage_observer(stage, "PASS", 0)
+
+
+class _BuildProgressReporter:
+    def __init__(self, dest: str | Path | None, log_file: Path | None = None):
+        self.dest = dest
+        self.log_file = log_file
+        self.current_stage = "preflight"
+        self._out_stream = None
+        self._log_stream = None
+        self._failed = False
+        self.is_json_stdout = False
+        self._saved_stdout = None
+
+        if log_file:
+            lf = Path(log_file)
+            lf.parent.mkdir(parents=True, exist_ok=True)
+            self._log_stream = lf.open("a", encoding="utf-8")
+
+        if dest:
+            if str(dest) == "-":
+                self.is_json_stdout = True
+                self._out_stream = sys.__stdout__ or sys.stdout
+                self._saved_stdout = sys.stdout
+                sys.stdout = self._log_stream if self._log_stream is not None else io.StringIO()
+            else:
+                p = Path(dest)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                self._out_stream = p.open("a", encoding="utf-8")
+
+    def report(self, stage: str, status: str, message: str) -> None:
+        self.current_stage = stage
+        if status == "FAIL":
+            self._failed = True
+        payload = {"stage": stage, "status": status, "message": message}
+        line = json.dumps(payload, ensure_ascii=False) + "\n"
+        if self._out_stream is not None:
+            self._out_stream.write(line)
+            self._out_stream.flush()
+        if self._log_stream is not None:
+            self._log_stream.write(f"[{stage}] {status}: {message}\n")
+            self._log_stream.flush()
+
+    def report_failure(self, message: str) -> None:
+        if not self._failed:
+            self.report(self.current_stage, "FAIL", message)
+
+    def log(self, text: str) -> None:
+        if self._log_stream is not None:
+            self._log_stream.write(text)
+            if not text.endswith("\n"):
+                self._log_stream.write("\n")
+            self._log_stream.flush()
+
+    def close(self) -> None:
+        if self._saved_stdout is not None:
+            sys.stdout = self._saved_stdout
+            self._saved_stdout = None
+        if self._out_stream is not None and self._out_stream is not sys.__stdout__ and self._out_stream is not sys.stdout:
+            try:
+                self._out_stream.close()
+            except OSError:
+                pass
+            self._out_stream = None
+        if self._log_stream is not None:
+            try:
+                self._log_stream.close()
+            except OSError:
+                pass
+            self._log_stream = None
+
+
 def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
+    reporter = _BuildProgressReporter(getattr(args, "progress_json", None),
+                                      getattr(args, "log_file", None))
+    try:
+        return _build_package(args, stage_observer, reporter)
+    finally:
+        # Restores stdout even on an unexpected exception; close() is idempotent.
+        reporter.close()
+
+
+def _build_package(args: argparse.Namespace, stage_observer,
+                   reporter: _BuildProgressReporter) -> int:
     disc_id = args.disc_id.upper()
     if not re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id):
-        sys.stderr.write("Build refused: disc ID must be a nine-character PSP ID.\n")
+        msg = "Build refused: disc ID must be a nine-character PSP ID."
+        reporter.report("preflight", "FAIL", msg)
+        reporter.close()
+        sys.stderr.write(msg + "\n")
         return 2
     try:
+        reporter.report("preflight", "START", f"Inspecting library entry for {disc_id}...")
         user_root = _user_data_root(args.user_data_root)
         entry = _load_library_entry(user_root, disc_id)
         iso_path = Path(entry["iso_path"]).expanduser()
@@ -543,6 +777,8 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         manifest_source, manifest, expected_hash = _load_entry_manifest(
             user_root, entry, disc_id, manifest_selected
         )
+        reporter.report("preflight", "PASS", "Library entry and manifest validated")
+        reporter.report("extract", "START", "Extracting executable and guest modules...")
         cache_dir = _require_child(user_root, user_root / "cache" / "packages" / disc_id,
                                    "Package cache")
         cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -583,12 +819,89 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             args.module_dir.expanduser().resolve() if args.module_dir else None,
             decrypted_module_dir(user_root, disc_id),
         )
+        reporter.report("extract", "PASS", "Executable and modules prepared")
 
-        build_dir = cache_dir / "package"
         target_dir = user_root / "packages" / disc_id
         _require_child(user_root, target_dir, "Package destination")
+        if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
+            raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
+        public_safe = not _has_private_backends()
+        cache_key = _current_package_cache_key(
+            manifest,
+            manifest_cache_path,
+            actual_hash,
+            module_dir,
+            cached_header,
+            public_safe=public_safe,
+        )
+        previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
+        decision = package_cache.compare_cache_keys(previous_key, cache_key)
+        target_valid = False
+        target_reason = "package is missing"
+        if target_dir.is_dir() and not target_dir.is_symlink():
+            target_valid, target_reason = package_cache.validate_package_cache(
+                target_dir,
+                expected_key=cache_key,
+            )
+        if target_valid and decision.action == "reuse":
+            _prune_package_cache(cache_dir)
+            if not reporter.is_json_stdout:
+                print(f"PACKAGE_REUSED: {target_dir}")
+                print("CACHE: unchanged key; AOT and native objects reused")
+            reporter.log(f"PACKAGE_REUSED: {target_dir}")
+            reporter.log("CACHE: unchanged key; AOT and native objects reused")
+            reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
+            reporter.report("package", "PASS", f"Package reused: {target_dir}")
+            _report_reused_package_stages(stage_observer)
+            reporter.close()
+            return 0
+        if previous_key is not None and decision.reasons:
+            if not reporter.is_json_stdout:
+                print("CACHE_CHANGED: " + ", ".join(decision.reasons))
+            reporter.log("CACHE_CHANGED: " + ", ".join(decision.reasons))
+
+        entry_root = (
+            cache_dir / "entries" / cache_key["aot"]["digest"] / cache_key["native"]["digest"]
+        )
+        entry_package = entry_root / "package"
+        if entry_root.is_symlink():
+            raise PackageBuildError("Package cache entry is a symlink; refusing to reuse it.")
+        if entry_package.is_dir() and not entry_package.is_symlink():
+            entry_valid, entry_reason = package_cache.validate_package_cache(
+                entry_package,
+                expected_key=cache_key,
+            )
+            if entry_valid:
+                _promote_cache_entry(entry_package, target_dir, cache_dir, cache_key, user_root, disc_id)
+                _prune_package_cache(cache_dir, entry_root)
+                if not reporter.is_json_stdout:
+                    print(f"PACKAGE: {target_dir}")
+                    print("CACHE: content-addressed entry reused")
+                reporter.log(f"PACKAGE: {target_dir}")
+                reporter.log("CACHE: content-addressed entry reused")
+                reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
+                reporter.report("package", "PASS", f"Package promoted: {target_dir}")
+                _report_reused_package_stages(stage_observer)
+                reporter.close()
+                return 0
+            if entry_package.is_symlink():
+                raise PackageBuildError("Package cache entry is a symlink; refusing to replace it.")
+            shutil.rmtree(entry_package)
+        elif entry_package.exists():
+            raise PackageBuildError("Package cache entry is not a directory; refusing to replace it.")
+
+        reuse_source = None
+        native_only = False
+        if target_valid and decision.generated_c_reusable:
+            reuse_source = target_dir
+            native_only = decision.action == "native-recompile"
+        entry_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        build_dir = entry_package
         if build_dir.exists():
+            if build_dir.is_symlink():
+                raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
             shutil.rmtree(build_dir)
+        reporter.report("compile", "START", "Compiling package with AOT codegen...")
         command = [
             sys.executable,
             str(ROOT / "tools" / "title_codegen_plan.py"),
@@ -599,20 +912,39 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             "--output-dir",
             str(build_dir),
         ]
+        if public_safe:
+            command.append("--public-safe")
         if module_dir is not None:
             command.extend(("--module-dir", str(module_dir)))
         if cached_header is not None:
             command.extend(("--psp-header", str(cached_header)))
+        if reuse_source is not None:
+            command.extend(("--reuse-aot-from", str(reuse_source)))
+        if native_only:
+            command.append("--native-only")
         if os.name == "nt":
-            print("COMMAND: " + subprocess.list2cmdline(command))
+            cmd_line = "COMMAND: " + subprocess.list2cmdline(command)
         else:
             import shlex
-            print("COMMAND: " + shlex.join(command))
+            cmd_line = "COMMAND: " + shlex.join(command)
+        if not reporter.is_json_stdout:
+            print(cmd_line)
+        reporter.log(cmd_line)
         compile_started = time.perf_counter()
-        completed = subprocess.run(command, cwd=ROOT, env=_runtime_build_environment(),
-                                   capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=_runtime_build_environment(
+                instruction_trace=bool(getattr(args, "instruction_trace", False))
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if completed.stdout:
-            sys.stdout.write(completed.stdout)
+            reporter.log(completed.stdout)
+            if not reporter.is_json_stdout:
+                sys.stdout.write(completed.stdout)
         if completed.returncode != 0:
             if stage_observer is not None:
                 stage_observer(
@@ -620,32 +952,67 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
                     int((time.perf_counter() - compile_started) * 1000),
                 )
             if completed.stderr:
-                sys.stderr.write(completed.stderr)
+                reporter.log(completed.stderr)
+                if not reporter.is_json_stdout:
+                    sys.stderr.write(completed.stderr)
             if "PUBLIC_SAFE=0 requires the private PGF and PGD backends" in (
                 completed.stderr + completed.stdout
             ):
-                raise PackageBuildError(
+                boundary_err = (
                     "This checkout lacks the production PGF/PGD runtime backends required "
-                    "for retail packages. Public-safe packages are limited to synthetic "
-                    "fixtures; production package building is in the works (#297)."
+                    "for a private-backend build (#297)."
                 )
+                reporter.report("compile", "FAIL", boundary_err)
+                reporter.close()
+                raise PackageBuildError(boundary_err)
             if "PACKAGE_UNSUPPORTED_PATH" in completed.stderr or "PACKAGE_UNSUPPORTED_PATH" in completed.stdout:
                 output = completed.stderr + completed.stdout
+                path_err = None
                 for line in output.splitlines():
                     if "PACKAGE_UNSUPPORTED_PATH:" in line:
-                        raise PackageBuildError(line.split("PACKAGE_UNSUPPORTED_PATH:", 1)[1].strip())
-                raise PackageBuildError(
-                    "A build path contains spaces and 8.3 short names are unavailable on this volume; "
-                    "set NK_BUILD_ROOT to a folder without spaces (#296)."
-                )
+                        path_err = line.split("PACKAGE_UNSUPPORTED_PATH:", 1)[1].strip()
+                        break
+                if not path_err:
+                    path_err = (
+                        "A build path contains spaces and 8.3 short names are unavailable on this volume; "
+                        "set NK_BUILD_ROOT to a folder without spaces (#296)."
+                    )
+                reporter.report("compile", "FAIL", path_err)
+                reporter.close()
+                raise PackageBuildError(path_err)
+            reporter.report("compile", "FAIL", f"Subprocess exited with code {completed.returncode}")
+            reporter.close()
             return completed.returncode
         if stage_observer is not None:
             stage_observer(
                 "compile", "PASS",
                 int((time.perf_counter() - compile_started) * 1000),
             )
+        reporter.report("compile", "PASS", "Compilation completed successfully")
+        reporter.report("package", "START", "Staging runtime assets and validating package...")
         package_started = time.perf_counter()
         _stage_runtime_assets(build_dir)
+        backends_mode = "public" if public_safe else "private"
+        backend_limits = (
+            [
+                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "PGD-protected data: unavailable (#295)",
+            ]
+            if public_safe
+            else []
+        )
+        package_cache.write_completion_manifest(
+            build_dir,
+            cache_key,
+            backends=backends_mode,
+            limits=backend_limits,
+        )
+        valid_package, package_reason = package_cache.validate_package_cache(
+            build_dir,
+            expected_key=cache_key,
+        )
+        if not valid_package:
+            raise PackageBuildError(f"Generated package failed cache verification: {package_reason}")
 
         package_json = json.loads((build_dir / "package.json").read_text(encoding="utf-8"))
         if package_json.get("title", {}).get("id") != entry["title_id"] or \
@@ -660,6 +1027,12 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         shutil.rmtree(staging)
         shutil.copytree(build_dir, staging)
         _require_child(user_root, staging, "Package staging directory")
+        valid_staging, staging_reason = package_cache.validate_package_cache(
+            staging,
+            expected_key=cache_key,
+        )
+        if not valid_staging:
+            raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
         backup = None
         if target_dir.exists():
             if target_dir.is_symlink():
@@ -672,14 +1045,27 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
             if backup is not None and not target_dir.exists():
                 os.replace(backup, target_dir)
             raise
-        print(f"PACKAGE: {target_dir}")
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+        _prune_package_cache(cache_dir, entry_root)
+        if not reporter.is_json_stdout:
+            print(f"PACKAGE: {target_dir}")
+            if native_only:
+                print("CACHE: generated C reused; native objects recompiled")
+            else:
+                print("CACHE: AOT regenerated for changed cache key")
+        reporter.log(f"PACKAGE: {target_dir}")
+        reporter.report("package", "PASS", f"Package verified and promoted to {target_dir}")
         if stage_observer is not None:
             stage_observer(
                 "build_package", "PASS",
                 int((time.perf_counter() - package_started) * 1000),
             )
+        reporter.close()
         return 0
     except (PackageBuildError, OSError, ValueError, KeyError, TypeError) as exc:
+        reporter.report_failure(str(exc))
+        reporter.close()
         sys.stderr.write(f"Package build refused: {exc}\n")
         return 1
 
@@ -965,6 +1351,14 @@ def _bringup_human_summary(report: dict) -> str:
         detail = f" (native runtime reported a crash; exit code {report['process_exit_code']})"
     elif report["failure_class"] == "UNRESOLVED_DISPATCH_TARGET":
         detail = " (the runtime rejected an unresolved dispatch target)"
+    elif report["failure_class"] == "EXITED_ZERO_BEFORE_HLE":
+        detail = " (the runtime exited zero before its first PSP kernel import)"
+    elif report["failure_class"] == "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP":
+        detail = " (the runtime exited zero before PSP display framebuffer setup)"
+    elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
+        detail = " (runtime telemetry did not verify a PSP kernel import)"
+    elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
+        detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
     elif report["failure_class"] == "LAUNCH_FAILED":
         kind = report.get("runtime_output_kind")
         if kind == "EMPTY":
@@ -1100,6 +1494,59 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
     return "EMPTY" if not output.strip() else "OTHER"
+
+
+def _flight_has_hle_import(path: Path | None) -> bool | None:
+    """Return whether the private flight bundle proves an HLE import occurred.
+
+    ``None`` means the bundle is missing, malformed, or its ring buffer dropped
+    events before any retained HLE import. The bundle itself is never copied
+    into the sanitized bring-up report.
+    """
+    if path is None:
+        return None
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recorder = bundle.get("recorder") if isinstance(bundle, dict) else None
+    events = bundle.get("events") if isinstance(bundle, dict) else None
+    dropped = recorder.get("dropped") if isinstance(recorder, dict) else None
+    if not isinstance(events, list) or isinstance(dropped, bool) or not isinstance(dropped, int) or dropped < 0:
+        return None
+    if any(
+        isinstance(event, dict) and event.get("class") == "hle" and event.get("kind") == 1
+        for event in events
+    ):
+        return True
+    return False if dropped == 0 else None
+
+
+def _flight_has_display_framebuffer_setup(path: Path | None) -> bool | None:
+    """Return whether the private flight bundle proves PSP framebuffer setup.
+
+    This establishes only that the guest configured a display framebuffer; it
+    does not claim that a host frame was presented or visually verified.
+    """
+    if path is None:
+        return None
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recorder = bundle.get("recorder") if isinstance(bundle, dict) else None
+    events = bundle.get("events") if isinstance(bundle, dict) else None
+    dropped = recorder.get("dropped") if isinstance(recorder, dict) else None
+    if (not isinstance(events, list) or isinstance(dropped, bool)
+            or not isinstance(dropped, int) or dropped < 0):
+        return None
+    if any(
+        isinstance(event, dict) and event.get("class") == "hle"
+        and event.get("kind") == 1 and event.get("arg0") == 0x289D82FE
+        for event in events
+    ):
+        return True
+    return False if dropped == 0 else None
 
 
 def _count_instructions(sources: list[dict]) -> int:
@@ -1393,6 +1840,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         user_data_root=user_root,
         module_dir=module_dir,
         psp_header=None,
+        instruction_trace=bool(getattr(args, "instruction_trace", False)),
     )
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
@@ -1434,12 +1882,31 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "PSP_ISO": str(iso_path),
             "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
         })
+        flight_output: Path | None = None
+        try:
+            flight_fd, flight_name = tempfile.mkstemp(
+                prefix="bringup-flight-", suffix=".json", dir=work_dir
+            )
+            os.close(flight_fd)
+            flight_output = Path(flight_name)
+            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal;4096"
+            env["SR_FLIGHT_OUTPUT"] = str(flight_output)
+        except OSError:
+            env.pop("SR_FLIGHT", None)
+            env.pop("SR_FLIGHT_OUTPUT", None)
         image = package_dir / f"{Path(package['executable']['path']).stem}_image.bin"
         base = int(manifest["executable"]["base"])
         base_argument = str(base) if base == 0 else f"0x{base:08x}"
+        instruction_trace_path = (
+            work_dir / "instructions.trace"
+            if bool(getattr(args, "instruction_trace", False))
+            else None
+        )
         launch_command = [
             str(executable), "--image", str(image), base_argument,
-            package["runtime"]["run_entry"], "none", "none", "--sched",
+            package["runtime"]["run_entry"], "none",
+            str(instruction_trace_path) if instruction_trace_path else "none",
+            "--sched",
         ]
         timeout = max(1, min(int(args.launch_timeout), 120))
         process = subprocess.Popen(
@@ -1455,7 +1922,34 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
             report["process_exit_code"] = process.returncode
             report["exit_classification"] = "EXITED_ZERO" if process.returncode == 0 else "EXITED_NONZERO"
-            if process.returncode != 0:
+            if process.returncode == 0:
+                hle_observed = _flight_has_hle_import(flight_output)
+                if hle_observed is False:
+                    _fail_bringup(
+                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [285, 308],
+                        int((time.perf_counter() - started) * 1000),
+                    )
+                elif hle_observed is None:
+                    _fail_bringup(
+                        report, "launch", "GUEST_ACTIVITY_UNVERIFIED", [285, 308],
+                        int((time.perf_counter() - started) * 1000),
+                    )
+                else:
+                    framebuffer_observed = _flight_has_display_framebuffer_setup(flight_output)
+                    if framebuffer_observed is False:
+                        _fail_bringup(
+                            report, "launch", "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [285, 308],
+                            int((time.perf_counter() - started) * 1000),
+                        )
+                    elif framebuffer_observed is None:
+                        _fail_bringup(
+                            report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [285, 308],
+                            int((time.perf_counter() - started) * 1000),
+                        )
+                    else:
+                        _set_bringup_stage(report, "launch", "PASS",
+                                           int((time.perf_counter() - started) * 1000))
+            else:
                 folded = launch_output.casefold()
                 if "no available video device" in folded or "video driver" in folded:
                     failure, issues = "HEADLESS_UNAVAILABLE", [297]
@@ -1484,9 +1978,6 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     failure, issues = "LAUNCH_FAILED", [297]
                 _fail_bringup(report, "launch", failure, issues,
                               int((time.perf_counter() - started) * 1000))
-            else:
-                _set_bringup_stage(report, "launch", "PASS",
-                                   int((time.perf_counter() - started) * 1000))
         except subprocess.TimeoutExpired:
             process.kill()
             process.communicate()
@@ -1545,6 +2036,10 @@ def main() -> int:
                          help="Optional directory containing required guest PRXs")
     p_build.add_argument("--psp-header", type=Path,
                          help="PSP header required by some title manifests")
+    p_build.add_argument("--progress-json", nargs="?", const="-", default=None,
+                         help="Emit machine-readable progress JSON objects (one per line)")
+    p_build.add_argument("--log-file", type=Path, default=None,
+                         help="Write build log to the specified file")
     p_build.set_defaults(func=cmd_build_package)
 
     p_bringup = subparsers.add_parser(
@@ -1557,6 +2052,8 @@ def main() -> int:
                            help="Destination for the public-safe JSON report")
     p_bringup.add_argument("--launch-timeout", type=int, default=20,
                            help="Hard launch limit in seconds (1..120; default 20)")
+    p_bringup.add_argument("--instruction-trace", action="store_true",
+                           help="Write guest instruction trace under --work-dir")
     p_bringup.set_defaults(func=cmd_bringup)
 
     args = parser.parse_args()

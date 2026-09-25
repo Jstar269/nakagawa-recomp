@@ -118,11 +118,10 @@ Corrections to the mission list:
    line while its ledger entry claims project-authored expression (a
    header/ledger mismatch the campaign must resolve, not by deleting the
    comment but by earning the replacement citation per the model rules);
-   and the `guest_interp` record (`daybreak4-guest-interpreter`) is
-   **unbacked** — `docs/provenance/GUEST_INTERP_ATTESTATION.md` records that
-   the named trusted record is absent from the authority, which only the
-   maintainer can resolve by promoting the existing human-authored record
-   verbatim. No agent action can close that item.
+   and the `guest_interp` record (`daybreak4-guest-interpreter`) was
+   **unbacked** until the maintainer promoted the existing human-authored
+   record into the trusted authority; it is backed as of 2026-09-24 (#332,
+   `docs/provenance/GUEST_INTERP_ATTESTATION.md`).
 
 Additions the mission list missed (all `upstream_derived` in the ledger):
 
@@ -194,9 +193,8 @@ replacement by an LLE path that makes the component unnecessary ·
 - **G3 loader slice → (a).** ELF32, `~PSP`/`~SCE` containers, and MIPS
   relocation application are public-format facts; NID/import-table
   resolution cites PSPSDK structures and the project's NID corpus
-  (`tools/nid_corpus.json`, IND-1). The future KIRK engine beside it is a
-  new (a) item (math + externalised user keyring, per fidelity §3.1), never
-  copied from any emulator's `kirk` implementation.
+  (`tools/nid_corpus.json`, IND-1). Any decryption capability is outside
+  this campaign pending the maintainer's legal decision (#295).
 - **G4 PGF → (a) + (a).** Both the publishable reader (against `pgf_api.h`,
   from the PGF format and the font-origins metric targets) and the
   project-owned converter (from pinned OFL/Ume inputs, deterministic

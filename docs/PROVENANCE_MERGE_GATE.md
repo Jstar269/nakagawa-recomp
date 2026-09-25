@@ -343,8 +343,25 @@ git show private/main:docs/provenance/IMPLEMENTATION_PROVENANCE.json > "$TRUSTED
 python tools/provenance_attest_verify.py --repo . --candidate HEAD --base origin/main --trusted-ledger "$TRUSTED_DIR/ledger.json" --show-debt
 ```
 
+The ephemeral route, which the hosted workflow uses, takes a public baseline
+for the exact base. Generate it from the trusted authority. The base branch's
+committed ledger is not an input, so a stale or edited copy on `main` cannot
+become the baseline:
+
+```bash
+python tools/provenance_attest_verify.py --repo . --base <exact BASE sha> \
+  --trusted-ledger "$TRUSTED_DIR/ledger.json" \
+  --emit-authority-baseline "$TRUSTED_DIR/public-provenance-baseline.json"
+```
+
+The envelope binds the base commit, tree and publication policy. Every published
+path gets the same safe public claim a newly admitted path receives, so a path
+without a qualifying trusted record makes the baseline invalid
+(`TRUSTED_BASELINE_INVALID`) rather than grandfathering it.
+`tools/provenance_refresh.py` uses the same baseline.
+
 For a candidate whose policy bytes differ from the exact trusted base, the
-maintainer must additionally supply both external files:
+maintainer must additionally supply both external policy files:
 
 ```bash
 python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha> \

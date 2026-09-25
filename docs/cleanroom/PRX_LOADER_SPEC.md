@@ -17,8 +17,8 @@ zero-filling uninitialised tails, applying the two PSP relocation formats, and
 reporting the module's identity, entry point, exported functions, and import stubs so
 the runtime can link and start it.
 
-**Out of scope.** Decryption and decompression of `~PSP` containers (a separate
-future item beside KIRK, campaign §4 G3), choosing the base address (the title
+**Out of scope.** Decryption and decompression of `~PSP` containers (not supported;
+an open maintainer legal decision, #295), choosing the base address (the title
 manifest's `modules[].load_address`, validated by `tools/title_manifest.py`),
 reserving guest memory (the allocator's exact-address reservation), running
 `module_start`, and resolving imports to handlers (the runtime's HLE registry and

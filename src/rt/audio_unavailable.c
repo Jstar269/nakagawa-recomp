@@ -262,6 +262,10 @@ void sr_audio_dump_stats(void) {
             (unsigned)peak);
 }
 
+int sr_audio_is_active(void) {
+    return s_audio_state == AUDIO_STATE_ACTIVE;
+}
+
 #ifdef SR_AUDIO_SELFTEST
 #include <assert.h>
 #include <math.h>

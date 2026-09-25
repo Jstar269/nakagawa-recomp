@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from build_public_export import public_safe_excluded_paths  # noqa: E402
+from nk_core.git_isolation import isolated_git_env, run_git  # noqa: E402
 import provenance_ledger  # noqa: E402
 import publication_policy  # noqa: E402
 from public_export import build_document  # noqa: E402
@@ -462,9 +463,8 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         """A tiny real Git repo with a synthetic policy and tracked files."""
         repo = Path(self.enterContext(tempfile.TemporaryDirectory())) / "repo"
         repo.mkdir()
-        for argv in (("init", "-q", "."), ("config", "user.email", "t@example.invalid"),
-                     ("config", "user.name", "test")):
-            subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True)
+        for argv in (("init", "-q", "."),):
+            run_git(argv, cwd=repo, check=True, capture_output=True)
         policy = repo / "assets" / "public_source_profile.json"
         policy.parent.mkdir(parents=True, exist_ok=True)
         policy.write_text(
@@ -474,9 +474,9 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         for rel, text in files.items():
             target = repo / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True, capture_output=True)
+            target.write_text(text, encoding="utf-8", newline="\n")
+        run_git(["-c", "core.autocrlf=false", "add", "-A"], cwd=repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "init"], cwd=repo, check=True, capture_output=True)
         return repo, policy
 
     def _detailed_ledger(self, repo: Path, records: list[dict]) -> Path:
@@ -617,12 +617,8 @@ class _RefreshFixture:
         self.excluded = excluded
         self.repo = self.tmp / "candidate"
         self.repo.mkdir()
-        for argv in (
-            ("init", "-q", "."),
-            ("config", "user.email", "refresh-test@example.invalid"),
-            ("config", "user.name", "refresh-test"),
-        ):
-            subprocess.run(["git", *argv], cwd=self.repo, check=True, capture_output=True)
+        for argv in (("init", "-q", "."),):
+            run_git(argv, cwd=self.repo, check=True, capture_output=True)
 
         self._write("LICENSE", "Synthetic fixture license placeholder\n")
         self._write("NOTICE.md", "# Notices\n\nSynthetic fixture.\n")
@@ -638,9 +634,9 @@ class _RefreshFixture:
         self._write("PUBLIC_EXPORT.json", "")
         self._write_ledger()
         self._write_export()
-        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "synthetic trusted baseline"], cwd=self.repo,
-                       check=True, capture_output=True)
+        run_git(["add", "-A"], cwd=self.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "synthetic trusted baseline"], cwd=self.repo,
+                check=True, capture_output=True)
         self.baseline = self._git("rev-parse", "HEAD")
 
         self.trusted_policy = self.tmp / "trusted-policy.json"
@@ -712,8 +708,8 @@ class _RefreshFixture:
             path.write_bytes(content)
 
     def _git(self, *argv: str) -> str:
-        return subprocess.run(["git", *argv], cwd=self.repo, check=True,
-                              capture_output=True, text=True).stdout.strip()
+        return run_git(argv, cwd=self.repo, check=True,
+                       capture_output=True, text=True).stdout.strip()
 
     #: Phantom include that mirrors the real repository: listed in
     #: ``include_paths`` but never tracked, so removing it is an exact bounded
@@ -806,8 +802,8 @@ class _RefreshFixture:
 
     def commit_change(self, relative: str, content: str, message: str) -> None:
         self._write(relative, content)
-        subprocess.run(["git", "add", relative], cwd=self.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", message], cwd=self.repo, check=True, capture_output=True)
+        run_git(["add", relative], cwd=self.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", message], cwd=self.repo, check=True, capture_output=True)
 
     def commit_policy_delta(
         self,
@@ -889,7 +885,13 @@ class _RefreshFixture:
             argv[argv.index("--paths"):argv.index("--paths")] = [
                 "--trusted-baseline-ledger", str(trusted_baseline_ledger),
             ]
-        return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+        return subprocess.run(
+            argv,
+            cwd=ROOT,
+            env=isolated_git_env(root=self.repo),
+            capture_output=True,
+            text=True,
+        )
 
     def _extend_policy(self, *new_paths: str) -> None:
         """Commit a candidate policy that includes exactly the new paths."""
@@ -905,8 +907,8 @@ class _RefreshFixture:
     def add_new_path(self, relative: str, content: str, message: str = "candidate new path") -> str:
         """Commit a new tracked path (and its policy include) on the candidate."""
         self._write(relative, content)
-        subprocess.run(["git", "add", relative], cwd=self.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", message], cwd=self.repo, check=True, capture_output=True)
+        run_git(["add", relative], cwd=self.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", message], cwd=self.repo, check=True, capture_output=True)
         self._extend_policy(relative)
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
@@ -945,7 +947,13 @@ class _RefreshFixture:
             ]
         if require_reviewed_blobs:
             argv.insert(argv.index("--paths"), "--require-reviewed-blobs")
-        return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+        return subprocess.run(
+            argv,
+            cwd=ROOT,
+            env=isolated_git_env(root=self.repo),
+            capture_output=True,
+            text=True,
+        )
 
     def audit(self, *extra: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -954,7 +962,10 @@ class _RefreshFixture:
                 "--candidate-tree", "--public-scope", "--policy", str(self.trusted_policy),
                 *extra,
             ],
-            cwd=ROOT, capture_output=True, text=True,
+            cwd=ROOT,
+            env=isolated_git_env(root=self.repo),
+            capture_output=True,
+            text=True,
         )
 
 
@@ -1198,13 +1209,18 @@ class ProvenanceRefreshTests(unittest.TestCase):
         (mutant_root / "tools" / "provenance_ledger.py").write_text(mutant_source, encoding="utf-8")
         shutil.copy2(ROOT / "tools" / "public_export.py", mutant_root / "tools" / "public_export.py")
         shutil.copy2(ROOT / "tools" / "publication_policy.py", mutant_root / "tools" / "publication_policy.py")
+        (mutant_root / "tools" / "nk_core").mkdir()
+        shutil.copy2(
+            ROOT / "tools" / "nk_core" / "git_isolation.py",
+            mutant_root / "tools" / "nk_core" / "git_isolation.py",
+        )
         mutant = subprocess.run(
             [
                 sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"), "refresh-reviewed",
                 "--trusted-ledger", str(fixture.trusted_ledger), "--candidate-tree", str(fixture.repo),
                 "--trusted-tree", fixture.baseline, "--trusted-policy", str(fixture.trusted_policy),
                 "--trusted-manifest", str(fixture.trusted_manifest), "--paths", "src/rt/existing.c",
-            ], cwd=ROOT, capture_output=True, text=True,
+            ], cwd=ROOT, env=isolated_git_env(root=fixture.repo), capture_output=True, text=True,
         )
         self.assertEqual(mutant.returncode, 0, mutant.stderr)
 
@@ -1260,8 +1276,8 @@ class TrustedAdmissionTests(unittest.TestCase):
         }
 
     def _commit_outputs(self, fixture: _RefreshFixture) -> str:
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "provenance: admit public metadata"],
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "provenance: admit public metadata"],
                        cwd=fixture.repo, check=True, capture_output=True)
         return fixture._git("rev-parse", "HEAD")
 
@@ -1456,9 +1472,9 @@ class TrustedAdmissionTests(unittest.TestCase):
         """A genuinely new path cannot slip through the refresh route."""
         fixture = _RefreshFixture(self)
         fixture._write(self.NEW_DOC, "# Snapshot\n")
-        subprocess.run(["git", "add", self.NEW_DOC], cwd=fixture.repo,
+        run_git(["add", self.NEW_DOC], cwd=fixture.repo,
                        check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "candidate new path, policy untouched"],
+        run_git(["commit", "-qm", "candidate new path, policy untouched"],
                        cwd=fixture.repo, check=True, capture_output=True)
         result = fixture.refresh(self.NEW_DOC)
         self.assertNotEqual(result.returncode, 0)
@@ -1736,8 +1752,8 @@ class TrustedAdmissionTests(unittest.TestCase):
             "schema_version": 1, "kind": "admission-authority",
             "reviewed_new_paths": [self._doc_statement(self.NEW_DOC, digest)],
         }), encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "smuggle authority"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "smuggle authority"], cwd=fixture.repo,
                        check=True, capture_output=True)
         result = fixture.admit(self.NEW_DOC, authority=smuggled)
         self.assertNotEqual(result.returncode, 0)
@@ -1848,6 +1864,11 @@ class TrustedAdmissionTests(unittest.TestCase):
         (mutant_root / "tools" / "provenance_ledger.py").write_text(mutant_source, encoding="utf-8")
         shutil.copy2(ROOT / "tools" / "public_export.py", mutant_root / "tools" / "public_export.py")
         shutil.copy2(ROOT / "tools" / "publication_policy.py", mutant_root / "tools" / "publication_policy.py")
+        (mutant_root / "tools" / "nk_core").mkdir()
+        shutil.copy2(
+            ROOT / "tools" / "nk_core" / "git_isolation.py",
+            mutant_root / "tools" / "nk_core" / "git_isolation.py",
+        )
         mutant = subprocess.run(
             [
                 sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"),
@@ -1858,7 +1879,7 @@ class TrustedAdmissionTests(unittest.TestCase):
                 "--trusted-policy", str(fixture.trusted_policy),
                 "--trusted-manifest", str(fixture.trusted_manifest),
                 "--paths", self.NEW_DOC,
-            ], cwd=ROOT, capture_output=True, text=True,
+            ], cwd=ROOT, env=isolated_git_env(root=fixture.repo), capture_output=True, text=True,
         )
         self.assertEqual(mutant.returncode, 0, mutant.stderr)
 
@@ -1915,6 +1936,11 @@ class TrustedAdmissionTests(unittest.TestCase):
         (mutant_root / "tools" / "provenance_ledger.py").write_text(mutant_source, encoding="utf-8")
         shutil.copy2(ROOT / "tools" / "public_export.py", mutant_root / "tools" / "public_export.py")
         shutil.copy2(ROOT / "tools" / "publication_policy.py", mutant_root / "tools" / "publication_policy.py")
+        (mutant_root / "tools" / "nk_core").mkdir()
+        shutil.copy2(
+            ROOT / "tools" / "nk_core" / "git_isolation.py",
+            mutant_root / "tools" / "nk_core" / "git_isolation.py",
+        )
         mutant = subprocess.run(
             [
                 sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"),
@@ -1927,7 +1953,7 @@ class TrustedAdmissionTests(unittest.TestCase):
                 "--trusted-baseline-ledger", str(strict_fixture.trusted_ledger),
                 "--require-reviewed-blobs",
                 "--paths", new_src,
-            ], cwd=ROOT, capture_output=True, text=True,
+            ], cwd=ROOT, env=isolated_git_env(root=strict_fixture.repo), capture_output=True, text=True,
         )
         self.assertEqual(mutant.returncode, 0, mutant.stderr)
 
@@ -2015,8 +2041,8 @@ class BaselineReuseTests(unittest.TestCase):
             trusted_baseline_ledger=fixture.trusted_ledger,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "provenance: refresh public metadata"],
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "provenance: refresh public metadata"],
                        cwd=fixture.repo, check=True, capture_output=True)
         trusted_ref = fixture._git("rev-parse", "HEAD")
         snapshot = fixture.tmp / "generation-one.json"
@@ -2107,8 +2133,8 @@ class BaselineReuseTests(unittest.TestCase):
         in_tree.write_text(json.dumps(forged, indent=2) + "\n", encoding="utf-8")
         fixture.commit_change(
             "src/rt/existing.c", fixture.source.replace("return 0", "return 2"), "second edit")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "forge own ledger"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "forge own ledger"], cwd=fixture.repo,
                        check=True, capture_output=True)
 
         result = fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
@@ -2131,8 +2157,8 @@ class BaselineReuseTests(unittest.TestCase):
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         policy["include_paths"] = sorted(set(policy["include_paths"]) | {"src/rt/evil.c"})
         policy_path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "policy substitution"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "policy substitution"], cwd=fixture.repo,
                        check=True, capture_output=True)
         self._fails(
             fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
@@ -2144,8 +2170,8 @@ class BaselineReuseTests(unittest.TestCase):
         trusted_ref, snapshot = self._generation_one(fixture)
         (fixture.repo / "assets/release_manifest.json").write_text(
             '{"name": "substituted", "components": []}\n', encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "manifest substitution"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "manifest substitution"], cwd=fixture.repo,
                        check=True, capture_output=True)
         self._fails(
             fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
@@ -2157,8 +2183,8 @@ class BaselineReuseTests(unittest.TestCase):
         trusted_ref, snapshot = self._generation_one(fixture)
         smuggled = fixture.repo / "smuggled-baseline.json"
         shutil.copy2(snapshot, smuggled)
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "smuggle trusted input"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "smuggle trusted input"], cwd=fixture.repo,
                        check=True, capture_output=True)
         self._fails(
             fixture.refresh("src/rt/existing.c", trusted_ledger=fixture.detailed_ledger(),
@@ -2170,8 +2196,8 @@ class BaselineReuseTests(unittest.TestCase):
         fixture = _RefreshFixture(self)
         trusted_ref, snapshot = self._generation_one(fixture)
         fixture._write("src/rt/newthing.c", "int newthing(void) { return 1; }\n")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "new implementation path"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "new implementation path"], cwd=fixture.repo,
                        check=True, capture_output=True)
         self._fails(
             fixture.refresh("src/rt/newthing.c", trusted_ledger=fixture.detailed_ledger(),
@@ -2272,8 +2298,8 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         return allowed
 
     def _commit_outputs(self, fixture: _RefreshFixture) -> None:
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "provenance: refresh with policy delta"],
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "provenance: refresh with policy delta"],
                        cwd=fixture.repo, check=True, capture_output=True)
 
     # -- positive ----------------------------------------------------------
@@ -2485,6 +2511,11 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         (mutant_root / "tools" / "provenance_ledger.py").write_text(mutant_source, encoding="utf-8")
         shutil.copy2(ROOT / "tools" / "public_export.py", mutant_root / "tools" / "public_export.py")
         shutil.copy2(ROOT / "tools" / "publication_policy.py", mutant_root / "tools" / "publication_policy.py")
+        (mutant_root / "tools" / "nk_core").mkdir()
+        shutil.copy2(
+            ROOT / "tools" / "nk_core" / "git_isolation.py",
+            mutant_root / "tools" / "nk_core" / "git_isolation.py",
+        )
         mutant = subprocess.run(
             [
                 sys.executable, str(mutant_root / "tools" / "provenance_ledger.py"), "refresh-reviewed",
@@ -2495,7 +2526,7 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
                 "--trusted-candidate-policy", str(blessed),
                 "--policy-delta-authority", str(authority),
                 "--paths", "docs/guide.md",
-            ], cwd=ROOT, capture_output=True, text=True,
+            ], cwd=ROOT, env=isolated_git_env(root=fixture.repo), capture_output=True, text=True,
         )
         self.assertEqual(mutant.returncode, 0, mutant.stderr)
 
@@ -2685,8 +2716,8 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         # Add a new tracked path WITHOUT extending the policy include, so the
         # policy delta itself stays the exact approved removal.
         fixture._write("docs/research/competitive/unadmitted.md", "# Unadmitted\n")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "new path, policy untouched"],
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "new path, policy untouched"],
                        cwd=fixture.repo, check=True, capture_output=True)
         blessed = fixture.external_policy_copy()
         authority = fixture.policy_delta_authority(
@@ -2708,8 +2739,8 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         fixture.commit_policy_delta(remove=(fixture.PHANTOM_INCLUDE,))
         (fixture.repo / "assets/release_manifest.json").write_text(
             '{"name": "substituted", "components": []}\n', encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "manifest substitution"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "manifest substitution"], cwd=fixture.repo,
                        check=True, capture_output=True)
         blessed = fixture.external_policy_copy()
         authority = fixture.policy_delta_authority(
@@ -2732,13 +2763,13 @@ class TransactionalOutputTests(unittest.TestCase):
     """
 
     def _head_bytes(self, fixture: _RefreshFixture, relative: str) -> bytes:
-        return subprocess.run(
-            ["git", "show", f"HEAD:{relative}"], cwd=fixture.repo,
+        return run_git(
+            ["show", f"HEAD:{relative}"], cwd=fixture.repo,
             check=True, capture_output=True).stdout
 
     def _assert_repo_clean(self, fixture: _RefreshFixture) -> None:
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=fixture.repo,
-                                check=True, capture_output=True, text=True).stdout
+        status = run_git(["status", "--porcelain"], cwd=fixture.repo,
+                         check=True, capture_output=True, text=True).stdout
         self.assertEqual(status, "", f"worktree must be clean after rollback: {status}")
         stray = [
             path.name for path in fixture.repo.rglob(".provenance-stage-*")]
@@ -2845,8 +2876,8 @@ class TransactionalOutputTests(unittest.TestCase):
         })
         result = fixture.admit(new_doc, authority=authority)
         self.assertEqual(result.returncode, 0, result.stderr)
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "provenance: admit snapshot"],
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "provenance: admit snapshot"],
                        cwd=fixture.repo, check=True, capture_output=True)
         admitted_ref = fixture._git("rev-parse", "HEAD")
         snapshot = fixture.tmp / "post-admission.json"
@@ -2882,8 +2913,8 @@ class TransactionalOutputTests(unittest.TestCase):
             "origin": "synthetic fixture documentation",
         }))
         self.assertEqual(result.returncode, 0, result.stderr)
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "admit first"], cwd=fixture.repo,
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "admit first"], cwd=fixture.repo,
                        check=True, capture_output=True)
         first_ref = fixture._git("rev-parse", "HEAD")
         snapshot = fixture.tmp / "first-admission.json"
@@ -3011,11 +3042,11 @@ class GeneratedControlWriteTests(unittest.TestCase):
             export.symlink_to(Path("docs") / "guide.md")
         except (OSError, NotImplementedError) as error:  # pragma: no cover - host dependent
             self.skipTest(f"host cannot create symlinks: {error}")
-        subprocess.run(["git", "add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-qm", "candidate aliases its export"],
+        run_git(["add", "-A"], cwd=fixture.repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "candidate aliases its export"],
                        cwd=fixture.repo, check=True, capture_output=True)
-        mode = subprocess.run(
-            ["git", "ls-files", "-s", "PUBLIC_EXPORT.json"], cwd=fixture.repo,
+        mode = run_git(
+            ["ls-files", "-s", "PUBLIC_EXPORT.json"], cwd=fixture.repo,
             check=True, capture_output=True, text=True).stdout.split(" ", 1)[0]
         if mode != "120000":  # pragma: no cover - host dependent
             self.skipTest("Git did not record a symlink on this host")

@@ -48,6 +48,11 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 
+try:
+    from .nk_core.git_isolation import isolated_git_env
+except ImportError:
+    from nk_core.git_isolation import isolated_git_env
+
 GIT_TIMEOUT_SECONDS = 300
 _MAX_STDERR_CHARS = 2000
 
@@ -133,7 +138,12 @@ def _git(args: list[str]) -> subprocess.CompletedProcess[str] | None:
     """
     try:
         return subprocess.run(
-            ["git", *args], capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT_SECONDS,
+            ["git", *args],
+            env=isolated_git_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
@@ -189,7 +199,11 @@ def search_history(needle: str, redact_needles: Sequence[str]) -> tuple[Verdict,
     try:
         result = subprocess.run(
             ["git", "log", "--all", "-S", needle, "--oneline", "--source"],
-            capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT_SECONDS,
+            env=isolated_git_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return Verdict.ERROR, SearchError(operation, None, f"git command timed out after {GIT_TIMEOUT_SECONDS}s")

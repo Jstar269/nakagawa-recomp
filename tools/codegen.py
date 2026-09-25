@@ -2360,14 +2360,16 @@ def main(argv):
     }
 
     impmap = {}
-    if elf.reloc is not None:
+    if elf.reloc is not None or elf.sec(".rodata.sceModuleInfo") is not None:
         try:
             from imports import parse_imports
             impmap = parse_imports(elf)
         except Exception as e:
             sys.stderr.write(f"warning: import table parse failed: {e}\n")
 
-    stub = elf.sec(".sceStub.text")
+    # Stripped linked executables may reconstruct the loader-owned table as
+    # .lib.stub instead of having a named .sceStub.text section.
+    stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
     def is_stub(a):
         if a in impmap:
             return True

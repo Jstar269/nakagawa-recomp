@@ -80,9 +80,9 @@ title needs a code range that lives outside the section table, declare it in the
 manifest's `executable.extra_executable_spans` (the manager then supplies it) or
 pass `--extra-span=LO,HI` to `codegen.py` for a direct Make build.
 
-## Step 2: Obtain the decrypted ELF
+## Step 2: Supply a plain (unencrypted) ELF
 
-The recompiler needs a **decrypted** PSP ELF (not encrypted PRX). Tools like `pspdecrypt` or `PRXDecrypter` can extract it from the ISO.
+The recompiler needs a **plain** PSP ELF: a file that begins with the ELF magic bytes `7F 45 4C 46`. A file beginning with `~PSP` or `~SCE` is an encrypted container and is rejected. When a disc carries an unencrypted `BOOT.BIN`, the player and CLI select it automatically. This project does not provide, recommend, or document decryption tools or keys; whether any lawful decryption capability can be offered is an open maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 
 Keep the result in a Git-ignored private-input location such as `place_game_here/EBOOT.elf`, or pass its actual path to Make. Do not commit the decrypted game executable.
 
@@ -117,7 +117,7 @@ Some games have their base/entry in `Core/Load/PSPELF.cpp` or game-specific conf
 
 Some games load additional modules (libraries). HST loads 3 extra PRXs from `place_game_here/EXTRACTED/decrypted/`. Your game may need different ones.
 
-Check the game's `MODULE.SYS` or use `pspdecrypt` to list all PRXs in the ISO.
+Check the game's `MODULE.SYS` and the disc's directory listing to identify the PRXs it loads.
 
 If your game has extra PRXs, declare their names and load addresses in the
 manifest. Keep the decrypted module directory as a local private binding. Do

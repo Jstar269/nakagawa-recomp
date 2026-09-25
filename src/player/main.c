@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "player_state.h"
+#include "package_builder.h"
 #include "iso_reader.h"
 #include "ui_renderer.h"
 #include "nk_title_manifest.h"
@@ -663,6 +664,10 @@ int main(int argc, char *argv[]) {
     if (runtime_root_path) {
         player_app_set_runtime_root(&app, runtime_root_path);
     }
+    {
+        const char *base = SDL_GetBasePath();
+        if (base) snprintf(app.install_root, sizeof(app.install_root), "%s", base);
+    }
     if (stage_only && !initial_iso_path) {
         fprintf(stderr, "[PLAYER] --stage-only requires --iso=<path>.\n");
         return 2;
@@ -869,6 +874,8 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_PREPARING);
         } else if (strcmp(test_view, "settings") == 0) {
             player_app_set_view(&app, VIEW_SETTINGS);
+        } else if (strcmp(test_view, "controller") == 0 || strcmp(test_view, "controller_settings") == 0) {
+            player_app_set_view(&app, VIEW_CONTROLLER_SETTINGS);
         } else if (strcmp(test_view, "error") == 0) {
             player_app_set_error(&app, "SOURCE_NOT_FOUND", "Game Source File Not Found",
                                  "Nakagawa could not locate the source ISO file on disk.",
@@ -916,6 +923,22 @@ int main(int argc, char *argv[]) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
             app.wizard.step = WIZARD_STEP_READY_LAUNCH;
+        } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0) {
+            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
+            const char *disc = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
+                ? app.games[app.selected_game_index].disc_id : "ULUS10041";
+            const char *title = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
+                ? app.games[app.selected_game_index].title_name : "Street Supremacy";
+            package_builder_init_session(&app.build_session, disc, title);
+            app.build_session.is_building = true;
+            app.build_session.current_stage = PACKAGE_BUILD_STAGE_COMPILE;
+            snprintf(app.build_session.current_stage_name, sizeof(app.build_session.current_stage_name), "compile");
+            snprintf(app.build_session.current_message, sizeof(app.build_session.current_message),
+                     "Compiling translated native host C sources into package binary...");
+            app.build_session.elapsed_ms = 1420;
+            package_builder_add_output_line(&app.build_session, "[preflight] PASS: Disc preflight inspection succeeded.");
+            package_builder_add_output_line(&app.build_session, "[extract] PASS: Staged plaintext guest modules to cache.");
+            package_builder_add_output_line(&app.build_session, "[compile] RUNNING: Compiling translated native C sources...");
         }
     }
 
@@ -1041,14 +1064,36 @@ int main(int argc, char *argv[]) {
        and map the d-pad and shoulders onto the same library selection the
        arrow keys drive. */
     SDL_Gamepad *gamepad = NULL;
+    if (SDL_HasGamepad()) {
+        int npads = 0;
+        SDL_JoystickID *ids = SDL_GetGamepads(&npads);
+        if (ids && npads > 0) {
+            gamepad = SDL_OpenGamepad(ids[0]);
+            if (gamepad) {
+                const char *pad_name = SDL_GetGamepadName(gamepad);
+                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                         "%s", pad_name ? pad_name : "Controller");
+                app.settings.controller_connected = true;
+            }
+        }
+        SDL_free(ids);
+    }
     PlayerStagingJob *staging_job = NULL;
 
     bool running = true;
+    uint64_t last_tick = SDL_GetTicks();
     /* The first frame is rendered before the event wait. A bounded wait keeps
        process-exit monitoring alive while the user is idle; staging progress
        and normal input still wake the loop immediately. */
     ui_render_frame(renderer, &app, &input);
     while (running && !app.should_quit) {
+        uint64_t now_tick = SDL_GetTicks();
+        uint32_t delta_ms = (uint32_t)(now_tick >= last_tick ? (now_tick - last_tick) : 0);
+        last_tick = now_tick;
+        if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
+            input_settings_update_capture(&app.input_settings, delta_ms > 0 ? delta_ms : 1);
+        }
+
         input.mouse_clicked = false;
         input.activate_pressed = false;
         SDL_Event event;
@@ -1082,6 +1127,17 @@ int main(int argc, char *argv[]) {
                     if (event.key.key == SDLK_ESCAPE) {
                         if (app.active_view == VIEW_SETUP_WIZARD) {
                             player_app_wizard_back(&app);
+                        } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
+                            if (input_settings_is_capturing(&app.input_settings)) {
+                                input_settings_cancel_capture(&app.input_settings);
+                            } else if (input_settings_is_calibrating(&app.input_settings)) {
+                                input_settings_cancel_calibration(&app.input_settings);
+                            } else {
+                                player_app_set_view(&app, VIEW_SETTINGS);
+                            }
+                        } else if (app.active_view == VIEW_BUILDING_PACKAGE) {
+                            player_app_cancel_package_build(&app);
+                            player_app_set_view(&app, VIEW_LIBRARY);
                         } else if (!player_view_is_library(app.active_view)) {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
@@ -1178,7 +1234,26 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     break;
+                case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+                    if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
+                        if ((event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
+                             event.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
+                            event.gaxis.value > 16000) {
+                            NkBindingSource src;
+                            src.type = NK_BINDING_HOST_TRIGGER;
+                            src.index = event.gaxis.axis;
+                            input_settings_feed_capture_source(&app.input_settings, src);
+                        }
+                    }
+                    break;
                 case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                    if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
+                        NkBindingSource src;
+                        src.type = NK_BINDING_HOST_BUTTON;
+                        src.index = event.gbutton.button;
+                        input_settings_feed_capture_source(&app.input_settings, src);
+                        break;
+                    }
                     if (player_view_is_library(app.active_view)) {
                         switch (event.gbutton.button) {
                             case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
@@ -1211,6 +1286,15 @@ int main(int argc, char *argv[]) {
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
                         if (app.active_view == VIEW_SETUP_WIZARD) {
                             player_app_wizard_back(&app);
+                        } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
+                            if (input_settings_is_calibrating(&app.input_settings)) {
+                                input_settings_cancel_calibration(&app.input_settings);
+                            } else {
+                                player_app_set_view(&app, VIEW_SETTINGS);
+                            }
+                        } else if (app.active_view == VIEW_BUILDING_PACKAGE) {
+                            player_app_cancel_package_build(&app);
+                            player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         }
@@ -1223,7 +1307,7 @@ int main(int argc, char *argv[]) {
                                event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
                         player_app_move_focus(&app, 1, ui_focus_count(&app));
                     } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
-                        if (app.active_view == VIEW_SETTINGS) {
+                        if (app.active_view == VIEW_SETTINGS || app.active_view == VIEW_CONTROLLER_SETTINGS) {
                             player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
                             player_app_set_view(&app, VIEW_SETTINGS);
@@ -1266,6 +1350,37 @@ int main(int argc, char *argv[]) {
          * never target a control the current view no longer draws. */
         player_app_move_focus(&app, 0, ui_focus_count(&app));
 
+        /* Monitor background package build session */
+        if (app.active_view == VIEW_BUILDING_PACKAGE) {
+            package_builder_poll(&app.build_session, SDL_GetTicks());
+            if (app.build_session.is_complete) {
+                const GameRecord *game = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
+                    ? &app.games[app.selected_game_index] : NULL;
+                char reason[512] = "";
+                NkRuntimePackageStatus status = player_app_validate_runtime_package(&app, game, NULL, reason, sizeof(reason));
+                if (status == NK_RUNTIME_PACKAGE_OK) {
+                    if (game) {
+                        app.games[app.selected_game_index].is_prepared = true;
+                        app.games[app.selected_game_index].status = NK_STATUS_PREPARED;
+                        nk_library_add_or_update(&app.library, &app.games[app.selected_game_index]);
+                        player_app_sync_library(&app);
+                    }
+                    player_app_set_view(&app, PLAYER_VIEW_READY_LIBRARY);
+                } else {
+                    player_app_set_build_error(&app, "package",
+                                               reason[0] ? reason : "Package re-validation failed after build completed.",
+                                               app.build_session.log_file_path);
+                }
+            } else if (app.build_session.is_failed) {
+                player_app_set_build_error(&app,
+                                           app.build_session.current_stage_name[0] ? app.build_session.current_stage_name : "build",
+                                           app.build_session.failure_boundary[0] ? app.build_session.failure_boundary : "Package build failed.",
+                                           app.build_session.log_file_path);
+            } else if (app.build_session.is_cancelled) {
+                player_app_set_view(&app, VIEW_LIBRARY);
+            }
+        }
+
         /* Monitor running game process */
         if (app.is_game_running) {
             if (app.launch_time_ms == 0) {
@@ -1295,6 +1410,32 @@ int main(int argc, char *argv[]) {
                     player_app_set_error(&app, "RUNTIME_ERROR_EXIT", "Child Process Error Exit",
                                          err_msg, "Return to Library", VIEW_LIBRARY);
                 }
+            }
+        }
+
+        /* Live input sampling for controller settings monitor (#357) */
+        if (gamepad) {
+            for (int b = 0; b < NK_HOST_BUTTON_COUNT; b++) {
+                app.host_buttons_live[b] = SDL_GetGamepadButton(gamepad, (SDL_GamepadButton)b);
+            }
+            for (int a = 0; a < NK_HOST_AXIS_COUNT; a++) {
+                app.host_axes_live[a] = SDL_GetGamepadAxis(gamepad, (SDL_GamepadAxis)a);
+            }
+        } else {
+            memset(app.host_buttons_live, 0, sizeof(app.host_buttons_live));
+            memset(app.host_axes_live, 0, sizeof(app.host_axes_live));
+        }
+
+        /* Update guided analog calibration when active (#357) */
+        if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
+            static uint64_t s_last_cal_tick = 0;
+            uint64_t cur_tick = SDL_GetTicks();
+            if (s_last_cal_tick == 0) s_last_cal_tick = cur_tick;
+            uint32_t dt_ms = (uint32_t)(cur_tick - s_last_cal_tick);
+            s_last_cal_tick = cur_tick;
+            if (input_settings_is_calibrating(&app.input_settings)) {
+                input_settings_update_calibration(&app.input_settings, dt_ms,
+                                                  app.host_axes_live);
             }
         }
 

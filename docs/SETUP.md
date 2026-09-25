@@ -1,8 +1,11 @@
 # Build and development setup
 
 The supported and tested core build is Windows 11 x64; the host-neutral object
-gate is a portability probe, not Linux support (see
-[`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)). The dashboard is a separate optional web project.
+gate is a portability probe, not Linux support. For an ISO/player workflow, start with
+[`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). For development, see
+[`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) and
+[`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The dashboard is a separate optional web
+project.
 
 ## Supported development baseline
 
@@ -18,14 +21,10 @@ The supported and tested core development environment is:
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
 
-The PowerShell floor is 7.4, the oldest line Microsoft still supports. A syntax/cmdlet
-inventory of every tracked `.ps1` finds nothing newer than the automatic `$IsWindows`
-variable (PowerShell 6.0). On 2026-09-24 every PowerShell-backed test (the two `.ps1`
-suites plus the manager-safety, title-planning, manager-adapter, visual-oracle,
-manifest, Doctor and production-smoke Python suites) passed under 7.4.20, 7.5.11 and
-7.6.6 (see [issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337)).
-The one host difference found: assigning `''` to an environment variable removes it on
-7.4 but keeps an empty value on 7.5+, so scripts treat empty and absent alike.
+PowerShell 7.4 is the current floor and the oldest line Microsoft still supports;
+[issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337) records the
+source inventory and cross-version test evidence. Scripts treat empty and absent
+environment values alike so the supported 7.4/7.5/7.6 lines behave consistently.
 
 Microsoft ends support for both 7.4 and 7.5 on 2026-11-10. After that date the floor
 moves to 7.6 (LTS, supported until 2028-11-14).
@@ -146,13 +145,17 @@ For automated or pre-loaded runs that require installed game data:
 
 - Utility savedata uses the hierarchical
   `memstick/PSP/SAVEDATA/<game><save>/` tree.
-- Ordinary guest `sceIoOpen("ms0:...")` calls still use the legacy flat
-  `fs/` mapping. Title-specific cached assets and save identities are private
-  inputs; this public guide deliberately does not enumerate them.
+- Ordinary guest `sceIoOpen("ms0:...")` calls and utility savedata share one
+  canonical host Memory Stick root (`SR_MEMSTICK`, default `memstick/`) and
+  one path resolver. Title-specific cached assets and save identities are
+  private inputs; this public guide deliberately does not enumerate them.
+- Legacy hierarchical trees under `fs/` are no longer listed or auto-migrated;
+  a read-open miss may import a legacy flat `fs/` file once into the unified
+  root, but write/create never creates under `fs/`.
 
-Unifying generic `ms0:` I/O with the savedata storage root is still portability
-work; do not remove `fs/` until that runtime change is implemented and the
-current menu route is revalidated.
+The unified Memory Stick root is the production contract; `fs/` remains only
+as a read-only legacy-import source until existing menu routes are
+revalidated against the unified tree.
 
 To regenerate the extracted asset tree, run the extractor. It has no
 third-party dependency:
@@ -175,60 +178,30 @@ defaults to a small cap rather than the CPU count because each worker holds a
 whole archive in memory, and the number of in-flight worker tasks is bounded
 independently of how many archives were found.
 
-[libxb](https://github.com/kiwi515/libxb) is **no longer used**. It was
-previously the extraction back end, pinned to the audited 0.2.0 source snapshot
-`ce6df78e5ca99241dd2bbbd68ca485e34003d760`. It remains a useful independent
-reference for the XB container format and may still be checked out for
-comparison work:
-
-```powershell
-git clone https://github.com/kiwi515/libxb.git third_party/libxb
-git -C third_party/libxb checkout --detach ce6df78e5ca99241dd2bbbd68ca485e34003d760
-```
-
-Upstream has no release/tag, so do not leave that optional checkout tracking
-`main`; record the commit above and verify the 0.2.0 sdist hash in
-[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md). Nothing in the build,
-the runtime, or the extractor reads it. Dropping it is not a statement that
-libxb is unsafe in general — see
-[`docs/ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md) for what was actually
-measured and what that does and does not establish.
+[libxb](https://github.com/kiwi515/libxb) is not used by the build, runtime, or
+extractor. Its formerly audited `0.2.0` snapshot and the measured comparison boundary
+are retained as historical evidence in
+[`ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md); no optional checkout is required.
 
 `third_party/` and `place_game_here/` are local-only and ignored by Git. If you use `tools/validate_assets.py`, its optional `tools/reference_hashes.json` reference file is also local-only; it is not required by the normal build.
 
-`pspdecrypt` may be used as an optional, user-supplied GPLv3 extraction/decryption helper; it is
-not shipped by this repository. The currently available build validates/decrypts the main EBOOT,
-but rejects this title's three encrypted `~SCE` library modules, so it does **not** yet make the
-workflow ISO-only.
+### Plain module inputs
 
-### Dump the required PRXs with PPSSPP
+Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
+ELF/PRX files; this repository ships no decryption tools or keys. For what the player needs
+and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). Whether
+any lawful decryption capability can be offered is an open maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). When you already have plain modules from your own
+lawfully obtained copy, place them at the paths the local manifest expects, for example:
 
-PPSSPP can decrypt and dump the game-supplied PRXs as it loads them. Use only modules produced
-from your own legally obtained copy of the game:
+```text
+place_game_here/EXTRACTED/decrypted/libfont.prx
+place_game_here/EXTRACTED/decrypted/scePsmf_library.prx
+place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx
+```
 
-1. In a current desktop PPSSPP build, open **Settings > Tools > Developer Tools**. Select the
-   **Dump files** tab and enable **PRX**. This is separate from **Dump Decrypted Eboot**.
-2. Start the supplied PSP title from the same lawful ISO/PBP used for the local
-   build. Run it far enough for the required optional modules to load.
-3. In PPSSPP, use **Settings > System > Show Memory Stick folder**, then open
-   `PSP/SYSTEM/DUMP/`. The emulator prefixes dumps with the disc identity.
-4. Create `place_game_here/EXTRACTED/decrypted/`, copy only the required
-   user-owned module dumps into it, and normalize their names to the paths
-   expected by the local manifest:
-
-   ```text
-   place_game_here/EXTRACTED/decrypted/libfont.prx
-   place_game_here/EXTRACTED/decrypted/scePsmf_library.prx
-   place_game_here/EXTRACTED/decrypted/scePsmfP_library.prx
-   ```
-
-5. A valid decrypted module begins with the ELF magic bytes `7F 45 4C 46`; a file beginning with `~SCE` or `~PSP` is still encrypted and will not work as this runtime input.
-
-PPSSPP's current implementation exposes separate EBOOT and PRX dump switches and writes enabled
-dumps beneath the emulated Memory Stick's `PSP/SYSTEM/DUMP` directory. It dumps a PRX only when
-the game actually loads that module, and it does not overwrite an existing dump. Delete an old
-dump first if you need PPSSPP to regenerate it. Preserve the known-good local files once created,
-and never copy game or firmware material into Git history.
+A valid plain module begins with the ELF magic bytes `7F 45 4C 46`; a file beginning with `~SCE`
+or `~PSP` is an encrypted container and is rejected. Never copy game or firmware material into
+Git history.
 
 ### Per-title decrypted input folder (standalone player and CLI)
 
@@ -309,27 +282,33 @@ To verify that system fonts are correctly installed:
 
 ## 3. Build
 
-From the repository root:
+The public checkout's end-to-end display build and player launch is:
 
 ```powershell
-.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+mingw32-make --no-print-directory display-smoke-player
 ```
 
-This runs the complete pipeline and compilation. Generated C is split into a dynamic number of
-translation units based on the discovered function count and `FUNCS_PER_CHUNK`, then compiled with
-intentionally conservative flags to avoid excessive compiler memory use.
+This generates the source-owned display fixture, runs the full two-phase pipeline,
+verifies the presented framebuffer, builds the native player, and exercises its Play
+route without private input. Use `mingw32-make --no-print-directory display-smoke` for
+the headless build/verification without opening a window. Generated C is split into a
+dynamic number of translation units based on the discovered function count and
+`FUNCS_PER_CHUNK`.
 
-For runtime-only changes:
+For a validated local title manifest, use the manager so every title-derived value
+comes from that manifest:
 
 ```powershell
-.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst
+.\nk_manager.ps1 -Action BuildFull -TitleManifest C:\path\to\manifest.json -GameName game
+.\nk_manager.ps1 -Action BuildFast -TitleManifest C:\path\to\manifest.json -GameName game
 ```
 
-Direct Make is title-neutral and does not run the manager planner. An HST direct-Make
-invocation must provide the validated `TITLE_MANIFEST` and every title-derived Make
-value explicitly; the supported HST workflow above uses `nk_manager.ps1` so those
-values cannot drift. Direct Make does not perform SDK discovery; export
-`VULKAN_SDK` or pass it as a Make variable when using that escape hatch.
+If `-GameName` is omitted, the manager uses the manifest's `game_name` or a portable
+ID fallback; an explicit value overrides that selection. Direct Make is title-neutral
+but does not run the manager planner; it must receive the validated
+`TITLE_MANIFEST` and every title-derived Make value explicitly. Direct Make also does
+not discover the Vulkan SDK, so set `VULKAN_SDK` or pass it as a Make variable.
 
 To build a generated v1 runtime package for an imported disc in the player library:
 
@@ -338,6 +317,18 @@ python tools/nk_cli.py build-package <disc_id>
 ```
 
 This extracts the plaintext executable (or automatically uses `EBOOT.elf` and guest PRXs from `<user data>/titles/<DISC_ID>/decrypted/`), runs the build pipeline, stages runtime assets, and promotes the package to `<user data>/packages/<DISC_ID>/`. The native player (`build/nakagawa_player.exe`) discovers, validates, and launches packages from that directory ([#297](https://github.com/Jstar269/nakagawa-recomp/issues/297)). An explicit `--module-dir <directory>` can be passed when modules are located elsewhere. In a public checkout this route packages source-owned synthetic fixtures only: a retail title needs the production runtime backends, which are not part of the public tree, and the command refuses with a message naming [#297](https://github.com/Jstar269/nakagawa-recomp/issues/297).
+
+Package work is content-addressed below `<user data>/cache/packages/<DISC_ID>/`; the cache key covers executable bytes, analyzer/codegen semantics, codegen options, generated-code/runtime ABI epochs, compiler identity/target, and native flags. An unchanged key reuses the published package, an ABI-compatible runtime or compiler change recompiles native objects while retaining generated C, and any other semantic change regenerates AOT. The builder writes and verifies `completion-manifest.json` before an atomic directory promotion; interrupted or corrupt entries are refused by the player and launcher. The full contract and rebuild-component names are in [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#6-private-content-addressed-cache-contract-316), tracked by [#316](https://github.com/Jstar269/nakagawa-recomp/issues/316).
+
+To inspect a private package cache with Doctor, pass the user-data root and disc ID:
+
+```powershell
+python tools/nk_doctor.py --scope products `
+  --user-data-root "$env:LOCALAPPDATA\Nakagawa\data" `
+  --disc-id <disc_id>
+```
+
+Doctor reports a missing, incomplete, or stale cache entry and names the changed key component when a current key is available. Cache cleanup is bounded per title; set `NK_AOT_CACHE_MAX_ENTRIES` to a positive limit when the default of eight is unsuitable.
 
 Alternatively, to build a local AOT package directly from a validated title manifest and plaintext executable ELF, use
 the planner's package action. It runs the same two-phase Make pipeline and writes the executable,
@@ -400,17 +391,19 @@ The canonical manager accepts these actions:
 
 ```powershell
 .\nk_manager.ps1 -Action Test
-.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run
-.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -SoftwareRender
-.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -NoGui -Duration 30
+mingw32-make --no-print-directory display-smoke-gui
+.\nk_manager.ps1 -TitleManifest C:\path\to\manifest.json -GameName game -Action Run
+.\nk_manager.ps1 -TitleManifest C:\path\to\manifest.json -GameName game -Action Run -SoftwareRender
+.\nk_manager.ps1 -TitleManifest C:\path\to\manifest.json -GameName game -Action Run -NoGui -Duration 30
 ```
 
-For normal Vulkan runs, an explicit runtime profile can isolate the intended task:
+The manager examples require a local validated manifest and its declared inputs. For
+normal Vulkan runs, an explicit profile can isolate the intended task:
 
 ```powershell
-.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Performance # log-free smoke test (public-safe build is silent by design)
-.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark   # 1 Hz telemetry + logs/perf.csv
-.\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Benchmark -GuestProfile # plus guest-PC hotspot summary
+.\nk_manager.ps1 -TitleManifest C:\path\to\manifest.json -GameName game -Action Run -Profile Performance # log-free smoke test
+.\nk_manager.ps1 -TitleManifest C:\path\to\manifest.json -GameName game -Action Run -Profile Benchmark   # 1 Hz telemetry + logs/perf.csv
+.\nk_manager.ps1 -TitleManifest C:\path\to\manifest.json -GameName game -Action Run -Profile Benchmark -GuestProfile # plus guest-PC hotspot summary
 ```
 
 `Performance` redirects the runtime's stdout and stderr to the null device; it is not a
@@ -502,7 +495,7 @@ feature must report that honestly rather than creating a placeholder artifact; s
 
 ## Troubleshooting
 
-- **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest assets/titles/hst-ucus98701.json -GameName hst` (or `python tools/nk_doctor.py --title-manifest assets/titles/hst-ucus98701.json --game-name hst`) to validate your toolchain, build dependencies, and private HST inputs. Without a title selection, the canonical doctor uses the public synthetic title.
+- **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest C:\path\to\manifest.json -GameName game` (or `python tools/nk_doctor.py --title-manifest C:\path\to\manifest.json --game-name game`) to validate the toolchain, build dependencies, and the selected title's local inputs. Without a title selection, Doctor uses the public synthetic manifest.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** ensure the UCRT64 SDL3 `bin` directory is on `PATH`, or place a compatible `SDL3.dll` at the repository root so the manager copies it beside `hst.exe`.
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where capability-excluded backends are stubbed, the runtime compiles with `PUBLIC_SAFE=1`. In this mode, UMD/ISO lookups return `-1` and retail disc routes fail closed.

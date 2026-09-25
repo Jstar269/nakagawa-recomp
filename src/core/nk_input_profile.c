@@ -247,13 +247,40 @@ NkNavAction nk_nav_action_from_name(const char *name) {
  * Transforms
  * -------------------------------------------------------------------------- */
 
-uint8_t nk_input_profile_transform_axis(
+uint8_t nk_input_profile_transform_axis_calibrated(
     int16_t raw_axis,
     int16_t deadzone_inner,
     int16_t deadzone_outer,
-    bool inverted
+    bool inverted,
+    int16_t rest,
+    int16_t min_val,
+    int16_t max_val
 ) {
     int32_t val = (int32_t)raw_axis;
+    if (min_val < max_val && rest >= min_val && rest <= max_val) {
+        if (val > (int32_t)rest) {
+            if ((int32_t)max_val > (int32_t)rest) {
+                int32_t span = (int32_t)max_val - (int32_t)rest;
+                val = ((val - (int32_t)rest) * 32767) / span;
+                if (val > 32767) val = 32767;
+                if (val < 0) val = 0;
+            } else {
+                val = 32767;
+            }
+        } else if (val < (int32_t)rest) {
+            if ((int32_t)rest > (int32_t)min_val) {
+                int32_t span = (int32_t)rest - (int32_t)min_val;
+                val = ((val - (int32_t)rest) * 32768) / span;
+                if (val < -32768) val = -32768;
+                if (val > 0) val = 0;
+            } else {
+                val = -32768;
+            }
+        } else {
+            val = 0;
+        }
+    }
+
     if (inverted) {
         val = -val;
         if (val > 32767) val = 32767;
@@ -276,8 +303,37 @@ uint8_t nk_input_profile_transform_axis(
     return (uint8_t)(((int32_t)val + 32768) * 255 / 65535);
 }
 
+uint8_t nk_input_profile_transform_axis(
+    int16_t raw_axis,
+    int16_t deadzone_inner,
+    int16_t deadzone_outer,
+    bool inverted
+) {
+    return nk_input_profile_transform_axis_calibrated(
+        raw_axis, deadzone_inner, deadzone_outer, inverted, 0, -32768, 32767);
+}
+
+bool nk_input_profile_eval_trigger_calibrated(
+    int16_t raw_trigger,
+    int16_t trigger_threshold,
+    int16_t trigger_rest,
+    int16_t trigger_extreme
+) {
+    if (trigger_extreme <= trigger_rest) {
+        return raw_trigger > trigger_threshold;
+    }
+    int32_t raw = (int32_t)raw_trigger;
+    if (raw <= (int32_t)trigger_rest) {
+        return false;
+    }
+    int32_t span = (int32_t)trigger_extreme - (int32_t)trigger_rest;
+    int32_t normalized = ((raw - (int32_t)trigger_rest) * 32767) / span;
+    if (normalized > 32767) normalized = 32767;
+    return normalized > (int32_t)trigger_threshold;
+}
+
 bool nk_input_profile_eval_trigger(int16_t raw_trigger, int16_t trigger_threshold) {
-    return raw_trigger > trigger_threshold;
+    return nk_input_profile_eval_trigger_calibrated(raw_trigger, trigger_threshold, 0, 32767);
 }
 
 /* -----------------------------------------------------------------------------
@@ -292,17 +348,25 @@ void nk_input_profile_init_default(NkInputProfile *profile) {
     snprintf(profile->guid, sizeof(profile->guid), "default");
     snprintf(profile->name_hint, sizeof(profile->name_hint), "Standard Gamepad");
     profile->trigger_threshold = NK_INPUT_DEFAULT_TRIGGER_THRESHOLD;
+    profile->trigger_rest = 0;
+    profile->trigger_extreme = 32767;
 
     /* Axes: Left Stick X/Y */
     profile->axes[NK_PSP_AXIS_ANALOG_X].host_axis = NK_HOST_AXIS_LEFTX;
     profile->axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner = NK_INPUT_DEFAULT_DEADZONE_INNER;
     profile->axes[NK_PSP_AXIS_ANALOG_X].deadzone_outer = NK_INPUT_DEFAULT_DEADZONE_OUTER;
     profile->axes[NK_PSP_AXIS_ANALOG_X].inverted = false;
+    profile->axes[NK_PSP_AXIS_ANALOG_X].rest = 0;
+    profile->axes[NK_PSP_AXIS_ANALOG_X].min_val = -32768;
+    profile->axes[NK_PSP_AXIS_ANALOG_X].max_val = 32767;
 
     profile->axes[NK_PSP_AXIS_ANALOG_Y].host_axis = NK_HOST_AXIS_LEFTY;
     profile->axes[NK_PSP_AXIS_ANALOG_Y].deadzone_inner = NK_INPUT_DEFAULT_DEADZONE_INNER;
     profile->axes[NK_PSP_AXIS_ANALOG_Y].deadzone_outer = NK_INPUT_DEFAULT_DEADZONE_OUTER;
     profile->axes[NK_PSP_AXIS_ANALOG_Y].inverted = false;
+    profile->axes[NK_PSP_AXIS_ANALOG_Y].rest = 0;
+    profile->axes[NK_PSP_AXIS_ANALOG_Y].min_val = -32768;
+    profile->axes[NK_PSP_AXIS_ANALOG_Y].max_val = 32767;
 
     /* PSP Buttons matching gpu_sdl3vk/sdl3vk.c */
     profile->psp_buttons[NK_PSP_BTN_SELECT].primary.type = NK_BINDING_HOST_BUTTON;
@@ -473,6 +537,13 @@ NkResult nk_input_profile_validate(
         return NK_ERROR_GENERIC;
     }
 
+    if (profile->trigger_rest >= profile->trigger_extreme) {
+        diag_set(diag_buf, diag_buf_sz,
+                 "trigger_rest (%d) must be less than trigger_extreme (%d)",
+                 profile->trigger_rest, profile->trigger_extreme);
+        return NK_ERROR_GENERIC;
+    }
+
     /* Validate axes */
     for (int i = 0; i < NK_PSP_AXIS_COUNT; i++) {
         const NkAxisCalibration *ax = &profile->axes[i];
@@ -498,6 +569,18 @@ NkResult nk_input_profile_validate(
             diag_set(diag_buf, diag_buf_sz,
                      "axis '%s' combined deadzones (%d + %d) out of range (< 32767)",
                      nk_psp_axis_name((NkPspAxis)i), ax->deadzone_inner, ax->deadzone_outer);
+            return NK_ERROR_GENERIC;
+        }
+        if (ax->min_val >= ax->max_val) {
+            diag_set(diag_buf, diag_buf_sz,
+                     "axis '%s' min_val (%d) must be less than max_val (%d)",
+                     nk_psp_axis_name((NkPspAxis)i), ax->min_val, ax->max_val);
+            return NK_ERROR_GENERIC;
+        }
+        if (ax->rest < ax->min_val || ax->rest > ax->max_val) {
+            diag_set(diag_buf, diag_buf_sz,
+                     "axis '%s' rest (%d) out of range [%d, %d]",
+                     nk_psp_axis_name((NkPspAxis)i), ax->rest, ax->min_val, ax->max_val);
             return NK_ERROR_GENERIC;
         }
     }
@@ -769,6 +852,39 @@ static bool parse_axis_node(
     } else {
         out_axis->inverted = false;
     }
+
+    JsonNode *rest_n = obj_get(node, "rest");
+    if (rest_n) {
+        if (rest_n->type != JSON_NUMBER || rest_n->u.num.num_val < -32768 || rest_n->u.num.num_val > 32767) {
+            diag_set(diag_buf, diag_buf_sz, "axis '%s' rest out of range [-32768, 32767]", axis_name);
+            return false;
+        }
+        out_axis->rest = (int16_t)rest_n->u.num.num_val;
+    } else {
+        out_axis->rest = 0;
+    }
+
+    JsonNode *min_n = obj_get(node, "min_val");
+    if (min_n) {
+        if (min_n->type != JSON_NUMBER || min_n->u.num.num_val < -32768 || min_n->u.num.num_val > 32767) {
+            diag_set(diag_buf, diag_buf_sz, "axis '%s' min_val out of range [-32768, 32767]", axis_name);
+            return false;
+        }
+        out_axis->min_val = (int16_t)min_n->u.num.num_val;
+    } else {
+        out_axis->min_val = -32768;
+    }
+
+    JsonNode *max_n = obj_get(node, "max_val");
+    if (max_n) {
+        if (max_n->type != JSON_NUMBER || max_n->u.num.num_val < -32768 || max_n->u.num.num_val > 32767) {
+            diag_set(diag_buf, diag_buf_sz, "axis '%s' max_val out of range [-32768, 32767]", axis_name);
+            return false;
+        }
+        out_axis->max_val = (int16_t)max_n->u.num.num_val;
+    } else {
+        out_axis->max_val = 32767;
+    }
     return true;
 }
 
@@ -916,6 +1032,32 @@ NkResult nk_input_profile_parse_json(
         return NK_ERROR_GENERIC;
     }
     out_profile->trigger_threshold = (int16_t)tt->u.num.num_val;
+
+    JsonNode *tr_rest = obj_get(cal, "trigger_rest");
+    if (tr_rest) {
+        if (tr_rest->type != JSON_NUMBER || tr_rest->u.num.num_val < -32768 || tr_rest->u.num.num_val > 32767) {
+            diag_set(diag_buf, diag_buf_sz, "trigger_rest out of range [-32768, 32767]");
+            json_free(root);
+            nk_input_profile_init_default(out_profile);
+            return NK_ERROR_GENERIC;
+        }
+        out_profile->trigger_rest = (int16_t)tr_rest->u.num.num_val;
+    } else {
+        out_profile->trigger_rest = 0;
+    }
+
+    JsonNode *tr_ext = obj_get(cal, "trigger_extreme");
+    if (tr_ext) {
+        if (tr_ext->type != JSON_NUMBER || tr_ext->u.num.num_val < -32768 || tr_ext->u.num.num_val > 32767) {
+            diag_set(diag_buf, diag_buf_sz, "trigger_extreme out of range [-32768, 32767]");
+            json_free(root);
+            nk_input_profile_init_default(out_profile);
+            return NK_ERROR_GENERIC;
+        }
+        out_profile->trigger_extreme = (int16_t)tr_ext->u.num.num_val;
+    } else {
+        out_profile->trigger_extreme = 32767;
+    }
 
     JsonNode *ax_x = obj_get(cal, "analog_x");
     if (!parse_axis_node(ax_x, &out_profile->axes[NK_PSP_AXIS_ANALOG_X], "analog_x", diag_buf, diag_buf_sz)) {
@@ -1118,6 +1260,8 @@ NkResult nk_input_profile_save(
     fprintf(f, "  },\n");
     fprintf(f, "  \"calibration\": {\n");
     fprintf(f, "    \"trigger_threshold\": %d,\n", profile->trigger_threshold);
+    fprintf(f, "    \"trigger_rest\": %d,\n", profile->trigger_rest);
+    fprintf(f, "    \"trigger_extreme\": %d,\n", profile->trigger_extreme);
 
     for (int i = 0; i < NK_PSP_AXIS_COUNT; i++) {
         const NkAxisCalibration *ax = &profile->axes[i];
@@ -1125,7 +1269,10 @@ NkResult nk_input_profile_save(
         fprintf(f, "      \"host_axis\": \"%s\",\n", nk_host_axis_name(ax->host_axis));
         fprintf(f, "      \"deadzone_inner\": %d,\n", ax->deadzone_inner);
         fprintf(f, "      \"deadzone_outer\": %d,\n", ax->deadzone_outer);
-        fprintf(f, "      \"inverted\": %s\n", ax->inverted ? "true" : "false");
+        fprintf(f, "      \"inverted\": %s,\n", ax->inverted ? "true" : "false");
+        fprintf(f, "      \"rest\": %d,\n", ax->rest);
+        fprintf(f, "      \"min_val\": %d,\n", ax->min_val);
+        fprintf(f, "      \"max_val\": %d\n", ax->max_val);
         fprintf(f, "    }%s\n", (i < NK_PSP_AXIS_COUNT - 1) ? "," : "");
     }
     fprintf(f, "  },\n");
@@ -1267,6 +1414,38 @@ NkResult nk_input_profile_load(
     return res;
 }
 
+NkResult nk_input_profile_resolve_path(char *out_path, size_t out_path_sz) {
+    if (!out_path || out_path_sz == 0) return NK_ERROR_GENERIC;
+    out_path[0] = '\0';
+
+    const char *env_path = getenv("NK_INPUT_PROFILE");
+    if (!env_path || !env_path[0]) {
+        env_path = getenv("SR_INPUT_PROFILE");
+    }
+
+    if (env_path && env_path[0]) {
+        if (strlen(env_path) >= out_path_sz) return NK_ERROR_GENERIC;
+        strncpy(out_path, env_path, out_path_sz - 1);
+        out_path[out_path_sz - 1] = '\0';
+        return NK_OK;
+    }
+
+    char config_dir[1024] = {0};
+    if (nk_platform_get_path(NK_PATH_CONFIG, config_dir, sizeof(config_dir))) {
+        char sep = nk_platform_path_separator();
+        int n = snprintf(out_path, out_path_sz, "%s%cinput_profile.json", config_dir, sep);
+        if (n < 0 || (size_t)n >= out_path_sz) return NK_ERROR_GENERIC;
+        return NK_OK;
+    }
+
+    return NK_ERROR_GENERIC;
+}
+
+bool nk_input_profile_padscript_active(void) {
+    const char *sp = getenv("SR_PADSCRIPT");
+    return sp && sp[0] != '\0';
+}
+
 /* -----------------------------------------------------------------------------
  * Runtime Evaluation Helpers
  * -------------------------------------------------------------------------- */
@@ -1275,7 +1454,9 @@ static bool eval_source(
     const NkBindingSource *src,
     const bool host_buttons[NK_HOST_BUTTON_COUNT],
     const int16_t host_axes[NK_HOST_AXIS_COUNT],
-    int16_t trigger_threshold
+    int16_t trigger_threshold,
+    int16_t trigger_rest,
+    int16_t trigger_extreme
 ) {
     if (!src || src->type == NK_BINDING_NONE) return false;
     switch (src->type) {
@@ -1286,7 +1467,8 @@ static bool eval_source(
         break;
     case NK_BINDING_HOST_TRIGGER:
         if (host_axes && src->index >= 0 && src->index < NK_HOST_AXIS_COUNT) {
-            return host_axes[src->index] > trigger_threshold;
+            return nk_input_profile_eval_trigger_calibrated(
+                host_axes[src->index], trigger_threshold, trigger_rest, trigger_extreme);
         }
         break;
     case NK_BINDING_HOST_AXIS_POS:
@@ -1315,9 +1497,11 @@ uint32_t nk_input_profile_eval_buttons(
     for (int i = 0; i < NK_PSP_BTN_COUNT; i++) {
         const NkDigitalBinding *b = &profile->psp_buttons[i];
         bool pressed = false;
-        if (eval_source(&b->primary, host_buttons, host_axes, profile->trigger_threshold)) {
+        if (eval_source(&b->primary, host_buttons, host_axes,
+                        profile->trigger_threshold, profile->trigger_rest, profile->trigger_extreme)) {
             pressed = true;
-        } else if (eval_source(&b->secondary, host_buttons, host_axes, profile->trigger_threshold)) {
+        } else if (eval_source(&b->secondary, host_buttons, host_axes,
+                               profile->trigger_threshold, profile->trigger_rest, profile->trigger_extreme)) {
             pressed = true;
         }
         if (pressed) {
@@ -1339,21 +1523,27 @@ void nk_input_profile_eval_analog(
 
     int ax_idx = profile->axes[NK_PSP_AXIS_ANALOG_X].host_axis;
     if (ax_idx >= 0 && ax_idx < NK_HOST_AXIS_COUNT && out_lx) {
-        *out_lx = nk_input_profile_transform_axis(
+        *out_lx = nk_input_profile_transform_axis_calibrated(
             host_axes[ax_idx],
             profile->axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner,
             profile->axes[NK_PSP_AXIS_ANALOG_X].deadzone_outer,
-            profile->axes[NK_PSP_AXIS_ANALOG_X].inverted
+            profile->axes[NK_PSP_AXIS_ANALOG_X].inverted,
+            profile->axes[NK_PSP_AXIS_ANALOG_X].rest,
+            profile->axes[NK_PSP_AXIS_ANALOG_X].min_val,
+            profile->axes[NK_PSP_AXIS_ANALOG_X].max_val
         );
     }
 
     int ay_idx = profile->axes[NK_PSP_AXIS_ANALOG_Y].host_axis;
     if (ay_idx >= 0 && ay_idx < NK_HOST_AXIS_COUNT && out_ly) {
-        *out_ly = nk_input_profile_transform_axis(
+        *out_ly = nk_input_profile_transform_axis_calibrated(
             host_axes[ay_idx],
             profile->axes[NK_PSP_AXIS_ANALOG_Y].deadzone_inner,
             profile->axes[NK_PSP_AXIS_ANALOG_Y].deadzone_outer,
-            profile->axes[NK_PSP_AXIS_ANALOG_Y].inverted
+            profile->axes[NK_PSP_AXIS_ANALOG_Y].inverted,
+            profile->axes[NK_PSP_AXIS_ANALOG_Y].rest,
+            profile->axes[NK_PSP_AXIS_ANALOG_Y].min_val,
+            profile->axes[NK_PSP_AXIS_ANALOG_Y].max_val
         );
     }
 }
@@ -1368,9 +1558,11 @@ uint32_t nk_input_profile_eval_navigation(
     for (int i = 0; i < NK_NAV_ACTION_COUNT; i++) {
         const NkDigitalBinding *b = &profile->nav_bindings[i];
         bool active = false;
-        if (eval_source(&b->primary, host_buttons, host_axes, profile->trigger_threshold)) {
+        if (eval_source(&b->primary, host_buttons, host_axes,
+                        profile->trigger_threshold, profile->trigger_rest, profile->trigger_extreme)) {
             active = true;
-        } else if (eval_source(&b->secondary, host_buttons, host_axes, profile->trigger_threshold)) {
+        } else if (eval_source(&b->secondary, host_buttons, host_axes,
+                               profile->trigger_threshold, profile->trigger_rest, profile->trigger_extreme)) {
             active = true;
         }
         if (active) {

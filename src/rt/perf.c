@@ -146,6 +146,12 @@ typedef struct SrPerfState {
 static SrPerfState s_perf;
 int sr_perf_aot_active;
 int sr_perf_enabled;
+/* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
+ * the in-game HUD, so the stderr lines are gated separately. */
+static int s_perf_stderr_enabled = 0;
+static double s_hud_fps = 0.0;
+static double s_hud_frame_ms = 0.0;
+static double s_hud_vblank_hz = 0.0;
 
 static int env_on(const char *name) {
     const char *value = getenv(name);
@@ -559,6 +565,10 @@ static void report_if_due(uint64_t now) {
     double fps = seconds > 0.0 ? (double)m.presents / seconds : 0.0;
     double vblank_hz = seconds > 0.0 ? (double)m.vblanks / seconds : 0.0;
     double frame_ms = m.presents ? ms(wall_ns) / (double)m.presents : 0.0;
+    s_hud_fps = fps;
+    s_hud_frame_ms = frame_ms;
+    s_hud_vblank_hz = vblank_hz;
+    if (s_perf_stderr_enabled) {
     fprintf(stderr,
             "PERF vblank_total=%llu wall_ms=%.3f fps=%.3f frame_ms=%.3f vblank_hz=%.3f "
             "cpu_ms=%.3f ge_wait_ms=%.3f present_ms=%.3f idle_ms=%.3f "
@@ -583,6 +593,7 @@ static void report_if_due(uint64_t now) {
             ms(m.storage_ns[SR_PERF_STORAGE_ISO]),
             ms(m.storage_ns[SR_PERF_STORAGE_VFS]), ms(m.h264_ns), ms(m.atrac_ns),
             ms(m.audio_mix_ns), ms(m.audio_output_ns));
+    }
     if (s_perf.csv) {
         csv_row(s_perf.csv, &m, s_perf.total_vblanks, wall_ns);
         fflush(s_perf.csv);
@@ -639,7 +650,8 @@ void sr_perf_init(void) {
     if (s_perf.initialized) return;
     memset(&s_perf, 0, sizeof(s_perf));
     s_perf.initialized = 1;
-    s_perf.enabled = env_on("SR_PERF");
+    s_perf_stderr_enabled = env_on("SR_PERF");
+    s_perf.enabled = s_perf_stderr_enabled || env_on("SR_HUD");
     sr_perf_enabled = s_perf.enabled;
     sr_perf_aot_active = 0;
     if (!s_perf.enabled) return;
@@ -965,4 +977,37 @@ void sr_perf_audio_output(uint64_t started_ns, uint32_t frames) {
     ADD(audio_output_ns, elapsed_ns(started_ns));
     ADD(audio_output_calls, 1);
     ADD(audio_output_frames, frames);
+}
+
+void sr_perf_enable_counters(void) {
+    if (!s_perf.initialized) {
+        s_perf.initialized = 1;
+        s_perf.run_start_ns = raw_now_ns();
+    }
+    s_perf.enabled = 1;
+    sr_perf_enabled = 1;
+    if (s_perf.interval_start_ns == 0) s_perf.interval_start_ns = raw_now_ns();
+}
+
+void sr_perf_get_hud_metrics(double *out_fps, double *out_frame_ms, double *out_vblank_hz) {
+    double fps = 0.0, frame_ms = 0.0, vblank_hz = 0.0;
+    if (s_hud_fps > 0.0) {
+        fps = s_hud_fps;
+        frame_ms = s_hud_frame_ms;
+        vblank_hz = s_hud_vblank_hz;
+    } else {
+        /* Before the first 1 Hz interval closes, estimate from the open interval. */
+        uint64_t now = raw_now_ns();
+        uint64_t elapsed = now > s_perf.interval_start_ns ? now - s_perf.interval_start_ns : 0;
+        double seconds = (double)elapsed / 1000000000.0;
+        if (s_perf.interval_start_ns && seconds > 0.1) {
+            fps = (double)s_perf.interval.presents / seconds;
+            vblank_hz = (double)s_perf.interval.vblanks / seconds;
+            frame_ms = s_perf.interval.presents
+                           ? ms(elapsed) / (double)s_perf.interval.presents : 0.0;
+        }
+    }
+    if (out_fps) *out_fps = fps;
+    if (out_frame_ms) *out_frame_ms = frame_ms;
+    if (out_vblank_hz) *out_vblank_hz = vblank_hz;
 }

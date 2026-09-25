@@ -149,6 +149,9 @@ typedef struct {
     int16_t deadzone_inner;      /* Inner deadzone (neutral deadband), range [0, 32766] */
     int16_t deadzone_outer;      /* Outer deadzone (edge saturation), range [0, 32766] */
     bool inverted;               /* Invert axis direction */
+    int16_t rest;                /* Rest / center offset (default 0) */
+    int16_t min_val;             /* Minimum extreme value (default -32768) */
+    int16_t max_val;             /* Maximum extreme value (default 32767) */
 } NkAxisCalibration;
 
 /**
@@ -176,6 +179,8 @@ typedef struct {
     char name_hint[NK_INPUT_NAME_HINT_MAX_LEN];
 
     int16_t trigger_threshold; /* Threshold for trigger axes to act as digital press */
+    int16_t trigger_rest;      /* Resting value when unpressed (default 0) */
+    int16_t trigger_extreme;   /* Extreme value when fully pressed (default 32767) */
 
     NkAxisCalibration axes[NK_PSP_AXIS_COUNT];
     NkDigitalBinding psp_buttons[NK_PSP_BTN_COUNT];
@@ -219,6 +224,19 @@ uint8_t nk_input_profile_transform_axis(
 );
 
 /**
+ * @brief Transform raw host axis to PSP byte using resting center and measured extremes.
+ */
+uint8_t nk_input_profile_transform_axis_calibrated(
+    int16_t raw_axis,
+    int16_t deadzone_inner,
+    int16_t deadzone_outer,
+    bool inverted,
+    int16_t rest,
+    int16_t min_val,
+    int16_t max_val
+);
+
+/**
  * @brief Test whether a raw trigger axis value satisfies the trigger threshold.
  *
  * Formula:
@@ -227,6 +245,16 @@ uint8_t nk_input_profile_transform_axis(
  * With the default threshold of 8192 (matching sdl3vk.c), pulls > 8192 return true.
  */
 bool nk_input_profile_eval_trigger(int16_t raw_trigger, int16_t trigger_threshold);
+
+/**
+ * @brief Test whether a raw trigger satisfies threshold calibrated against resting/extreme pull.
+ */
+bool nk_input_profile_eval_trigger_calibrated(
+    int16_t raw_trigger,
+    int16_t trigger_threshold,
+    int16_t trigger_rest,
+    int16_t trigger_extreme
+);
 
 /**
  * @brief Return standard PSP button bitmask for an enum button.
@@ -303,6 +331,26 @@ NkResult nk_input_profile_save(
     char *diag_buf,
     size_t diag_buf_sz
 );
+
+/**
+ * @brief Resolve the active input profile file path.
+ *
+ * Checks NK_INPUT_PROFILE and SR_INPUT_PROFILE environment variables.
+ * If unset or empty, resolves <config_dir>/input_profile.json via nk_platform_get_path.
+ *
+ * @param out_path Buffer to receive resolved null-terminated path.
+ * @param out_path_sz Capacity of out_path.
+ * @return NK_OK (0) on success, or NK_ERROR_* (<0) on failure.
+ */
+NkResult nk_input_profile_resolve_path(char *out_path, size_t out_path_sz);
+
+/**
+ * @brief Check whether automated deterministic script input is active.
+ *
+ * When SR_PADSCRIPT is set and non-empty, scripted input takes precedence
+ * and host input profiles must not override default input mappings.
+ */
+bool nk_input_profile_padscript_active(void);
 
 /**
  * @brief Evaluate the 14 PSP digital buttons from host gamepad state.

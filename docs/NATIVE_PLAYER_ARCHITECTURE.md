@@ -139,12 +139,12 @@ decryption, generated-runtime provisioning, and arbitrary-ISO one-click play rem
    - Staging directory created under `.staging_<disc_id>/` in local application data.
    - `EBOOT.BIN` and `PSP_GAME/USRDIR/xbdata` are copied by the native ISO reader.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named already-decrypted support PRXs are copied from standard PPSSPP dump locations into `EXTRACTED/decrypted/`.
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`; the player never decrypts.
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
-   - KIRK decryption and validation of an encrypted `~PSP` inner ELF remain later
-     capabilities; a missing recompiled child is reported instead of fabricated.
+   - Encrypted `~PSP`/`~SCE` executables are not supported (open maintainer legal
+     decision, #295); a missing recompiled child is reported instead of fabricated.
 6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a runtime is
    available and *"LAUNCH PREPARED"* when assets are staged but runtime
    preparation is still pending.
@@ -192,6 +192,23 @@ Instead of exposing raw exception stack traces or compiler lines, errors provide
 - **Gamepad First**: D-Pad and mapped buttons provide navigation; Cross (A) selects and Circle (B) goes back. Left-stick navigation remains a target until axis events are handled.
 - **High-DPI Scaling**: DPI-aware raster text uses density-specific SDL_ttf size buckets. Vector/SDF typography remains a target.
 - **Theme**: Modern dark court palette with crisp contrast, soft glass panels, and clear visual hierarchy.
+
+### 6.1 Controller Settings
+
+The native player provides a dedicated Controller Settings screen (`VIEW_CONTROLLER_SETTINGS`), reachable from the main Settings menu via the "CONTROLLER SETTINGS" action:
+
+- **Interactive Remapping**: Allows rebinding each of the 14 standard PSP digital controls (D-Pad, action buttons, L/R shoulders, Start, Select, Home, Hold) and analog stick axes. Activating a binding button begins a 5-second capture window; pressing any host gamepad button assigns the new mapping. Captures can be cancelled at any time with keyboard Escape.
+- **Conflict Visibility**: When the same host button is mapped to multiple PSP controls, a prominent conflict warning banner identifies the conflicting controls without silently dropping or unbinding either one.
+- **Deadzone & Trigger Calibration**: Dedicated steppers adjust stick inner deadzone (range 0–32766) and trigger threshold (range 0–32767) in bounded increments.
+- **Live Input Monitor**: A real-time visualizer panel displays active host button presses, numerical stick coordinates, and an interactive 2D deadzone box so users can immediately observe calibration effects.
+- **Safe Navigation & Defaults**: Keyboard Escape always backs out or cancels capture, preventing navigation lockouts. "RESET DEFAULTS" restores the baseline profile.
+- **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the profile via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime.
+- **Guided Stick & Trigger Calibration**: A multi-stage calibration wizard ("CALIBRATE STICK & TRIGGERS") guides the user through:
+  1. *Resting state*: sampling resting analog stick and trigger axes for 1000 ms to establish neutral/center points.
+  2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
+  3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
+  Values are stored in the unified `input_profile.json` (schema 1 backward compatible) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
+- **In the Works**: In-game pause overlay controller configuration remains in the works (pause menu requires guest-clock semantics; out of scope for this milestone).
 
 ---
 

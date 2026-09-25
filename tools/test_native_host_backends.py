@@ -41,6 +41,7 @@ CORE_SOURCES = [
     "src/core/nk_title_manifest.c",
     "src/core/nk_json.c",
     "src/core/nk_font.c",
+    "src/core/nk_input_profile.c",
     "src/core/generated/nk_title_catalog.c",
 ]
 
@@ -123,9 +124,19 @@ class NativeHostBackendTests(unittest.TestCase):
         cls._objects["src/player/player_state.c"] = _compile_object(
             cls, "src/player/player_state.c", "player_state.o", ("-Isrc/player",)
         )
+        cls._objects["src/player/input_settings.c"] = _compile_object(
+            cls, "src/player/input_settings.c", "input_settings.o", ("-Isrc/player",)
+        )
+        cls._objects["src/player/iso_reader.c"] = _compile_object(
+            cls, "src/player/iso_reader.c", "iso_reader.o", ("-Isrc/player",)
+        )
+        cls._objects["src/player/package_builder.c"] = _compile_object(
+            cls, "src/player/package_builder.c", "package_builder.o", ("-Isrc/player",)
+        )
         harnesses = {
             "tests/native/test_launch_resolution.c": (),
             "tests/native/test_player_state.c": ("-Isrc/player",),
+            "tests/native/test_package_builder.c": ("-Isrc/player",),
         }
         if not _WINDOWS:
             harnesses["tests/native/test_posix_process.c"] = ()
@@ -152,9 +163,22 @@ class NativeHostBackendTests(unittest.TestCase):
         """Library entry lookup and honest add results, with no SDL involved."""
         stdout = _build_and_run(
             self, "tests/native/test_player_state.c", "test_player_state",
-            extra_sources=("src/player/player_state.c",),
+            extra_sources=(
+                "src/player/player_state.c",
+                "src/player/input_settings.c",
+                "src/player/iso_reader.c",
+                "src/player/package_builder.c",
+            ),
         )
         self.assertIn("ALL PLAYER STATE TESTS PASSED", stdout)
+
+    def test_package_builder(self) -> None:
+        """Package builder progress line parser and state machine."""
+        stdout = _build_and_run(
+            self, "tests/native/test_package_builder.c", "test_package_builder",
+            extra_sources=("src/player/package_builder.c",),
+        )
+        self.assertIn("ALL PACKAGE BUILDER TESTS PASSED", stdout)
 
     @unittest.skipIf(_WINDOWS, "the POSIX process backend is not built on Windows")
     def test_posix_process_backend(self) -> None:

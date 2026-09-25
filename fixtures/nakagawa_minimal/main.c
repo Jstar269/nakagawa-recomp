@@ -13,10 +13,11 @@
  *     conversion and written to the std stdout descriptor, which the runtime
  *     mirrors to the host console log (SCETYPEWRITE line).
  *  2. The same constant string is written through sceIoOpen/sceIoWrite/
- *     sceIoClose to a flat ms0:/ path (sceIoMkdir has no runtime handler, so
- *     no directory creation), and the host-side file is verified byte-for-
- *     byte. The first open lands on the runtime's implicit std slot, so the
- *     file is written through the second descriptor.
+ *     sceIoClose to a flat ms0:/ path under the unified Memory Stick root
+ *     (issue #334; sceIoMkdir is available but this fixture does not need a
+ *     directory), and the host-side file is verified byte-for- byte. The
+ *     first open lands on the runtime's implicit std slot, so the file is
+ *     written through the second descriptor.
  * Clean exit via sceKernelExitGame(0).
  */
 #include <pspkernel.h>

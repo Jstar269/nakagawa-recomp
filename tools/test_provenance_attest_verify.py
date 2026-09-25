@@ -37,6 +37,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+from nk_core.git_isolation import run_git  # noqa: E402
 import provenance_attest_verify as verifier  # noqa: E402
 import provenance_ledger  # noqa: E402
 import provenance_refresh  # noqa: E402
@@ -136,8 +137,6 @@ class Repository:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self._git("init", "--quiet", "--initial-branch=main")
-        self._git("config", "user.email", "fixture@example.invalid")
-        self._git("config", "user.name", "Fixture")
         self._git("config", "commit.gpgsign", "false")
         # Keep Git from starting background maintenance while TemporaryDirectory
         # is removing this throwaway repository on hosted Python 3.14 runners.
@@ -145,8 +144,8 @@ class Repository:
         self._git("config", "maintenance.auto", "false")
 
     def _git(self, *args: str) -> str:
-        result = subprocess.run(
-            ["git", *args], cwd=self.root, capture_output=True, text=True, check=True,
+        result = run_git(
+            args, cwd=self.root, capture_output=True, text=True, check=True,
         )
         return result.stdout.strip()
 
@@ -362,8 +361,8 @@ class GateCase(unittest.TestCase):
         return result
 
     def current_entries(self, rev: str = "HEAD") -> list[dict]:
-        raw = subprocess.run(
-            ["git", "show", f"{rev}:{verifier.LEDGER_PATH}"], cwd=self.repo.root,
+        raw = run_git(
+            ["show", f"{rev}:{verifier.LEDGER_PATH}"], cwd=self.repo.root,
             capture_output=True, check=True,
         ).stdout
         return json.loads(raw.decode("utf-8"))["entries"]
@@ -1548,24 +1547,24 @@ class PathCanonicalizationTests(GateCase):
     """One file, one spelling. Ambiguity fails closed rather than normalizing."""
 
     def _stage_path(self, raw_path: bytes) -> str:
-        blob = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"], cwd=self.repo.root,
+        blob = run_git(
+            ["hash-object", "-w", "--stdin"], cwd=self.repo.root,
             input=b"int x(void) { return 1; }\n", capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
         # `git mktree` builds a single level, so it cannot express a nested
         # path. `update-index --index-info` takes the raw bytes and any depth.
-        subprocess.run(["git", "read-tree", self.base], cwd=self.repo.root, check=True,
-                       capture_output=True)
-        subprocess.run(
-            ["git", "update-index", "-z", "--index-info"], cwd=self.repo.root,
+        run_git(["read-tree", self.base], cwd=self.repo.root, check=True,
+                capture_output=True)
+        run_git(
+            ["update-index", "-z", "--index-info"], cwd=self.repo.root,
             input=b"100644 " + blob.encode("ascii") + b" 0\t" + raw_path + b"\0",
             capture_output=True, check=True,
         )
-        tree = subprocess.run(
-            ["git", "write-tree"], cwd=self.repo.root, capture_output=True, check=True,
+        tree = run_git(
+            ["write-tree"], cwd=self.repo.root, capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
-        return subprocess.run(
-            ["git", "commit-tree", tree, "-p", self.base, "-m", "odd path"],
+        return run_git(
+            ["commit-tree", tree, "-p", self.base, "-m", "odd path"],
             cwd=self.repo.root, capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
 
@@ -1752,8 +1751,8 @@ class ContentBindingTests(GateCase):
         self.repo.branch("attack", self.base)
         # Stage a real mode-120000 entry without needing symlink support on the
         # host filesystem, which Windows CI runners do not reliably grant.
-        blob = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"], cwd=self.repo.root,
+        blob = run_git(
+            ["hash-object", "-w", "--stdin"], cwd=self.repo.root,
             input=b"src/rt/core.c", capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
         self.repo._git("update-index", "--add", "--cacheinfo", f"120000,{blob},src/rt/link.c")
@@ -2227,24 +2226,52 @@ class EphemeralGenerationTests(unittest.TestCase):
 
     def baseline(self, commit: str | None = None) -> Path:
         commit = commit or self.base
-        raw = subprocess.run(
-            ["git", "show", f"{commit}:{verifier.LEDGER_PATH}"],
+        raw = run_git(
+            ["show", f"{commit}:{verifier.LEDGER_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         path = self.outside / "trusted-baseline.json"
         path.write_bytes(raw)
         return path
 
+    def back_legacy_path(self) -> None:
+        """Give the fixture's grandfathered tools/legacy.py a trusted record.
+
+        An authority-generated baseline has no grandfathered category: every
+        published path needs a qualifying record, as on the real main branch.
+        """
+        authority = json.loads(json.dumps(AUTHORITY_RECORDS))
+        authority["records"].append({
+            "id": "legacy-tool-independent",
+            "paths": ["tools/legacy.py"],
+            "classification": "project-authored-independent",
+            "upstream": None,
+            "evidence_tier": "S",
+        })
+        self.write_trusted(authority)
+
+    def authority_baseline(self, commit: str | None = None) -> Path:
+        path = self.outside / "authority-baseline.json"
+        path.write_bytes(verifier.generate_authority_baseline(
+            repo=self.repo.root,
+            base_rev=commit or self.base,
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / "authority-baseline-scratch",
+        ))
+        return path
+
     def run_ephemeral(self, candidate: str, *, base: str | None = None,
                       trusted_candidate_policy: Path | None = None,
                       policy_delta_authority: Path | None = None,
-                      require_exact_blob_approvals: bool = False) -> dict:
+                      require_exact_blob_approvals: bool = False,
+                      authority_baseline: bool = False) -> dict:
         return verifier.verify_ephemeral(
             repo=self.repo.root,
             candidate_rev=candidate,
             base_rev=base or self.base,
             trusted_ledger=self.trusted_ledger,
-            trusted_baseline=self.baseline(base),
+            trusted_baseline=(self.authority_baseline(base) if authority_baseline
+                              else self.baseline(base)),
             output_dir=self.outside / "generated",
             trusted_candidate_policy=trusted_candidate_policy,
             policy_delta_authority=policy_delta_authority,
@@ -2256,8 +2283,90 @@ def _canonical(document: dict) -> bytes:
     return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+class AuthorityBaselineTests(EphemeralGenerationTests):
+    """The trusted baseline comes from the authority, never from the base's committed ledger."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.back_legacy_path()
+
+    def emit(self, base: str | None = None) -> bytes:
+        return verifier.generate_authority_baseline(
+            repo=self.repo.root,
+            base_rev=base or self.base,
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / "baseline-scratch",
+        )
+
+    def validate(self, raw: bytes, base: str | None = None) -> dict[str, dict]:
+        commit = verifier._rev_commit(self.repo.root, base or self.base)
+        tree = verifier._rev_tree(self.repo.root, commit)
+        blobs = verifier.read_tree(self.repo.root, tree)
+        policy = verifier._load_policy_bytes(
+            blobs[verifier.POLICY_PATH], self.outside / "policy-scratch", "policy.json",
+            code="TRUSTED_POLICY_INVALID",
+        )
+        _document, entries = verifier._validate_public_baseline(
+            raw, base_commit=commit, base_tree=tree, base_blobs=blobs, trusted_policy=policy,
+        )
+        return entries
+
+    def test_envelope_is_bound_to_the_exact_base_and_validates(self) -> None:
+        raw = self.emit()
+        envelope = json.loads(raw)
+        self.assertEqual(envelope["kind"], verifier.BASELINE_KIND)
+        self.assertEqual(envelope["binding"]["base_commit"],
+                         verifier._rev_commit(self.repo.root, self.base))
+        self.assertEqual(envelope["binding"]["base_tree"], verifier._rev_tree(self.repo.root, self.base))
+        entries = self.validate(raw)
+        self.assertEqual(entries["src/rt/widget.c"]["classification"], "project_authored_attested")
+        # The publication audit checks an upstream file's SPDX header against
+        # this public identifier, so the safe claim must keep it.
+        self.assertEqual(entries["src/rt/core.c"]["evidence"]["license"], "GPL-2.0-or-later")
+
+    def test_envelope_for_one_base_is_refused_for_another(self) -> None:
+        raw = self.emit()
+        self.repo.write("docs/notes.md", "# a later base\n")
+        later = self.repo.commit("later base")
+        with self.assertRaises(verifier.VerifyError) as caught:
+            self.validate(raw, later)
+        self.assertEqual(caught.exception.code, "TRUSTED_BASELINE_BINDING")
+
+    def test_committed_base_ledger_is_not_an_input(self) -> None:
+        first = json.loads(self.emit())["ledger"]
+        ledger = json.loads((self.repo.root / verifier.LEDGER_PATH).read_text(encoding="utf-8"))
+        for entry in ledger["entries"]:
+            if entry["path"] == "src/rt/widget.c":
+                entry["evidence"]["record_id"] = "forged-record"
+        self.repo.write(verifier.LEDGER_PATH, _canonical(ledger))
+        edited = self.repo.commit("base carrying an edited committed ledger")
+        self.assertEqual(json.loads(self.emit(edited))["ledger"], first)
+
+    def test_published_path_without_a_record_fails_closed(self) -> None:
+        self.repo.write("src/rt/unrecorded.c", "int unrecorded(void) { return 0; }\n")
+        self.write_policy(list(GateCase.FILES) + [TRUSTED_WORKFLOW, verifier.LEDGER_PATH,
+                                                  "src/rt/unrecorded.c"])
+        base = self.repo.commit("base publishing an unrecorded implementation path")
+        with self.assertRaises(verifier.VerifyError) as caught:
+            self.validate(self.emit(base), base)
+        self.assertEqual(caught.exception.code, "TRUSTED_BASELINE_INVALID")
+
+    def test_cli_writes_outside_the_repository_only(self) -> None:
+        out = self.outside / "emitted" / "baseline.json"
+        argv = ["--repo", str(self.repo.root), "--base", self.base,
+                "--trusted-ledger", str(self.trusted_ledger)]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(verifier.main(argv + ["--emit-authority-baseline", str(out)]), 0)
+        self.assertEqual(out.read_bytes(), self.emit())
+        inside = self.repo.root / "baseline.json"
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(verifier.main(argv + ["--emit-authority-baseline", str(inside)]), 2)
+        self.assertFalse(inside.exists())
+
+
 class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
     def test_local_ledger_generation_matches_ephemeral_with_refresh_baseline(self) -> None:
+        self.back_legacy_path()
         baseline = json.loads(self.baseline().read_text(encoding="utf-8"))
         for entry in baseline["entries"]:
             if entry["path"] == "docs/notes.md":
@@ -2293,7 +2402,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.EXPORT_PATH, local.generated_export_bytes)
         refreshed_head = self.repo.commit("local refresh controls")
 
-        hosted = self.run_ephemeral(refreshed_head)
+        hosted = self.run_ephemeral(refreshed_head, authority_baseline=True)
         hosted_ledger = Path(hosted["generated_outputs"]["ledger_path"]).read_bytes()
         hosted_export = Path(hosted["generated_outputs"]["export_path"]).read_bytes()
         self.assertEqual(json.loads(hosted_ledger)["refresh"], local.generated_ledger["refresh"])
@@ -2323,6 +2432,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.assertEqual(ctx.exception.code, "TRUSTED_INPUT_MISSING")
 
     def test_local_refresh_requires_authority_for_a_publication_policy_delta(self) -> None:
+        self.back_legacy_path()
         policy_path = self.repo.root / verifier.POLICY_PATH
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         policy["exclude_paths"] = sorted(set(policy["exclude_paths"]) | {"new-exclusion.txt"})
@@ -2512,8 +2622,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("authorized obsolete exclusion removal")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         blessed_policy = self.outside / "blessed-exclusion-removal-policy.json"
@@ -2555,8 +2665,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("authorized candidate policy change")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         blessed_policy = self.outside / "blessed-candidate-policy.json"
@@ -2597,8 +2707,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("policy change for output collision test")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         authority_document = _canonical({
@@ -2654,8 +2764,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
         head = self.repo.commit("mismatched candidate policy")
 
-        baseline_raw = subprocess.run(
-            ["git", "show", f"{self.base}:{verifier.POLICY_PATH}"],
+        baseline_raw = run_git(
+            ["show", f"{self.base}:{verifier.POLICY_PATH}"],
             cwd=self.repo.root, check=True, capture_output=True,
         ).stdout
         blessed_policy = self.outside / "wrong-blessed-candidate-policy.json"

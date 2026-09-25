@@ -25,6 +25,7 @@ import tempfile
 import unicodedata
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nk_core.git_isolation import isolated_git_env  # noqa: E402
 from publication_policy import (  # noqa: E402
     INCLUDED,
     Policy,
@@ -86,6 +87,7 @@ PROVENANCE_CLASSES = frozenset({
 
 FORBIDDEN_PREFIXES = (
     "build/",
+    "cache/",
     "docs/opengrip_ref/",
     "fs/",
     "logs/",
@@ -275,7 +277,13 @@ def parse_gitleaks_report(report_path: Path) -> list[Finding]:
 
 
 def _git_output(cmd: list[str], repo_root: Path = ROOT) -> str:
-    res = subprocess.run(["git", *cmd], cwd=repo_root, capture_output=True, check=False)
+    res = subprocess.run(
+        ["git", *cmd],
+        cwd=repo_root,
+        env=isolated_git_env(root=repo_root),
+        capture_output=True,
+        check=False,
+    )
     if res.returncode != 0:
         err = res.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"git {' '.join(cmd)} failed: {err}")
@@ -380,7 +388,10 @@ def _read_git_lfs_attributes(
                     return set(), []
                 res = subprocess.run(
                     ["git", "cat-file", "blob", listing[1]],
-                    cwd=repo_root, capture_output=True, check=False,
+                    cwd=repo_root,
+                    env=isolated_git_env(root=repo_root),
+                    capture_output=True,
+                    check=False,
                 )
                 if res.returncode != 0:
                     return set(), [Finding(
@@ -621,6 +632,7 @@ def _prune_gitignored_untracked(entries: list[GitEntry], repo_root: Path) -> lis
         tracked = subprocess.run(
             ["git", "ls-files", "-z", "--cached"],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             capture_output=True,
             check=False,
             timeout=30,
@@ -638,6 +650,7 @@ def _prune_gitignored_untracked(entries: list[GitEntry], repo_root: Path) -> lis
         ignored = subprocess.run(
             ["git", "check-ignore", "--no-index", "--stdin"],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             input=stdin_data,
             capture_output=True,
             check=False,
@@ -678,6 +691,7 @@ def read_indexed_blob(
             res = subprocess.run(
                 ["git", "cat-file", "-p", entry.sha],
                 cwd=repo_root,
+                env=isolated_git_env(root=repo_root),
                 capture_output=True,
                 check=False,
             )
@@ -731,6 +745,7 @@ def read_indexed_blobs_batch(
         proc = subprocess.Popen(
             ["git", "cat-file", "--batch"],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
         )
@@ -1522,7 +1537,14 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
     all_paths = paths
     if all_paths is None:
         try:
-            res = subprocess.run(["git", "ls-files"], cwd=repo_root, capture_output=True, text=True, check=True)
+            res = subprocess.run(
+                ["git", "ls-files"],
+                cwd=repo_root,
+                env=isolated_git_env(root=repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
             all_paths = [f.strip().replace("\\", "/") for f in res.stdout.splitlines() if f.strip()]
         except Exception:
             all_paths = []
@@ -2828,6 +2850,7 @@ def _materialize_committed_tree(ref: str, source_repo: Path) -> tuple[Path, str]
     destination = Path(tempfile.mkdtemp(prefix="nakagawa-committed-audit-"))
     archive = subprocess.run(
         ["git", "archive", "--format=tar", ref], cwd=source_repo,
+        env=isolated_git_env(root=source_repo),
         capture_output=True, check=True,
     ).stdout
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:

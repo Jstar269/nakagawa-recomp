@@ -911,13 +911,54 @@ int main(int argc, char **argv) {{
             captured_command.extend(command)
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
+            module_path = Path(command[command.index("--module-dir") + 1])
+            cache_key = nk_cli._current_package_cache_key(
+                manifest,
+                Path(command[1]),
+                hashlib.sha256(eboot_bytes).hexdigest(),
+                module_path,
+                None,
+            )
+            executable = build_dir / "synthetic.exe"
+            image = build_dir / "synthetic_image.bin"
+            generated = build_dir / "synthetic_recomp.o"
+            executable.write_bytes(b"fake executable")
+            image.write_bytes(b"fake image")
+            generated.write_bytes(b"fake object")
+            cache = nk_cli.package_cache.cache_metadata(
+                cache_key,
+                nk_cli._package_codegen_options(manifest, os.environ),
+            )
             package = {
+                "cache": cache,
                 "title": {"id": title_id},
-                "inputs": {"executable": {"sha256": hashlib.sha256(eboot_bytes).hexdigest()}},
+                "inputs": {
+                    "manifest": {"sha256": cache_key["aot"]["components"]["manifest_sha256"]},
+                    "executable": {"sha256": hashlib.sha256(eboot_bytes).hexdigest()},
+                    "modules": [{
+                        "name": "synthetic2.prx",
+                        "load_address": f"0x{int(manifest['modules'][0]['load_address']):08x}",
+                        "sha256": hashlib.sha256(module_bytes).hexdigest(),
+                    }],
+                    "psp_header": None,
+                },
+                "executable": {
+                    "path": executable.name,
+                    "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                },
+                "generated_objects": [{
+                    "path": generated.name,
+                    "sha256": hashlib.sha256(generated.read_bytes()).hexdigest(),
+                }],
             }
+            report = {"cache": cache}
             (build_dir / "package.json").write_text(
                 json.dumps(package), encoding="utf-8"
             )
+            (build_dir / "build-report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            nk_cli.package_cache.write_completion_manifest(build_dir, cache_key)
             return subprocess.CompletedProcess(command, 0, "", "")
 
         args = type("BuildArgs", (), {
@@ -936,12 +977,152 @@ int main(int argc, char **argv) {{
         module_dir = Path(captured_command[captured_command.index("--module-dir") + 1])
         self.assertEqual(game_elf.read_bytes(), eboot_bytes)
         self.assertEqual((module_dir / "synthetic2.prx").read_bytes(), module_bytes)
+        captured_command.clear()
+        with patch.object(nk_cli, "_load_entry_manifest",
+                          return_value=(manifest_path, manifest, None)), \
+             patch.object(nk_cli.subprocess, "run", side_effect=fake_package_build), \
+             patch.object(nk_cli, "_stage_runtime_assets"):
+            self.assertEqual(nk_cli.cmd_build_package(args), 0)
+        self.assertEqual(captured_command, [])
         (decrypted_dir / "synthetic2.prx").write_bytes(b"not an ELF")
         with self.assertRaisesRegex(nk_cli.PackageBuildError, "not a decrypted ELF"):
             nk_cli._copy_optional_modules(
                 iso_file, manifest, user_root / "bad-module-cache", None,
                 decrypted_dir,
             )
+
+    def test_package_build_mode_selection_and_limits(self) -> None:
+        disc_id = "TEST00004"
+        disc_id_priv = "TEST00005"
+        user_root = self.temp_dir / "user-data-mode"
+        user_root.mkdir(parents=True, exist_ok=True)
+        iso_file = self.temp_dir / "mode-test.iso"
+        eboot_bytes = build_plain_mips_elf()
+        create_test_iso_with_executables(iso_file, build_psp_container(), disc_id=disc_id, title="Mode Test Title")
+        iso_file_priv = self.temp_dir / "mode-test-priv.iso"
+        create_test_iso_with_executables(iso_file_priv, build_psp_container(), disc_id=disc_id_priv, title="Mode Test Title Priv")
+
+        title_id = "synthetic-title2-v1"
+        entry_pub = {
+            "disc_id": disc_id,
+            "title_id": title_id,
+            "iso_path": str(iso_file),
+            "selected_executable": "",
+            "is_experimental": False,
+        }
+        entry_priv = {
+            "disc_id": disc_id_priv,
+            "title_id": title_id,
+            "iso_path": str(iso_file_priv),
+            "selected_executable": "",
+            "is_experimental": False,
+        }
+        (user_root / "library.json").write_text(
+            json.dumps({"schema_version": 1, "games": [entry_pub, entry_priv]}),
+            encoding="utf-8",
+        )
+        decrypted_dir = user_root / "titles" / disc_id / "decrypted"
+        decrypted_dir.mkdir(parents=True, exist_ok=True)
+        (decrypted_dir / "EBOOT.elf").write_bytes(eboot_bytes)
+
+        decrypted_dir_priv = user_root / "titles" / disc_id_priv / "decrypted"
+        decrypted_dir_priv.mkdir(parents=True, exist_ok=True)
+        (decrypted_dir_priv / "EBOOT.elf").write_bytes(eboot_bytes)
+
+        manifest_path = ROOT / "assets" / "titles" / "synthetic-title2.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        captured_commands: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            captured_commands.append(list(command))
+            build_dir = Path(command[command.index("--output-dir") + 1])
+            build_dir.mkdir(parents=True, exist_ok=True)
+            executable = build_dir / "synthetic.exe"
+            image = build_dir / "synthetic_image.bin"
+            generated = build_dir / "synthetic_recomp.o"
+            executable.write_bytes(b"fake executable")
+            image.write_bytes(b"fake image")
+            generated.write_bytes(b"fake object")
+            (build_dir / "package.json").write_text(
+                json.dumps({
+                    "cache": {"format": "nakagawa-aot-cache", "schema_version": 1, "key": {}, "codegen_options": {}, "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True}},
+                    "title": {"id": title_id},
+                    "inputs": {"manifest": {"sha256": "0" * 64}, "executable": {"sha256": hashlib.sha256(eboot_bytes).hexdigest()}, "modules": [], "psp_header": None},
+                    "executable": {"path": executable.name, "sha256": hashlib.sha256(b"fake executable").hexdigest()},
+                    "generated_objects": [{"path": generated.name, "sha256": hashlib.sha256(b"fake object").hexdigest()}],
+                }),
+                encoding="utf-8",
+            )
+            # Like title_codegen_plan.build_package, the report records the backend
+            # mode the command line selected (the real report is covered end to end
+            # in test_production_smoke).
+            public = "--public-safe" in command
+            (build_dir / "build-report.json").write_text(
+                json.dumps({
+                    "cache": {"format": "nakagawa-aot-cache", "schema_version": 1, "key": {}, "codegen_options": {}, "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True}},
+                    "backends": "public" if public else "private",
+                    "limits": [
+                        "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                        "PGD-protected data: unavailable (#295)",
+                    ] if public else [],
+                }),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        args = type("BuildArgs", (), {
+            "disc_id": disc_id,
+            "user_data_root": user_root,
+            "module_dir": None,
+            "psp_header": None,
+        })()
+
+        captured_commands.clear()
+        with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \
+             patch.object(nk_cli, "_has_private_backends", return_value=False), \
+             patch.object(nk_cli.subprocess, "run", side_effect=fake_run), \
+             patch.object(nk_cli, "_stage_runtime_assets"), \
+             patch.object(nk_cli.package_cache, "validate_package_cache", return_value=(True, "")):
+            self.assertEqual(nk_cli.cmd_build_package(args), 0)
+            self.assertTrue(len(captured_commands) > 0)
+            self.assertIn("--public-safe", captured_commands[0])
+            report = json.loads((user_root / "packages" / disc_id / "build-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report.get("backends"), "public")
+            self.assertEqual(report.get("limits"), [
+                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "PGD-protected data: unavailable (#295)",
+            ])
+            completion = json.loads((user_root / "packages" / disc_id / "completion-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(completion.get("backends"), "public")
+            self.assertEqual(completion.get("limits"), [
+                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "PGD-protected data: unavailable (#295)",
+            ])
+
+        # Test private mode when private backends are present
+        disc_id_priv = "TEST00005"
+        args_priv = type("BuildArgs", (), {
+            "disc_id": disc_id_priv,
+            "user_data_root": user_root,
+            "module_dir": None,
+            "psp_header": None,
+        })()
+        captured_commands.clear()
+        with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \
+             patch.object(nk_cli, "_has_private_backends", return_value=True), \
+             patch.object(nk_cli.subprocess, "run", side_effect=fake_run), \
+             patch.object(nk_cli, "_stage_runtime_assets"), \
+             patch.object(nk_cli.package_cache, "validate_package_cache", return_value=(True, "")):
+            self.assertEqual(nk_cli.cmd_build_package(args_priv), 0)
+            self.assertTrue(len(captured_commands) > 0)
+            self.assertNotIn("--public-safe", captured_commands[0])
+            report_priv = json.loads((user_root / "packages" / disc_id_priv / "build-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report_priv.get("backends"), "private")
+            self.assertEqual(report_priv.get("limits"), [])
+            completion_priv = json.loads((user_root / "packages" / disc_id_priv / "completion-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(completion_priv.get("backends"), "private")
+            self.assertEqual(completion_priv.get("limits"), [])
 
     def test_prx_format_boot_fallback_is_selected_by_both_inspectors(self) -> None:
         """Retail BOOT.BIN is often PSP PRX-format (e_type 0xFFA0), which the

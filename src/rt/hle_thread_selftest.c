@@ -124,6 +124,10 @@ extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
 extern uint32_t sr_hle_test_io_close_async(CpuState *s);
 extern uint32_t sr_hle_test_io_rename(CpuState *s);
+extern uint32_t sr_hle_test_io_mkdir(CpuState *s);
+extern uint32_t sr_hle_test_io_remove(CpuState *s);
+extern uint32_t sr_hle_test_io_getstat(CpuState *s);
+extern uint32_t sr_hle_test_ms0_legacy_import_count(void);
 extern int sr_hle_test_fd_kind(uint32_t fd);
 extern int sr_callback_is_valid(uint32_t uid);
 
@@ -451,6 +455,9 @@ int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
     /* Keep one known ISO directory for the descriptor baseline.  Other paths
      * model an ISO miss so the extracted-data VFS fallback is exercised. */
     return guest_path && strcmp(guest_path, "disc0:/") == 0 ? 0 : -1;
+}
+uint32_t iso_physical_lba(uint32_t lba_or_token) {
+    return lba_or_token; /* selftest ISO stub: tokens are their own LBA */
 }
 
 /* recomp.c is not linked here. The #88 conformance matrix registers the pool
@@ -966,13 +973,23 @@ static void fd_guest_copy(uint32_t address, const void *data, size_t size) {
 }
 
 static void fd_host_path(char *out, size_t capacity, const char *guest) {
-    const char root[] = "build/hle_fd_namespace_fs/";
+    /* Hierarchical path under the unified Memory Stick root (issue #334):
+     * strip a known ms0:/fatms0: device prefix and keep guest separators. */
+    char root[256];
+    const char *env = getenv("SR_MEMSTICK");
+    if (env && env[0]) snprintf(root, sizeof root, "%s", env);
+    else snprintf(root, sizeof root, "%s", "build/hle_fd_namespace_ms");
+    const char *rel = guest ? guest : "";
     size_t at = 0;
     if (!out || capacity == 0) return;
     for (size_t i = 0; root[i] && at + 1 < capacity; i++) out[at++] = root[i];
-    for (size_t i = 0; guest && guest[i] && at + 1 < capacity; i++) {
-        char c = guest[i];
-        out[at++] = (c == '/' || c == ':' || c == '\\' || c == ' ') ? '_' : c;
+    if (_strnicmp(rel, "ms0:", 4) == 0) rel += 4;
+    else if (_strnicmp(rel, "fatms0:", 7) == 0) rel += 7;
+    while (*rel == '/' || *rel == '\\') rel++;
+    if (at + 1 < capacity) out[at++] = '\\';
+    for (size_t i = 0; rel[i] && at + 1 < capacity; i++) {
+        char c = rel[i];
+        out[at++] = (c == '/') ? '\\' : c;
     }
     out[at] = '\0';
 }
@@ -1016,15 +1033,16 @@ static void test_fd_namespace(void) {
     static const uint8_t payload[] = "NAKAGAWA_MINIMAL SUM=5050\n";
     char result_host[256];
     CpuState cpu;
-    const char *old_root_value = getenv("SR_FSDIR");
+    const char *old_root_value = getenv("SR_MEMSTICK");
     char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
     if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
 
     fd_host_path(result_host, sizeof(result_host), result_guest);
     DeleteFileA(result_host);
     CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_fs", NULL);
-    SetEnvironmentVariableA("SR_FSDIR", "build/hle_fd_namespace_fs");
+    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
+    SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+    _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms");
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
@@ -1221,8 +1239,8 @@ static void test_fd_namespace(void) {
 
     /* An actual empty overlay directory is successful and immediately at end
      * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
-     * directory. */
-    CreateDirectoryA("build/hle_fd_namespace_fs/empty", NULL);
+     * directory. Lives under the unified Memory Stick root (issue #334). */
+    CreateDirectoryA("build/hle_fd_namespace_ms/empty", NULL);
     memset(&cpu, 0, sizeof cpu);
     fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
     cpu.r[4] = path_addr;
@@ -1238,7 +1256,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = empty_dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the empty overlay directory descriptor closes cleanly");
-    RemoveDirectoryA("build/hle_fd_namespace_fs/empty");
+    RemoveDirectoryA("build/hle_fd_namespace_ms/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -1480,10 +1498,284 @@ static void test_fd_namespace(void) {
     DeleteFileA(rename_dst_host);
 
     DeleteFileA(result_host);
-    RemoveDirectoryA("build/hle_fd_namespace_fs");
-    if (old_root) SetEnvironmentVariableA("SR_FSDIR", old_root);
-    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    RemoveDirectoryA("build/hle_fd_namespace_ms");
+    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
+    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
+    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
+    else _putenv_s("SR_MEMSTICK", "");
     free(old_root);
+}
+
+/* Issue #334: ordinary sceIo* and savedata must share one canonical host
+ * Memory Stick root and one path resolver. Fails before the unification (flat
+ * fs/ vs hierarchical memstick/) and passes after. */
+extern uint32_t sr_savedata_execute(uint32_t param);
+
+static void test_ms0_unified_namespace(void) {
+    enum {
+        PARAM_ADDR = 0x08800000u,
+        DATA_ADDR  = 0x08900000u,
+        PATH_ADDR  = 0x09030000u,
+        PATH2_ADDR = 0x09030100u,
+        STAT_ADDR  = 0x09030200u
+    };
+    static const char ms_root[] = "build/hle_ms0_unified";
+    static const char legacy_root[] = "build/hle_ms0_legacy_fs";
+    static const uint8_t payload[] = "MS0_UNIFIED_OK\n";
+    CpuState cpu;
+    char host[512];
+    const char *old_ms = getenv("SR_MEMSTICK");
+    const char *old_fs = getenv("SR_FSDIR");
+    char *save_ms = old_ms ? (char *)malloc(strlen(old_ms) + 1u) : NULL;
+    char *save_fs = old_fs ? (char *)malloc(strlen(old_fs) + 1u) : NULL;
+    if (save_ms) memcpy(save_ms, old_ms, strlen(old_ms) + 1u);
+    if (save_fs) memcpy(save_fs, old_fs, strlen(old_fs) + 1u);
+
+    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(ms_root, NULL);
+    CreateDirectoryA(legacy_root, NULL);
+    SetEnvironmentVariableA("SR_MEMSTICK", ms_root);
+    SetEnvironmentVariableA("SR_FSDIR", legacy_root);
+    _putenv_s("SR_MEMSTICK", ms_root);
+    _putenv_s("SR_FSDIR", legacy_root);
+    sr_hle_init();
+
+    /* --- ordinary sceIo mkdir/open/write/read/seek/stat/remove --- */
+    static const char dir_guest[] = "ms0:/TESTDIR";
+    static const char file_guest[] = "ms0:/TESTDIR/UNIFIED.TXT";
+    static const char file_guest2[] = "ms0:/TESTDIR/UNIFIED_RENAMED.TXT";
+    fd_host_path(host, sizeof(host), file_guest);
+    DeleteFileA(host);
+    fd_host_path(host, sizeof(host), file_guest2);
+    DeleteFileA(host);
+
+    fd_guest_copy(PATH_ADDR, dir_guest, sizeof(dir_guest));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0u,
+           "sceIoMkdir creates a directory under the unified Memory Stick root");
+    /* mkdir result is hierarchical under SR_MEMSTICK, not flat fs/ */
+    {
+        char mkdir_host[512];
+        snprintf(mkdir_host, sizeof mkdir_host, "%s\\TESTDIR", ms_root);
+        expect(GetFileAttributesA(mkdir_host) != INVALID_FILE_ATTRIBUTES,
+               "mkdir result is hierarchical under SR_MEMSTICK, not flat fs/");
+    }
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0x80010011u,
+           "sceIoMkdir on an existing directory returns EEXIST 0x80010011");
+
+    fd_set_path(&cpu, PATH_ADDR, file_guest);
+    uint32_t fd = sr_hle_test_io_open(&cpu);
+    expect(fd == 3u, "sceIoOpen under unified ms0 root succeeds");
+    fd_guest_copy(DATA_ADDR, payload, sizeof(payload) - 1u);
+    fd_set_write(&cpu, fd, DATA_ADDR, (uint32_t)(sizeof(payload) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(payload) - 1u,
+           "write through unified ms0 root reports full payload");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "unified ms0 file closes cleanly");
+
+    fd_guest_copy(PATH_ADDR, dir_guest, sizeof(dir_guest));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) == 0u &&
+               MEM_R32(STAT_ADDR) == (0x1000u | 0x0124u),
+           "sceIoGetstat sees the unified directory via the host ms0 leg");
+
+    fd_guest_copy(PATH_ADDR, file_guest, sizeof(file_guest));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) == 0u &&
+               (MEM_R32(STAT_ADDR + 8u) == (uint32_t)(sizeof(payload) - 1u)),
+           "sceIoGetstat size matches the file written under unified ms0 root");
+
+    fd_guest_copy(PATH2_ADDR, file_guest2, sizeof(file_guest2));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = PATH2_ADDR;
+    expect(sr_hle_test_io_rename(&cpu) == 0u,
+           "sceIoRename moves a file within the unified Memory Stick root");
+    fd_host_path(host, sizeof(host), file_guest2);
+    expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+           "rename destination exists under SR_MEMSTICK hierarchy");
+
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH2_ADDR;
+    expect(sr_hle_test_io_remove(&cpu) == 0u,
+           "sceIoRemove deletes a regular file under the unified root");
+    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+           "removed file is gone from the unified Memory Stick hierarchy");
+
+    /* foreign device / traversal fail closed */
+    fd_guest_copy(PATH_ADDR, "disc0:/PSP_GAME", sizeof("disc0:/PSP_GAME"));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0x80010016u,
+           "sceIoMkdir refuses a foreign device with EINVAL 0x80010016");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) != 0u,
+           "sceIoGetstat does not fabricate stats for foreign devices");
+    fd_guest_copy(PATH_ADDR, "ms0:/../escape", sizeof("ms0:/../escape"));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_remove(&cpu) == 0x80010016u,
+           "sceIoRemove refuses path traversal with EINVAL 0x80010016");
+
+    /* disc0 open does not create under the ms root */
+    fd_host_path(host, sizeof host, "ms0:/PSP_GAME");
+    DeleteFileA(host);
+    fd_guest_copy(PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN",
+                  sizeof("disc0:/PSP_GAME/SYSDIR/EBOOT.BIN"));
+    fd_set_path(&cpu, PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
+    cpu.r[5] = 1u; /* O_RDONLY */
+    uint32_t disc_fd = sr_hle_test_io_open(&cpu);
+    if (disc_fd < 64u) {
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = disc_fd;
+        sr_hle_test_io_close(&cpu);
+    }
+    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+           "foreign disc0 open never materializes a host path under SR_MEMSTICK");
+
+    /* --- legacy flat import (read-open miss copies once) --- */
+    {
+        char legacy_flat[512];
+        snprintf(legacy_flat, sizeof legacy_flat,
+                 "%s\\ms0__LEGACY_FLAT.TXT", legacy_root);
+        FILE *lf = fopen(legacy_flat, "wb");
+        expect(lf != NULL, "legacy flat fixture file can be created");
+        if (lf) {
+            fwrite(payload, 1, sizeof(payload) - 1u, lf);
+            fclose(lf);
+        }
+        /* Guest path whose flat mapping under SR_FSDIR is ms0__LEGACY_FLAT.TXT
+         * (sr_vfs_host_flat_path maps "ms0:/LEGACY_FLAT.TXT" -> "ms0__LEGACY_FLAT.TXT"). */
+        static const char legacy_guest[] = "ms0:/LEGACY_FLAT.TXT";
+        fd_host_path(host, sizeof(host), legacy_guest);
+        DeleteFileA(host);
+        uint32_t before = sr_hle_test_ms0_legacy_import_count();
+        fd_set_path(&cpu, PATH_ADDR, legacy_guest);
+        cpu.r[5] = 1u; /* O_RDONLY: import only on read miss */
+        uint32_t lfd = sr_hle_test_io_open(&cpu);
+        expect(lfd < 64u,
+               "read-open of a legacy flat file imports into the unified root");
+        if (lfd < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = lfd;
+            cpu.r[5] = DATA_ADDR;
+            cpu.r[6] = (uint32_t)(sizeof(payload) - 1u);
+            expect(sr_hle_test_io_read(&cpu) == sizeof(payload) - 1u,
+                   "imported legacy file is readable through sceIoRead");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = lfd;
+            sr_hle_test_io_close(&cpu);
+        }
+        expect(sr_hle_test_ms0_legacy_import_count() == before + 1u,
+               "legacy flat import increments the source-owned counter exactly once");
+        expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+               "imported legacy content lives under SR_MEMSTICK, not SR_FSDIR only");
+        DeleteFileA(host);
+        DeleteFileA(legacy_flat);
+    }
+
+    /* --- savedata SAVE and ordinary sceIoOpen see the same host path --- */
+    {
+        static const char game[] = "NAKAGAWA334";
+        static const char save[] = "NSPACE";
+        static const char data[] = "SAVEDATA_BRIDGE\n";
+        char guest_open[128];
+        memset(g_mem_base + PARAM_ADDR, 0, 0x600);
+        fd_guest_copy(PARAM_ADDR + 0x3c, game, sizeof(game));
+        fd_guest_copy(PARAM_ADDR + 0x4c, save, sizeof(save));
+        fd_guest_copy(PARAM_ADDR + 0x64, "DATA.BIN", sizeof("DATA.BIN"));
+        fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
+        MEM_W32(PARAM_ADDR + 0x30, 3u); /* SD_SAVE */
+        MEM_W32(PARAM_ADDR + 0x74, DATA_ADDR);
+        MEM_W32(PARAM_ADDR + 0x78, (uint32_t)(sizeof(data) - 1u));
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
+        uint32_t sd_rc = sr_savedata_execute(PARAM_ADDR);
+        expect(sd_rc == 0u, "sr_savedata_execute SD_SAVE succeeds under unified root");
+
+        snprintf(guest_open, sizeof guest_open, "ms0:/PSP/SAVEDATA/%s%s/DATA.BIN",
+                 game, save);
+        fd_set_path(&cpu, PATH_ADDR, guest_open);
+        cpu.r[5] = 1u; /* O_RDONLY */
+        uint32_t sfd = sr_hle_test_io_open(&cpu);
+        expect(sfd < 64u,
+               "ordinary sceIoOpen observes the file savedata just wrote (shared root)");
+        if (sfd < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = sfd;
+            cpu.r[5] = DATA_ADDR;
+            cpu.r[6] = (uint32_t)(sizeof(data) - 1u);
+            expect(sr_hle_test_io_read(&cpu) == sizeof(data) - 1u &&
+                       MEM_R8(DATA_ADDR) == (uint8_t)'S',
+                   "cross-route read returns the savedata payload bytes");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = sfd;
+            sr_hle_test_io_close(&cpu);
+        }
+    }
+
+    /* --- junction rejection: open through a planted link fails closed --- */
+    {
+        char victim[512], jpath[512], jcmd[1200];
+        snprintf(victim, sizeof victim, "%s\\..\\ms0_victim_outside.txt", ms_root);
+        FILE *vf = fopen(victim, "wb");
+        if (vf) { fwrite(payload, 1, sizeof(payload) - 1u, vf); fclose(vf); }
+        snprintf(jpath, sizeof jpath, "%s\\JCT_LINK.TXT", ms_root);
+        DeleteFileA(jpath);
+        snprintf(jcmd, sizeof jcmd,
+                 "cmd /c mklink \"%s\" \"%s\" >nul 2>&1", jpath, victim);
+        int made = system(jcmd) == 0 &&
+                   GetFileAttributesA(jpath) != INVALID_FILE_ATTRIBUTES;
+        if (made) {
+            fd_guest_copy(PATH_ADDR, "ms0:/JCT_LINK.TXT", sizeof("ms0:/JCT_LINK.TXT"));
+            fd_set_path(&cpu, PATH_ADDR, "ms0:/JCT_LINK.TXT");
+            cpu.r[5] = 1u;
+            uint32_t jfd = sr_hle_test_io_open(&cpu);
+            expect(jfd == 0x80010002u || jfd >= 64u,
+                   "open through a reparse point outside the unified root fails closed");
+            if (jfd < 64u) {
+                memset(&cpu, 0, sizeof cpu);
+                cpu.r[4] = jfd;
+                sr_hle_test_io_close(&cpu);
+            }
+            DeleteFileA(jpath);
+        } else {
+            fprintf(stderr, "SKIP: junction fixture needs mklink privilege\n");
+        }
+        DeleteFileA(victim);
+    }
+
+    /* cleanup */
+    fd_host_path(host, sizeof(host), file_guest);
+    DeleteFileA(host);
+    fd_host_path(host, sizeof(host), file_guest2);
+    DeleteFileA(host);
+    {
+        char d[512];
+        snprintf(d, sizeof d, "%s\\TESTDIR", ms_root);
+        RemoveDirectoryA(d);
+    }
+    RemoveDirectoryA(ms_root);
+    RemoveDirectoryA(legacy_root);
+    if (save_ms) SetEnvironmentVariableA("SR_MEMSTICK", save_ms);
+    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
+    if (save_fs) SetEnvironmentVariableA("SR_FSDIR", save_fs);
+    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    if (save_ms) _putenv_s("SR_MEMSTICK", save_ms);
+    else _putenv_s("SR_MEMSTICK", "");
+    if (save_fs) _putenv_s("SR_FSDIR", save_fs);
+    else _putenv_s("SR_FSDIR", "");
+    free(save_ms);
+    free(save_fs);
 }
 
 static void test_utility_av_module_state(void) {
@@ -1584,18 +1876,19 @@ static void test_io_devctl_memory_stick(void) {
     static const char ms0[] = "ms0:";
     static const char fatms0[] = "fatms0:";
     static const char unknown_device[] = "devctl-test0:";
-    const char *old_root_value = getenv("SR_FSDIR");
+    const char *old_root_value = getenv("SR_MEMSTICK");
     char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
     CpuState cpu;
     if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
     if (old_root_value && !old_root) {
-        expect(0, "sceIoDevctl test can preserve the configured SR_FSDIR");
+        expect(0, "sceIoDevctl test can preserve the configured SR_MEMSTICK");
         return;
     }
 
     CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_fs", NULL);
-    expect(SetEnvironmentVariableA("SR_FSDIR", "build/hle_fd_namespace_fs"),
+    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
+    expect(SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms") &&
+               _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms") == 0,
            "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
@@ -1666,8 +1959,10 @@ static void test_io_devctl_memory_stick(void) {
                sr_hle_test_io_devctl_refusal_log_count() == logs_before + 2u,
            "sceIoDevctl refuses an unknown command and logs each device/command pair once");
 
-    if (old_root) SetEnvironmentVariableA("SR_FSDIR", old_root);
-    else SetEnvironmentVariableA("SR_FSDIR", NULL);
+    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
+    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
+    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
+    else _putenv_s("SR_MEMSTICK", "");
     free(old_root);
 }
 
@@ -5442,6 +5737,26 @@ static void test_b23_second_round(void) {
 #define VPL_EXHAUSTED_ERR     0x800200d9u
 #define VPL_INFO              0x00240a00u
 #define VPL_OUTPTR            0x00240a80u
+#define NID_MBX_CREATE        0x8125221du
+#define NID_MBX_DELETE        0x86255adau
+#define NID_MBX_SEND          0xe9b3061eu
+#define NID_MBX_RECV          0x18260574u
+#define NID_MBX_RECV_CB       0xf3986382u
+#define NID_MBX_POLL          0x0d81716au
+#define NID_MBX_CANCEL        0x87d4dd36u
+#define NID_MBX_REFER         0xa8e8c846u
+#define MBX_UNKNOWN_ID_ERR    0x8002019bu
+#define MBX_EMPTY_ERR         0x800201b2u
+#define MBX_WAIT_TIMEOUT_ERR  0x800201a8u
+#define MBX_WAIT_CANCEL_ERR   0x800201a9u
+#define MBX_WAIT_DELETE_ERR   0x800201b5u
+#define MBX_NAMEBUF           0x00241100u
+#define MBX_MSG_BASE          0x00241200u
+#define MBX_OUTPTR            0x00241300u
+#define MBX_TIMEOUT_PTR       0x00241304u
+#define MBX_NUMWAIT_PTR       0x00241308u
+#define MBX_INFO              0x00241400u
+#define MBX_PRIORITY_ATTR     0x400u
 
 /* Fresh FPL_NBLOCKS x FPL_BSIZE pool. Returns 0 on arrangement failure. */
 static uint32_t fpl_make_pool(void) {
@@ -10891,6 +11206,97 @@ static void selftest_vpl_waiter_fiber_body(void *arg) {
     selftest_park_on_scheduler();
 }
 
+/* Mailbox receive waiter. toptr==0 means an infinite wait (no timeout word). */
+typedef struct {
+    uint32_t uid;
+    TCB     *tcb;
+    uint32_t mbx_uid;
+    uint32_t outptr;
+    uint32_t toptr;
+    int      is_cb;
+    uint32_t ret;
+    int      returned;
+} SelftestMbxWaiterCtx;
+
+int s_mbx_parks = 0;
+
+static void selftest_mbx_waiter_fiber_body(void *arg) {
+    SelftestMbxWaiterCtx *ctx = (SelftestMbxWaiterCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = ctx->mbx_uid;
+    cpu.r[5] = ctx->outptr;
+    cpu.r[6] = ctx->toptr;
+    ctx->ret = sr_syscall(&cpu, ctx->is_cb ? NID_MBX_RECV_CB : NID_MBX_RECV);
+    ctx->returned = 1;
+    s_mbx_parks++;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t selftest_mbx_create(uint32_t attr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = MBX_NAMEBUF;
+    cpu.r[5] = attr;
+    cpu.r[6] = 0;
+    return sr_syscall(&cpu, NID_MBX_CREATE);
+}
+
+static uint32_t selftest_mbx_delete(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_MBX_DELETE);
+}
+
+static uint32_t selftest_mbx_send(uint32_t uid, uint32_t msg) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = msg;
+    return sr_syscall(&cpu, NID_MBX_SEND);
+}
+
+static uint32_t selftest_mbx_recv(uint32_t uid, uint32_t outptr, uint32_t toptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = outptr;
+    cpu.r[6] = toptr;
+    return sr_syscall(&cpu, NID_MBX_RECV);
+}
+
+static uint32_t selftest_mbx_poll(uint32_t uid, uint32_t outptr) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = outptr;
+    return sr_syscall(&cpu, NID_MBX_POLL);
+}
+
+static uint32_t selftest_mbx_cancel(uint32_t uid, uint32_t nump) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = nump;
+    return sr_syscall(&cpu, NID_MBX_CANCEL);
+}
+
+static uint32_t selftest_mbx_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_MBX_REFER);
+}
+
+/* Guest SceKernelMsgPacket at base: next@0, msgPriority@4, dummy@8. */
+static void mbx_init_packet(uint32_t base, uint32_t priority) {
+    MEM_W32(base + 0, 0);
+    MEM_W32(base + 4, priority);
+    MEM_W32(base + 8, 0);
+}
+
 static uint32_t selftest_fpl_create(uint32_t bsize, uint32_t nblocks) {
     CpuState cpu;
     memset(&cpu, 0, sizeof cpu);
@@ -11369,6 +11775,216 @@ static void test_vpl_blocking_waits(void) {
     expect(w_del.returned == 1 && w_del.ret == 0x800201b5u, "VPL: waiter returned WAIT_DELETE (0x800201b5)");
     expect(MEM_R32(out2) == 0xfeedfaceu, "VPL: deleted pool writes no output pointer");
     sr_coro_destroy(w_del.tcb->coro); w_del.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+}
+
+/* =========================================================================
+ * Mailbox object model tests (issue #339)
+ * Measured anchors from docs/HARDWARE_ORACLE.md (campaign psp-hw-20260917):
+ * unknown id 0x8002019B, timeout 0x800201A8 with remaining 0, Cancel waiters
+ * 0x800201A9, empty poll 0x800201B2, FIFO circular next links, attr 0x400
+ * ascending msgPriority, waitType 5.
+ * ========================================================================= */
+
+static void test_mbx_lifecycle_and_ordering(void) {
+    extern void sr_hle_test_partition_reset(void);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    TCB *cur = fixture_thread(0x150u, TH_RUNNING, 32);
+    s_cur = (int)(cur - s_tcb);
+    cur->started = 1;
+
+    uint32_t out = MBX_OUTPTR;
+
+    /* ---- 1. Unknown id on every op ---- */
+    expect(selftest_mbx_poll(0xdeadbeefu, out) == MBX_UNKNOWN_ID_ERR,
+           "MBX: PollMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_send(0xdeadbeefu, MBX_MSG_BASE) == MBX_UNKNOWN_ID_ERR,
+           "MBX: SendMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_recv(0xdeadbeefu, out, 0) == MBX_UNKNOWN_ID_ERR,
+           "MBX: ReceiveMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_cancel(0xdeadbeefu, MBX_NUMWAIT_PTR) == MBX_UNKNOWN_ID_ERR,
+           "MBX: CancelReceiveMbx unknown id is 0x8002019B");
+    expect(selftest_mbx_refer(0xdeadbeefu, MBX_INFO) == MBX_UNKNOWN_ID_ERR,
+           "MBX: ReferMbxStatus unknown id is 0x8002019B");
+    expect(selftest_mbx_delete(0xdeadbeefu) == MBX_UNKNOWN_ID_ERR,
+           "MBX: DeleteMbx unknown id is 0x8002019B");
+
+    /* ---- 2. Empty poll is MBX_EMPTY (0x800201B2) ---- */
+    uint32_t mbx = selftest_mbx_create(0);
+    expect(mbx != 0 && (mbx >> 31) == 0, "MBX: CreateMbx returns a UID");
+    MEM_W32(out, 0xfeedfaceu);
+    expect(selftest_mbx_poll(mbx, out) == MBX_EMPTY_ERR,
+           "MBX: empty poll returns 0x800201B2");
+    expect(MEM_R32(out) == 0xfeedfaceu, "MBX: empty poll leaves outptr untouched");
+
+    /* ---- 3. FIFO circular delivery ---- */
+    uint32_t m0 = MBX_MSG_BASE + 0x00u;
+    uint32_t m1 = MBX_MSG_BASE + 0x10u;
+    uint32_t m2 = MBX_MSG_BASE + 0x20u;
+    mbx_init_packet(m0, 0);
+    mbx_init_packet(m1, 0);
+    mbx_init_packet(m2, 0);
+    expect(selftest_mbx_send(mbx, m0) == 0, "MBX: SendMbx #0 succeeds");
+    expect(selftest_mbx_send(mbx, m1) == 0, "MBX: SendMbx #1 succeeds");
+    expect(selftest_mbx_send(mbx, m2) == 0, "MBX: SendMbx #2 succeeds");
+
+    /* HARDWARE_ORACLE: FIFO mailboxes link packets circularly. */
+    expect(MEM_R32(m0 + 0) == m1, "MBX: FIFO circular link m0->next == m1");
+    expect(MEM_R32(m1 + 0) == m2, "MBX: FIFO circular link m1->next == m2");
+    expect(MEM_R32(m2 + 0) == m0, "MBX: FIFO circular link m2->next == m0 (circular)");
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: ReferMbxStatus succeeds");
+    expect(MEM_R32(MBX_INFO + 44) == 3u, "MBX: Refer numMessages == 3");
+    expect(MEM_R32(MBX_INFO + 48) == m0, "MBX: Refer firstMessage == FIFO head");
+    expect(MEM_R32(MBX_INFO + 40) == 0u, "MBX: Refer numWaitThreads == 0 when idle");
+
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: poll delivers first");
+    expect(MEM_R32(out) == m0, "MBX: poll order is FIFO head");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_recv(mbx, out, 0) == 0, "MBX: receive delivers second");
+    expect(MEM_R32(out) == m1, "MBX: receive order is FIFO second");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: poll delivers third");
+    expect(MEM_R32(out) == m2, "MBX: poll order is FIFO third");
+    expect(selftest_mbx_poll(mbx, out) == MBX_EMPTY_ERR,
+           "MBX: poll after drain is empty");
+
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: DeleteMbx succeeds");
+    expect(selftest_mbx_delete(mbx) == MBX_UNKNOWN_ID_ERR,
+           "MBX: double DeleteMbx is unknown id");
+
+    /* ---- 4. Priority mailbox (attr 0x400): ascending msgPriority, FIFO among equals ---- */
+    mbx = selftest_mbx_create(MBX_PRIORITY_ATTR);
+    expect(mbx != 0 && (mbx >> 31) == 0, "MBX: CreateMbx priority returns a UID");
+    mbx_init_packet(m0, 5);
+    mbx_init_packet(m1, 1);
+    mbx_init_packet(m2, 3);
+    uint32_t m3 = MBX_MSG_BASE + 0x30u;
+    mbx_init_packet(m3, 1);
+    expect(selftest_mbx_send(mbx, m0) == 0, "MBX: priority Send #0 (pri 5)");
+    expect(selftest_mbx_send(mbx, m1) == 0, "MBX: priority Send #1 (pri 1)");
+    expect(selftest_mbx_send(mbx, m2) == 0, "MBX: priority Send #2 (pri 3)");
+    expect(selftest_mbx_send(mbx, m3) == 0, "MBX: priority Send #3 (pri 1)");
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: priority Refer succeeds");
+    expect(MEM_R32(MBX_INFO + 44) == 4u, "MBX: priority numMessages == 4");
+    expect(MEM_R32(MBX_INFO + 48) == m1,
+           "MBX: priority firstMessage is lowest priority (1, first of equals)");
+
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 1");
+    expect(MEM_R32(out) == m1, "MBX: priority order [0] == pri 1 (first send)");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 2");
+    expect(MEM_R32(out) == m3, "MBX: priority order [1] == pri 1 (FIFO among equals)");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 3");
+    expect(MEM_R32(out) == m2, "MBX: priority order [2] == pri 3");
+    MEM_W32(out, 0);
+    expect(selftest_mbx_poll(mbx, out) == 0, "MBX: priority poll 4");
+    expect(MEM_R32(out) == m0, "MBX: priority order [3] == pri 5");
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: priority DeleteMbx succeeds");
+
+    /* ---- 5. Timeout == 0 on empty mailbox writes remaining 0 and WAIT_TIMEOUT ---- */
+    mbx = selftest_mbx_create(0);
+    MEM_W32(MBX_TIMEOUT_PTR, 0);
+    MEM_W32(out, 0xfeedfaceu);
+    expect(selftest_mbx_recv(mbx, out, MBX_TIMEOUT_PTR) == MBX_WAIT_TIMEOUT_ERR,
+           "MBX: timeout 0 on empty returns WAIT_TIMEOUT");
+    expect(MEM_R32(MBX_TIMEOUT_PTR) == 0u,
+           "MBX: timeout 0 writes remaining timeout 0");
+    expect(MEM_R32(out) == 0xfeedfaceu,
+           "MBX: timed-out receive leaves outptr untouched");
+
+    /* ---- 6. Blocking receive wakes on Send (waitType 5, handoff) ---- */
+    SelftestMbxWaiterCtx w; memset(&w, 0, sizeof w);
+    w.uid = 0x151u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = 0;
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: waiter blocked on empty mailbox");
+    expect(w.tcb->wait_kind == 5, "MBX: waiter wait_kind is 5 (PSP mailbox)");
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: Refer while waiter blocked");
+    expect(MEM_R32(MBX_INFO + 40) == 1u,
+           "MBX: Refer numWaitThreads == 1 while blocked");
+
+    mbx_init_packet(m0, 0);
+    MEM_W32(out, 0xfeedfaceu);
+    expect(selftest_mbx_send(mbx, m0) == 0, "MBX: Send wakes blocked receiver");
+    expect(w.tcb->state == TH_READY, "MBX: waiter woke to TH_READY on Send");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == 0, "MBX: waiter returned 0 after handoff");
+    expect(MEM_R32(out) == m0, "MBX: waiter received the sent packet");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+
+    expect(selftest_mbx_refer(mbx, MBX_INFO) == 0, "MBX: Refer after handoff");
+    expect(MEM_R32(MBX_INFO + 40) == 0u, "MBX: numWaitThreads back to 0");
+    expect(MEM_R32(MBX_INFO + 44) == 0u, "MBX: numMessages back to 0");
+
+    /* ---- 7. CancelReceiveMbx wakes waiter with WAIT_CANCEL and reports count ---- */
+    memset(&w, 0, sizeof w);
+    w.uid = 0x152u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = 0;
+    MEM_W32(out, 0xfeedfaceu);
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: waiter blocked before cancel");
+
+    MEM_W32(MBX_NUMWAIT_PTR, 0xdeadbeefu);
+    expect(selftest_mbx_cancel(mbx, MBX_NUMWAIT_PTR) == 0,
+           "MBX: CancelReceiveMbx succeeds");
+    expect(MEM_R32(MBX_NUMWAIT_PTR) == 1u,
+           "MBX: Cancel reports numWaitThreads == 1");
+    expect(w.tcb->state == TH_READY, "MBX: cancel woke waiter to TH_READY");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == MBX_WAIT_CANCEL_ERR,
+           "MBX: cancelled waiter returns 0x800201A9");
+    expect(MEM_R32(out) == 0xfeedfaceu,
+           "MBX: cancelled receive writes no message");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
+
+    /* ---- 8. DeleteMbx wakes waiter with WAIT_DELETE ---- */
+    memset(&w, 0, sizeof w);
+    w.uid = 0x153u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = 0;
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: waiter blocked before delete");
+
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: DeleteMbx with waiter succeeds");
+    expect(w.tcb->state == TH_READY, "MBX: delete woke waiter to TH_READY");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == MBX_WAIT_DELETE_ERR,
+           "MBX: waiter on deleted mailbox returns 0x800201B5");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
     s_cur = (int)(cur - s_tcb);
 }
 
@@ -11964,13 +12580,14 @@ static void check_coroutine_lifecycle(void) {
     {
         extern int s_mtx_parks;
         extern int s_pool_parks;
-        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks;
+        extern int s_mbx_parks;
+        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
         char msg[256];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs = %d, observed %lu)",
-                 ic_expected_parks(), s_mtx_parks, s_pool_parks, expected_parks, s_parks);
+                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
+                 ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -13916,6 +14533,7 @@ int main(int argc, char **argv) {
 
     test_prx_export_relocation_behavior();
     test_fd_namespace();
+    test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_io_devctl_memory_stick();
@@ -14004,6 +14622,7 @@ int main(int argc, char **argv) {
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
     test_vpl_blocking_waits();
+    test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();
     test_psp_mutex();
     test_real_module_start_lifecycle();

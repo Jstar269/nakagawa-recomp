@@ -267,6 +267,55 @@ class TitleManifestTests(unittest.TestCase):
                 with self.assertRaises(title_manifest.TitleManifestError):
                     title_manifest.validate_manifest(value)
 
+    def test_declared_executable_input_uses_the_make_safe_rule(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["filesystem"]["executable"] = "place_game_here/EBOOT.elf"
+        result = title_manifest.validate_manifest(value)
+        self.assertEqual(result["filesystem"]["executable"], "place_game_here/EBOOT.elf")
+        for bad_path in ("place game/EBOOT.elf", "../EBOOT.elf", "EBOOT[1].elf"):
+            with self.subTest(path=bad_path):
+                value = copy.deepcopy(self.fixture)
+                value["filesystem"]["executable"] = bad_path
+                with self.assertRaises(title_manifest.TitleManifestError):
+                    title_manifest.validate_manifest(value)
+
+    def test_disc_image_accepts_ordinary_dump_file_names(self) -> None:
+        # The disc image reaches only the runtime (PSP_ISO), never Make.
+        for good_path in (
+            "hst.iso",
+            "place_game_here/ISO/Synthetic Title - Edition™ [ABCD12345].iso",
+            "discs/a b (1).iso",
+        ):
+            with self.subTest(path=good_path):
+                value = copy.deepcopy(self.fixture)
+                value["filesystem"]["disc_image"] = good_path
+                result = title_manifest.validate_manifest(value)
+                self.assertEqual(result["filesystem"]["disc_image"], good_path)
+
+    def test_disc_image_rejects_unsafe_paths(self) -> None:
+        bad_paths = [
+            "../disc.iso",
+            "/absolute/disc.iso",
+            "drive" + ":" + "disc.iso",
+            "folder\\disc.iso",
+            "folder//disc.iso",
+            "folder/./disc.iso",
+            " leading.iso",
+            "trailing.iso ",
+            "trailing-dot.",
+            "bad<name>.iso",
+            "bad|name.iso",
+            "control\x01.iso",
+            "CON.iso",
+            "CON .iso",
+        ]
+        for bad_path in bad_paths:
+            with self.subTest(path=bad_path):
+                value = copy.deepcopy(self.fixture)
+                value["filesystem"]["disc_image"] = bad_path
+                with self.assertRaises(title_manifest.TitleManifestError):
+                    title_manifest.validate_manifest(value)
+
     def test_duplicate_features_and_device_prefixes_are_rejected(self) -> None:
         value = copy.deepcopy(self.fixture)
         value["feature_requirements"].append(value["feature_requirements"][0])

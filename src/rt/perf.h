@@ -117,6 +117,10 @@ void     sr_perf_atrac(uint64_t started_ns, int result);
 void     sr_perf_audio_mix(uint64_t started_ns);
 void     sr_perf_audio_output(uint64_t started_ns, uint32_t frames);
 
+/* In-game HUD metrics query (reuses SR_PERF counters, zero overhead when inactive) */
+void     sr_perf_enable_counters(void);
+void     sr_perf_get_hud_metrics(double *out_fps, double *out_frame_ms, double *out_vblank_hz);
+
 #ifdef __cplusplus
 }
 #endif

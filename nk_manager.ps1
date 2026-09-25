@@ -272,6 +272,7 @@ try {
         # Title input layout (issue #196 Phase 4): a manifest DECLARES where its
         # private inputs live; generic code paths never assume a layout.
         $script:TitleDataRoot = $null
+        $script:TitleExecutable = $null
         $script:TitleModuleDir = $null
         $script:TitlePspHeader = $null
         $script:TitleDiscImage = $null
@@ -279,13 +280,21 @@ try {
         if ($manifestJson.filesystem) { $fsProps = @($manifestJson.filesystem.PSObject.Properties.Name) }
         foreach ($decl in @(
             @{ Key = 'data_root'; Var = 'TitleDataRoot' },
+            @{ Key = 'executable'; Var = 'TitleExecutable' },
             @{ Key = 'module_dir'; Var = 'TitleModuleDir' },
             @{ Key = 'psp_header'; Var = 'TitlePspHeader' },
             @{ Key = 'disc_image'; Var = 'TitleDiscImage' }
         )) {
             if (($fsProps -contains $decl.Key) -and -not [string]::IsNullOrWhiteSpace($manifestJson.filesystem.($decl.Key))) {
                 $value = [string]$manifestJson.filesystem.($decl.Key)
-                if ($value -notmatch '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$') {
+                if ($decl.Key -eq 'disc_image') {
+                    # Only the runtime (PSP_ISO) consumes the disc image, never Make, so ordinary
+                    # dump names with spaces and Unicode are allowed (same rule as title_manifest.py).
+                    $badComponent = @(@($value -split '/') | Where-Object { $_ -in @('', '.', '..') -or $_ -match '^ | $|\.$' }).Count -gt 0
+                    if ($value -match '^/|\\|:|[<>"|?*\x00-\x1f\x7f]' -or $badComponent) {
+                        throw "Title manifest filesystem.disc_image must be a relative path with forward slashes and no Windows-forbidden characters: $value"
+                    }
+                } elseif ($value -notmatch '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$') {
                     throw "Title manifest filesystem.$($decl.Key) must be a relative path with forward slashes: $value"
                 }
                 Set-Variable -Name "script:$($decl.Var)" -Value $value
@@ -304,8 +313,8 @@ try {
         # private input location.
         $GameElfPath = $null
         $candidates = @()
-        if ($manifestJson.executable -and $manifestJson.executable.path) {
-            $candidates += $manifestJson.executable.path
+        if ($script:TitleExecutable) {
+            $candidates += $script:TitleExecutable
         }
         $candidates += @(
             "build\fixtures\$GameName.elf",
@@ -350,6 +359,12 @@ try {
             "--build-dir=$BuildDirForMake",
             "--funcs-per-chunk=$effectiveFuncsPerChunk"
         )
+        if ($needsPspHeader -and -not $PspHeaderForMake) {
+            throw "Title manifest sets executable.bss_metadata_source=psp-header: declare filesystem.psp_header (the relative path of the title's PSP header input)"
+        }
+        if ($needsModuleDir -and -not $ModuleDirForMake) {
+            throw "Title manifest declares guest-prx modules: declare filesystem.module_dir (the relative directory holding them)"
+        }
         if ($needsModuleDir -and $ModuleDirForMake) { $plannerArgs += "--module-dir=$ModuleDirForMake" }
         if ($needsPspHeader -and $PspHeaderForMake) { $plannerArgs += "--psp-header=$PspHeaderForMake" }
 
