@@ -960,9 +960,7 @@ int main(int argc, char *argv[]) {
             return 2;
         }
         app.selected_game_index = launch_index;
-        if (player_app_validate_runtime_package(
-                &app, &app.games[launch_index], NULL, NULL, 0) !=
-            NK_RUNTIME_PACKAGE_OK) {
+        if (!player_app_game_has_runtime(&app, &app.games[launch_index])) {
             fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
                     launch_index);
             return 3;

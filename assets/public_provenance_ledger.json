@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3259d1d927470e4553a97ffd0b301ae0d8aff235f9cfd8232d0719c2698d6914"
+      "sha256": "cafc92e50915d745701164de1401181b04df60d4f39580f547e0511b72c747fe"
     },
     {
       "path": "NOTICE.md",
@@ -1426,7 +1426,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12f12eb5b9cf05068e7d35d6672fea38ea6e421361efdf428e1a98fca5349137"
+      "sha256": "14683fcebac4c4db33370c4e9e218e15f642dfeb0550a837e3868981a275834c"
     },
     {
       "path": "fixtures/nakagawa_minimal/Makefile",
@@ -4121,7 +4121,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8fba5fc906138fdbd0c5aa37abe047a0f344c6fbed763b20a6ad923b1a1f6030"
+      "sha256": "eb61e7760a521bfd57d5790c635ff4129ee7821e31eb8d9bd2691d6d981abc7f"
     },
     {
       "path": "src/player/package_builder.c",
@@ -4157,7 +4157,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e100bfdfebde2359e1393bbe60a5706340591cb87b95942bdc9b677b3a53e8eb"
+      "sha256": "52bded8da15158f84f194fbb2f2c220c67cdc5e2e2197cc79d70a2df01f16642"
     },
     {
       "path": "src/player/player_state.h",
@@ -4169,7 +4169,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f70557ac25f18eca97188436a5914d0f43f6f7f6fcc7dbc2a2cd9343934b420"
+      "sha256": "897b81c0558a73e8f1ba8c547f1de337a8739a35291c07601ce143976ae9c79b"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -4205,7 +4205,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "61db35aa59624b53f65495631414db7fd8e9437de45bfdfeba76babfb7b55793"
+      "sha256": "5ab1793a864b0b4245d8f731cccf7a0332230fd195274e7c49b6b229ecf3aa87"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -6639,7 +6639,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "888fa8c01d671a049a511801ac59b1e1d9cca613ff6d78f8f4b9c5b730930052"
+      "sha256": "2759fb423c764582c1bbb7aa81c9fcd7f1808a0b6dc561bee357e28e8e9bf000"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -8201,7 +8201,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "f1cc3251caa1f727510091971033feccff52e4f67f557868ef9c8c18d255b923"
+      "sha256": "6829fc3580df51d7d6375840f6bd0e64c76248bf0266c8d649d8b5d2bcfff084"
     },
     {
       "path": "tools/test_callback_correctness.py",

@@ -1229,6 +1229,17 @@ class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
             + "\n".join(offenders),
         )
 
+    def test_makefile_recipes_do_not_use_unix_mkdir_p(self) -> None:
+        offenders = []
+        for line_no, line in enumerate(self.makefile_text.splitlines(), start=1):
+            if line.startswith("\t") and re.search(r"\bmkdir\s+-p\b", line):
+                offenders.append(f"Makefile:{line_no}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "Makefile recipes contain 'mkdir -p' which fails under Windows cmd.exe:\n"
+            + "\n".join(offenders),
+        )
+
     def test_makefile_recipes_do_not_use_raw_rm(self) -> None:
         """Recipes must not rely on Unix `rm` for cleanup when Python is available."""
         offenders = []
