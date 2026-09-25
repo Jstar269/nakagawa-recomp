@@ -231,7 +231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "332f551615f720d14e0c48ed3dd0cf785345af08a6e5f43d8af16959d0476964"
+      "sha256": "991097291a55f0889157238c10f617b2adeea3b6f8ef9519da7287899dd35397"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b130f114c1665e553f268ceae6d60e0191d931a723e4805243b5d2e845cc6376"
+      "sha256": "a62e1864c07a1fc420c4cc30b5fbad992c507470cbdcb2041f613d99f76ee973"
     },
     {
       "path": "NOTICE.md",
@@ -463,7 +463,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0c2d68d339f716c04e40379ddb6d7dc0459a90fe46c290782016ad22ccb0852e"
+      "sha256": "eac85d54369b749d6b702a5ccb0bf09fe300945fa4e0492221fc2f3f95771076"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -928,6 +928,15 @@
       "sha256": "79426f844a7b4d52ca66a3d9e3a625dc2edc88de3166a499d7d19712ceb0c07e"
     },
     {
+      "path": "docs/LINUX_DEVELOPMENT.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "58188f66b24e5e1e2188ec52872ba0e5db244c0537be2038e18995a559977aff"
+    },
+    {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1084,7 +1093,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "016ac804a8bceb14135ccae8c0d87ab272d6e24defccb230946a0cd9afd319b9"
+      "sha256": "361bdc90a9260d10c2e6ad9c1a28ac8a80878d1ce96ab195fe5598e87d68fad0"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1102,7 +1111,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3746c187a2a2d858e5a6ac778f9778c66b8a1c1451ee47ded78479bac3969a3e"
+      "sha256": "0c77e86a72e9f2ece535dd937e63c5a308ff30ecf15e84f0e4832f02da64a60a"
     },
     {
       "path": "docs/SMOKE_TEST.md",
@@ -6583,7 +6592,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a2cd2c25579768e9bdad1280ec27c9474c41e9eab86bd2da03f837f4389571b"
+      "sha256": "f4f84a3ebc124d8042fe3e07b2409086bd6d837b414c047a2f5bba8d4b26342b"
     },
     {
       "path": "tools/boot_gate.py",
@@ -6631,7 +6640,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30d426345da88c2a1b3d3bf98854d8051ffe81973031ee0b36fa249a0a59115f"
+      "sha256": "cf6cbf347b5a3d05a90e93cbd50cb86a0bd15a7c6d8c4a7b06a371cb13f24624"
     },
     {
       "path": "tools/capture_native_screenshots.py",
@@ -6983,7 +6992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e989358313638d18becde655b87b9a191bb4ab2b02e4242d4d7aa2e8cdbf62f7"
+      "sha256": "6a8d0c0261a74a41a832784bc6bac618b9d08812692dcea54c0878837e7225c0"
     },
     {
       "path": "tools/hle_manifest.py",
@@ -7101,7 +7110,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "701055d1643571b896eed1500bf41306568c214b34fb42ceeeab77a984f94f34"
+      "sha256": "deffbc7b04c1605649bbd251c218e9c7da52d92bcbac1e3a8d6c373dee725a82"
     },
     {
       "path": "tools/mem_debug.py",
@@ -7236,18 +7245,6 @@
         "upstream_attribution": null
       },
       "sha256": "cfc3d38681a82e3260ea3c62f64e4fe00dc263d8e4d5a80dbbfb11eb19006ee3"
-    },
-    {
-      "path": "tools/nk_core/git_isolation.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "test-git-isolation",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "f9b796d1fb9417650378407eb78c208b36d454f1784d2afa7a9c67049c2606c4"
     },
     {
       "path": "tools/nk_core/iso_inspect.py",
@@ -7501,7 +7498,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a54c793b171e97e994c7ec2540a0a197dfac10791381e942d7de76509169a4a5"
+      "sha256": "31451d9dfc6964eb48acdf13081b4fbecda59ac850b0eb50be3dc6966f3cb259"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -7513,7 +7510,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "357de1758aa7e4a5231e09f94e8ee182052cfbf994047615abcc5164d565151b"
+      "sha256": "47b3188b632cb63e25bfc205deb9aa1db1a55025dbbc12fdfc0c00c5667b05b9"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -7525,7 +7522,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e0d55c3180b23bd35df7984bddb118e88196b36788c485b18f3f282b30393ede"
+      "sha256": "06c70bdec2a802799046f5e391bf935c4214d4d620e6f9c3747bc4b5fb865f18"
     },
     {
       "path": "tools/prxload.py",
@@ -7862,7 +7859,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48f77164f3056661226a2c8291855e63a5f5479e06bcb3879aa5828381c91716"
+      "sha256": "8061395338882c0c8a577b45c90d31ccb80fb5bf6226bd14c86e658510799290"
     },
     {
       "path": "tools/publication_policy.py",
@@ -7886,7 +7883,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea5cec6f8d21f0e504b8fa05622a3aab9e8014664a347c973a75af73ac790201"
+      "sha256": "35efade3d2acfeb2a21c6deb7afc86e4ced07ef0857cb5ecf4fb6ea6722fab16"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -8018,7 +8015,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "6b89c3abbc2f6865c5e3297723bb82359f9c80d60e7147254e9d723cd065b825"
+      "sha256": "f1cc3251caa1f727510091971033feccff52e4f67f557868ef9c8c18d255b923"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -8504,7 +8501,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "09f92255ce41bc132621bc55c9ec53dfea1eb19597bfce2827c4a50732a8ba07"
+      "sha256": "cda81f7dc00861d3a1b6ec097bee4219740bf883b0a26d61cda1277c48d8f3f2"
     },
     {
       "path": "tools/test_hle_manifest.py",
@@ -8558,7 +8555,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7e648baeee067489d20643fe2369788751faa66436559b533074d9b4ab4bcf5a"
+      "sha256": "5c62ac254c1954bee687c997566179d709ebb9cd715bc4678fff6e907dab6464"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
@@ -8642,7 +8639,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "dc6742e97e2eba408264ab0ff9aef9168fcd35d03be5c5391f5277e4993859e8"
+      "sha256": "42e0dda8aa90441ee4ec161f6d513b0bfa2befc8bf07974fae28345fa7197cea"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -8651,7 +8648,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b40b6ed23b5a2719a3ebbd7620b2d95ba317ff06c400fd03ec89cc205f158296"
+      "sha256": "e10703147fdd9804adecef55a6255f4b11a82c047fbc476b7a4ca95fa2a36210"
     },
     {
       "path": "tools/test_manager_safety.ps1",
@@ -8942,7 +8939,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "750f1f4ad5575b656dcf68ee55d6f43c30c7764a1ab2711e0dfda84f3f07d7f4"
+      "sha256": "90293248bcbb34c49849997ca04e226ab000c34746267a188d2be16c39cd0d0d"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -8951,7 +8948,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "abd329a815d83e0d7f39f2cdb6350ae2ce06a4b5e8530b5ca94183f78d5edad8"
+      "sha256": "d20f8de64b57582a44f400b79309f450b7b9fd0a280d8a2bf14bf1629541fbac"
     },
     {
       "path": "tools/test_provenance_ledger.py",
@@ -8963,7 +8960,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7fda35bb20e991e72386e881d2e31d7364ecf6782081a2b07ed1ce6627d65f1a"
+      "sha256": "c6ce5e417df8fd21070db404745c7a49e1374c34495166bdade0572b052f68ee"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -9119,7 +9116,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "aeeb49ac4f45bff8aed94db98079812d1e395d33cc7f9f8bbdaa11bd9ad75ded"
+      "sha256": "7adc2114cd982d6519ac0aaa57a60c09df5ff38a38f76c34977873e5a31279d2"
     },
     {
       "path": "tools/test_public_title_isolation.py",
@@ -9131,7 +9128,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b970bf51d0aee9d93daf3e739e7fa0b0b5858a0f1bdf0b433562c5a97feb9521"
+      "sha256": "fb4f9cbbce97fcafd9e0884905db968394f181f63e5e047305b47c2082fbf36c"
     },
     {
       "path": "tools/test_publication_policy_gate.py",
@@ -9140,7 +9137,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "f841af9a70e731fd67580a65a0c630be2ba12d209d1c411205f1f42a62bd4998"
+      "sha256": "e20dd9f13b2f96f307a343c5735797b0056b8f2d5ee5ab1fd637cb98022dcecf"
     },
     {
       "path": "tools/test_publish_audit.py",
@@ -9149,7 +9146,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "93d98b394f738ab9c4129d5d1a0308c607e64882e26f11d8218a43fd712caf59"
+      "sha256": "d7b7de6b09c844ae42f6618dfa2a7aacdd18d867a0c0537c3944a104d8593d10"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
@@ -9536,7 +9533,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0f3b2d5a6899b3e8ccb0557c35c8bf51b8c93b371a60445e99e3f929d214739d"
+      "sha256": "b837a5971e965052c4665fa4c94b7ca039387cb9138f44c2f25072d98ba0b341"
     },
     {
       "path": "tools/test_waits_census.py",
@@ -9678,7 +9675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f26e0d74e6f39efe0092b384139d4599b0d081c147dd3a181e9a6b0ea4e3f38"
+      "sha256": "663e4791c7679a0c6d71d47175e267b5394f04e0a66cdbc20237dde37b75cab1"
     },
     {
       "path": "tools/verify_sbom.py",
@@ -9775,7 +9772,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be28097d8f56d5de7e75c19d7928c735a07bf4826529cb1435e127e3f1285a8f"
+      "sha256": "4d6af9ede07ad444092e21cfb71979ac2ad6781fa14396cdfd0d42f79752c3a4"
     },
     {
       "path": "tools/waits_census.py",
