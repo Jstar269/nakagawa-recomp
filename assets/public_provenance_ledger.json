@@ -120,7 +120,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c943400c8faf48b16e5f9ee98bb614245a48c05099a7ad594a8bc45dad2eda16"
+      "sha256": "02dca41b9de3d5253e756e19baee78bf96045d4226c8f32c7ebdbb28465516fe"
     },
     {
       "path": ".github/dependabot.yml",
@@ -210,7 +210,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b8cd4350abd5bfe8afab25ffdc6a6333020ebf07957bba4147dfc3dc6e494fa4"
+      "sha256": "9fc75fa607930d7a31e0852cb5545c35970a1951d7be0c1519845c8b931e1db7"
     },
     {
       "path": "CLAUDE.md",
@@ -219,7 +219,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "94e4906b344e3b80ea2e153c4ff4524c95a46f12e24c9b08caeb892cd524c4cc"
+      "sha256": "fe10ec1526b5149c956963c44cf6f5363dd5f0ce09f628b04df1e1fdcae11cc4"
     },
     {
       "path": "CMakeLists.txt",
@@ -320,7 +320,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9795fcf5c42beb4af944878c4d11a32d8c8048db7e8c42fbeec533aa9a2196d6"
+      "sha256": "ab7425a5b9c6b56ce76bdb8b647be53a99c898a1fc9b6cbd217b45bfe6c70f7b"
     },
     {
       "path": "SECURITY.md",
@@ -814,7 +814,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "07c84c7491c03bb2325278e2c2cd95c57c0d068e57f9a5f4461ef5efe6f8a0a7"
+      "sha256": "d86bff4517ab493b62cb6ba1e9deea3371e47f261acc3e3c3bd03cc8f5015c06"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -823,7 +823,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "997af06eaef1f3aaacb30adaa6ff88d7dea458934ce23f4e5b7aa4c34631f3be"
+      "sha256": "d46cd7381d754e65bdfbc1c38397ea6400c73d712e436ef215e23c0764a66e1b"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1093,7 +1093,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "361bdc90a9260d10c2e6ad9c1a28ac8a80878d1ce96ab195fe5598e87d68fad0"
+      "sha256": "81fbe29e29947dd0921f8ae98891265df2740923178aff5a36de9ba3352085a3"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1111,7 +1111,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0c77e86a72e9f2ece535dd937e63c5a308ff30ecf15e84f0e4832f02da64a60a"
+      "sha256": "53c9289e85e67e07e452023f519a319bbd186445098d8f9de10b063244465cfe"
     },
     {
       "path": "docs/SMOKE_TEST.md",
