@@ -503,7 +503,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1047d9f0f3161464595e93a9a330dc8e7bb9c02fe20f52d60799a7d063ba607b"
+      "sha256": "021765f7dc4e2ec708095fd118ac8fd03df3e928180561f2ac1b3af0715cdae6"
     },
     {
       "path": "assets/third_party_components.schema.json",
