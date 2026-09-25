@@ -2024,19 +2024,19 @@ shader-repro-verify:
 # Native Product Core Tests
 # -----------------------------------------------------------------------------
 player-state-test-bin:
-	@mkdir -p build
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c \
 		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
-	@mkdir -p build
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
 		tests/native/test_input_settings.c -o build/test_input_settings$(EXE_EXT)
 
 package-builder-test-bin:
-	@mkdir -p build
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
 		tests/native/test_package_builder.c -o build/test_package_builder$(EXE_EXT)
