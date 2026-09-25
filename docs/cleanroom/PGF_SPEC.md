@@ -856,6 +856,10 @@ Open questions are not permission to guess during implementation:
     accessor should expose the semantic rejection classes in §3.7 without
     changing the null-returning open functions? Named diagnostics remain in
     the works under #349 until the maintainer and callers approve an extension.
+18. **O-18 — §8 RLE vector expected samples.** The bytes in the 4-by-3 example
+    decode under §3.6 to `1,1,2,2,3,0,0,0,15,15,15,5`; the earlier expected
+    sequence did not match its control/sample nibbles. The vector now follows
+    §3.6. Confirm this correction during spec review.
 
 Required future hardware evidence is homebrew-only under campaign §8: a
 resident-runner probe may open user-supplied fonts and record ABI records,
@@ -955,7 +959,7 @@ and no shadow; mutations then vary one fact at a time.
 1. Encode a 4-by-3 row-order-1 glyph with control/sample nibbles
    `1,1,1,2,0,3,2,0,2,F,0,5`. Its six synthetic bytes are
    `0x11,0x21,0x30,0x02,0xF2,0x50`, and its samples are
-   `1,1,2,2,3,3,3,3,3,3,3,3`; the trailing encoded nibbles are not consumed.
+   `1,1,2,2,3,0,0,0,15,15,15,5`; the trailing encoded nibbles are not consumed.
    A column-order twin proves the same samples map
    to transposed coordinates.
 2. Cover control 0, 7, 8, and 15. Control 0 repeats eight times, control 7
