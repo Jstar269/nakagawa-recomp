@@ -102,7 +102,7 @@ even for copies you own. Check the rules where you live.
 | Area | Today | Tracking |
 | --- | --- | --- |
 | Encrypted executables | You supply unencrypted files as described above. The project is reviewing lawful ways to make this automatic. | [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) |
-| Commercial-game packages in public builds | Packages build with the public runtime. In-game system fonts still need the public font reader, which is in the works. | [#349](https://github.com/Jstar269/nakagawa-recomp/issues/349) |
+| Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the remaining reader variants are still in the works. | [#349](https://github.com/Jstar269/nakagawa-recomp/issues/349) |
 | In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`. | [#300](https://github.com/Jstar269/nakagawa-recomp/issues/300) |
 | Games beyond the verified title | Other games import as Experimental; bring-up of further titles is ongoing. | [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 

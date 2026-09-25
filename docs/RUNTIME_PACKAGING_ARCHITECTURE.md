@@ -1,9 +1,12 @@
 # Runtime Packaging Architecture
 
 > **Status: CURRENT — maintained packaging decision record.** The process-isolation
-> boundary and a local developer AOT package build are implemented. The player does
-> not yet consume the generated package (#297). ISO unpacking remains #295; installers
-> and complete end-user preparation are not built.
+> boundary, a local developer AOT package build, and the library's build-package →
+> validate → launch route are implemented ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)).
+> `tools/nk_cli.py build-package <disc_id>` extracts the plaintext executable from a
+> library disc image and the player consumes the resulting package; unwrapping an
+> encrypted `~PSP` executable (#295), installers, and one-click end-user preparation
+> without the developer toolchain (#308) are not built.
 
 ## 1. Context and Goals
 
@@ -50,8 +53,10 @@ The native player loads a generic runtime engine, which dynamically loads a titl
 ### Option C: Isolated Process per Title + Native Host Launcher (Adopted Architecture)
 
 > **Implementation boundary:** the public source validates and launches a prepared
-> runtime as a child process. It does not create that runtime from an arbitrary ISO;
-> the packaging and preparation steps below remain target work.
+> runtime as a child process, and the library's **BUILD PACKAGE** action creates that
+> runtime from a staged disc entry with live progress. It does not create a runtime
+> from an arbitrary ISO in one click; that, and the distribution work in Section 4,
+> remain target work.
 
 The native player (`nakagawa_player`) acts as an authentic front-end and library manager. When a game is launched, it constructs a typed `NkLaunchSession` and spawns the title's standalone recompiled runtime as an isolated child process via `nk_platform_spawn_process`.
 Communication and handoff occur via:
@@ -152,10 +157,12 @@ mean the analyzer/code generator did not report that boundary for these inputs;
 they do not establish title acceptance. These records do not patch behavior:
 generated unsupported functions retain the runtime's fail-closed path.
 
-This package command still requires the developer toolchain. It does not unwrap
-an ISO or make the player launch the generated package. The player-side consumer
-and run-directory provisioning are tracked by #297; analyzer ownership and
-stack-balance gates remain tracked by #291.
+This package command still requires the developer toolchain. It takes a plain
+executable and does not unwrap a disc itself; `tools/nk_cli.py build-package
+<disc_id>` performs the library-disc extraction and the player consumes the
+resulting package. Checkout-independent run-directory provisioning (#297) is
+still tracked there; analyzer ownership and stack-balance gates remain tracked
+by #291.
 
 ## 6. Private content-addressed cache contract (#316)
 
