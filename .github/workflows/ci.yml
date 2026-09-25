@@ -127,6 +127,38 @@ jobs:
         shell: bash
         run: python tools/betterleaks_canary.py --betterleaks "$BETTERLEAKS_BIN"
 
+      # #293/#294: represent the release-export candidate path in hosted CI.
+      # One invocation runs the publication gates, generates the public-safe
+      # candidate, and runs the exhaustive candidate-tree audit against the
+      # staging bytes. The audit requires the release-controlled trusted ledger
+      # (human-only input), so without it the export MUST fail closed with
+      # PROVENANCE_UNVERIFIED and never promote a candidate (#293 immutability).
+      # This step asserts exactly that named boundary.
+      - name: Exercise public-export generation and candidate audit
+        if: >-
+          ${{ needs.classify.outputs.security_publication == 'true' ||
+              github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          export_dir="${RUNNER_TEMP:?}/public-export-candidate"
+          set +e
+          output="$(python tools/build_public_export.py --export-dir "$export_dir" --public-safe-profile 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$rc" -eq 0 ]; then
+            echo "export cleared without the trusted ledger; the candidate audit must fail closed" >&2
+            exit 1
+          fi
+          if ! grep -q "PROVENANCE_UNVERIFIED" <<<"$output"; then
+            echo "export failed for a reason other than the named fail-closed candidate audit" >&2
+            exit 1
+          fi
+          if [ -e "$export_dir" ]; then
+            echo "an uncleared candidate must never occupy the requested export path (#293)" >&2
+            exit 1
+          fi
+
   markdown:
     name: Markdown validation
     runs-on: ubuntu-24.04
@@ -555,6 +587,27 @@ jobs:
             mingw-w64-ucrt-x86_64-vulkan-headers
             mingw-w64-ucrt-x86_64-vulkan-loader
 
+      # Windows toolchain contract (docs/CI.md): repository tools run under the
+      # MSYS2 UCRT64 CPython installed above, selected by the msys2 shell's PATH
+      # order -- never the runner's Windows CPython. Stages that need `pwsh` opt
+      # into the inherited Windows PATH explicitly (MSYS2_PATH_TYPE: inherit) and
+      # assert `command -v pwsh` themselves. This step makes both facts explicit
+      # instead of leaving them to PATH order.
+      - name: Pin the Windows Python toolchain (MSYS2 UCRT64 CPython)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          # Compare against MSYS2's own UCRT64 prefix wherever the runner installed
+          # MSYS2 (for example under the runner temp directory), never a fixed drive.
+          prefix="$(cygpath -m /ucrt64)"
+          py="$(python -c 'import sys; print(sys.executable.replace(chr(92), chr(47)))')"
+          echo "python -> $py (expected under $prefix)"
+          case "$py" in
+            /ucrt64/*|"$prefix"/*) ;;
+            *) echo "expected the MSYS2 UCRT64 python under $prefix, got $py" >&2; exit 1 ;;
+          esac
+          python --version
+
       - name: Verify default and override compiler resolution
         shell: msys2 {0}
         run: |
@@ -628,7 +681,9 @@ jobs:
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc native-core-tests
 
-      - name: Build and run platform-ladder filesystem workload
+      # Hosted build/link gate for the public player/launcher (#294). Link-only
+      # proof: the player's GUI smoke remains a developer/display gate.
+      - name: Build and link the native player
         if: matrix.part == 'main'
         shell: msys2 {0}
         env:
@@ -636,7 +691,34 @@ jobs:
         run: |
           set -euo pipefail
           command -v pwsh
-          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 platform-ladder-fs
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player
+
+      # Run the same smoke with the executable staged outside its build tree
+      # (#294): a launcher/staging path bug must fail in CI, not only in the
+      # build-tree spelling. Depends on the production-smoke step above; the
+      # rebuild underneath is incremental, so this re-runs only generate/verify/run.
+      - name: Stage and run production smoke outside its build directory
+        if: matrix.part == 'main'
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-staged
+
+      # The complete source-owned ladder matrix (#294), superset of the former
+      # ladder-fs-only step: zero/reloc/gap/sched/fpu/fs/fs-negative/title2/
+      # title2-negative.
+      - name: Build and run the full platform ladder
+        if: matrix.part == 'main'
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 platform-ladder
 
       # Presentation path on a source-owned guest: fill the PSP framebuffer, hand
       # it to sceDisplaySetFrameBuf and wait for vblank, once per frame. The other
