@@ -1,6 +1,6 @@
 # AOT Productization Architecture: End-User Recompilation Without Developer Toolchains
 
-> **Status: CURRENT — maintained architecture decision record.** This document evaluates productization routes and records target choices. The public tree still requires developer tooling, and no end-user ISO-to-AOT preparation pipeline is connected.
+> **Status: CURRENT — maintained architecture decision record.** This document evaluates productization routes and records target choices. The public tree still requires the developer toolchain (Python, GNU Make, a C compiler): the library's `BUILD PACKAGE` route connects a staged disc to a validated package and launch ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)), but a zero-toolchain end-user route is not built.
 
 ## 1. The Core Problem
 
@@ -41,10 +41,12 @@ Nakagawa Program + User's Game ISO → Play
 
 ### Option C: Build-Time AOT Engine + End-User Asset Extraction (Recommended Primary)
 
-> **Implementation status: UNBUILT.** The following describes the proposed packaging
-> route. The current player does not validate a retail disc hash or launch a newly
-> generated runtime from an arbitrary ISO. It does perform bounded asset extraction for
-> supported ISO/XB inputs; that landed staging capability is separate from end-user AOT.
+> **Implementation status: UNBUILT as a zero-toolchain release route.** The
+> following describes the proposed packaging route. Bounded asset extraction and
+> the library's build-package → validate → launch route are connected
+> ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)); what this option
+> still needs is retail disc-hash validation and a precompiled release that runs
+> without a developer toolchain on the user's machine.
 
 In this model, Nakagawa maintainers/packagers compile the verified title executable (or generic recompiled core for supported manifests) into standalone release packages.
 
