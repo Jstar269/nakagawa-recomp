@@ -1379,6 +1379,7 @@ static int hook_hash_fill_trace(CpuState *s, uint32_t target) {
  * assigns it immediately before the dispatch, so the call site is $ra - 8.  Only
  * valid for the call forms that write $ra -- a `jr` tail-call carries the caller's
  * return address instead, so this is reported as approximate. */
+__attribute__((unused))  /* documented diagnostic helper; no caller yet */
 static uint32_t sr_dispatch_call_site(const CpuState *s) {
     return s->r[31] >= 8u ? s->r[31] - 8u : 0u;
 }
