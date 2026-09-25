@@ -881,7 +881,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dd55670e8411448ab0ad4eab4762bd9bb18c1fbdf2185fbc0a3ec1c478315155"
+      "sha256": "6cb75fc7bb0bb2e2a192e779ba0de2a95d8d70fa0f6b35345bc3c5f3ff913a8e"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -8310,10 +8310,13 @@
     },
     {
       "path": "tools/test_build_truth.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "build-truth-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d8aac35a9d4b5244403ef577942e6032ee7447f11952caf7f86eeab854789f1b"
     },
