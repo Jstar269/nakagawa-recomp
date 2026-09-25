@@ -2584,18 +2584,37 @@ static bool package_validate_build_report(const JsonNode *report,
                                           const JsonNode *package_cache,
                                           uint32_t player_abi_version,
                                           char *error, size_t error_size) {
-    static const char * const root_keys[] = {
+    static const char * const allowed_root_keys[] = {
+        "format", "schema_version", "title_id", "runtime_abi", "cache", "input_hashes",
+        "tools", "coverage", "unsupported", "analysis_diagnostics", "artifacts",
+        "backends", "limits", NULL
+    };
+    static const char * const required_root_keys[] = {
         "format", "schema_version", "title_id", "runtime_abi", "cache", "input_hashes",
         "tools", "coverage", "unsupported", "analysis_diagnostics", "artifacts", NULL
     };
     static const char * const runtime_keys[] = {"name", "version", NULL};
     static const char * const runtime_required[] = {"name", "version", NULL};
     const char *value = NULL;
-    if (!package_check_object(report, "build-report", root_keys, root_keys, error, error_size) ||
+    if (!package_check_object(report, "build-report", allowed_root_keys, required_root_keys, error, error_size) ||
         !package_string(obj_get(report, "format"), &value) || strcmp(value, "nakagawa-build-report") != 0 ||
         !package_number(obj_get(report, "schema_version"), 1) ||
         !package_string(obj_get(report, "title_id"), &value) || strcmp(value, title_id) != 0) {
         if (error && error_size && !error[0]) snprintf(error, error_size, "build report identity/schema does not match package");
+        return false;
+    }
+    const JsonNode *backends = obj_get(report, "backends");
+    if (backends) {
+        const char *backend_mode = NULL;
+        if (!package_string(backends, &backend_mode) ||
+            (strcmp(backend_mode, "public") != 0 && strcmp(backend_mode, "private") != 0)) {
+            if (error && error_size) snprintf(error, error_size, "build report backends mode must be 'public' or 'private'");
+            return false;
+        }
+    }
+    const JsonNode *limits = obj_get(report, "limits");
+    if (limits && limits->type != JSON_ARRAY) {
+        if (error && error_size) snprintf(error, error_size, "build report limits must be an array");
         return false;
     }
     const JsonNode *runtime = obj_get(report, "runtime_abi");
@@ -2642,7 +2661,10 @@ static bool package_validate_completion(const char *package_root,
                                         const JsonNode *package_cache,
                                         const char *exe_relative,
                                         char *error, size_t error_size) {
-    static const char * const root_keys[] = {
+    static const char * const allowed_keys[] = {
+        "format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits", NULL
+    };
+    static const char * const required_keys[] = {
         "format", "schema_version", "status", "cache_key", "artifacts", NULL
     };
     static const char * const artifact_keys[] = {"path", "sha256", NULL};
@@ -2663,7 +2685,7 @@ static bool package_validate_completion(const char *package_root,
         return false;
     }
     const char *value = NULL;
-    if (!package_check_object(completion, "completion-manifest", root_keys, root_keys,
+    if (!package_check_object(completion, "completion-manifest", allowed_keys, required_keys,
                               error, error_size) ||
         !package_string(obj_get(completion, "format"), &value) ||
         strcmp(value, "nakagawa-aot-cache-completion") != 0 ||

@@ -534,13 +534,21 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
     }
 
 
+def _has_private_backends(root: Path = ROOT) -> bool:
+    return (root / "src" / "rt" / "pgf.c").is_file() and (root / "src" / "rt" / "pgd.c").is_file()
+
+
 def _current_package_cache_key(
     manifest: dict,
     manifest_path: Path,
     executable_sha256: str,
     module_dir: Path | None,
     psp_header: Path | None,
+    *,
+    public_safe: bool | None = None,
 ) -> dict:
+    if public_safe is None:
+        public_safe = not _has_private_backends()
     selected_modules = [
         module for module in manifest.get("modules", [])
         if module.get("role") == "guest-prx" and module.get("required", False)
@@ -579,7 +587,7 @@ def _current_package_cache_key(
         target=package_cache.compiler_target(environment),
         runtime_source_digest=package_cache.source_tree_digest(ROOT),
         compile_flags=package_cache.native_compile_flags(
-            public_safe=False, environment=environment
+            public_safe=public_safe, environment=environment
         ),
         link_flags=environment.get("LDFLAGS", ""),
     )
@@ -817,12 +825,14 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
             raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
+        public_safe = not _has_private_backends()
         cache_key = _current_package_cache_key(
             manifest,
             manifest_cache_path,
             actual_hash,
             module_dir,
             cached_header,
+            public_safe=public_safe,
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
         decision = package_cache.compare_cache_keys(previous_key, cache_key)
@@ -902,6 +912,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             "--output-dir",
             str(build_dir),
         ]
+        if public_safe:
+            command.append("--public-safe")
         if module_dir is not None:
             command.extend(("--module-dir", str(module_dir)))
         if cached_header is not None:
@@ -948,8 +960,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             ):
                 boundary_err = (
                     "This checkout lacks the production PGF/PGD runtime backends required "
-                    "for retail packages. Public-safe packages are limited to synthetic "
-                    "fixtures; production package building is in the works (#297)."
+                    "for a private-backend build (#297)."
                 )
                 reporter.report("compile", "FAIL", boundary_err)
                 reporter.close()
@@ -981,7 +992,21 @@ def _build_package(args: argparse.Namespace, stage_observer,
         reporter.report("package", "START", "Staging runtime assets and validating package...")
         package_started = time.perf_counter()
         _stage_runtime_assets(build_dir)
-        package_cache.write_completion_manifest(build_dir, cache_key)
+        backends_mode = "public" if public_safe else "private"
+        backend_limits = (
+            [
+                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "PGD-protected data: unavailable (#295)",
+            ]
+            if public_safe
+            else []
+        )
+        package_cache.write_completion_manifest(
+            build_dir,
+            cache_key,
+            backends=backends_mode,
+            limits=backend_limits,
+        )
         valid_package, package_reason = package_cache.validate_package_cache(
             build_dir,
             expected_key=cache_key,

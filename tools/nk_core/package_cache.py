@@ -526,16 +526,26 @@ def _atomic_write(path: Path, data: bytes) -> None:
                 pass
 
 
-def write_completion_manifest(package_dir: Path, key: Mapping[str, Any]) -> Path:
+def write_completion_manifest(
+    package_dir: Path,
+    key: Mapping[str, Any],
+    *,
+    backends: str | None = None,
+    limits: list[str] | None = None,
+) -> Path:
     package_dir = package_dir.resolve(strict=False)
     artifacts = _artifact_records(package_dir)
-    document = {
+    document: dict[str, Any] = {
         "format": COMPLETION_FORMAT,
         "schema_version": COMPLETION_SCHEMA_VERSION,
         "status": "complete",
         "cache_key": key,
         "artifacts": artifacts,
     }
+    if backends is not None:
+        document["backends"] = backends
+    if limits is not None:
+        document["limits"] = limits
     destination = package_dir / COMPLETION_MANIFEST
     _atomic_write(destination, canonical_json(document).encode("utf-8"))
     return destination
@@ -557,8 +567,10 @@ def validate_completion_manifest(
         return False, f"completion manifest is unreadable: {exc}", None
     if not isinstance(document, dict):
         return False, "completion manifest must be a JSON object", None
+    allowed = {"format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits"}
     required = {"format", "schema_version", "status", "cache_key", "artifacts"}
-    if set(document) != required:
+    doc_keys = set(document)
+    if not required.issubset(doc_keys) or not doc_keys.issubset(allowed):
         return False, "completion manifest fields do not match the cache contract", None
     if document["format"] != COMPLETION_FORMAT or document["schema_version"] != COMPLETION_SCHEMA_VERSION:
         return False, "completion manifest format or schema is unsupported", None
