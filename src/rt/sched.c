@@ -2592,11 +2592,12 @@ void sr_yield(CpuState *s) {
         if (yield_count < 200) {
             uint32_t k0 = s->r[26];
             fprintf(stderr, "YIELD uid=0x%x pc=0x%08x ra=0x%08x tick=%llu k0=0x%08x k0+4=0x%08x\n",
-                    g_worker_uid, s->pc, s->r[31], s_tick, k0, MEM_R32(k0 + 4));
+                    g_worker_uid, s->pc, s->r[31], (unsigned long long)s_tick,
+                    k0, MEM_R32(k0 + 4));
             yield_count++;
         } else if ((yield_count % 5000) == 0) {
             fprintf(stderr, "PCSAMPLE uid=0x%x pc=0x%08x ra=0x%08x tick=%llu\n",
-                    g_worker_uid, s->pc, s->r[31], s_tick);
+                    g_worker_uid, s->pc, s->r[31], (unsigned long long)s_tick);
         }
         yield_count++;
     }
@@ -2679,7 +2680,8 @@ void sr_yield(CpuState *s) {
             static int post_yield_count = 0;
             if (post_yield_count < 256) {
                 fprintf(stderr, "POSTUMD-YIELD uid=0x%x pc=0x%08x ra=0x%08x tick=%llu a0=0x%08x a1=0x%08x a2=0x%08x libc_main_id[0x0030a040]=0x%08x last_alloc=0x%08x\n",
-                        g_worker_uid, s->pc, s->r[31], s_tick, s->r[4], s->r[5], s->r[6],
+                        g_worker_uid, s->pc, s->r[31], (unsigned long long)s_tick,
+                        s->r[4], s->r[5], s->r[6],
                         MEM_R32(0x0030a040u), MEM_R32(0x0030b000u));
                 fflush(stderr);
                 post_yield_count++;

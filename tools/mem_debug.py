@@ -352,6 +352,10 @@ def get_symbol_rvas(exe_path):
     rvas = dict(DEFAULT_RVAS)
     if not exe_path or not os.path.exists(exe_path):
         return rvas, "fallback"
+    # Resolve the caller's spelling to an absolute path before spawning tools:
+    # a cwd-relative program path is resolved by the child against a cwd that
+    # is not the caller's frame (#294).
+    exe_path = os.path.abspath(exe_path)
 
     nm_candidate = os.environ.get("NM")
     msys_bin = os.environ.get("MSYS_PATH")
