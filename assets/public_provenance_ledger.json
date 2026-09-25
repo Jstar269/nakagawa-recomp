@@ -231,7 +231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e23918cf5f9b87b1d10823c9c05c37a767dd05224d0b556b3b0c1b4ac8c3831"
+      "sha256": "991097291a55f0889157238c10f617b2adeea3b6f8ef9519da7287899dd35397"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -285,7 +285,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "2ab4c791557dbe302ce332642477eead77ce6ae8cb7aa2379562649716a78a07"
+      "sha256": "a62e1864c07a1fc420c4cc30b5fbad992c507470cbdcb2041f613d99f76ee973"
     },
     {
       "path": "NOTICE.md",
@@ -463,7 +463,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d547f1be0fff5a6488ddde3923405b86727d9e1df9ec6b38417d479bc420c706"
+      "sha256": "eafdba3c991d0c2a0cbcb3028e4a70ddf98c666b6e614fd9862fa1113dd8efc6"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -970,7 +970,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1a97c1693bb6176e430eee23629e44d23f0e980a49bb2818ab45451c06e9c49f"
+      "sha256": "fdc7e6bd3cf3bd64bd37edd33c98c7edf8ff6abe9c8b358373200be79e51f54e"
     },
     {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
@@ -1093,7 +1093,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "81fbe29e29947dd0921f8ae98891265df2740923178aff5a36de9ba3352085a3"
+      "sha256": "dac283e7d5c4f6a643e20c0b0ad3612db23531d8b0a2b49e5847daafea210cb8"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1186,6 +1186,15 @@
       "sha256": "6373094121cf747a88d716c1fe7633ab9591d683971693af6d50bfdfde993892"
     },
     {
+      "path": "docs/WEB_UI_RETIREMENT.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "5609f00a14a7a668bc9450f4bbe826cd53b66d2f3eaea9ceb6ab792517620982"
+    },
+    {
       "path": "docs/WORKSPACE_DOCTOR.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1210,7 +1219,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c6ba6a81519bec97dfc1bb376ebad9454b15ce88f487bad8d4c6a78a09a5aa1d"
+      "sha256": "b57ac3defc8c0e7d95dc1462671b03a5efc493aa10fe32aa1116c49b903ddcb4"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -5874,16 +5883,16 @@
       "sha256": "85bdf16cf721715b00f4b393f76982b23a4c0dce23829080c470990aa7cf10b4"
     },
     {
-      "path": "src/rt/pgf_public.c",
+      "path": "src/rt/pgf_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "pgf-public-reader-349",
+        "record_id": "pgf-public-safe-seam",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50b111c35ed99ef2fb7c4b1d13d3cbffc9b6073ffe6e7542e7b519edde00df6c"
+      "sha256": "537a578f0872efbbb2c78b0ebde7bf509a48ae3e9a10673914486b5eea98625f"
     },
     {
       "path": "src/rt/profiler_selftest.c",
@@ -6478,18 +6487,6 @@
         "upstream_attribution": null
       },
       "sha256": "7cd458c8481b02bd2efdda75865fdd09630d075e3375b7dd1f61b5f3d8c07de6"
-    },
-    {
-      "path": "tests/native/test_pgf_public.c",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "pgf-public-reader-tests-349",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "47be108d179d8bfaecd46f01b71a20a819cc1daa35e1b911213e286e0f1818a7"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -8030,7 +8027,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb6b2739006c95dfa00c65232dce32e2fddc2a4d735abe33a000e29e2d67c3f1"
+      "sha256": "38f710ce1456b085a0d0bf8e3297c18fdae4285192e5965e191c0d837825268c"
     },
     {
       "path": "tools/test_build_truth.py",
@@ -8777,7 +8774,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "265dbff873edefe65de4bc7fb54235777dd2097dacdc1ed0190252ccd4c78f82"
+      "sha256": "06c287df11362d113dd353f9d75f72cf9896175b6823963c73ae1a4aa2bd7e68"
     },
     {
       "path": "tools/test_nid_name_proof.py",
