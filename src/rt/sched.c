@@ -2092,6 +2092,19 @@ static int pick_next(void) {
     return -1;   /* unreachable: have_ready guarantees a match above */
 }
 
+static SrPerfSchedState sched_perf_state(void) {
+    if (s_cur < 0 || s_cur >= s_ntcb) return SR_PERF_SCHED_IDLE;
+    if (s_tcb[s_cur].state == TH_READY) return SR_PERF_SCHED_RUNNABLE;
+    if (s_tcb[s_cur].state == TH_WAIT_DELAY || s_tcb[s_cur].state == TH_WAIT_OBJ)
+        return SR_PERF_SCHED_BLOCKED;
+    if (s_tcb[s_cur].state == TH_DORMANT) return SR_PERF_SCHED_IDLE;
+    return SR_PERF_SCHED_RUNNING;
+}
+
+static uint32_t sched_perf_uid(void) {
+    return s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u;
+}
+
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
  * next thread. Called from a thread fiber. */
 static void switch_to_scheduler(void) {
@@ -2100,6 +2113,7 @@ static void switch_to_scheduler(void) {
         SCHED_LIVENESS_OWNER(s_tcb[s_cur].uid);
 #endif
     if (!s_sched_coro || sr_coro_current() == s_sched_coro) return;
+    if (sr_perf_enabled) sr_perf_sched_state(sched_perf_state(), sched_perf_uid());
     sr_coro_switch(s_sched_coro);
 }
 
@@ -3579,6 +3593,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     /* Idle no-progress accounting; see the guard in the idle path below. */
     uint64_t idle_vbl_mark = s_vbl_count;
     int idle_no_progress = 0;
+    if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
     for (;;) {
         if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
@@ -3588,6 +3603,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         }
         int idx = pick_next();
         if (idx < 0) {
+            if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
             /* No thread is ready. If a timed wait expires before the next vblank is due,
              * sleep precisely to it (sub-frame delays keep their real duration); otherwise
              * advance the display source timeline and service its eligible pending interrupt.
@@ -3669,6 +3685,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             idle_vbl_mark = s_vbl_count;
         }
         TCB *t = &s_tcb[idx];
+        uint32_t previous_uid = 0;
+        if (sr_perf_enabled && s_cur >= 0 && s_cur < s_ntcb)
+            previous_uid = s_tcb[s_cur].uid;
         s_cur = idx;
         SCHED_LIVENESS_OWNER(t->uid);
         t->state = TH_RUNNING;
@@ -3706,9 +3725,13 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         }
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
-        sr_perf_guest_begin();
+        if (sr_perf_enabled) {
+            sr_perf_sched_state(SR_PERF_SCHED_RUNNING, t->uid);
+            sr_perf_sched_switch(previous_uid, t->uid);
+            sr_perf_guest_begin();
+        }
         sr_coro_switch(t->coro);           /* run until it yields/blocks/exits */
-        sr_perf_guest_end();
+        if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;
         g_hle_depth = 0;
         /* A coroutine cannot destroy itself from inside sched_exit_current;

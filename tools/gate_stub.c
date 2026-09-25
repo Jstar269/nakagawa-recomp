@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "perf.h"
 #ifdef __cplusplus
 #include <atomic>
 typedef std::atomic_int_least32_t atomic_int_least32_t;
@@ -187,6 +188,22 @@ size_t sr_host_data_entry_count(void) { return 0u; }
 
 /* --- Perf stubs (perf.c) --- */
 void     sr_perf_init(void) {}
+int      sr_perf_enabled;
+uint64_t sr_perf_now_ns_impl(void) { return 0; }
+int      sr_perf_aot_active;
+void     sr_perf_aot_begin(uint32_t pc) { (void)pc; }
+void     sr_perf_aot_end(void) {}
+void     sr_perf_aot_instruction(uint32_t pc, uint32_t opcode) { (void)pc; (void)opcode; }
+void     sr_perf_guest_begin(void) {}
+void     sr_perf_guest_end(void) {}
+void     sr_perf_shutdown(void) {}
+void     sr_perf_interp_set_reason(SrPerfInterpReason reason) { (void)reason; }
+void     sr_perf_interp_begin(uint32_t pc) { (void)pc; }
+void     sr_perf_interp_instruction(void) {}
+void     sr_perf_interp_end(uint32_t pc, int result) { (void)pc; (void)result; }
+void     sr_perf_vfpu(uint32_t opcode, uint64_t started_ns, int result) { (void)opcode; (void)started_ns; (void)result; }
+void     sr_perf_sched_state(SrPerfSchedState state, uint32_t uid) { (void)state; (void)uid; }
+void     sr_perf_sched_switch(uint32_t from_uid, uint32_t to_uid) { (void)from_uid; (void)to_uid; }
 
 /* --- Debug / watch stubs (debug.c) --- */
 uint32_t g_sr_debug = 0;

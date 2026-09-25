@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "atrac3p_bridge.h"
+#include "perf.h"
 #include "libavutil/error.h"   /* AVERROR(EINVAL/ENOMEM) */
 
 struct Atrac3pBridge {
@@ -59,9 +60,18 @@ int atrac3p_bridge_decode(Atrac3pBridge *b, const uint8_t *frame, int frame_size
     /* The PR-A API returns the consumed frame size on success; the bridge
      * normalizes that to 0 (see header contract) so callers can test
      * `ret < 0` for failure and rely on *samples_out for output. */
+    uint64_t perf_started = sr_perf_now_ns();
     int ret = atrac3p_decode(b->dec, frame, frame_size, pcm_out, samples_out);
-    if (ret < 0) return ret;
-    if (*samples_out <= 0) return AVERROR(EINVAL);   /* no PCM, never a success */
+    if (ret < 0) {
+        if (perf_started) sr_perf_atrac(perf_started, ret);
+        return ret;
+    }
+    if (*samples_out <= 0) {
+        ret = AVERROR(EINVAL);
+        if (perf_started) sr_perf_atrac(perf_started, ret);
+        return ret;
+    }
+    if (perf_started) sr_perf_atrac(perf_started, ret);
     return 0;
 }
 

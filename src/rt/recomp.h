@@ -518,10 +518,21 @@ void sr_trace_close(void);
  * release build removes the hooks in the preprocessor. TRACE=1 retains a predicted-false
  * runtime gate and byte-accurate instruction tracing for oracle/diff builds. The address
  * expression passed to sr_end is a pure register-plus-constant computation. */
+#ifndef PERF_AOT_INSTRUCTIONS
+#define PERF_AOT_INSTRUCTIONS 0
+#endif
 extern int sr_trace_active;
 void sr_begin_impl(CpuState *s, uint32_t pc, uint32_t op);
 void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size);
-#ifdef SR_INSTRUCTION_TRACE
+#if PERF_AOT_INSTRUCTIONS
+#define sr_begin(s, pc, op) do { \
+    if (__builtin_expect(sr_perf_aot_active, 0)) sr_perf_aot_instruction((pc), (op)); \
+    if (__builtin_expect(sr_trace_active, 0)) sr_begin_impl((s), (pc), (op)); \
+} while (0)
+#define sr_end(s, mem_addr, size) do { \
+    if (__builtin_expect(sr_trace_active, 0)) sr_end_impl((s), (mem_addr), (size)); \
+} while (0)
+#elif defined(SR_INSTRUCTION_TRACE)
 #define sr_begin(s, pc, op)       do { if (__builtin_expect(sr_trace_active, 0)) sr_begin_impl((s), (pc), (op)); } while (0)
 #define sr_end(s, mem_addr, size) do { if (__builtin_expect(sr_trace_active, 0)) sr_end_impl((s), (mem_addr), (size)); } while (0)
 #else

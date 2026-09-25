@@ -151,8 +151,9 @@ endif
 # Direct Make remains conservative -O0/-O0. Validated private title adapters may
 # request measured profile-specific values; explicit overrides remain supported.
 RUNTIME_OPT ?= -O0
+PERF_AOT_INSTRUCTIONS ?= 0
 CFLAGS     ?= $(RUNTIME_OPT) -fno-strict-aliasing -Isrc/rt -Isrc/core $(SDL3_INC_FLAGS) -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include -DSR_SDL3VK -D_CRT_SECURE_NO_WARNINGS -Wall -Wextra
-override CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
+override CFLAGS += -DSR_FLIGHT_RECORDER_LINKED -DPERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
 # The extracted HST archive tree has a title-specific extracted-data census
 # (HST: 56,672 files). The generic build has no census (0 = disabled); a
 # title-configured build carries the expectation via runtime_bindings
@@ -545,6 +546,7 @@ PORTABLE_CORE_SRCS := src/rt/recomp.c \
                       src/rt/debug.c \
                       src/rt/watchpoints_file.c \
                       src/rt/guest_printf.c \
+                      src/rt/perf.c \
                       src/rt/vfpu_interp.c \
                       $(ISO_BACKEND_SRC) \
                       $(PGD_BACKEND_SRC) \
@@ -581,6 +583,7 @@ PUBLIC_TARGETS := \
 	production-smoke \
 	production-smoke-clean \
 	production-smoke-gap \
+	perf-benchmark \
 	display-smoke \
 	display-smoke-run \
 	display-smoke-gui \
@@ -678,6 +681,7 @@ HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objec
 HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
 HELP_DESCRIPTION_production-smoke-clean := remove production smoke artifacts
 HELP_DESCRIPTION_production-smoke-gap := run the public AOT-gap dispatch smoke test
+HELP_DESCRIPTION_perf-benchmark := run the public source-owned SR_PERF benchmark matrix and overhead check
 HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run the display smoke fixture
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
@@ -771,6 +775,7 @@ compiler-info:
 	@echo CFLAGS=$(CFLAGS)
 	@echo RECOMP_OPT=$(RECOMP_OPT)
 	@echo RECOMP_FLAGS=$(RECOMP_FLAGS)
+	@echo PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
 	@echo FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)
 	@echo CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 	@echo PUBLIC_SAFE=$(PUBLIC_SAFE)
@@ -957,6 +962,9 @@ production-smoke-gap:
 production-smoke-gap-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) clean
 
+perf-benchmark:
+	$(PYTHON) tools/run_perf_benchmarks.py --make "$(MAKE)" --python "$(PYTHON)" --output "$(BUILD_DIR)/perf-benchmark" --overhead
+
 # ---------------------------------------------------------------------------
 # Source-owned second-platform workload ladder.
 #
@@ -1142,12 +1150,12 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --file "$(CPU_STATE_ABI_HEADER)")
+RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -1163,6 +1171,9 @@ TRACE ?= 0
 ifeq ($(TRACE),1)
 RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
 endif
+ifeq ($(PERF_AOT_INSTRUCTIONS),1)
+RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
+endif
 
 # Make the object flavour explicit. Switching TRACE forces only the generated
 # chunks to rebuild, avoiding a stale trace-enabled object in a release binary
@@ -1171,10 +1182,10 @@ TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
 	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
-RECOMP_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --file "$(CPU_STATE_ABI_HEADER)")
+RECOMP_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Compile the chunked generated C code.
 
@@ -1311,7 +1322,7 @@ cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
 		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(COSIM_INTERP_SRC) src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c -lm
+		$(COSIM_INTERP_SRC) src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
@@ -1417,7 +1428,7 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_f
 # standalone binary fails to link after the table-loader integration.
 heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c $(LIBS) -lm
+		src/rt/heap_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
@@ -1427,7 +1438,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS)
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS)
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -1485,7 +1496,7 @@ atrac3p-bridge-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(LDFLAGS) \
 		-o $(BUILD_DIR)/atrac3p_bridge_selftest.exe \
-		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
+		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
 		$(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/atrac3p_bridge_selftest.exe
 
@@ -1514,7 +1525,7 @@ atrac3p-title-accept:
 # scheduler/driver plumbing is stubbed. No game inputs or private data required.
 vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(BUILD_DIR)/vfpu_overlap_diff_cases.h
 	$(CC) $(CFLAGS) -DSR_FLIGHT_RECORDER_STANDALONE -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) 		-o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c $(LIBS)
+		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS)
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 $(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/codegen.py
@@ -1583,13 +1594,13 @@ endif
 psmf-media-selftest:
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest.exe \
-		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c \
+		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c src/rt/perf.c \
 		$(PSMF_MEDIA_LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
-		src/rt/audio_unavailable.c -lSDL3 -lm \
+		src/rt/audio_unavailable.c src/rt/perf.c -lSDL3 -lm \
 		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
@@ -1705,7 +1716,7 @@ stale-code-selftest:
 # keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
-		src/rt/cpu_lle_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
+		src/rt/cpu_lle_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
 # domain-mode-selftest — host-neutral unit tests for the LLE Phase 1
@@ -1719,7 +1730,7 @@ cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 # hit/miss/dispatch-reject, and fallback hit/miss/reject. Exit code 0 = all.
 domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/domain_mode_selftest.exe \
-		src/rt/domain_mode_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c -lm
+		src/rt/domain_mode_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
@@ -1752,7 +1763,7 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
 		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
-		src/rt/dispatch_isolation_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c \
+		src/rt/dispatch_isolation_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c \
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
