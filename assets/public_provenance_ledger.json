@@ -1909,7 +1909,7 @@
         "source": "public documentation review",
         "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded"
       },
-      "sha256": "8bf90bf316ab849eb0f94439941940b8d4fa048473c587cb0b446b7c4b74bcb4"
+      "sha256": "506616db4ea37b951840f2fc488db1d1f935f20306af555e4cf8db0788cc5d53"
     },
     {
       "path": "interface/.env.example",
