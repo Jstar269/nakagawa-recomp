@@ -4,6 +4,10 @@
 > retained internally and are not published with this landing. This README is
 > the published text inventory; the capture files are illustrative evidence
 > only.
+>
+> **Current product:** The public repository has the native player as its only UI.
+> This dated inventory records a retired browser UI and earlier migration proposals;
+> its screenshots and proposed follow-ups are historical, not current capabilities or commitments.
 
 ## 1. Overview & Capture Environment
 
@@ -19,7 +23,7 @@ This directory records the visual and functional baseline of Nakagawa Recomp's u
 
 ## 2. Screenshot Inventory & Functional Assessment
 
-| Screenshot Filename | View / Section | Launch Command / URL | Visible Functionality | Working Status | Preservation Requirement in Native UI |
+| Screenshot Filename | View / Section | Launch Command / URL | Visible Functionality | Working Status | Historical native-migration proposal (not a current commitment) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `01_web_player_mode.png` | Player Mode Landing / Hero | `http://localhost:3000` | Game hero banner, "Start Setup Wizard", quick settings cards (Resolution, Controller, Save status), Workspace Preflight badge, Boot Health summary, Native binary status card | **WORKING (UI Level)** | Must be preserved as the default home screen when a title is loaded; clean layout, controller and resolution indicators |
 | `02_web_studio_iso_loader.png` | ISO Loader & Inspector | `http://localhost:3000?section=iso` | In-browser ISO file dropzone, sector read status, disc ID / title display | **PARTIALLY WORKING** (In-browser sector parse only; cannot write files to disk) | Must be replaced by native OS file picker (`IFileDialog`) with direct disk reading and transactional preparation |

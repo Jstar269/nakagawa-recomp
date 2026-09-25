@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Regression tests for the stable CI aggregate status."""
 
@@ -21,7 +21,6 @@ def _results(**overrides: str) -> dict[str, str]:
         "markdown": "skipped",
         "python-tools": "skipped",
         "native-tools": "skipped",
-        "dashboard": "skipped",
         "windows-runtime": "skipped",
         "main-smoke": "skipped",
     }
@@ -46,8 +45,8 @@ class CiRequiredTests(unittest.TestCase):
     def test_applicable_failure_or_cancel_fails(self) -> None:
         for outcome in ("failure", "cancelled", "skipped"):
             with self.subTest(outcome=outcome):
-                results = _results(**{"dashboard": outcome})
-                self.assertFalse(required_gate_passes(results, {"dashboard": True}, allow_substantive=True))
+                results = _results(**{"python-tools": outcome})
+                self.assertFalse(required_gate_passes(results, {"python-tools": True}, allow_substantive=True))
 
     def test_classifier_and_hygiene_failures_cannot_be_hidden(self) -> None:
         for name in ("classify", "hygiene"):
@@ -58,7 +57,7 @@ class CiRequiredTests(unittest.TestCase):
         self.assertFalse(
             required_gate_passes(
                 _results(),
-                {"python-tools": True, "native-tools": True, "dashboard": True, "windows-runtime": True},
+                {"python-tools": True, "native-tools": True, "windows-runtime": True},
                 allow_substantive=False,
                 draft=True,
             )
@@ -81,13 +80,11 @@ class CiRequiredTests(unittest.TestCase):
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
-            "DASHBOARD_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
             "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "true",
-            "RUN_DASHBOARD": "false",
             "RUN_WINDOWS": "true",
             "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "false",
@@ -132,13 +129,11 @@ class CiRequiredTests(unittest.TestCase):
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "skipped",
-            "DASHBOARD_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
             "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "false",
-            "RUN_DASHBOARD": "false",
             "RUN_WINDOWS": "false",
             "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "true",
@@ -163,7 +158,6 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
-            "DASHBOARD_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
             "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
@@ -171,7 +165,6 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             # Applicable, but the job was skipped -- this must fail unless
             # suppression was explicitly requested.
             "RUN_NATIVE": "true",
-            "RUN_DASHBOARD": "false",
             "RUN_WINDOWS": "false",
             "RUN_MAIN_SMOKE": "false",
             # This fixture models the intentional main-push suppression, not a
@@ -209,13 +202,11 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "MARKDOWN_RESULT": "success",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "success",
-            "DASHBOARD_RESULT": "success",
             "WINDOWS_RESULT": "success",
             "MAIN_SMOKE_RESULT": "success",
             "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "false",
             "RUN_NATIVE": "false",
-            "RUN_DASHBOARD": "false",
             "RUN_WINDOWS": "false",
             "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "true",
@@ -227,7 +218,6 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "RUN_MARKDOWN",
             "RUN_PYTHON",
             "RUN_NATIVE",
-            "RUN_DASHBOARD",
             "RUN_WINDOWS",
             "RUN_MAIN_SMOKE",
         ):
@@ -245,7 +235,6 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "RUN_MARKDOWN",
             "RUN_PYTHON",
             "RUN_NATIVE",
-            "RUN_DASHBOARD",
             "RUN_WINDOWS",
             "RUN_MAIN_SMOKE",
         ):

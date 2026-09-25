@@ -61,7 +61,6 @@ class TestSBOMTooling(unittest.TestCase):
             "description": "Test App",
             "components": [],
         }
-        npm_pkgs = []
         py_pkgs = []
         with tempfile.TemporaryDirectory() as tmpdir:
             pkg_dir = Path(tmpdir)
@@ -86,17 +85,17 @@ class TestSBOMTooling(unittest.TestCase):
             self.assertEqual(shipped[0]["name"], "SDL3.dll")
             self.assertEqual(shipped[0]["license"], "Zlib")
 
-            spdx23 = generate_sbom.generate_spdx23(manifest_data, npm_pkgs, py_pkgs, shipped_dlls=shipped)
+            spdx23 = generate_sbom.generate_spdx23(manifest_data, py_pkgs, shipped_dlls=shipped)
             spdx_names = {p["name"]: p.get("licenseConcluded") for p in spdx23["packages"]}
             self.assertIn("SDL3.dll", spdx_names)
             self.assertEqual(spdx_names["SDL3.dll"], "Zlib")
 
-            spdx301 = generate_sbom.generate_spdx301(manifest_data, npm_pkgs, py_pkgs, shipped_dlls=shipped)
+            spdx301 = generate_sbom.generate_spdx301(manifest_data, py_pkgs, shipped_dlls=shipped)
             graph_names = {node.get("spdx:name"): node.get("spdx:concludedLicense") for node in spdx301["@graph"]}
             self.assertIn("SDL3.dll", graph_names)
             self.assertEqual(graph_names["SDL3.dll"], "http://spdx.org/licenses/Zlib")
 
-            cyclonedx = generate_sbom.generate_cyclonedx(manifest_data, npm_pkgs, py_pkgs, shipped_dlls=shipped)
+            cyclonedx = generate_sbom.generate_cyclonedx(manifest_data, py_pkgs, shipped_dlls=shipped)
             cdx_names = {c["name"]: c["licenses"][0]["license"]["id"] for c in cyclonedx["components"] if "licenses" in c}
             self.assertIn("SDL3.dll", cdx_names)
             self.assertEqual(cdx_names["SDL3.dll"], "Zlib")
@@ -126,43 +125,35 @@ class TestSBOMTooling(unittest.TestCase):
                 {"id": "sdl3-runtime", "name": "SDL3 Runtime", "license": "Zlib"}
             ]
         }
-        npm_pkgs = [
-            {"name": "react", "version": "18.2.0", "spdx_id": "SPDXRef-npm-react-18.2.0", "license": "MIT", "resolved": "", "purl": "pkg:npm/react@18.2.0"}
-        ]
         py_pkgs = generate_sbom.parse_python_lockfile(
             generate_sbom.ROOT / "tools" / "requirements-lock.txt")[:1]
 
-        spdx = generate_sbom.generate_spdx23(manifest_data, npm_pkgs, py_pkgs)
+        spdx = generate_sbom.generate_spdx23(manifest_data, py_pkgs)
         self.assertEqual(spdx["spdxVersion"], "SPDX-2.3")
         self.assertEqual(spdx["name"], "nakagawa-recomp-sbom")
         pkg_names = {p["name"] for p in spdx["packages"]}
         self.assertIn("nakagawa-recomp", pkg_names)
         self.assertIn("SDL3 Runtime", pkg_names)
-        self.assertIn("react", pkg_names)
         self.assertIn("compiledb", pkg_names)
 
-        cyclonedx = generate_sbom.generate_cyclonedx(manifest_data, npm_pkgs, py_pkgs)
+        cyclonedx = generate_sbom.generate_cyclonedx(manifest_data, py_pkgs)
         self.assertEqual(cyclonedx["bomFormat"], "CycloneDX")
         self.assertEqual(cyclonedx["specVersion"], "1.5")
         self.assertGreater(len(cyclonedx["components"]), 1)
 
     def test_verify_release_locks_and_sbom(self):
         manifest_path = generate_sbom.ROOT / "assets" / "release_manifest.json"
-        npm_lock_path = generate_sbom.ROOT / "interface" / "package-lock.json"
         py_lock_path = generate_sbom.ROOT / "tools" / "requirements-lock.txt"
 
         errors = verify_sbom.verify_release_locks(manifest_path)
         self.assertEqual(errors, [], f"Release locks verification failed: {errors}")
 
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        # Build from one snapshot per lockfile with standards-conformant lock
-        # evidence, exactly as the generator CLI does.
-        parsed = generate_sbom.parse_lockfiles(npm_lock_path, py_lock_path,
-                                               repo_root=generate_sbom.ROOT)
-        npm_pkgs = parsed["npm_packages"]
+        # Build from one snapshot with standards-conformant lock evidence.
+        parsed = generate_sbom.parse_lockfiles(py_lock_path, repo_root=generate_sbom.ROOT)
         py_pkgs = parsed["py_packages"]
         spdx = generate_sbom.generate_spdx23(
-            manifest_data, npm_pkgs, py_pkgs,
+            manifest_data, py_pkgs,
             lock_files=parsed["lock_files"],
             lock_relationships=parsed["lock_relationships"],
         )
@@ -171,22 +162,16 @@ class TestSBOMTooling(unittest.TestCase):
             json.dump(spdx, tmp)
             spdx_path = Path(tmp.name)
         try:
-            match_errors, _digests = verify_sbom.verify_sbom_matches(spdx_path, manifest_path, npm_lock_path, py_lock_path)
+            match_errors, _digests = verify_sbom.verify_sbom_matches(spdx_path, manifest_path, py_lock_path)
             self.assertEqual(match_errors, [], f"SPDX verification failed: {match_errors}")
         finally:
             spdx_path.unlink(missing_ok=True)
 
-    def test_verify_dashboard_toolchain_compatibility(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
-            json.dump({"devDependencies": {"typescript": "^7.0.2", "eslint": "^10.8.0"}}, tmp)
-            bad_pkg = Path(tmp.name)
-        try:
-            errors = verify_sbom.verify_dashboard_toolchain_compatibility(bad_pkg)
-            self.assertEqual(len(errors), 2)
-            self.assertIn("typescript-eslint v8 requires typescript < 6.1.0", errors[0])
-            self.assertIn("eslint-config-next 16.x requires eslint < 10.0.0", errors[1])
-        finally:
-            bad_pkg.unlink(missing_ok=True)
+    def test_manifest_declares_only_the_native_python_tooling(self):
+        manifest = json.loads((generate_sbom.ROOT / "assets" / "release_manifest.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(set(manifest["lockfiles"]), {"python"})
+        self.assertFalse((generate_sbom.ROOT / "interface").exists())
 
     def test_provenance_family_inventory_is_independent_and_fail_closed(self):
         data = json.loads((generate_sbom.ROOT / "assets" / "release_manifest.json").read_text(encoding="utf-8"))
@@ -202,9 +187,8 @@ class TestSBOMTooling(unittest.TestCase):
                 for error in verify_sbom.verify_provenance_families(mutated))
         )
 
-        npm_pkgs = generate_sbom.parse_npm_lockfile(generate_sbom.ROOT / "interface" / "package-lock.json")
         py_pkgs = generate_sbom.parse_python_lockfile(generate_sbom.ROOT / "tools" / "requirements-lock.txt")
-        sbom = generate_sbom.generate_spdx23(data, npm_pkgs, py_pkgs)
+        sbom = generate_sbom.generate_spdx23(data, py_pkgs)
         sbom["packages"] = [
             package for package in sbom["packages"]
             if package.get("name") != "PPSSPP-origin VFPU lookup tables"
@@ -216,7 +200,6 @@ class TestSBOMTooling(unittest.TestCase):
             errors, _digests = verify_sbom.verify_sbom_matches(
                 sbom_path,
                 generate_sbom.ROOT / "assets" / "release_manifest.json",
-                generate_sbom.ROOT / "interface" / "package-lock.json",
                 generate_sbom.ROOT / "tools" / "requirements-lock.txt",
             )
             self.assertTrue(any("VFPU lookup tables missing" in error for error in errors))
@@ -321,14 +304,12 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertTrue(any("matches no trusted artifact" in error for error in errors), str(errors))
 
     def test_sboms_distinguish_declared_and_verified_hashes(self):
-        npm_lock = generate_sbom.ROOT / "interface" / "package-lock.json"
         py_lock = generate_sbom.ROOT / "tools" / "requirements-lock.txt"
         manifest_path = generate_sbom.ROOT / "assets" / "release_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        parsed = generate_sbom.parse_lockfiles(npm_lock, py_lock, repo_root=generate_sbom.ROOT)
+        parsed = generate_sbom.parse_lockfiles(py_lock, repo_root=generate_sbom.ROOT)
         spdx23 = generate_sbom.generate_spdx23(
             manifest,
-            parsed["npm_packages"],
             parsed["py_packages"],
             lock_files=parsed["lock_files"],
             lock_relationships=parsed["lock_relationships"],
@@ -346,8 +327,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertTrue(any("status=declared" in comment for comment in comments))
         self.assertTrue(any("status=verified" in comment for comment in comments))
 
-        spdx3 = generate_sbom.generate_spdx301(
-            manifest, parsed["npm_packages"], parsed["py_packages"])
+        spdx3 = generate_sbom.generate_spdx301(manifest, parsed["py_packages"])
         spdx3_package = next(
             package for package in spdx3["@graph"]
             if package.get("spdx:name") == "ruff"
@@ -358,8 +338,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         )
         self.assertIn("status=declared", spdx3_package["spdx:sourceInfo"])
 
-        cyclonedx = generate_sbom.generate_cyclonedx(
-            manifest, parsed["npm_packages"], parsed["py_packages"])
+        cyclonedx = generate_sbom.generate_cyclonedx(manifest, parsed["py_packages"])
         cdx_package = next(
             component for component in cyclonedx["components"]
             if component.get("name") == "ruff"
@@ -373,14 +352,12 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("status=verified", properties_text)
 
     def test_verifier_rejects_tampered_verified_hash_metadata(self):
-        npm_lock = generate_sbom.ROOT / "interface" / "package-lock.json"
         py_lock = generate_sbom.ROOT / "tools" / "requirements-lock.txt"
         manifest_path = generate_sbom.ROOT / "assets" / "release_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        parsed = generate_sbom.parse_lockfiles(npm_lock, py_lock, repo_root=generate_sbom.ROOT)
+        parsed = generate_sbom.parse_lockfiles(py_lock, repo_root=generate_sbom.ROOT)
         spdx = generate_sbom.generate_spdx23(
             manifest,
-            parsed["npm_packages"],
             parsed["py_packages"],
             lock_files=parsed["lock_files"],
             lock_relationships=parsed["lock_relationships"],
@@ -392,7 +369,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             spdx_path = Path(tmp.name)
         try:
             errors, _digests = verify_sbom.verify_sbom_matches(
-                spdx_path, manifest_path, npm_lock, py_lock)
+                spdx_path, manifest_path, py_lock)
         finally:
             spdx_path.unlink(missing_ok=True)
         self.assertTrue(
@@ -555,7 +532,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             code = verify_sbom.main(["--manifest", str(self.MANIFEST_PATH)])
         self.assertEqual(code, 0)
         output = out_buf.getvalue()
-        self.assertIn("SBOM Verification: OK (Release dependency lockfiles, artifact hashes, toolchain policy verified)", output)
+        self.assertIn("SBOM Verification: OK (Release dependency lockfile, artifact hashes, toolchain policy verified)", output)
         self.assertNotIn("reproducible", output.lower())
         self.assertNotIn("all release dependency locks", output.lower())
 
@@ -576,7 +553,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             self.assertEqual(code, 0)
             output = out_buf.getvalue()
             self.assertIn(
-                "SBOM Verification: OK (Release dependency lockfiles, artifact hashes, toolchain policy, observed toolchain verified)",
+                "SBOM Verification: OK (Release dependency lockfile, artifact hashes, toolchain policy, observed toolchain verified)",
                 output,
             )
             self.assertNotIn("reproducible", output.lower())

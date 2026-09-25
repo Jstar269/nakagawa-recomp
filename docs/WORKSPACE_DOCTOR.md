@@ -21,7 +21,7 @@ Use a narrower scope when diagnosing one layer:
 .\nk.ps1 Doctor -Scope run
 ```
 
-For automation or the optional local dashboard:
+For automation:
 
 ```powershell
 .\nk.ps1 Doctor -Scope all -Json

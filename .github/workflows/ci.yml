@@ -40,7 +40,6 @@ jobs:
       build_system: ${{ steps.paths.outputs.build_system }}
       manager_powershell: ${{ steps.paths.outputs.manager_powershell }}
       title_manifest: ${{ steps.paths.outputs.title_manifest }}
-      dashboard: ${{ steps.paths.outputs.dashboard }}
       workflow_ci: ${{ steps.paths.outputs.workflow_ci }}
       dependency_metadata: ${{ steps.paths.outputs.dependency_metadata }}
       security_publication: ${{ steps.paths.outputs.security_publication }}
@@ -48,7 +47,6 @@ jobs:
       run_python: ${{ steps.paths.outputs.run_python }}
       run_native: ${{ steps.paths.outputs.run_native }}
       run_windows: ${{ steps.paths.outputs.run_windows }}
-      run_dashboard: ${{ steps.paths.outputs.run_dashboard }}
       run_main_smoke: ${{ steps.paths.outputs.run_main_smoke }}
       allow_substantive: ${{ steps.paths.outputs.allow_substantive }}
       draft: ${{ steps.paths.outputs.draft }}
@@ -300,9 +298,9 @@ jobs:
           ./build/vfpu_tables_selftest
 
       - name: Run watchpoints-file parser selftest (source-owned, no game inputs)
-        # Issue #188: the derived watchpoints.json artifact round-trips the
-        # exact dashboard-writer fixture into the expected native watchpoint
-        # set, plus fail-closed cases (version/format, bounds, labels,
+        # Issue #188: the derived watchpoints.json artifact round-trips a
+        # canonical fixture into the expected native watchpoint set, plus
+        # fail-closed cases (version/format, bounds, labels,
         # duplicates, capacity, legacy array form).
         run: |
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
@@ -444,106 +442,6 @@ jobs:
         run: |
           python tools/ppmdiff.py --threshold 3 build/verify/snap build/verify/gold
           python -c "import json; r=json.load(open('visual_regression_report.json')); exit(1 if r['summary']['failed_frames'] > 0 else 0)"
-
-  dashboard:
-    name: Dashboard checks
-    runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
-    if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
-          needs.classify.outputs.allow_substantive == 'true' &&
-          needs.classify.outputs.run_dashboard == 'true' }}
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: interface
-    env:
-      DATABASE_URL: file:./prisma/ci.db
-      NEXT_TELEMETRY_DISABLED: "1"
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.21.0"
-          cache: npm
-          cache-dependency-path: interface/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Verify dependency install scripts are allowlisted
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Keep npm's platform-aware diagnostic visible, then enforce the
-          # repository-wide lockfile contract so optional packages cannot hide
-          # an unapproved script merely because this runner did not install them.
-          npm approve-scripts --allow-scripts-pending
-          node --input-type=module <<'NODE'
-          import fs from "node:fs";
-          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
-          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
-          const allowScripts = packageJson.allowScripts ?? {};
-          const pending = Object.entries(lock.packages ?? [])
-            .filter(([location, metadata]) => location && metadata?.hasInstallScript)
-            .map(([location, metadata]) => `${location.replace(/^node_modules\//, "")}@${metadata.version}`)
-            .filter((identity) => allowScripts[identity] !== true)
-            .sort();
-          if (pending.length > 0) {
-            console.error("not yet covered by allowScripts:");
-            for (const identity of pending) console.error(`  ${identity}`);
-            process.exit(1);
-          }
-          console.log("all locked dependency install scripts are covered by allowScripts");
-          NODE
-
-      - name: Audit the resolved dashboard dependency graph
-        run: |
-          npm ls brace-expansion minimatch --all
-          npm audit --audit-level=high
-
-      - name: Initialize test database
-        run: npm run db:push
-
-      - name: Test
-        run: npm test
-
-      - name: Test (database-backed store integration)
-        run: npm run test:db
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type-check
-        run: npm run typecheck
-
-      - name: Build production dashboard
-        run: npm run build
-
-      - name: Reject repository leakage into standalone output
-        shell: bash
-        run: |
-          test -f .next/standalone/server.js
-          for path in Makefile AGENTS.md docs src/rt/recomp.c original_game game.iso eboot.elf; do
-            if test -e ".next/standalone/$path"; then
-              echo "standalone output leaked repository path: $path" >&2
-              exit 1
-            fi
-          done
-          if find .next/standalone -type f \( -iname '*.iso' -o -iname '*.cso' -o -iname '*.elf' -o -iname '*.prx' -o -iname '*.pbp' \) -print -quit | grep -q .; then
-            echo "standalone output contains a prohibited game-input file" >&2
-            exit 1
-          fi
-          bytes=$(du -sb .next/standalone | cut -f1)
-          if test "$bytes" -ge 536870912; then
-            echo "standalone output is unexpectedly large: $bytes bytes" >&2
-            exit 1
-          fi
 
   windows_runtime:
     name: Windows runtime compile gate
@@ -845,7 +743,7 @@ jobs:
   ci_required:
     name: CI required
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, markdown, python_tools, native_tools, dashboard, windows_runtime, main_smoke]
+    needs: [classify, hygiene, markdown, python_tools, native_tools, windows_runtime, main_smoke]
     if: ${{ always() }}
     timeout-minutes: 5
     env:
@@ -854,13 +752,11 @@ jobs:
       MARKDOWN_RESULT: ${{ needs.markdown.result }}
       PYTHON_RESULT: ${{ needs.python_tools.result }}
       NATIVE_RESULT: ${{ needs.native_tools.result }}
-      DASHBOARD_RESULT: ${{ needs.dashboard.result }}
       WINDOWS_RESULT: ${{ needs.windows_runtime.result }}
       MAIN_SMOKE_RESULT: ${{ needs.main_smoke.result }}
       RUN_MARKDOWN: ${{ needs.classify.outputs.run_markdown }}
       RUN_PYTHON: ${{ needs.classify.outputs.run_python }}
       RUN_NATIVE: ${{ needs.classify.outputs.run_native }}
-      RUN_DASHBOARD: ${{ needs.classify.outputs.run_dashboard }}
       RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}
       RUN_MAIN_SMOKE: ${{ needs.classify.outputs.run_main_smoke }}
       ALLOW_SUBSTANTIVE: ${{ needs.classify.outputs.allow_substantive }}

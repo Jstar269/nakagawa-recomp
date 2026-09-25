@@ -1,4 +1,4 @@
-# Project status dashboard
+# Project status summary
 
 **Repository status: active sanitized public source.**
 `Jstar269/nakagawa-recomp` is the public source repository. Its public history
@@ -7,7 +7,7 @@ development history is not ordinary `main` ancestry and must not be reconnected.
 This status is not legal clearance, a release announcement, or a PSP-correctness
 claim.
 
-**Live GitHub Issues are the authority for work-item state.** This dashboard
+**Live GitHub Issues are the authority for work-item state.** This summary
 describes work areas and records what past closures established. It deliberately
 carries no frozen counts: verify current state on the
 linked live issue, and read counts from the generator cited beside each area.
@@ -116,6 +116,6 @@ ledger, release manifest, SBOMs, and `tools/publish_audit.py` must describe the
 same exact bytes. A candidate or export cannot select a relaxed private audit
 mode or self-authorize provenance.
 
-Do not treat this dashboard as a release announcement. Update it only when the
+Do not treat this summary as a release announcement. Update it only when the
 public-source boundary or milestone record changes, and keep private
 investigation narratives outside the public source tree.
