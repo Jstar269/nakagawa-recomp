@@ -119,20 +119,16 @@ either trusted input. A changed publication profile also requires both
 `PROVENANCE_TRUSTED_CANDIDATE_POLICY` and
 `PROVENANCE_POLICY_DELTA_AUTHORITY`, each naming an external reviewed input.
 
-Readiness used to be assembled ad hoc and was repeatedly wrong: a locally green
-candidate failed the hosted publication audit, and the repaired candidate then
-failed the hosted *attestation* gate — a verifier that was runnable locally the
-whole time and simply never run. Run all of these, in this order, and treat any
-failure as blocking:
+Run the strict aggregate first, then the full Python suite. Treat any failure as
+blocking:
 
 ```bash
 NK_TRUSTED_LEDGER=<external detailed ledger> make readiness
 python -m unittest discover -s tools -p "test_*.py"
 ```
 
-`make readiness` runs the whole list in cheapest-first order and stops at the
-first failure. Prefer it over running the steps by hand: the checklist below was
-already documented and correct, and was still routinely half-run.
+`make readiness` runs the publication/policy checks in cheapest-first order and stops
+at the first failure. Prefer it to assembling the checklist by hand.
 
 ### What `readiness` runs, if you need a step alone
 
@@ -159,8 +155,8 @@ reason a branch looks finished and is not:
 | `publish_audit` | the candidate's **own checked-in ledger** | **no** — the candidate supplies both sides |
 | `provenance_attest_verify` | the **external private authority** | yes; normal mode checks path authority and content binding; strict mode also checks legacy blob approvals |
 
-A tree can report `publication audit: OK (784 tracked files)` and
-`verdict: FAIL (5 fatal findings)` at the same commit. "Gates green" that means
+A tree can report `publication audit: OK (<N> tracked files)` and
+`verdict: FAIL (<N> fatal findings)` at the same commit. "Gates green" that means
 only the first is not evidence that the branch can merge.
 
 The attestation verifier is also the one most easily forgotten. Existing
@@ -197,7 +193,7 @@ The repository's text bytes are **UTF-8 without BOM, LF, with a final newline**.
 authority; this section says how to *produce* bytes that satisfy them.
 
 Git normalises on commit, so the index is clean by construction — a scan of all
-784 tracked files finds no CRLF, no BOM and no UTF-16. The damage happens
+tracked files finds no CRLF, no BOM and no UTF-16. The damage happens
 elsewhere: in working trees and in generated artifacts. A checkout polluted with
 CRLF makes every touched file's content hash disagree with the provenance
 ledger, and the resulting wall of `PROVENANCE_CONTENT_MISMATCH` names the

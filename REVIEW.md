@@ -1,101 +1,78 @@
-# REVIEW.md
+# Review guidance
 
-Review guidance for Nakagawa Recomp, an experimental PSP static recompiler
-(generated C plus a native C runtime, an interpreter floor, and HLE, moving
-toward low-level emulation). `AGENTS.md` is the operating contract; this file
-only says what a reviewer should look for.
+Nakagawa Recomp is an experimental PSP static recompiler: generated C plus a native C
+runtime, an interpreter floor, and HLE, moving toward low-level emulation.
+[`AGENTS.md`](AGENTS.md) is the operating contract; this file adds review priorities.
 
-## What matters in this repository
+## Priorities
 
-- **Private/public boundary (highest priority).** Nothing may add game
-  binaries or assets, firmware, decrypted modules, keys, saves, captures,
-  traces, retail addresses from private evidence, or absolute local machine
-  paths (user home or workspace directories). This includes docs, test
-  fixtures, logs, and CI output.
-- **`src/rt/recomp.h` `CpuState` is a load-bearing ABI.** Any layout change
-  must bump `SR_CPUSTATE_ABI_VERSION` and update `tools/mem_debug.py`. MIPS
-  `$ra` is `r[31]`; there is no separate link register.
-- **Default builds must not change behaviour** when a change is gated behind an
-  opt-in flag (for example `--lle-cpu`, `--lle-import-seam`): generated C
-  without the flag must stay byte-identical, and the default lane must stay
-  fail-closed.
-- **Fail closed, never guess.** Invalid guest pointers, unknown opcodes,
-  unowned jump targets, missing inputs, and unavailable backends must be
-  reported, not silently defaulted or synthesized.
-- **No title-specific logic in generic code.** Title behaviour belongs in
-  manifests or title config with evidence and a retirement criterion, not in
-  hard-coded addresses or game names in `src/rt/` or `tools/`.
-- **No invented hardware facts.** PSP-specific values must cite a measured
-  hardware cell, a public spec, or be labelled unmeasured and kept behind a
-  disabled-by-default path. MIPS32 architectural behaviour should cite the
-  MIPS32 specification.
-- **Provenance honesty.** New code must never be copied or line-by-line
-  translated from PPSSPP, sal063, or other emulators; flag any new path that
-  looks copied, whatever its record says. Existing derived code must keep its
-  derived record. Flag docs that call project code "clean-room", or that turn
-  engineering controls into legal conclusions.
-- **Host neutrality.** A change to a `*_posix.c` backend or a shared runtime
-  file must build on Linux as well as Windows (MSYS2 UCRT64 GCC).
+- **Private/public boundary:** reject game binaries/assets, firmware, decrypted modules,
+  keys, saves, captures, traces, private addresses or paths in any file, test, document,
+  log, or CI artifact.
+- **ABI and transfer safety:** `src/rt/recomp.h` `CpuState` is load-bearing. A layout
+  change must bump `SR_CPUSTATE_ABI_VERSION` and update `tools/mem_debug.py`; MIPS `$ra`
+  is `r[31]`, with no separate link register.
+- **Default-lane stability:** an opt-in change such as `--lle-cpu` or
+  `--lle-import-seam` must leave generated output byte-identical without the flag and
+  keep unsupported behavior fail-closed.
+- **Visible failure:** invalid guest pointers, unknown opcodes, unowned targets, missing
+  inputs, and unavailable backends must be reported, not guessed or synthesized.
+- **Generic implementation:** no game names or private guest addresses in `src/rt/` or
+  generic `tools/` code. Evidence-backed title behavior belongs in a manifest/config with
+  a retirement criterion.
+- **Evidence honesty:** preserve existing derived-code records and reject copied or
+  translated emulator code. PSP values need a measured cell, public specification, or an
+  explicit unmeasured/fail-closed label. Do not present engineering controls as legal
+  conclusions or call code clean-room/independent without a supporting trusted record.
+- **Host neutrality:** shared runtime and `*_posix.c` changes must build on Linux as well
+  as Windows, and generic PSP semantics must not depend on Windows APIs.
 
-## Severity calibration
+## Severity
 
-- **Critical:** private material or local paths entering the tree; a key or
-  secret; a guest-to-host memory-safety bug (unchecked guest pointer or length,
-  out-of-bounds host write); a silent `CpuState` ABI change; a default-lane
-  behaviour change hidden behind an "opt-in" claim.
-- **Warning:** missing span or pointer validation in an HLE handler; a flag
-  that is set in one execution tier (AOT or interpreter) but not honoured by the
-  other; state such as `next_pc` / `in_delay_slot` not restored on every exit
-  path; an unmeasured PSP value presented as fact; a new test that cannot fail;
-  a doc claim that contradicts the Makefile, `nk_manager.ps1`, or source.
-- **Suggestion:** naming, comment accuracy, smaller refactors.
+- **Critical:** private material or local paths; secrets; guest-to-host memory safety;
+  a silent `CpuState` ABI change; or a default behavior change hidden behind an opt-in
+  claim.
+- **Warning:** missing span/pointer validation; a flag honored in only one execution tier;
+  transfer state not restored on every exit; an unmeasured PSP value presented as fact;
+  a test that cannot fail; or a doc claim that contradicts the Makefile,
+  `nk_manager.ps1`, workflow, or source.
+- **Suggestion:** naming, comment accuracy, and smaller refactors.
 
 ## Do not flag
 
-- The mere presence of regenerated `PUBLIC_EXPORT.json` and
-  `assets/public_provenance_ledger.json` changes in a
-  "provenance: refresh public controls ..." commit. Do flag them if the
-  "Trusted provenance attestation" check failed or did not run on the head
-  (that check is currently observation-only, not required), or if the
-  commit changes anything beyond those regenerated outputs.
-- New entries in `assets/public_source_profile.json` for files the same PR
-  adds, provided the attestation check passed on the head. Otherwise flag
-  them as unauthorized public paths.
-- Missing `Signed-off-by:` trailers on maintainer or maintainer-directed agent
-  commits, which the standing DCO waiver covers (`docs/DCO_POLICY.md`
-  section 5.1). Commits from anyone else still need a DCO 1.1 sign-off; flag
-  those when it is missing.
-- Merge commits from `main` into a PR branch. The project never rebases or
-  force-pushes shared branches.
-- `*_unavailable.c` stubs that always fail. The public tree deliberately
-  excludes some backends (PGF fonts, PGD, ISO, audio) and links fail-closed
-  stubs instead.
-- Formatting-only differences that `.clang-format`, `ruff`, or markdownlint
-  already enforce.
-- Edits to generated `build/<game>/*_recomp_*.c`. These files are never
-  committed; flag it only if a PR actually adds one.
+- Regenerated `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json` in a
+  focused provenance-refresh commit. Flag them if the commit changes anything else, or
+  if the "Trusted provenance attestation" check failed or did not run on the head (it
+  is currently observation-only, not required).
+- New `assets/public_source_profile.json` entries for files the same PR adds, provided
+  the attestation check passed on the head. Otherwise flag them as unauthorized public
+  paths.
+- Missing `Signed-off-by:` on maintainer or maintainer-directed agent commits covered by
+  `docs/DCO_POLICY.md` section 5.1. Other contributors still require DCO 1.1 sign-off.
+- Merge commits from `main` into a PR branch; shared branches are not rebased or force-pushed.
+- Fail-closed public stubs such as `iso_unavailable.c` and `pgd_unavailable.c`. Do not infer behavior from a filename: `audio_unavailable.c` is
+  the active public-safe SDL3 host-audio backend.
+- Formatting-only differences already enforced by `.clang-format`, Ruff, or markdownlint.
+- Edits to generated `build/<game>/*_recomp_*.c`; those files are never committed. Flag
+  a PR only if it actually adds one.
 
-## Verification expectations
+## Evidence expectations
 
-- Codegen changes: a focused `tools/test_*.py` test, plus evidence that the
-  default output is unchanged when the feature is gated.
-- Runtime changes: the source-owned ladder that needs no game input
-  (`production-smoke`, `production-smoke-gap`, `cosim-selftest`,
-  `cosim-mutants`, `sched-selftest`, `dispatch-selftest`,
-  `hle-thread-selftest`, `selftest`, `public-safe-verify`). A new selftest must
-  be wired into a target that hosted CI runs (for example
-  `native-core-tests`) and must link on Linux.
-- Interpreter changes: `cosim-mutants` must still kill every mutant. A mutant
-  pattern count that no longer matches is a signal to update the mutant, not
-  to weaken it.
-- Docs changes: `python -m unittest tools.test_lint_docs` and markdownlint.
-  Links and Makefile target names must resolve.
-- A PR that says "not run" or "blocked" for a gate is acceptable. A PR that
-  implies a gate passed without running it is not.
+- Codegen: a focused `tools/test_*.py` regression and proof that default output is
+  unchanged when the feature is gated.
+- Runtime: the applicable source-owned ladder from `production-smoke`,
+  `production-smoke-gap`, `cosim-selftest`, `cosim-mutants`, `sched-selftest`,
+  `dispatch-selftest`, `hle-thread-selftest`, `selftest`, and `public-safe-verify`.
+  Wire new selftests into a hosted target such as `native-core-tests` and keep Linux
+  linkage valid.
+- Interpreter: `cosim-mutants` still kills every mutant. A changed pattern count means
+  update the mutant, not weaken the gate.
+- Docs: `python -m unittest tools.test_lint_docs`, Markdown lint, and resolved links,
+  paths, flags, and Make targets.
+- Report skipped or blocked gates as such. Never imply an unrun gate passed.
 
 ## Review style
 
-Lead with the concrete failure scenario (inputs, then the wrong result).
-Cite `file:line`. One finding per thread. Do not restate the PR description or
-praise unchanged code. If a finding depends on PSP hardware behaviour, say
-whether it is measured, specified, or assumed.
+Lead with the concrete failure scenario: inputs first, then the wrong result. Cite
+`file:line`, use one finding per thread, and do not restate the PR or praise unchanged
+code. Label PSP-hardware-dependent claims as measured, specified, or assumed.
