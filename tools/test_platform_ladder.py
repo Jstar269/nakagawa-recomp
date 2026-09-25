@@ -23,6 +23,7 @@ import sys
 import tempfile
 from typing import Callable
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -320,6 +321,24 @@ class HostileEnvironmentTests(unittest.TestCase):
         self.assertIn("status=PASS", combined)
         for forbidden in ("xbdata", "place_game_here", "hst_image", "UNKNOWN NID"):
             self.assertNotIn(forbidden, combined)
+
+    def test_generator_ignores_ambient_runtime_output_controls(self):
+        workloads_dir = ROOT / "build" / "platform-ladder" / "ladder-zero"
+        exe = workloads_dir / "pl_zero.exe"
+        image = workloads_dir / "pl_zero_image.bin"
+        _ensure_workload(self, "platform-ladder-zero", lambda: exe.is_file() and image.is_file())
+
+        sentinel = Path(self.tmp.name) / "ambient-perf.json"
+        sentinel.write_bytes(b"developer-owned\n")
+        hostile = {
+            "SR_PERF": "1",
+            "SR_PERF_JSON": str(sentinel),
+            "SR_EXIT_AT_VBLANK": "1",
+        }
+        with mock.patch.dict(os.environ, hostile, clear=False):
+            self.assertEqual(generator.run(workloads_dir, "ladder-zero"), 0)
+
+        self.assertEqual(sentinel.read_bytes(), b"developer-owned\n")
 
 
 class MutationKillTests(unittest.TestCase):
