@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "74775dd4da5fbb8e98e9619007956bb9b97e2f02eb84bfe3d6d9984a044ceb6b"
+      "sha256": "79b3576ac53e3402c85855579b1c9b62f4be8afa26a9e21d2ced3155da7e0a91"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -817,7 +817,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b70115ed7e14c4c0a742ada1deb98aee7323d1884d96a39dae071b2232feb0fa"
+      "sha256": "fed3fbd65f81e3e452c55cdd7e07ce03c1a3d97c1115f2ce0a2781f9c6de9a56"
     },
     {
       "path": "docs/ARCHITECTURE.md",
@@ -871,7 +871,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "45b633d5f6d552acbcb60f75605cdcbd342e457f0a4cd49191059e36b9086fc3"
+      "sha256": "e076c54c2c05e31669bc1e8863a571efa9b048154a170fb46c45f23f6271052d"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1141,7 +1141,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "974bcca8ffdf2ecf0bc295545a626dbf8c0d275713a24243a10cecd8cba5e601"
+      "sha256": "ba699ef6488c2efd80c25827e861aaf049a874694c4ba93d8d3023492eb63a51"
     },
     {
       "path": "docs/SETUP.md",
@@ -1504,7 +1504,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2922b8517f6da978ab99836aa04f192fa4a165697d77f4b833efbb7301856b86"
+      "sha256": "02a3d1f9342a381e220cab3e3cb6129298bbc1a8a1cdc3802fce219553b4fe55"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -1525,7 +1525,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "933aa59d85c87412cf69d1eb0aea4b07055efa2ef5966fd0de0e9c39e0817c9b"
+      "sha256": "1a804509288165b82e0d672d96ef4464dd81f0a36e2b0f31c1d9a0082d0dea8a"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -1840,7 +1840,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3002fb7c240f93f2930bb70236e8c214b8b71115d079f2e0b4f5e66958e6d27"
+      "sha256": "eb09b02b11f69a6cba29efc54f4a31bd2b19faeece3f165b613ad94c0daf6807"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
@@ -3794,7 +3794,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16e5d27ae32ea854f6f25d8698813f8492c3f86c2b6ebe0fa24181e203bb4026"
+      "sha256": "c282c2b219154fead08312aefbdcba1c01f4a12cf234a25077a8560d10bdfd3c"
     },
     {
       "path": "pyproject.toml",
@@ -3935,7 +3935,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "001cf1e26178226f4a1dda1e64f4b8ee6f28d15377f4627c71df9038b098705a"
+      "sha256": "3158452aefa3f6290c1841c2c17020766e85c1b199a79237c289a3b0ff03fcdb"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3947,7 +3947,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b67a0688faaad4e1e0b815e7474040cfe10b034e5372e9f0a9df00ac1e3908f8"
+      "sha256": "ab0ea5e5dbe46745c4249ffefa1bc38da5fadfa3ae616e7bcfc83798f2b35782"
     },
     {
       "path": "src/core/nk_library.c",
@@ -7376,7 +7376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac23b38890080e9747412cba9d9fa85ea68c55e1945763dab3f130e6bcb391b8"
+      "sha256": "2d00d89cc60bff307ddf0948663d1a06d81f5bf576f1061fb421c1cb032bd7fb"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8441,7 +8441,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b00fb9ca7630a84d907301b35a5a4afc2eab778344b2f2772aaf9f00ac17f235"
+      "sha256": "11869092458d0db217654319101c68c97b2b735bbddc574aadd9ee2eef8b15f1"
     },
     {
       "path": "tools/test_dmac_semantics.py",
@@ -9077,7 +9077,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9db33199f3182ae309e9fac45cc9e9b16984951f73b5bb5e1502013aff264713"
+      "sha256": "899b1e668cba286620632310a1dda064090a16decc61a58dd9c2e81bab1f89f4"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -9464,7 +9464,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b70bda5635f93e3b88aa1a43bc2f5e4dcfb5ecbcfbc0b553f783122ec726136f"
+      "sha256": "340f14e819c6beb571677ba88bec5b833a65d7540ed9eb3bed5d6c01b02b80c6"
     },
     {
       "path": "tools/test_shader_embed.py",

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 """Generate and qualify the source-owned full-production smoke guest.
@@ -547,13 +547,13 @@ class ModePlan:
 
 MODES: dict[str, ModePlan] = {
     "aot": ModePlan(
-        env={"SR_DISPATCH_FATAL": "1", "SR_HLELOG": "1"},
+        env={"SR_HLELOG": "1"},
     ),
     # The intentional omission reaches the real production dispatcher, executes
     # guest bytes inside an analyzer-owned span, and hands off to region B AOT.
     "aot-gap": ModePlan(
         codegen_args=(f"--omit-aot=0x{HELPER:08x}",),
-        env={"SR_DISPATCH_FATAL": "1", "SR_HLELOG": "1", "SR_DISPLOG": "1"},
+        env={"SR_HLELOG": "1", "SR_DISPLOG": "1"},
         expected_value=INTERP_RESULT,
     ),
 }

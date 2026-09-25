@@ -61,7 +61,7 @@ The native player loads a generic runtime engine, which dynamically loads a titl
 The native player (`nakagawa_player`) acts as an authentic front-end and library manager. When a game is launched, it constructs a typed `NkLaunchSession` and spawns the title's standalone recompiled runtime as an isolated child process via `nk_platform_spawn_process`.
 Communication and handoff occur via:
 
-* Clean environment variables: `PSP_ISO`, `SR_FPS_CAP`, `SR_GPU_GE=1`, `SR_DEBUG`, `SR_DISPATCH_FATAL=1`.
+* Clean environment variables: `PSP_ISO`, `SR_FPS_CAP`, `SR_GPU_GE=1`, `SR_DEBUG`.
 * Process lifecycle tracking: native wait, status queries, and platform-specific termination (forced on Windows; SIGTERM with bounded grace and SIGKILL escalation on POSIX).
 
 * **Advantages:**
