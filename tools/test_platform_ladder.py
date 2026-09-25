@@ -431,6 +431,54 @@ class ChildEnvironmentContractTests(unittest.TestCase):
         self.assertEqual(environment["PL_ENV_CONTRACT_SENTINEL"], "keep-me")
 
 
+class SpawnPathContractTests(unittest.TestCase):
+    """Built executables are spawned by resolved absolute paths (#294)."""
+
+    def test_ladder_run_spawns_absolute_paths_from_a_foreign_cwd(self):
+        plan = generator.PLANS["ladder-fs"]
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = list(command)
+            expect = (
+                f"DRIVER_EXPECT_U32 addr=0x{plan.result_addr():08x} "
+                f"got=0x{plan.expected_value():08x} "
+                f"expected=0x{plan.expected_value():08x} status=PASS"
+            )
+            return subprocess.CompletedProcess(
+                list(command),
+                0,
+                stdout=(
+                    "BOOT_EVENT phase=init public_safe=1\n"
+                    f"BOOT_EVENT phase=image_loaded entry=0x{plan.entry:08x}\n"
+                    "sr_register_all: completed\n"
+                    f"{expect}\n"
+                ),
+                stderr="",
+            )
+
+        build_dir = Path(tempfile.mkdtemp(prefix="pl_spawn_"))
+        self.addCleanup(shutil.rmtree, build_dir, ignore_errors=True)
+        foreign_cwd = Path(tempfile.mkdtemp(prefix="pl_foreign_cwd_"))
+        self.addCleanup(shutil.rmtree, foreign_cwd, ignore_errors=True)
+        previous_cwd = os.getcwd()
+        try:
+            os.chdir(foreign_cwd)
+            with mock.patch.object(generator.subprocess, "run", side_effect=fake_run):
+                self.assertEqual(generator.run(build_dir, "ladder-fs"), 0)
+        finally:
+            os.chdir(previous_cwd)
+        self.assertTrue(os.path.isabs(captured["command"][0]))
+        self.assertEqual(
+            Path(captured["command"][0]).resolve(), (build_dir / "pl_fs.exe").resolve()
+        )
+        image_arg = captured["command"][2]
+        self.assertTrue(os.path.isabs(image_arg))
+        self.assertEqual(
+            Path(image_arg).resolve(), (build_dir / "pl_fs_image.bin").resolve()
+        )
+
+
 class MutationKillTests(unittest.TestCase):
     """Deliberate genericity/title-coupling mutations must flip the gate."""
 

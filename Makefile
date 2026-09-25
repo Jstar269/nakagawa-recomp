@@ -626,6 +626,7 @@ PUBLIC_TARGETS := \
 	player \
 	public-safe-verify \
 	production-smoke \
+	production-smoke-staged \
 	production-smoke-clean \
 	production-smoke-gap \
 	perf-benchmark \
@@ -726,6 +727,7 @@ HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
 HELP_DESCRIPTION_player := build the native player
 HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objects
 HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
+HELP_DESCRIPTION_production-smoke-staged := run the production smoke from a staging directory outside the build tree
 HELP_DESCRIPTION_production-smoke-clean := remove production smoke artifacts
 HELP_DESCRIPTION_production-smoke-gap := run the public AOT-gap dispatch smoke test
 HELP_DESCRIPTION_perf-benchmark := run the public source-owned SR_PERF benchmark matrix and overhead check
@@ -948,6 +950,12 @@ production-smoke:
 		LDFLAGS="$(LDFLAGS) -Wl,-Map,$(PRODUCTION_SMOKE_MAP)"
 	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) verify --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
 	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) run --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
+
+# Run the same smoke with the executable staged into a fresh directory outside
+# the build tree (#294): a launcher/staging path bug must fail here, not only in
+# the build-tree spelling.
+production-smoke-staged: production-smoke
+	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) run-staged --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
 
 production-smoke-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_DIR) clean
