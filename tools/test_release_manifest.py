@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the Nakagawa Recomp authors
 #
 # test_release_manifest.py — regression suite for the release dependency
 # manifest (assets/release_manifest.json) and the SBOM generators in

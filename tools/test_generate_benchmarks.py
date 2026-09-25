@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the Nakagawa Recomp authors
 """Tests for tools/generate_benchmarks.py (issue #189 read-only/bounded/atomic).
 
 These tests exercise the report generator with pure helpers and temporary

@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Adversarial regression: the publication gates cannot be bypassed by editing
 the checked-in public ledger/policy/export in the same change.
