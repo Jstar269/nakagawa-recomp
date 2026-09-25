@@ -15083,6 +15083,9 @@ static void test_flight_recorder_trace(void) {
            "recorder retains the scheduler event at the truncation boundary");
     expect(sr_flight_event_at(1, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE,
            "recorder retains the HLE event after the scheduler event");
+    expect(flight_event.has_return != 0u && flight_event.return_value == 0u &&
+               flight_event.arguments[0] == module_uid,
+           "recorder attaches HLE arguments and return value to the import event");
     expect(sr_flight_event_at(2, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_PRX,
            "recorder retains the PRX event after the HLE event");
     expect(sr_flight_event_at(3, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_FATAL,
@@ -15093,8 +15096,10 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 1") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 2") != NULL,
            "recorder writes a schema-versioned JSON bundle");
+    expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
+           "recorder JSON contains HLE arguments and the returned value");
     expect(strstr(bundle, "\"dropped\": 3") != NULL && strstr(bundle, "\"terminal\"") != NULL,
            "recorder JSON records truncation and terminal reason");
     expect(strstr(bundle, "\"guest") == NULL && strstr(bundle, "\"path") == NULL,
@@ -15144,16 +15149,20 @@ static void test_flight_recorder_trace(void) {
     sr_flight_test_disable();
 
     remove(output);
-    sr_flight_test_reset(SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 4u);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL,
+                         4u);
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "controlled unsupported producer returns its named utility error");
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "controlled unsupported producer remains stable on retry");
     sr_flight_snapshot(&snapshot);
-    expect(snapshot.recorded == 1u && snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
+    expect(snapshot.recorded == 2u && snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
            "first unsupported NID triggers exactly one recorder dump");
-    expect(sr_flight_event_at(0, &flight_event) != 0 &&
+    expect(sr_flight_event_at(0, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE &&
+               flight_event.has_return != 0u && flight_event.return_value == 0x80110001u,
+           "controlled unsupported HLE return value is retained before its recorder trigger");
+    expect(sr_flight_event_at(1, &flight_event) != 0 &&
                flight_event.event_class == SR_FLIGHT_CLASS_UNSUPPORTED,
            "unsupported trigger event is retained");
     remove(output);
