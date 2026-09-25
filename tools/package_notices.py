@@ -5,9 +5,10 @@
 """Deterministic third-party notice generation and licensing gate for native packages.
 
 Enumerates bundled binaries, resolves and validates required license notices from
-installed toolchain and repository files, emits the THIRD_PARTY_NOTICES bundle and
-LGPL relinking materials (RELINK.md), and fails closed if any bundled binary lacks
-a license record.
+``assets/third_party_components.json`` (the single machine-readable source of truth)
+with the local toolchain as a fallback source of the same texts, emits the
+THIRD_PARTY_NOTICES bundle and LGPL relinking materials (RELINK.md), and fails
+closed if any bundled binary lacks a license record.
 """
 
 from __future__ import annotations
@@ -25,6 +26,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
+#: Machine-readable source of truth for every third-party component that can enter
+#: a release artifact. The native package, the dashboard standalone output, the
+#: SBOM and the release gate all read this one file.
+COMPONENTS_IDENTITY = "assets/third_party_components.json"
+COMPONENTS_PATH = ROOT / COMPONENTS_IDENTITY
+
 try:
     from title_codegen_plan import PackageRouteError
 except ImportError:
@@ -35,51 +42,109 @@ except ImportError:
             self.message = message
 
 
-KNOWN_RUNTIME_DLLS: dict[str, dict[str, str]] = {
-    "sdl3.dll": {
-        "name": "SDL3",
-        "spdx_id": "Zlib",
-        "toolchain_license_rel": "share/licenses/SDL3/LICENSE.txt",
-        "pacman_package": "sdl3",
-        "upstream_origin": "https://github.com/libsdl-org/SDL",
-    },
-    "libwinpthread-1.dll": {
-        "name": "winpthreads",
-        "spdx_id": "MIT AND BSD-3-Clause",
-        "toolchain_license_rel": "share/licenses/winpthreads/COPYING",
-        "pacman_package": "winpthreads",
-        "alt_toolchain_license_rel": "share/licenses/libwinpthread/COPYING",
-        "upstream_origin": "https://mingw-w64.org/",
-    },
-    "libgcc_s_seh-1.dll": {
-        "name": "gcc-libs (libgcc)",
-        "spdx_id": "GPL-3.0-or-later WITH GCC-exception-3.1",
-        "toolchain_license_rel": "share/licenses/gcc-libs/COPYING.RUNTIME",
-        "extra_toolchain_license_rels": ["share/licenses/gcc-libs/COPYING3"],
-        "pacman_package": "gcc-libs",
-        "upstream_origin": "https://gcc.gnu.org/",
-    },
-    "libstdc++-6.dll": {
-        "name": "gcc-libs (libstdc++)",
-        "spdx_id": "GPL-3.0-or-later WITH GCC-exception-3.1",
-        "toolchain_license_rel": "share/licenses/gcc-libs/COPYING.RUNTIME",
-        "extra_toolchain_license_rels": ["share/licenses/gcc-libs/COPYING3"],
-        "pacman_package": "gcc-libs",
-        "upstream_origin": "https://gcc.gnu.org/",
-    },
-}
+def load_component_inventory(path: Path | None = None) -> dict[str, Any]:
+    """Return the third-party component inventory, failing closed when unusable.
 
-SYSTEM_DLL_PATTERNS = (
-    re.compile(r"^api-ms-win-.*\.dll$", re.IGNORECASE),
-    re.compile(r"^ext-ms-win-.*\.dll$", re.IGNORECASE),
-    re.compile(
-        r"^(kernel32|kernelbase|user32|gdi32|shell32|ole32|oleaut32|advapi32|"
-        r"setupapi|imm32|version|winmm|comctl32|comdlg32|shlwapi|ws2_32|wsock32|"
-        r"dnsapi|iphlpapi|netapi32|userenv|uxtheme|dwmapi|d3d[0-9a-z_]*|dxgi|"
-        r"dinput[0-9a-z_]*|xinput[0-9a-z_]*|mfplat|mf|mfreadwrite|mfuuid|"
-        r"vulkan-1|ntdll|msvcrt|ucrtbase)\.dll$",
-        re.IGNORECASE,
-    ),
+    The inventory is the authority for every license record, so a missing or
+    malformed file is a named packaging failure rather than a silent fallback to
+    an empty record set that would let an unrecorded binary through.
+    """
+    source = path or COMPONENTS_PATH
+    if not source.is_file():
+        raise PackageRouteError(
+            "PACKAGE_LICENSE_RECORD_MISSING",
+            f"LICENSE_RECORD_SOURCE_MISSING: third-party component inventory "
+            f"{COMPONENTS_IDENTITY} is missing from the source tree",
+        )
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PackageRouteError(
+            "PACKAGE_LICENSE_RECORD_MISSING",
+            f"LICENSE_RECORD_SOURCE_UNREADABLE: {COMPONENTS_IDENTITY} could not be parsed: {exc}",
+        ) from exc
+    dlls = data.get("native", {}).get("dlls")
+    if not isinstance(dlls, dict) or not dlls:
+        raise PackageRouteError(
+            "PACKAGE_LICENSE_RECORD_MISSING",
+            f"LICENSE_RECORD_SOURCE_INCOMPLETE: {COMPONENTS_IDENTITY} declares no native.dlls records",
+        )
+    return data
+
+
+def notice_file_name(record: dict[str, Any]) -> str:
+    """Return the notice filename for a component record.
+
+    The inventory names it explicitly so the emitted filename stays stable when a
+    display name is reworded; a record without one falls back to a slug.
+    """
+    declared = record.get("notice_file")
+    if declared:
+        return str(declared)
+    return re.sub(r"[^A-Za-z0-9._-]", "_", record["name"]).strip("_") + ".txt"
+
+
+def component_license_sources(
+    record: dict[str, Any], toolchain_root: Path | None, repo_root: Path
+) -> list[tuple[Path, str]]:
+    """Return the (path, display label) license texts for one component record.
+
+    The in-tree text under ``third_party/licenses/`` is authoritative because it
+    travels with the source; the local toolchain copy is the fallback so a host
+    whose toolchain is newer than the checked-in text still resolves one.
+    """
+    sources: list[tuple[Path, str]] = []
+    for entry in record.get("license_texts", []):
+        in_tree = repo_root / entry["file"]
+        if in_tree.is_file():
+            sources.append((in_tree, entry["file"]))
+            continue
+        toolchain_rel = entry.get("toolchain_license_rel")
+        if toolchain_root and toolchain_rel:
+            candidate = toolchain_root / toolchain_rel
+            if candidate.is_file():
+                sources.append((candidate, toolchain_rel))
+    return sources
+
+
+def known_runtime_dlls(repo_root: Path = ROOT) -> dict[str, dict[str, Any]]:
+    """Map every lowercased bundleable DLL name to its inventory record.
+
+    Includes ``host_resolved_components`` so a loader a user places beside the
+    package still gets a named notice rather than an unexplained refusal.
+    """
+    inventory = load_component_inventory()
+    records: dict[str, dict[str, Any]] = {}
+    for dll_name, record in inventory["native"]["dlls"].items():
+        records[dll_name.lower()] = record
+    for record in inventory["native"].get("host_resolved_components", []):
+        dll = record.get("dll")
+        if dll:
+            records[dll.lower()] = record
+    return records
+
+
+def packaged_dll_names() -> set[str]:
+    """Return the lowercased DLL names the packaging routes may copy into a package.
+
+    Deliberately excludes ``host_resolved_components``: the Vulkan loader is
+    resolved from the host and this repository does not redistribute it
+    (NOTICE.md), so it is recorded for attribution but never staged.
+    """
+    return {
+        name.lower()
+        for name, record in load_component_inventory()["native"]["dlls"].items()
+        if record.get("disposition") == "copied_into_package"
+    }
+
+
+#: Retained as a module attribute so existing importers keep working; the values
+#: now come from assets/third_party_components.json rather than a second literal.
+KNOWN_RUNTIME_DLLS: dict[str, dict[str, Any]] = known_runtime_dlls()
+
+SYSTEM_DLL_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in load_component_inventory()["native"]["system_dll_patterns"]
 )
 
 
@@ -335,11 +400,12 @@ def generate_package_notices(
     if toolchain_root:
         bin_dir = toolchain_root / "bin"
         if bin_dir.is_dir():
+            staged_names = packaged_dll_names()
             for binary in list(binaries):
                 imports = get_binary_imports(binary, toolchain_root)
                 for imp in imports:
                     imp_lower = imp.lower()
-                    if imp_lower in KNOWN_RUNTIME_DLLS:
+                    if imp_lower in staged_names:
                         dst = package_dir / imp
                         if not dst.is_file():
                             src = bin_dir / imp
@@ -353,28 +419,42 @@ def generate_package_notices(
     components: list[dict[str, Any]] = []
     license_files_to_copy: list[tuple[str, Path, str]] = []  # (target_filename, src_path, display_name)
 
-    # ATRAC3+ subset notice (compiled into the recomp runtime executable)
-    has_exe = any(p.suffix.lower() == ".exe" for p in binaries)
-    if has_exe or (repo_root / "src" / "rt" / "atrac3p").is_dir():
-        atrac3p_lic_path = repo_root / "src" / "rt" / "atrac3p" / "LICENSE.LGPLv2.1.txt"
-        if not atrac3p_lic_path.is_file():
+    # Linked/host-resolved components, driven by the inventory rather than a second
+    # literal. The LGPL subset ships inside every runtime executable, so it is
+    # named whenever the package contains one.
+    inventory = load_component_inventory()
+    for linked in inventory["native"].get("linked_components", []):
+        sources = component_license_sources(linked, toolchain_root, repo_root)
+        if not sources:
+            declared = [entry["file"] for entry in linked.get("license_texts", [])]
             raise PackageRouteError(
                 "PACKAGE_LICENSE_TEXT_MISSING",
-                "LICENSE_TEXT_MISSING: FFmpeg ATRAC3+ subset LGPL license text is missing from "
-                f"the source tree ({make_relative_path(atrac3p_lic_path, toolchain_root, repo_root)})",
+                f"LICENSE_TEXT_MISSING: {linked['name']} license text is missing from the "
+                f"source tree; {COMPONENTS_IDENTITY} declares {declared}",
             )
-        rel_atrac3p = make_relative_path(atrac3p_lic_path, toolchain_root, repo_root)
-        components.append({
-            "name": "FFmpeg ATRAC3+ subset",
-            "version": "n4.4",
-            "spdx_id": "LGPL-2.1-or-later",
-            "source_path": rel_atrac3p,
-            "license_file": "FFmpeg-ATRAC3P.txt",
-            "relink_doc": "RELINK.md",
-            "upstream_origin": "https://github.com/FFmpeg/FFmpeg",
-            "disposition": "statically_linked_subset",
-        })
-        license_files_to_copy.append(("FFmpeg-ATRAC3P.txt", atrac3p_lic_path, "FFmpeg ATRAC3+ subset"))
+        slug = notice_file_name(linked)
+        component: dict[str, Any] = {
+            "name": linked["name"],
+            "spdx_id": linked["spdx_id"],
+            "source_path": make_relative_path(sources[0][0], toolchain_root, repo_root),
+            "license_file": slug,
+            "upstream_origin": linked.get("upstream_origin", "NOASSERTION"),
+            "disposition": linked.get("disposition", "linked"),
+        }
+        if linked.get("upstream_revision"):
+            component["version"] = linked["upstream_revision"]
+        if linked.get("relink_doc"):
+            component["relink_doc"] = linked["relink_doc"]
+        components.append(component)
+        license_files_to_copy.append((slug, sources[0][0], linked["name"]))
+        for extra_src, extra_display in sources[1:]:
+            extra_name = f"{Path(slug).stem}-{Path(extra_display).name}"
+            component.setdefault("additional_license_files", []).append(extra_name)
+            license_files_to_copy.append(
+                (extra_name, extra_src, f"{linked['name']} ({Path(extra_display).name})")
+            )
+        if linked.get("object_glob"):
+            component["relink_objects"] = linked["object_glob"]
 
     # Process bundled binaries
     for binary in binaries:
@@ -382,18 +462,36 @@ def generate_package_notices(
         bin_lower = bin_name.lower()
 
         if binary.suffix.lower() == ".exe":
-            # Recompiled executable: governed by Nakagawa Recomp project license and LGPL relink obligations
-            proj_license = repo_root / "LICENSE"
-            if proj_license.is_file():
-                rel_proj = make_relative_path(proj_license, toolchain_root, repo_root)
-                components.append({
-                    "name": f"Nakagawa Recomp Runtime ({bin_name})",
-                    "binary": bin_name,
-                    "spdx_id": "GPL-3.0-or-later",
-                    "source_path": rel_proj,
-                    "license_file": "Nakagawa-Recomp-LICENSE.txt",
-                })
-                license_files_to_copy.append(("Nakagawa-Recomp-LICENSE.txt", proj_license, "Nakagawa Recomp"))
+            # Recompiled executable: governed by the project license recorded for
+            # the package output, and by the LGPL relink obligations above.
+            runtime_record = inventory["native"].get("project_output")
+            if runtime_record is None:
+                raise PackageRouteError(
+                    "PACKAGE_LICENSE_RECORD_MISSING",
+                    f"LICENSE_RECORD_SOURCE_INCOMPLETE: {COMPONENTS_IDENTITY} declares no "
+                    f"native.project_output record for the packaged executable",
+                )
+            runtime_sources = component_license_sources(runtime_record, toolchain_root, repo_root)
+            if not runtime_sources:
+                raise PackageRouteError(
+                    "PACKAGE_LICENSE_TEXT_MISSING",
+                    f"LICENSE_TEXT_MISSING: project license text is missing for the packaged "
+                    f"executable {bin_name!r}",
+                )
+            components.append({
+                "name": f"{runtime_record['name']} ({bin_name})",
+                "binary": bin_name,
+                "spdx_id": runtime_record["spdx_id"],
+                "source_path": make_relative_path(runtime_sources[0][0], toolchain_root, repo_root),
+                "license_file": runtime_record.get("notice_file", "Nakagawa-Recomp-LICENSE.txt"),
+                "upstream_origin": runtime_record.get("upstream_origin", "NOASSERTION"),
+                "disposition": runtime_record.get("disposition", "project_output"),
+            })
+            license_files_to_copy.append((
+                runtime_record.get("notice_file", "Nakagawa-Recomp-LICENSE.txt"),
+                runtime_sources[0][0],
+                runtime_record["name"],
+            ))
             continue
 
         # For DLLs, match known runtime DLLs or custom mapping
@@ -409,29 +507,27 @@ def generate_package_notices(
                 f"bundled binary {bin_name!r} lacks a license record; packaging refused",
             )
 
-        # Locate license text file
-        lic_src: Path | None = None
+        # Locate the license text files. A caller-supplied license_path wins; every
+        # other record resolves through the inventory's license_texts, preferring the
+        # in-tree copy so notices generation does not depend on a host toolchain.
+        sources: list[tuple[Path, str]] = []
         if "license_path" in record and Path(record["license_path"]).is_file():
-            lic_src = Path(record["license_path"])
-        elif toolchain_root:
-            cand1 = toolchain_root / record["toolchain_license_rel"]
-            if cand1.is_file():
-                lic_src = cand1
-            elif "alt_toolchain_license_rel" in record:
-                cand2 = toolchain_root / record["alt_toolchain_license_rel"]
-                if cand2.is_file():
-                    lic_src = cand2
+            sources.append((Path(record["license_path"]), record["license_path"]))
+        else:
+            sources = component_license_sources(record, toolchain_root, repo_root)
 
-        if lic_src is None or not lic_src.is_file():
+        if not sources:
+            declared = [entry["file"] for entry in record.get("license_texts", [])]
             raise PackageRouteError(
                 "PACKAGE_LICENSE_TEXT_MISSING",
                 f"LICENSE_TEXT_MISSING: license text for bundled binary {bin_name!r} "
-                f"({record.get('name')}) was not found in toolchain or local source",
+                f"({record.get('name')}) was not found in the source tree or the "
+                f"local toolchain; {COMPONENTS_IDENTITY} declares {declared}",
             )
 
-        clean_slug = re.sub(r"[^A-Za-z0-9._-]", "_", record["name"]).strip("_")
-        target_lic_name = f"{clean_slug}.txt"
-        rel_src = make_relative_path(lic_src, toolchain_root, repo_root)
+        clean_slug = notice_file_name(record)
+        target_lic_name = clean_slug
+        rel_src = make_relative_path(sources[0][0], toolchain_root, repo_root)
 
         components.append({
             "name": record["name"],
@@ -442,19 +538,15 @@ def generate_package_notices(
             "source_path": rel_src,
             "license_file": target_lic_name,
             "upstream_origin": record.get("upstream_origin", "NOASSERTION"),
+            "disposition": record.get("disposition", "bundled_binary"),
         })
-        license_files_to_copy.append((target_lic_name, lic_src, record["name"]))
-        for extra_rel in record.get("extra_toolchain_license_rels", []):
-            extra_src = toolchain_root / extra_rel if toolchain_root else None
-            if extra_src is None or not extra_src.is_file():
-                raise PackageRouteError(
-                    "PACKAGE_LICENSE_TEXT_MISSING",
-                    f"LICENSE_TEXT_MISSING: license text {extra_rel!r} for bundled binary "
-                    f"{bin_name!r} ({record.get('name')}) was not found in the toolchain",
-                )
-            extra_name = f"{clean_slug}-{Path(extra_rel).name}.txt"
+        license_files_to_copy.append((target_lic_name, sources[0][0], record["name"]))
+        for extra_src, extra_display in sources[1:]:
+            extra_name = f"{Path(clean_slug).stem}-{Path(extra_display).name}"
             components[-1].setdefault("additional_license_files", []).append(extra_name)
-            license_files_to_copy.append((extra_name, extra_src, f"{record['name']} ({Path(extra_rel).name})"))
+            license_files_to_copy.append(
+                (extra_name, extra_src, f"{record['name']} ({Path(extra_display).name})")
+            )
 
     # Materialize THIRD_PARTY_NOTICES directory
     notices_dir = package_dir / "THIRD_PARTY_NOTICES"
