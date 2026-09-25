@@ -9131,7 +9131,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e3ddcb7a09a5ebf8a385abeee6244729eb53de1fa3db297d672661313e30be1"
+      "sha256": "2038484b2b3f28c54b82126245c9813b11a8e14d09b47b48861a26f01ed357f5"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
