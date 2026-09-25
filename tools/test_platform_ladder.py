@@ -341,6 +341,122 @@ class HostileEnvironmentTests(unittest.TestCase):
         self.assertEqual(sentinel.read_bytes(), b"developer-owned\n")
 
 
+class ChildEnvironmentContractTests(unittest.TestCase):
+    """The exact child environment of one run, pinned at the spawn boundary.
+
+    The ladder owns the whole SR_* runtime-control namespace: every ambient
+    SR_* key is deleted at the filter in generate.py, then the workload's
+    temporary roots (hermetic_host_roots) and its plan.env are applied.  This
+    contract is asserted with a mocked subprocess.run, so it runs on a clean
+    machine with no compiler and no native build; HostileEnvironmentTests
+    keeps the compiled end-to-end regression.
+    """
+
+    HOSTILE_SR = {
+        "SR_EXIT_AT_VBLANK": "1",
+        "SR_PERF_JSON": "ambient-perf.json",
+        "SR_DATAROOT": "C:\\ambient\\retail\\data",
+        "SR_FSDIR": "C:\\ambient\\dev_fs",
+        "SR_MEMSTICK": "C:\\ambient\\memstick",
+        "SR_QUIET": "ambient-quiet.log",
+    }
+    ROOT_KEYS = ("SR_DATAROOT", "SR_MEMSTICK", "SR_FSDIR")
+
+    def _run_and_capture(self, workload: str, negative: bool = False) -> dict:
+        plan = generator.PLANS[workload]
+        captured: dict = {}
+
+        def fake_run(command, **kwargs):
+            environment = kwargs["env"]
+            captured["environment"] = dict(environment)
+            # The temporary roots still exist while the child would spawn.
+            captured["roots_are_temporary"] = {
+                key: os.path.isdir(environment[key])
+                and os.path.basename(environment[key]).startswith("platform_ladder_")
+                for key in self.ROOT_KEYS
+                if key in environment
+            }
+            if negative:
+                unsupported = f"0x{generator.TITLE2_UNSUPPORTED_NID:08x}"
+                return subprocess.CompletedProcess(
+                    list(command),
+                    7,
+                    stdout=(
+                        f"HLE: unimplemented nid {unsupported} (unknown) (thread uid 0x133)\n"
+                        f"     -> add a handler in src/rt/hle.c: "
+                        f'sr_hle_register({unsupported}u, "sceUnknown", h_...);\n'
+                    ),
+                    stderr="",
+                )
+            expect = (
+                f"DRIVER_EXPECT_U32 addr=0x{plan.result_addr():08x} "
+                f"got=0x{plan.expected_value():08x} "
+                f"expected=0x{plan.expected_value():08x} status=PASS"
+            )
+            return subprocess.CompletedProcess(
+                list(command),
+                0,
+                stdout=(
+                    "BOOT_EVENT phase=init public_safe=1\n"
+                    f"BOOT_EVENT phase=image_loaded entry=0x{plan.entry:08x}\n"
+                    "sr_register_all: completed\n"
+                    f"{expect}\n"
+                ),
+                stderr="",
+            )
+
+        build_dir = Path(tempfile.mkdtemp(prefix="pl_env_contract_"))
+        self.addCleanup(shutil.rmtree, build_dir, ignore_errors=True)
+        ambient = dict(self.HOSTILE_SR)
+        ambient["PL_ENV_CONTRACT_SENTINEL"] = "keep-me"
+        with mock.patch.dict(os.environ, ambient, clear=False):
+            with mock.patch.object(generator.subprocess, "run", side_effect=fake_run):
+                self.assertEqual(
+                    generator.run(build_dir, workload, negative=negative), 0
+                )
+        return captured
+
+    def _assert_contract(self, captured: dict, plan) -> None:
+        environment = captured["environment"]
+        # No ambient SR_* key survives: keys the ladder never supplies vanish,
+        # and even the root names come back with temporary-root values ...
+        for key in self.HOSTILE_SR:
+            if key not in self.ROOT_KEYS:
+                self.assertNotIn(key, environment)
+        # ... so the child's SR_* surface is exactly the roots plus the plan.
+        self.assertEqual(
+            {key for key in environment if key.startswith("SR_")},
+            set(self.ROOT_KEYS) | set(plan.env),
+        )
+        # Every root_environment key is present with a fresh temporary-root value.
+        self.assertEqual(
+            captured["roots_are_temporary"], {key: True for key in self.ROOT_KEYS}
+        )
+        self.assertEqual(
+            len({environment[key] for key in self.ROOT_KEYS}), len(self.ROOT_KEYS)
+        )
+        for key in self.ROOT_KEYS:
+            self.assertNotEqual(
+                environment[key], self.HOSTILE_SR[key],
+                f"ambient {key} value survived into the child",
+            )
+        # Every plan.env entry is present with its exact value ...
+        for key, value in plan.env.items():
+            self.assertEqual(environment[key], value)
+        # ... and non-SR ambient state is still inherited.
+        self.assertEqual(environment["PL_ENV_CONTRACT_SENTINEL"], "keep-me")
+
+    def test_child_env_is_owned_by_temporary_roots_and_plan_only(self):
+        captured = self._run_and_capture("ladder-fs")
+        self._assert_contract(captured, generator.PLANS["ladder-fs"])
+
+    def test_title2_negative_child_env_gets_temporary_roots(self):
+        # The negative run must be hermetic too: with no roots the Memory Stick
+        # fallback (relative "memstick") could resolve against the checkout.
+        captured = self._run_and_capture("ladder-title2-negative", negative=True)
+        self._assert_contract(captured, generator.PLANS["ladder-title2-negative"])
+
+
 class MutationKillTests(unittest.TestCase):
     """Deliberate genericity/title-coupling mutations must flip the gate."""
 
@@ -461,7 +577,10 @@ class Title2ContractTests(unittest.TestCase):
         self.assertEqual(plan.game_name, "pl_title2")
         self.assertEqual(plan.base, 0x08A40000)
         self.assertEqual(plan.entry, 0x08A40020)
-        self.assertEqual(plan.env, {"SR_DISPATCH_FATAL": "1"})
+        # No plan injects dispatch controls: dispatch is unconditionally
+        # fail-closed (src/rt/recomp.c dispatch/dispatch_call), so the ladder
+        # needs no environment switch to make a miss fatal.
+        self.assertEqual(plan.env, {})
         self.assertEqual(
             plan.flat_nids(),
             [

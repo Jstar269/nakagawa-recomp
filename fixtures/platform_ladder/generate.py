@@ -1581,7 +1581,6 @@ def _register_plans() -> None:
         relocate_data=False,
         result_addr_fn=lambda p: p.base + p.data_seg_vaddr + L2_RESULT,
         expected_value_fn=l2_expected,
-        env={"SR_DISPATCH_FATAL": "1"},
     )
     PLANS["ladder-fpu"] = Plan(
         name="ladder-fpu",
@@ -1620,7 +1619,6 @@ def _register_plans() -> None:
         relocate_data=False,
         result_addr_fn=lambda p: p.base + p.data_seg_vaddr + LG_RESULT,
         expected_value_fn=lg_expected,
-        env={"SR_DISPATCH_FATAL": "1"},
         label_contract={"entry": LG_ENTRY_OFF, "mid": LG_MID_OFF, "end": LG_END_OFF},
         gap_omit_offset=LG_MID_OFF,
     )
@@ -1639,7 +1637,6 @@ def _register_plans() -> None:
         relocate_data=False,
         result_addr_fn=lambda p: p.base + p.data_seg_vaddr + L5_RESULT,
         expected_value_fn=l5_expected_ok,
-        env={"SR_DISPATCH_FATAL": "1"},
     )
     PLANS["ladder-title2"] = Plan(
         name="ladder-title2",
@@ -1677,7 +1674,6 @@ def _register_plans() -> None:
         relocate_data=False,
         result_addr_fn=lambda p: p.base + p.data_seg_vaddr + TITLE2_RESULT_OFF,
         expected_value_fn=title2_expected,
-        env={"SR_DISPATCH_FATAL": "1"},
         label_contract={
             "entry": TITLE2_ENTRY_OFF,
             "callback": TITLE2_CALLBACK_OFF,
@@ -1704,7 +1700,6 @@ def _register_plans() -> None:
         relocate_data=False,
         result_addr_fn=lambda p: p.base + p.data_seg_vaddr,
         expected_value_fn=lambda p: 0,
-        env={"SR_DISPATCH_FATAL": "1"},
         label_contract={"entry": TITLE2_NEGATIVE_ENTRY_OFF},
         data_seg_vaddr=0x3000,
     )
@@ -2244,7 +2239,7 @@ def hermetic_host_roots(workload: str) -> Iterator[tuple[dict[str, str], Path | 
 
         environment = {"SR_DATAROOT": str(temporary("platform_ladder_empty_root_"))}
         fs_root: Path | None = None
-        if workload in ("ladder-fs", "ladder-title2"):
+        if workload in ("ladder-fs", "ladder-title2", "ladder-title2-negative"):
             environment["SR_MEMSTICK"] = str(temporary("platform_ladder_memstick_"))
             fs_root = temporary("platform_ladder_fs_")
             environment["SR_FSDIR"] = str(fs_root)

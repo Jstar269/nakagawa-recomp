@@ -85,4 +85,4 @@ route is currently implemented:
 
 1. **Retain Isolated Child Process Launch Contract:** `NkLaunchSession` handles both pre-compiled executables (Option C) and locally compiled binaries (Option A) identically via environment parameters.
 2. **Deterministic Manifest-Driven Metadata:** Title configurations (`assets/titles/*.json`) dictate whether an executable is pre-packaged or locally derived.
-3. **Fail-Closed Dispatch Enforcement:** All launch paths enforce `SR_DISPATCH_FATAL=1` to guarantee fidelity and prevent silent emulation hacks.
+3. **Fail-Closed Dispatch Enforcement:** Dispatch is unconditionally fail-closed to guarantee fidelity and prevent silent emulation hacks: a dispatch miss executes only inside analyzer-owned executable spans and every rejection terminates the run (`src/rt/recomp.c` `dispatch`/`dispatch_call`); no environment switch can relax this.
