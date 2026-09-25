@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/flight_recorder_schema.json",
   "$comment": "SPDX-License-Identifier: GPL-3.0-or-later",
-  "title": "Nakagawa Recomp Flight Recorder Bundle v1",
+  "title": "Nakagawa Recomp Flight Recorder Bundle v2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "runtime", "build", "recorder", "terminal", "events"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"enum": [1, 2]},
     "runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -74,16 +74,64 @@
         "additionalProperties": false,
         "required": ["schema_version", "sequence", "class", "kind", "arg0", "arg1", "arg2", "arg3"],
         "properties": {
-          "schema_version": {"const": 1},
+          "schema_version": {"enum": [1, 2]},
           "sequence": {"type": "integer", "minimum": 1},
           "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal"]},
           "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295},
           "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295},
           "arg1": {"type": "integer", "minimum": 0, "maximum": 4294967295},
           "arg2": {"type": "integer", "minimum": 0, "maximum": 4294967295},
-          "arg3": {"type": "integer", "minimum": 0, "maximum": 4294967295}
-        }
+          "arg3": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "arguments": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+          },
+          "return_value": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"schema_version": {"const": 1}}, "required": ["schema_version"]},
+            "then": {
+              "allOf": [
+                {"not": {"required": ["arguments"]}},
+                {"not": {"required": ["return_value"]}}
+              ]
+            }
+          },
+          {
+            "if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
+            "then": {
+              "if": {
+                "properties": {"class": {"const": "hle"}, "kind": {"const": 1}},
+                "required": ["class", "kind"]
+              },
+              "then": {"required": ["arguments", "return_value"]},
+              "else": {
+                "allOf": [
+                  {"not": {"required": ["arguments"]}},
+                  {"not": {"required": ["return_value"]}}
+                ]
+              }
+            }
+          }
+        ]
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"schema_version": {"const": 1}}, "required": ["schema_version"]},
+      "then": {"properties": {"events": {"items": {"properties": {"schema_version": {"const": 1}}}}}}
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
+      "then": {"properties": {"events": {"items": {"properties": {"schema_version": {"const": 2}}}}}}
+    }
+  ]
 }

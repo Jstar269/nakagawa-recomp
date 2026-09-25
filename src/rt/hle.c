@@ -16043,7 +16043,11 @@ static int link_started_export(CpuState *s, uint32_t nid) {
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
-    sr_flight_hle_import(nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
+    uint64_t flight_sequence = sr_flight_hle_import(
+        nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
+    if (flight_sequence != 0u && s) {
+        sr_flight_hle_arguments(flight_sequence, s->r[4], s->r[5], s->r[6], s->r[7]);
+    }
     sr_last_nid = nid;
     if (getenv("SR_NIDLOG")) {
         static FILE *nf = NULL; static unsigned long nc = 0;
@@ -16051,7 +16055,11 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
                   if ((++nc & 0x3f) == 0) fflush(nf); }
     }
-    if (link_started_export(s, nid)) return s->r[2];
+    if (link_started_export(s, nid)) {
+        uint32_t ret = s->r[2];
+        if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
+        return ret;
+    }
     HleEntry *e = hle_find(nid);
     if (hle_log_on()) {
         /* Deduplicate: only log each (thread, nid) pair once to avoid drowning
@@ -16094,7 +16102,6 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     }
     uint32_t ret;
     if (e->unsupported_error) {
-        sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
         hle_note_unsupported(e);
         ret = e->unsupported_error;
     } else {
@@ -16109,5 +16116,9 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     s->r[24] = 0xDEADBEEFu; s->r[25] = 0xDEADBEEFu;
     s->hi = 0xDEADBEEFu; s->lo = 0xDEADBEEFu;
     s->r[2] = ret;
+    if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
+    if (e->unsupported_error) {
+        sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
+    }
     return ret;
 }
