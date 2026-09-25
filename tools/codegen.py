@@ -46,6 +46,16 @@ LLE_IMPORT_SEAM = False
 # without false-firing on the first check.
 STALE_DETECT = False
 
+# SR_NAN_TRAP NaN/Inf origin diagnostic (issue #69). When True, every FPU and
+# VFPU result write in the generated C is followed by an SR_NAN_TRAP_* check
+# that names the first instructions whose result went non-finite from all-finite
+# operands (see the SR_NAN_TRAP block in src/rt/recomp.h). Set by --nan-trap;
+# default False emits no check statement at all, so the generated C -- and
+# therefore the object built from it -- is byte-identical to a pre-trap build.
+# The C half of the option (-DSR_NAN_TRAP) makes those checks live; without it
+# they expand to ((void)0) and neither half changes behaviour on its own.
+NAN_TRAP = False
+
 
 def enable_lle_import_seam():
     """Turn on the import seam and the PR 2 flow machinery it relies on.
@@ -352,6 +362,70 @@ def s16(w): return (w & 0xFFFF) - 0x10000 if w & 0x8000 else w & 0xFFFF
 def wr(i, expr):
     # Assignment to GPR i; writes to r0 are dropped (ARCHITECTURE section 4).
     return "(void)0;" if i == 0 else f"s->r[{i}] = {expr};"
+
+
+def _nanf(pc, op, fd, out, ins):
+    """SR_NAN_TRAP check for one scalar FPU result. Empty unless --nan-trap.
+
+    `ins` are the C expressions holding the operands the instruction consumed;
+    the codegen samples them into locals before the store, so a destination that
+    aliases a source still reports what was actually read.
+    """
+    if not NAN_TRAP:
+        return ""
+    return (f' SR_NAN_TRAP_F(0x{pc:08x}u,"{op}",{fd}u,{out},'
+            f'{",".join(ins)});')
+
+
+def _nanv(pc, op, vd, out, nout, a, na, b=None, nb=0):
+    """SR_NAN_TRAP check for one VFPU lane result. Empty unless --nan-trap.
+
+    `a`/`na` and `b`/`nb` are the source lane arrays; omitting `b` reports a
+    one-source-vector form.
+    """
+    if not NAN_TRAP:
+        return ""
+    tail = f",{b},{nb}" if b is not None else ""
+    return (f' SR_NAN_TRAP_V2(0x{pc:08x}u,"{op}",{vd}u,{out},{nout},'
+            f'{a},{na}{tail});')
+
+
+def _nan_matrix(pc, op, vd, out_exprs, in_exprs):
+    """SR_NAN_TRAP check for a form whose operands are scattered v[] elements.
+
+    The matrix forms (vmmul, vtfm) read and write raw physical registers instead
+    of a lane array, so the results and the operands are gathered into arrays
+    first. Only emitted under --nan-trap.
+    """
+    if not NAN_TRAP:
+        return ""
+    outs = " ".join(f"_ntout[{i}]={expr};" for i, expr in enumerate(out_exprs))
+    ins = " ".join(f"_ntin[{i}]={expr};" for i, expr in enumerate(in_exprs))
+    return (f"{{ float _ntin[{len(in_exprs)}], _ntout[{len(out_exprs)}]; {ins} {outs} "
+            + _nanm(pc, op, vd, "_ntout", "_ntin", len(out_exprs), len(in_exprs))
+            + "}")
+
+
+#: Report names for the VFPU lane forms that share one emitter, so a maintainer
+#: reading NAN_TRAP output sees which instruction produced the value.
+_TRANS_NAME = {16: "vrcp.s", 17: "vrsqrt.s", 18: "vsin.s", 19: "vcos.s",
+               20: "vexp2.s", 21: "vlog2.s", 22: "vsqrt.s", 23: "vasin.s",
+               24: "vrcp.s", 25: "vrsqrt.s", 26: "vsin.s", 27: "vcos.s",
+               28: "vexp2.s", 29: "vlog2.s", 30: "vsqrt.s", 31: "vasin.s"}
+_BINOP_NAME = {(0x18, 0): "vadd.s", (0x18, 1): "vsub.s", (0x18, 7): "vdiv.s",
+               (0x19, 0): "vmul.s"}
+
+
+def _nanm(pc, op, vd, outs, ins, nout, nin):
+    """SR_NAN_TRAP check for a form whose operands are scattered v[] elements.
+
+    The matrix forms (vmmul, vtfm) read and write raw physical registers instead
+    of a lane array, so the operands are gathered into one array first. Only
+    emitted under --nan-trap.
+    """
+    if not NAN_TRAP:
+        return ""
+    return (f' SR_NAN_TRAP_V(0x{pc:08x}u,"{op}",{vd}u,{outs},{nout},{ins},{nin});')
 
 def vreg_indices(reg, size):
     # Physical v[] indices for a VFPU vector register. size is lanes (1=single..4=quad).
@@ -735,7 +809,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                         f"if (((s->vfpuCtrl[3] >> _i) & 1u) == {1 - tf}u) _d[_i]=_s[_i]; ")
             else:
                 raise Unsupported(f"vcmov imm3 {imm3} at 0x{addr:08x}")
-            body = rd_st + move + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}"
+            body = (rd_st + move
+                    + _nanv(addr, "vcmov.s", vd, "_d", n, "_s", n, "_d", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if jump == 0x02:  # vocp
             op9 = (w >> 16) & 0x1F
@@ -745,7 +821,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                         f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]|0xF0000u); "
                         f"sr_vread(_t,s,{_arr(si)},{n},(s->vfpuCtrl[1]&~0xFFu)|0x55u|0xF000u); "
                         f"for(int _i=0;_i<{n};_i++) _d[_i]=isnan(_s[_i])?fabsf(_s[_i]):_t[_i]+_s[_i]; "
-                        f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                        + _nanv(addr, "vocp.s", vd, "_d", n, "_s", n, "_t", n)
+                        + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
                 return "{ " + body + " }", None, 0
             raise Unsupported(f"VFPU9 op 0x{op9:02x} at 0x{addr:08x}")
         if jump == 0x03:  # vcst
@@ -857,7 +934,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                    5: "(_s[_i]<-1.0f?-1.0f:(_s[_i]>1.0f?1.0f:_s[_i]))"}[optype]
             body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                     f"for(int _i=0;_i<{n};_i++) _d[_i]={per}; "
-                    f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vv2op.s", vd, "_d", n, "_s", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         _TRANS = {16: "sr_vfpu_rcp(_s[_i])", 17: "sr_vfpu_rsqrt(_s[_i])",
                   18: "sr_vfpu_sin(_s[_i])", 19: "sr_vfpu_cos(_s[_i])",
@@ -871,7 +949,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             si = vreg_indices(vs, n)
             body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                     f"for(int _i=0;_i<{n};_i++) _d[_i]={_TRANS[optype]}; "
-                    f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, _TRANS_NAME[optype], vd, "_d", n, "_s", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if optype in (6, 7):  # vzero / vone
             val = "0.0f" if optype == 6 else "1.0f"
@@ -999,7 +1078,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     f"if({ismin}) _r=(_ai<0&&_bi<0)?(_bi<_ai?_ai:_bi):(_ai<_bi?_ai:_bi); "
                     f"else _r=(_ai<0&&_bi<0)?(_ai<_bi?_ai:_bi):(_bi<_ai?_ai:_bi); memcpy(&_d[_i],&_r,4); }} "
                     f"else _d[_i]={ismin}?(_a[_i]<_b[_i]?_a[_i]:_b[_i]):(_b[_i]<_a[_i]?_a[_i]:_b[_i]); }} "
-                    f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vmin.s" if ismin == "1" else "vmax.s", vd, "_d", n,
+                            "_a", n, "_b", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if sub in (6, 7): # vcmovt / vcmovf
             tf = sub & 1
@@ -1015,7 +1096,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 lines.append(f"for (int _i = 0; _i < {n}; _i++) if (((s->vfpuCtrl[3] >> _i) & 1u) == {1 - tf}u) _d[_i] = _s[_i];")
             else:
                 raise Unsupported(f"vcmov imm3 {imm3} at 0x{addr:08x}")
-            lines.append(f"sr_vwrite(s, {_arr(di)}, _d, {n}, s->vfpuCtrl[2]);{_EAT}")
+            lines.append(_nanv(addr, "vcmovt.s" if tf == 0 else "vcmovf.s",
+                               vd, "_d", n, "_s", n, "_d", n)
+                         + f"sr_vwrite(s, {_arr(di)}, _d, {n}, s->vfpuCtrl[2]);{_EAT}")
             return "{ " + " ".join(lines) + " }", None, 0
         raise Unsupported(f"VFPU3 sub {sub} at 0x{addr:08x}")
     if op == 0x3c and sub == 7 and ((w >> 21) & 0x1F) == 28:
@@ -1054,6 +1137,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
             writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
             writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+            writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
             writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
             return "{ " + " ".join(writes) + _EAT + " }", None, 0
         raise Unsupported(f"VFPUMatrix1 which {which} at 0x{addr:08x}")
@@ -1066,13 +1150,15 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     f"_d[1]=-_s[0]*_t[2]+_s[1]*_t[3]+_s[2]*_t[0]+_s[3]*_t[1]; "
                     f"_d[2]=_s[0]*_t[1]-_s[1]*_t[0]+_s[2]*_t[3]+_s[3]*_t[2]; "
                     f"_d[3]=-_s[0]*_t[0]-_s[1]*_t[1]-_s[2]*_t[2]+_s[3]*_t[3]; "
-                    f"sr_vwrite(s,{_arr(di)},_d,4,s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vqmul.q", vd, "_d", 4, "_s", 4, "_t", 4)
+                    + f"sr_vwrite(s,{_arr(di)},_d,4,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if n == 3:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},3,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},3,s->vfpuCtrl[1]); "
                     f"_d[0]=_s[1]*_t[2]-_s[2]*_t[1]; _d[1]=_s[2]*_t[0]-_s[0]*_t[2]; _d[2]=_s[0]*_t[1]-_s[1]*_t[0]; "
-                    f"sr_vwrite(s,{_arr(di)},_d,3,s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vcrsp.t", vd, "_d", 3, "_s", 3, "_t", 3)
+                    + f"sr_vwrite(s,{_arr(di)},_d,3,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         raise Unsupported(f"vcrsp/vqmul size {n} at 0x{addr:08x}")
     if op == 0x3c and sub == 7 and ((w >> 21) & 0x1F) == 29:
@@ -1094,7 +1180,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 lines.append(f"_d[{cos_lane}]=sr_vfpu_cos(_d[{dnames.index(vs)}]);")
         # PSP ignores destination saturation and write-mask bits for the cosine lane.
         dmask=(3<<cos_lane)|(1<<(8+cos_lane))
-        lines.append(f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]&~0x{dmask:x}u);{_EAT}")
+        lines.append(_nanv(addr, "vrot", vd, "_d", n, "_a", 1)
+                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]&~0x{dmask:x}u);{_EAT}")
         return "{ " + " ".join(lines) + " }", None, 0
     if (op == 0x18 and sub in (0, 1, 7)) or (op == 0x19 and sub == 0):
         ti = vreg_indices(vt, n)
@@ -1103,7 +1190,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
                 f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]{oper}_t[_i]; "
-                f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                + _nanv(addr, _BINOP_NAME[(op, sub)], vd, "_d", n, "_s", n, "_t", n)
+                + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 1:  # vdot
         ti = vreg_indices(vt, n)
@@ -1111,7 +1199,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
                 f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d+=_s[_i]*_t[_i]; "
-                f"float _dd[1]={{_d}}; sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
+                f"float _dd[1]={{_d}};"
+                + _nanv(addr, "vdot.s", vd, "_dd", 1, "_s", n, "_t", n)
+                + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 4:  # vhdp
         ti = vreg_indices(vt, n)
@@ -1120,7 +1210,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
                 f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d+=_s[_i]*_t[_i]; "
                 f"_d+=1.0f*_t[{n - 1}]; _d=isnan(_d)?fabsf(_d):_d; "
-                f"float _dd[1]={{_d}}; sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
+                f"float _dd[1]={{_d}};"
+                + _nanv(addr, "vhdp.s", vd, "_dd", 1, "_s", n, "_t", n)
+                + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 5:  # vcrs
         if n != 3:
@@ -1131,7 +1223,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         muls = " ".join(f"_d[{i}]=_s[{ss[i]}]*_t[{ts[i]}];" for i in range(n))
         body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); {muls} "
-                f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                + _nanv(addr, "vcrs.t", vd, "_d", n, "_s", n, "_t", n)
+                + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x3c and sub == 0:  # vmmul
         side = vec_size(w)
@@ -1150,7 +1243,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     lines.append(f"_m{a}_{b}+=s->v[{mreg_index(vs, side, b, c)}]*s->v[{mreg_index(vt, side, a, c)}];")
         writes = " ".join(f"s->v[{mreg_index(vd, side, a, b)}]=_m{a}_{b};"
                           for a in range(side) for b in range(side))
-        return "{ " + " ".join(lines) + " " + writes + _EAT + " }", None, 0
+        return "{ " + " ".join(lines) + " " + _nan_matrix(
+            addr, "vmmul", vd,
+            [f"_m{a}_{b}" for a in range(side) for b in range(side)],
+            [f"s->v[{mreg_index(vs, side, b, a)}]" for a in range(side) for b in range(side)]
+            + [f"s->v[{mreg_index(vt, side, a, b)}]" for a in range(side) for b in range(side)],
+        ) + " " + writes + _EAT + " }", None, 0
     if op == 0x3c and sub in (1, 2, 3):  # vtfm
         ins = sub
         side = ins + 1
@@ -1167,13 +1265,18 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             if ins >= n:
                 lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, ins)}];")
         writes = " ".join(f"s->v[{di[i]}]=_v{i};" for i in range(side))
-        return "{ " + " ".join(lines) + " " + writes + _EAT + " }", None, 0
+        return "{ " + " ".join(lines) + " " + _nan_matrix(
+            addr, "vtfm", vd,
+            [f"_v{i}" for i in range(side)],
+            [f"s->v[{mreg_index(vs, side, i, k)}]" for i in range(side) for k in range(side)],
+        ) + " " + writes + _EAT + " }", None, 0
     if op == 0x19 and sub == 2:  # vscl
         scalar = vreg_indices(vt, 1)[0]
         body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"float _sc=s->v[{scalar}]; "
                 f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]*_sc; "
-                f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                + _nanv(addr, "vscl.s", vd, "_d", n, "_s", n, "(&_sc)", 1)
+                + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x3c and sub == 4:  # vmscl
         vt = (w >> 16) & 0x7F
@@ -1189,10 +1292,24 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
         writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
         writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+        writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
         writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
         return "{ " + " ".join(writes) + _EAT + " }", None, 0
 
     raise Unsupported(f"VFPU opcode 0x{op:02x} sub 0x{sub:x} at 0x{addr:08x}")
+
+def _fpu_unary(addr, op, fdv, expr, src):
+    """One scalar FPU result computed from a single source operand.
+
+    Without --nan-trap this is the bare assignment the emitter has always
+    produced. With it the operand is sampled into a local first, so the report
+    names what the instruction read even when fd == fs.
+    """
+    if not NAN_TRAP:
+        return f"{F(fdv)} = {expr};"
+    return (f"{{ float _a = {src}; {F(fdv)} = {expr};"
+            + _nanf(addr, op, fdv, F(fdv), ["_a"]) + " }")
+
 
 def fpu_effect(addr, w):
     fmt = rs(w); ft = rt(w); fs = rd(w); fdv = sa(w)
@@ -1219,20 +1336,28 @@ def fpu_effect(addr, w):
         # zero and inf*subnormal would wrongly take the canonical-qNaN path.
         # Integer bit tests are environment-blind. Exact ±inf * exact ±0
         # still canonicalizes to 0x7fc00000.
-        if fn == 0x00: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x01: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_sub_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x00:
+            stmt = f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31);"
+            return stmt + _nanf(addr, "add.s", fdv, F(fdv), ["_a", "_b"]) + " }", None, 0
+        if fn == 0x01:
+            stmt = f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_sub_s(_a,_b,s->fcr31);"
+            return stmt + _nanf(addr, "sub.s", fdv, F(fdv), ["_a", "_b"]) + " }", None, 0
         if fn == 0x02:
             return (f"{{ const uint32_t _ab=s->fi[{fs}],_bb=s->fi[{ft}]; "
                     f"float _a={F(fs)},_b={F(ft)}; "
                     f"if((((_ab & 0x7fffffffu) == 0x7f800000u && (_bb & 0x7fffffffu) == 0u)) || "
                     f"(((_bb & 0x7fffffffu) == 0x7f800000u && (_ab & 0x7fffffffu) == 0u))) "
                     f"s->fi[{fdv}]=0x7fc00000u; "
-                    f"else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31); }}"), None, 0
-        if fn == 0x03: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_div_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x04: return f"{F(fdv)} = sqrtf({F(fs)});", None, 0
-        if fn == 0x05: return f"{F(fdv)} = fabsf({F(fs)});", None, 0
-        if fn == 0x06: return f"{F(fdv)} = {F(fs)};", None, 0
-        if fn == 0x07: return f"{F(fdv)} = -{F(fs)};", None, 0
+                    f"else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31);"
+                    + _nanf(addr, "mul.s", fdv, F(fdv), ["_a", "_b"])
+                    + " }"), None, 0
+        if fn == 0x03:
+            stmt = f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_div_s(_a,_b,s->fcr31);"
+            return stmt + _nanf(addr, "div.s", fdv, F(fdv), ["_a", "_b"]) + " }", None, 0
+        if fn == 0x04: return _fpu_unary(addr, "sqrt.s", fdv, f"sqrtf({F(fs)})", F(fs)), None, 0
+        if fn == 0x05: return _fpu_unary(addr, "abs.s", fdv, f"fabsf({F(fs)})", F(fs)), None, 0
+        if fn == 0x06: return _fpu_unary(addr, "mov.s", fdv, F(fs), F(fs)), None, 0
+        if fn == 0x07: return _fpu_unary(addr, "neg.s", fdv, f"-{F(fs)}", F(fs)), None, 0
         if fn in (0x0C, 0x0D, 0x0E, 0x0F, 0x24):
             return f"s->fi[{fdv}] = sr_fpu_to_word({F(fs)}, 0x{fn:02x}u, s->fcr31);", None, 0
         if fn >= 0x30:
@@ -2290,6 +2415,13 @@ def main(argv):
             # Default (absent) preserves byte-identical output.
             global STALE_DETECT
             STALE_DETECT = True
+        elif o == "--nan-trap":
+            # SR_NAN_TRAP: follow every FPU/VFPU result write with a check that
+            # names the instruction whose result went non-finite from all-finite
+            # operands. Default (absent) emits no check statement at all, so the
+            # generated C is byte-identical to a pre-trap build.
+            global NAN_TRAP
+            NAN_TRAP = True
         elif o.startswith("--profile="):
             profile = o.split("=", 1)[1]
         elif o.startswith("--funcs-per-chunk="):

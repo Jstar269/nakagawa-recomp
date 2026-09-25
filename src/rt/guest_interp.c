@@ -366,7 +366,8 @@ static SrGuestInterpResult execute_noncontrol(
         } else if (fmt == 0x04u && move_shape) {  /* mtc1 rt, fs */
             s->fi[fs] = read_gpr(s, ft);
         } else if (fmt == 0x10u && funct == 0x00u) {   /* add.s */
-            s->f[fd] = sr_fpu_add_s(s->f[fs], s->f[ft], s->fcr31);
+            SR_NAN_TRAP_STORE_F2(pc, "add.s", fd, fs, ft,
+                                 sr_fpu_add_s(s->f[fs], s->f[ft], s->fcr31));
         } else if (fmt == 0x10u && funct == 0x02u) {   /* mul.s */
             /* Classify the inf*0 case from RAW bits, exactly as the generated
              * code does: a floating precheck would itself be a guest-sensitive
@@ -375,12 +376,16 @@ static SrGuestInterpResult execute_noncontrol(
             const uint32_t b_bits = s->fi[ft];
             if (((a_bits & 0x7fffffffu) == 0x7f800000u && (b_bits & 0x7fffffffu) == 0u) ||
                 ((b_bits & 0x7fffffffu) == 0x7f800000u && (a_bits & 0x7fffffffu) == 0u)) {
+                /* Hardware-mandated inf*0 NaN, and one of the operands is not
+                 * finite, so SR_NAN_TRAP correctly stays silent about it. */
                 s->fi[fd] = 0x7fc00000u;
             } else {
-                s->f[fd] = sr_fpu_mul_s(s->f[fs], s->f[ft], s->fcr31);
+                SR_NAN_TRAP_STORE_F2(pc, "mul.s", fd, fs, ft,
+                                     sr_fpu_mul_s(s->f[fs], s->f[ft], s->fcr31));
             }
         } else if (fmt == 0x10u && funct == 0x24u) {   /* cvt.w.s */
-            s->fi[fd] = sr_fpu_to_word(s->f[fs], funct, s->fcr31);
+            const float a = s->f[fs];
+            s->fi[fd] = sr_fpu_to_word(a, funct, s->fcr31);
         } else {
             set_fault(fault, pc, opcode, pc, 1);
             return SR_GUEST_INTERP_UNSUPPORTED;
