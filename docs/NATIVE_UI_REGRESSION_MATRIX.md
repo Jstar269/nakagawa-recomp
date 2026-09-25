@@ -34,13 +34,31 @@ capabilities and are not implied by this path.
 
 ## 2. Regression Gate Checklist for Native Slices
 
-Before declaring any native player slice complete, verify:
+Before declaring any native player slice complete, verify each gate with its owner:
 
-1. [ ] **Binary Compilation**: Native shell compiles without warnings or errors on Windows UCRT64 GCC.
-2. [ ] **Window Lifecycle**: Application window appears in $<100\text{ ms}$ before any I/O or indexing begins.
-3. [ ] **Multi-Title Invariant**: UI does not hardcode `hst` or `UCUS98701` logic; query resolves dynamically from `TitleRegistry`.
-4. [ ] **LLE Compliance**: No synthetic TTF font substitution, no fake `libfont` readiness flags, no fake `psmf` return values added.
-5. [ ] **File Dialog**: Native OS file picker invoked without terminal or console prompts.
-6. [ ] **Error Handling**: Missing or corrupt ISOs produce human-actionable error cards with stable error codes.
-7. [ ] **Automated Test Parity**: All unit tests in `tools/test_nk_core.py` and `interface` continue to pass.
-8. [ ] **Typography & Font Strategy**: Open-source UI fonts strictly follow the target usage profile (M PLUS Rounded 1c / Rubik / Nunito / Teko / Bebas Neue for arcade HUD; Inter / Roboto Flex for launcher & settings dialogs; JetBrains Mono / Intel One Mono for debug overlays & telemetry; Kosugi Maru / Zen Maru Gothic for Japanese CJK).
+1. [ ] **Binary compilation:** `mingw32-make player` and `mingw32-make native-core-tests`
+   build without warnings on Windows UCRT64 GCC, and `native-core-tests` also builds on
+   hosted Linux.
+2. [ ] **Window lifecycle:** the window presents before any disc read, indexing or
+   extraction; that work runs on the staging worker (`src/player/setup_staging.c`).
+   `mingw32-make display-smoke-player` exercises the launch path. No latency figure is
+   claimed until one is measured.
+3. [ ] **Multi-title invariant:** no `hst` or disc-ID logic in the UI; identity and launch
+   resolve from the manifest and catalog (`src/core/nk_title_manifest.c`,
+   `src/core/generated/nk_title_catalog.c`). Covered by
+   `tests/native/test_launch_resolution.c`.
+4. [ ] **LLE compliance:** no synthetic TTF substitution in the guest runtime, no fake
+   `libfont` readiness flags, and no fake `psmf` return values. Missing firmware fonts
+   fail closed with guidance.
+5. [ ] **File dialog:** the native picker (`SDL_ShowOpenFileDialog` in
+   `src/player/main.c`) opens without a terminal or console prompt.
+6. [ ] **Error handling:** missing, corrupt or unsupported discs produce an actionable
+   error card with a stable code (for example `ISO_CORRUPT`, `SOURCE_NOT_FOUND`,
+   `STAGED_EXECUTABLE_INVALID`, `LIBRARY_WRITE_FAILED`, `RUNTIME_PACKAGE_NOT_READY`) and
+   a recovery button. Covered by `tests/native/test_player_state.c`.
+7. [ ] **Automated tests:** `python -m unittest tools.test_nk_core` and the
+   `tests/native/` binaries run by `native-core-tests` pass.
+8. [ ] **Typography:** the player loads a system UI font at run time through SDL3_ttf
+   (for example DejaVu Sans on Linux) and falls back to SDL3 debug text; the repository
+   and shipped binary bundle no fonts. Open fonts such as M PLUS Rounded 1c, Rubik,
+   Inter and JetBrains Mono are design references only.
