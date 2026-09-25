@@ -2274,10 +2274,15 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
                 (fs_root / TITLE2_PATH_BYTES.decode("ascii").rstrip("\0").replace("/", "_").replace(":", "_")).write_bytes(title2_payload_bytes())
 
         environment = os.environ.copy()
+        # --- SR_* namespace rule -------------------------------------------
         # The ladder owns the complete SR_* runtime-control surface. Inheriting
         # even a developer's output path or early-exit switch makes this proof
-        # depend on ambient state; only the roots and plan contract below may
-        # configure the child.
+        # depend on ambient state, so every ambient SR_* key is deleted here.
+        # Exactly two sources may configure the child: hermetic_host_roots'
+        # temporary roots and the workload's plan.env. A new diagnostic a
+        # workload needs must be added to its plan.env and must write only
+        # under the workload's temporary root, never into the checkout or to
+        # any fixed or ambient path.
         for key in tuple(environment):
             if key.startswith("SR_"):
                 del environment[key]

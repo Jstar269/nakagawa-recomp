@@ -868,7 +868,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e6e50b1770d300afa0e67750ebcc4501f527c5a82618d38264d56dd6fc9b0108"
+      "sha256": "45b633d5f6d552acbcb60f75605cdcbd342e457f0a4cd49191059e36b9086fc3"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1492,7 +1492,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cc81c335f0917dc5bca00be70413b0fd895f33b0b984119aebfde51bd477487"
+      "sha256": "2922b8517f6da978ab99836aa04f192fa4a165697d77f4b833efbb7301856b86"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -5791,7 +5791,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1293cb4729fc7552a24a9905aa38d03119c5b248a07b381214b7809910c8a389"
+      "sha256": "27053536b6a1440830aa8ac55295ded43902396e8cb30be24967de2a0a8ea174"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5829,7 +5829,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d34de696673d41edeaaa7db9d9515db91fa107f9b76901e3c41c13b04b9a8250"
+      "sha256": "86660122dc284b5172b0c0103b7d20143516485f72319f5bc407b1b2f5bbaa02"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8136,12 +8136,15 @@
     },
     {
       "path": "tools/test_asset_index_c.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "asset-index-c-selftest-driver-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "78fc46fb6726b68df2ae9268190ea129d7797697fe7b606ed83625227b2b114e"
+      "sha256": "ce8ea530cc1de53500f1f2aa368ef490614c6550f0a7a71bd9fe18feb8c08a3b"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
@@ -8865,12 +8868,15 @@
     },
     {
       "path": "tools/test_matrix_report.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "matrix-report-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "8a291e8947a9f36461deee0d29c57e2bcf48589823b597eb0dd234773feed5e0"
+      "sha256": "cad81180a55efb392ea571c1df3b2996edfe9a1977f5599b3ed39b5c1d941daa"
     },
     {
       "path": "tools/test_mem_debug.py",
@@ -9056,7 +9062,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c7e107793a209e95b02a59724bc55bff821d1885d8b30d356fe6d8dd93691b0"
+      "sha256": "9db33199f3182ae309e9fac45cc9e9b16984951f73b5bb5e1502013aff264713"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -9096,12 +9102,15 @@
     },
     {
       "path": "tools/test_production_smoke.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "production-smoke-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "56519f5674adf0dcba73c7746e03403f9a8997497687559d747695ce7ddf827d"
+      "sha256": "5c121709d0af016caff2849d104d6d4b517c5d4bc49ca0c4ad2dd2b73514922f"
     },
     {
       "path": "tools/test_progress_evidence.py",
@@ -9378,12 +9387,15 @@
     },
     {
       "path": "tools/test_sbom.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "sbom-tooling-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "51b9f4e0930ce1ed43e00bf6d17e2b7c2f89eb299e1f53998bd7c457ca7468e8"
+      "sha256": "d52cc113edb333e461e539251435fa1d8edbb12a7407b4eb5f7812adca538e3e"
     },
     {
       "path": "tools/test_sbom_binding.py",
