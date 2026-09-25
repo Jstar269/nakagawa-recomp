@@ -96,15 +96,19 @@ natural next step -- do not read their absence here as "safe to ignore."
 """
 
 import inspect
-import re
-import unittest
 from pathlib import Path
+import re
+import sys
+import unittest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import compat_overrides
 from host_stubs import HST_SIMPLE_STUBS
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = ROOT
 RECOMP_C = REPO_ROOT / "src" / "rt" / "recomp.c"
 
 
