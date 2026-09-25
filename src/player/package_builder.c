@@ -163,6 +163,46 @@ void package_builder_apply_event(
     }
 }
 
+/* Scan PATH for the first of names that exists as a file. Shared by the
+ * interpreter and toolchain lookups: both must see exactly the PATH a spawned
+ * build child would see, with no hidden fallback location. */
+static bool scan_path_for_names(const char *const *names, size_t name_count,
+                                char *out_path, size_t out_size) {
+    const char *path_env = getenv("PATH");
+    if (!path_env || !path_env[0]) return false;
+
+    char path_copy[32768];
+    safe_str_copy(path_copy, sizeof(path_copy), path_env);
+
+#if defined(_WIN32) || defined(_WIN64)
+    const char sep = ';';
+#else
+    const char sep = ':';
+#endif
+    char *dir = path_copy;
+    while (dir) {
+        char *next = strchr(dir, sep);
+        if (next) *next++ = '\0';
+        /* A PATH entry too long for a candidate path cannot name a usable tool. */
+        if (dir[0] && strlen(dir) < NK_MAX_PATH) {
+            for (size_t i = 0; i < name_count; i++) {
+                char candidate[NK_MAX_PATH * 2];
+                snprintf(candidate, sizeof(candidate), "%.*s%c%s", NK_MAX_PATH - 1, dir,
+                         nk_platform_path_separator(), names[i]);
+                if (nk_platform_file_exists(candidate)) {
+                    if (nk_platform_absolute_path(candidate, out_path, out_size)) {
+                        return true;
+                    }
+                    safe_str_copy(out_path, out_size, candidate);
+                    return true;
+                }
+            }
+        }
+        dir = next;
+    }
+    return false;
+}
+
 bool package_builder_find_python(char *out_path, size_t out_size) {
     if (!out_path || out_size == 0) return false;
     out_path[0] = '\0';
@@ -194,39 +234,14 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
 #endif
 
     /* 3. Scan PATH for python3 / python */
-    const char *path_env = getenv("PATH");
-    if (path_env && path_env[0]) {
-        char path_copy[32768];
-        safe_str_copy(path_copy, sizeof(path_copy), path_env);
-
 #if defined(_WIN32) || defined(_WIN64)
-        const char sep = ';';
-        static const char *names[] = { "python3.exe", "python.exe" };
+    static const char *kPathNames[] = { "python3.exe", "python.exe" };
 #else
-        const char sep = ':';
-        static const char *names[] = { "python3", "python" };
+    static const char *kPathNames[] = { "python3", "python" };
 #endif
-        char *dir = path_copy;
-        while (dir) {
-            char *next = strchr(dir, sep);
-            if (next) *next++ = '\0';
-            /* A PATH entry too long for a candidate path cannot name a usable interpreter. */
-            if (dir[0] && strlen(dir) < NK_MAX_PATH) {
-                for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-                    char candidate[NK_MAX_PATH * 2];
-                    snprintf(candidate, sizeof(candidate), "%.*s%c%s", NK_MAX_PATH - 1, dir,
-                             nk_platform_path_separator(), names[i]);
-                    if (nk_platform_file_exists(candidate)) {
-                        if (nk_platform_absolute_path(candidate, out_path, out_size)) {
-                            return true;
-                        }
-                        safe_str_copy(out_path, out_size, candidate);
-                        return true;
-                    }
-                }
-            }
-            dir = next;
-        }
+    if (scan_path_for_names(kPathNames, sizeof(kPathNames) / sizeof(kPathNames[0]),
+                            out_path, out_size)) {
+        return true;
     }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -246,40 +261,143 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
     return false;
 }
 
+/* Append "<root>/<rel>" unless root is empty or the slots are full. */
+static void cli_add_rooted(char out[][NK_MAX_PATH], int *count, int max_out,
+                           const char *root, const char *rel) {
+    if (!root || !root[0] || *count >= max_out) return;
+    size_t len = strlen(root);
+    bool has_sep = root[len - 1] == '/' || root[len - 1] == '\\';
+    snprintf(out[*count], NK_MAX_PATH, "%s%s%s", root, has_sep ? "" : "/", rel);
+    (*count)++;
+}
+
+int package_builder_cli_candidate_paths(
+    const char *install_root,
+    const char *override_root,
+    char out[][NK_MAX_PATH],
+    int max_out
+) {
+    if (!out || max_out <= 0) return 0;
+    int count = 0;
+
+    /* 1. Explicit override wins (NK_INSTALL_ROOT: the folder containing tools/). */
+    cli_add_rooted(out, &count, max_out, override_root, "tools/nk_cli.py");
+    /* 2. The executable's own folder: a checkout runs as <checkout>/build/, a
+     *    packaged player may carry tools/ beside nakagawa_player.exe. */
+    cli_add_rooted(out, &count, max_out, install_root, "tools/nk_cli.py");
+    /* 3. One level above the executable: <checkout>/build/../tools. */
+    cli_add_rooted(out, &count, max_out, install_root, "../tools/nk_cli.py");
+    /* 4. The documented v0.0.1 release layout: bin/ beside source/, and the
+     *    public source export carries tools/nk_cli.py. */
+    cli_add_rooted(out, &count, max_out, install_root, "../source/tools/nk_cli.py");
+    /* 5-6. The working directory and its parent, unchanged from before. */
+    static const char *kRelatives[] = { "tools/nk_cli.py", "../tools/nk_cli.py" };
+    for (size_t i = 0; i < sizeof(kRelatives) / sizeof(kRelatives[0]) && count < max_out; i++) {
+        snprintf(out[count], NK_MAX_PATH, "%s", kRelatives[i]);
+        count++;
+    }
+    return count;
+}
+
 bool package_builder_find_cli(const char *install_root, char *out_path, size_t out_size) {
     if (!out_path || out_size == 0) return false;
     out_path[0] = '\0';
 
-    /* The player normally runs as <checkout>/build/nakagawa_player, so the CLI is one level up. */
-    static const char *kInstallRelatives[] = { "tools", "../tools" };
-    char candidate[NK_MAX_PATH * 2];
-    if (install_root && install_root[0]) {
-        size_t len = strlen(install_root);
-        bool has_sep = install_root[len - 1] == '/' || install_root[len - 1] == '\\';
-        for (size_t i = 0; i < sizeof(kInstallRelatives) / sizeof(kInstallRelatives[0]); i++) {
-            snprintf(candidate, sizeof(candidate), "%s%s%s/nk_cli.py",
-                     install_root, has_sep ? "" : "/", kInstallRelatives[i]);
-            if (nk_platform_file_exists(candidate)) {
-                if (nk_platform_absolute_path(candidate, out_path, out_size)) return true;
-                safe_str_copy(out_path, out_size, candidate);
-                return true;
-            }
-        }
-    }
-
-    static const char *kRelatives[] = {
-        "tools/nk_cli.py",
-        "../tools/nk_cli.py"
-    };
-    for (size_t i = 0; i < sizeof(kRelatives) / sizeof(kRelatives[0]); i++) {
-        if (nk_platform_file_exists(kRelatives[i])) {
-            if (nk_platform_absolute_path(kRelatives[i], out_path, out_size)) return true;
-            safe_str_copy(out_path, out_size, kRelatives[i]);
+    const char *override_root = getenv("NK_INSTALL_ROOT");
+    char candidates[PACKAGE_BUILDER_CLI_MAX_CANDIDATES][NK_MAX_PATH];
+    int count = package_builder_cli_candidate_paths(
+        install_root, override_root, candidates, PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    for (int i = 0; i < count; i++) {
+        if (nk_platform_file_exists(candidates[i])) {
+            if (nk_platform_absolute_path(candidates[i], out_path, out_size)) return true;
+            safe_str_copy(out_path, out_size, candidates[i]);
             return true;
         }
     }
-
     return false;
+}
+
+void package_builder_describe_cli_not_found(const char *install_root,
+                                            char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    /* Trim a trailing separator so the shown locations read cleanly. */
+    char root[NK_MAX_PATH];
+    if (install_root && install_root[0]) {
+        safe_str_copy(root, sizeof(root), install_root);
+        size_t len = strlen(root);
+        while (len > 1 && (root[len - 1] == '/' || root[len - 1] == '\\')) {
+            root[--len] = '\0';
+        }
+    } else {
+        safe_str_copy(root, sizeof(root), "the player folder");
+    }
+    snprintf(out, out_size,
+             "tools/nk_cli.py was not found. Searched, in order: the NK_INSTALL_ROOT "
+             "environment variable, %s/tools, %s/../tools, %s/../source/tools (the "
+             "release layout), the working directory and its parent. Fix: run the player "
+             "from a Nakagawa Recomp source checkout, keep a tools folder beside "
+             "nakagawa_player.exe, or set NK_INSTALL_ROOT to the folder that contains "
+             "tools/ (for example the release's source folder).",
+             root, root, root);
+}
+
+bool package_builder_find_tool(const char *name, char *out_path, size_t out_size) {
+    if (!name || !name[0] || !out_path || out_size == 0) return false;
+    out_path[0] = '\0';
+
+#if defined(_WIN32) || defined(_WIN64)
+    char exe_name[NK_MAX_PATH + 8];
+    const char *names[2];
+    size_t name_count;
+    if (strlen(name) > 4 && strcmp(name + strlen(name) - 4, ".exe") == 0) {
+        names[0] = name;
+        name_count = 1;
+    } else {
+        snprintf(exe_name, sizeof(exe_name), "%s.exe", name);
+        names[0] = exe_name;
+        names[1] = name;
+        name_count = 2;
+    }
+#else
+    const char *names[1] = { name };
+    size_t name_count = 1;
+#endif
+    return scan_path_for_names(names, name_count, out_path, out_size);
+}
+
+bool package_builder_toolchain_missing(
+    bool have_python, bool have_gcc, bool have_make,
+    char *out_tool, size_t out_tool_size,
+    char *out_message, size_t out_message_size
+) {
+    const char *tool = NULL;
+    const char *fix = NULL;
+    if (!have_python) {
+        tool = "python";
+        fix = "Install CPython 3.14 (see docs/SETUP.md) or set the PYTHON environment "
+              "variable to the interpreter.";
+    } else if (!have_gcc) {
+        tool = "gcc";
+        fix = "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-gcc) and put "
+              "its bin directory on PATH.";
+    } else if (!have_make) {
+        tool = "mingw32-make";
+        fix = "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-make) and put "
+              "its bin directory on PATH.";
+    }
+    if (!tool) {
+        if (out_tool && out_tool_size) out_tool[0] = '\0';
+        if (out_message && out_message_size) out_message[0] = '\0';
+        return false;
+    }
+    if (out_tool && out_tool_size) snprintf(out_tool, out_tool_size, "%s", tool);
+    if (out_message && out_message_size) {
+        snprintf(out_message, out_message_size,
+                 "BUILD_TOOLCHAIN_MISSING: %s was not found on PATH. The package build "
+                 "runs python, gcc and mingw32-make, so it cannot start. %s",
+                 tool, fix);
+    }
+    return true;
 }
 
 NkResult package_builder_start(
