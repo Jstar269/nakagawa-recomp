@@ -931,6 +931,135 @@ static int archive_list_has(const SrVfsDirList *list, const char *name) {
     return 0;
 }
 
+static void test_archive_vfs_mount_scaling(void) {
+    static const size_t archive_counts[] = { 250u, 500u, 1000u, 2000u };
+    const size_t members_per_archive = 8u;
+    uint8_t payload[8] = { 0 };
+    FixtureEntry entries[8];
+    char paths[8][64];
+
+    for (size_t scale = 0; scale < sizeof(archive_counts) / sizeof(archive_counts[0]); scale++) {
+        size_t archive_count = archive_counts[scale];
+        ByteBuffer *archives = (ByteBuffer *)calloc(archive_count, sizeof(*archives));
+        assert(archives != NULL);
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            for (size_t member_index = 0; member_index < members_per_archive; member_index++) {
+                snprintf(paths[member_index], sizeof(paths[member_index]),
+                         "data/gen/a%04zu/f%02zu.bin", archive_index, member_index);
+                entries[member_index].path = paths[member_index];
+                entries[member_index].data = payload + member_index;
+                entries[member_index].size = 1u;
+                entries[member_index].compression = NK_XB_COMPRESSION_NONE;
+            }
+            archives[archive_index] = make_archive(entries, members_per_archive, false);
+        }
+
+        SrArchiveVfs vfs;
+        sr_archive_vfs_init(&vfs);
+        clock_t started = clock();
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            assert(sr_archive_vfs_mount_memory(&vfs, archives[archive_index].data,
+                                               archives[archive_index].size, "scale.xb", false,
+                                               -1, NULL) == NK_OK);
+        }
+        clock_t finished = clock();
+        assert(sr_archive_vfs_mount_count(&vfs) == archive_count);
+        assert(sr_archive_vfs_entry_count(&vfs) == archive_count * members_per_archive);
+        assert(sr_archive_vfs_index_sort_count(&vfs) == 0u);
+        clock_t finalize_started = clock();
+        assert(sr_archive_vfs_finalize(&vfs));
+        clock_t finalize_finished = clock();
+        assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            for (size_t member_index = 0; member_index < members_per_archive; member_index++) {
+                char query[64];
+                SrArchiveFile file;
+                snprintf(query, sizeof(query), "data/gen/a%04zu/f%02zu.bin",
+                         archive_index, member_index);
+                assert(sr_archive_vfs_lookup(&vfs, query, -2, &file));
+                assert(file.mount_index == archive_index);
+                assert(file.entry_index == member_index);
+                assert(file.size == 1u);
+            }
+        }
+        assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+        printf("[ARCHIVE_VFS] mount scaling N=%zu M=%zu mount=%.6f finalize=%.6f total=%.6f CPU seconds sorts=%zu\n",
+               archive_count, members_per_archive,
+               (double)(finished - started) / CLOCKS_PER_SEC,
+               (double)(finalize_finished - finalize_started) / CLOCKS_PER_SEC,
+               (double)(finalize_finished - started) / CLOCKS_PER_SEC,
+               sr_archive_vfs_index_sort_count(&vfs));
+        sr_archive_vfs_destroy(&vfs);
+        for (size_t archive_index = 0; archive_index < archive_count; archive_index++) {
+            free(archives[archive_index].data);
+        }
+        free(archives);
+    }
+}
+
+static void test_archive_vfs_precedence(void) {
+    static const uint8_t unqualified_data[] = "unqualified";
+    static const uint8_t variant_two_data[] = "variant-two-first";
+    static const uint8_t variant_two_again_data[] = "variant-two-second";
+    static const uint8_t variant_zero_data[] = "variant-zero";
+    const FixtureEntry unqualified_entry = {
+        "Data/Shared.BIN", unqualified_data, sizeof(unqualified_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    const FixtureEntry variant_two_entry = {
+        "data/shared.bin", variant_two_data, sizeof(variant_two_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    const FixtureEntry variant_two_again_entry = {
+        "DATA/SHARED.BIN", variant_two_again_data, sizeof(variant_two_again_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    const FixtureEntry variant_zero_entry = {
+        "data/shared.bin", variant_zero_data, sizeof(variant_zero_data) - 1u,
+        NK_XB_COMPRESSION_NONE
+    };
+    ByteBuffer archives[4] = { { 0 }, { 0 }, { 0 }, { 0 } };
+    archives[0] = make_archive(&unqualified_entry, 1u, false);
+    archives[1] = make_archive(&variant_two_entry, 1u, false);
+    archives[2] = make_archive(&variant_two_again_entry, 1u, false);
+    archives[3] = make_archive(&variant_zero_entry, 1u, false);
+
+    SrArchiveVfs vfs;
+    sr_archive_vfs_init(&vfs);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[0].data, archives[0].size,
+                                       "shared.xb", false, -1, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[1].data, archives[1].size,
+                                       "shared.xb2", false, 2, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[2].data, archives[2].size,
+                                       "shared.xb2", false, 2, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_memory(&vfs, archives[3].data, archives[3].size,
+                                       "shared.xb0", false, 0, NULL) == NK_OK);
+    assert(sr_archive_vfs_index_sort_count(&vfs) == 0u);
+    assert(sr_archive_vfs_finalize(&vfs));
+    assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+
+    SrArchiveFile file;
+    assert(sr_archive_vfs_lookup(&vfs, "DaTa/ShArEd.BiN", -2, &file));
+    assert(file.mount_index == 0u && file.size == sizeof(unqualified_data) - 1u);
+    assert(sr_archive_vfs_lookup(&vfs, "data/shared.bin", 2, &file));
+    assert(file.mount_index == 1u && file.size == sizeof(variant_two_data) - 1u);
+    assert(sr_archive_vfs_lookup(&vfs, "data/shared.bin", 0, &file));
+    assert(file.mount_index == 3u && file.size == sizeof(variant_zero_data) - 1u);
+
+    SrVfsDirList list;
+    sr_vfs_dirlist_init(&list);
+    assert(sr_archive_vfs_list_dir(&vfs, "DATA", -2, &list) == 1);
+    assert(list.exists && list.count == 1u);
+    assert(archive_list_has(&list, "Shared.BIN"));
+    sr_vfs_dirlist_destroy(&list);
+    assert(sr_archive_vfs_index_sort_count(&vfs) == 1u);
+
+    sr_archive_vfs_destroy(&vfs);
+    for (size_t i = 0; i < sizeof(archives) / sizeof(archives[0]); i++) {
+        free(archives[i].data);
+    }
+}
+
 static void test_archive_vfs_provider(void) {
     static const uint8_t raw_data[] = "raw archive bytes";
     static const uint8_t lzs_data[] = "lzs archive bytes";
@@ -1051,8 +1180,10 @@ int main(void) {
     test_compressed_header_expansion_limit();
     test_duplicate_canonical_path();
     test_deterministic_mutation_fuzz();
+    test_archive_vfs_precedence();
     test_archive_vfs_provider();
     test_archive_vfs_many_members();
+    test_archive_vfs_mount_scaling();
     test_staging_cleanup_boundary();
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();

@@ -51,6 +51,8 @@ typedef struct {
     SrArchiveIndexEntry *index;
     size_t index_count;
     size_t index_capacity;
+    size_t index_sort_count;
+    int index_dirty;
     SrArchiveCacheEntry *cache;
     size_t cache_count;
     size_t cache_capacity;
@@ -73,6 +75,7 @@ NkResult sr_archive_vfs_mount_memory(SrArchiveVfs *vfs, const void *data,
                                      size_t data_size, const char *source_name,
                                      bool big_endian, int variant,
                                      const NkXbLimits *limits);
+int sr_archive_vfs_finalize(SrArchiveVfs *vfs);
 
 int sr_archive_vfs_lookup(const SrArchiveVfs *vfs, const char *key,
                           int wanted_variant, SrArchiveFile *file_out);
@@ -84,6 +87,7 @@ int sr_archive_vfs_list_dir(const SrArchiveVfs *vfs, const char *dir_key,
 
 size_t sr_archive_vfs_mount_count(const SrArchiveVfs *vfs);
 size_t sr_archive_vfs_entry_count(const SrArchiveVfs *vfs);
+size_t sr_archive_vfs_index_sort_count(const SrArchiveVfs *vfs);
 size_t sr_archive_vfs_cache_bytes(const SrArchiveVfs *vfs);
 size_t sr_archive_vfs_cache_entry_count(const SrArchiveVfs *vfs);
 
