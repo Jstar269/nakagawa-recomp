@@ -33,6 +33,8 @@ SYNTHETIC_DISC_IDS = {
     "synthetic-title2-v1": "TEST00002",
     "pspdev-phase5-v1": "TEST00005",
     "display-smoke-v1": "TEST00006",
+    "showcase-scene-v1": "TEST00007",
+    "showcase-breakout-v1": "TEST00008",
 }
 
 
