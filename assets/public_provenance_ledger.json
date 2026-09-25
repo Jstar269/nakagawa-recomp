@@ -460,7 +460,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e8a32327c437ee5d0b0ab92e13391a5ec584933aee239f69dcc47d50f00d7fcb"
+      "sha256": "e78a6e8d465d77fde8883867a92d5256cc5b93d8c44580d5ebb3012e03ea020f"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -1009,7 +1009,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "976b275395a590626adca73c2b6be6af358d582a4a0d08bc7fa2b61554ccedca"
+      "sha256": "e1bf6383ad90bf6ec654f72d43d43d7b1cafaffa2723b08965bc9b70dc6a3415"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -2281,7 +2281,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ebd71df2fd02048285760125bb6cf9defe0a2051713c0b92e68b56418c29522"
+      "sha256": "407ba15ba907038c337ee3f4d146ee7f299209819cfb2fb74b31dd862e146d67"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2317,7 +2317,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55db42aa336e4e35ae26952650eddda40d1ca9294ca297535808ca94633e288e"
+      "sha256": "81037353241696f8205caafc19ef8a013454100eb3f32ad65e86e794b1a1c39e"
     },
     {
       "path": "src/player/player_state.h",
@@ -2329,7 +2329,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "131d0a379666623b674d87f4e3f3f62a649643f9eec8023df7e7fa3ccf72888a"
+      "sha256": "4434a16bbee723c037f8b7dc0d1060739505df08aaf4f440ca25b77ff4b3d266"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -4763,7 +4763,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e422dd76995e055aa5ba9a0ab91b6ef7c55a5427d36bc057816634615976dc92"
+      "sha256": "b98604a01d904e9293a0172e9cd51b60aeb1d63d233c0d9b341b2baacb7505bf"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -7315,6 +7315,18 @@
         "upstream_attribution": null
       },
       "sha256": "5cdd94a96dd817bf38f5722c1f2c647ca98f93383c966f974441f3a983c6f43e"
+    },
+    {
+      "path": "tools/test_player_package_route.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "player-package-route-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c82d3f70b201d300e3f54fd91c85ef3eec8a3c517c01360ca086077e3ecbcf6b"
     },
     {
       "path": "tools/test_portability_inventory.py",
