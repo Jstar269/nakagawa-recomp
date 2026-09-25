@@ -49,6 +49,7 @@ TOOLS = ROOT / "tools"
 AUDIT = TOOLS / "publish_audit.py"
 
 sys.path.insert(0, str(TOOLS))
+from nk_core.git_isolation import isolated_git_env, run_git  # noqa: E402
 import publication_policy  # noqa: E402
 from public_export import build_document  # noqa: E402
 
@@ -108,9 +109,8 @@ class _AttestationRepo:
         self.tmp = Path(testcase.enterContext(tempfile.TemporaryDirectory()))
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
-        for argv in (("init", "-q", "."), ("config", "user.email", "t@example.invalid"),
-                     ("config", "user.name", "test")):
-            subprocess.run(["git", *argv], cwd=self.repo, check=True, capture_output=True)
+        for argv in (("init", "-q", "."),):
+            run_git(argv, cwd=self.repo, check=True, capture_output=True)
         self.content: dict[str, str] = dict(REQUIRED_FILES)
         self.content.update({
             "docs/guide.md": "# Guide\n\nSynthetic fixture.\n",
@@ -141,8 +141,8 @@ class _AttestationRepo:
         return hashlib.sha256((self.repo / rel).read_bytes()).hexdigest()
 
     def _git(self, *argv: str) -> str:
-        return subprocess.run(["git", *argv], cwd=self.repo, check=True,
-                              capture_output=True, text=True).stdout.strip()
+        return run_git(argv, cwd=self.repo, check=True,
+                       capture_output=True, text=True).stdout.strip()
 
     def _stage(self, extra_files: dict[str, str] | None = None) -> None:
         """Write (optional) new files, update the policy + ledger + export to a
@@ -154,7 +154,7 @@ class _AttestationRepo:
         self._write_policy()
         self._write_ledger()
         self._write_export()
-        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True, capture_output=True)
+        run_git(["add", "-A"], cwd=self.repo, check=True, capture_output=True)
 
     # -- baseline construction ----------------------------------------------
 
@@ -250,16 +250,16 @@ class _AttestationRepo:
 
     def build_baseline(self) -> None:
         self._stage()
-        subprocess.run(["git", "commit", "-qm", "authoritative baseline"], cwd=self.repo,
-                       check=True, capture_output=True)
+        run_git(["commit", "-qm", "authoritative baseline"], cwd=self.repo,
+                check=True, capture_output=True)
         self._baseline_commit = self._git("rev-parse", "HEAD")
-        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", self._baseline_commit],
-                       cwd=self.repo, check=True, capture_output=True)
+        run_git(["update-ref", "refs/remotes/origin/main", self._baseline_commit],
+                cwd=self.repo, check=True, capture_output=True)
 
     def baseline_ledger_bytes(self) -> bytes:
         assert self._baseline_commit is not None
-        return subprocess.run(
-            ["git", "show", f"{self._baseline_commit}:assets/public_provenance_ledger.json"],
+        return run_git(
+            ["show", f"{self._baseline_commit}:assets/public_provenance_ledger.json"],
             cwd=self.repo, check=True, capture_output=True,
         ).stdout
 
@@ -272,7 +272,10 @@ class _AttestationRepo:
         return subprocess.run(
             [sys.executable, str(AUDIT), "--repo-root", str(self.repo),
              "--tracked-only", "--public-scope", *extra],
-            cwd=self.repo, capture_output=True, text=True,
+            cwd=self.repo,
+            env=isolated_git_env(root=self.repo),
+            capture_output=True,
+            text=True,
         )
 
     def findings(self, result: subprocess.CompletedProcess) -> list[tuple[str, str]]:
@@ -461,8 +464,8 @@ class TestSelfConsistencyTripwire(unittest.TestCase):
         # Tamper with a file but stage it WITHOUT the ledger/export regeneration
         # (``_stage`` would refresh the hash; bypass it).
         repo._write("src/rt/existing.c", SPDX_C + "int tampered(void) { return 1; }\n")
-        subprocess.run(["git", "add", "src/rt/existing.c"],
-                       cwd=repo.repo, check=True, capture_output=True)
+        run_git(["add", "src/rt/existing.c"],
+                cwd=repo.repo, check=True, capture_output=True)
         rc, findings = repo.audit_result("--provenance-self-consistency")
         self.assertEqual(rc, 1, "stale content hash must fail the tripwire")
         self.assertIn("PROVENANCE_CONTENT_MISMATCH", {c for c, _ in findings})
@@ -477,8 +480,8 @@ class TestSelfConsistencyTripwire(unittest.TestCase):
         doc["schema_version"] = 99  # any byte change that is not regenerated
         (repo.repo / "assets" / "public_provenance_ledger.json").write_text(
             json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-        subprocess.run(["git", "add", "assets/public_provenance_ledger.json"],
-                       cwd=repo.repo, check=True, capture_output=True)
+        run_git(["add", "assets/public_provenance_ledger.json"],
+                cwd=repo.repo, check=True, capture_output=True)
         rc, findings = repo.audit_result("--provenance-self-consistency")
         self.assertEqual(rc, 1, "ledger edit without export regeneration must fail the tripwire")
         self.assertIn("POLICY_EXPORT_STALE", {c for c, _ in findings})

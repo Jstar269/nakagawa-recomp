@@ -157,6 +157,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 try:
+    from .nk_core.git_isolation import isolated_git_env
     from .provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
@@ -165,6 +166,7 @@ try:
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
 except ImportError:
+    from nk_core.git_isolation import isolated_git_env
     from provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
@@ -229,7 +231,13 @@ class Finding:
 
 
 def _git(repo: Path, *args: str) -> bytes:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, check=False)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=isolated_git_env(root=repo),
+        capture_output=True,
+        check=False,
+    )
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise VerifyError("GIT_ERROR", detail or f"git {' '.join(args)} failed")
@@ -239,7 +247,10 @@ def _git(repo: Path, *args: str) -> bytes:
 def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=repo, capture_output=True, check=False,
+        cwd=repo,
+        env=isolated_git_env(root=repo),
+        capture_output=True,
+        check=False,
     )
     return result.returncode == 0
 
@@ -362,6 +373,7 @@ def _stream_tree_entries(repo: Path, tree_sha: str):
     """
     proc = subprocess.Popen(
         ["git", "ls-tree", "-r", "-z", "--full-tree", tree_sha], cwd=repo,
+        env=isolated_git_env(root=repo),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdout
@@ -470,6 +482,7 @@ def read_tree(repo: Path, tree_sha: str) -> dict[str, bytes]:
 
     proc = subprocess.Popen(
         ["git", "cat-file", "--batch"], cwd=repo,
+        env=isolated_git_env(root=repo),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdin and proc.stdout
