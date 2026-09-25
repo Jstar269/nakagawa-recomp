@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20ca3da82fa54e85bf93ac28907e05bd7f907bb677b1128c4993892405a7f866"
+      "sha256": "15e4f6098a61967c7f0e0ceb61df1f5dec5cfc9b30d6bf319d836b16ad5a27c8"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -295,7 +295,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7f246b422c11bb0bc4b3f7ab3119ca51cd34f1037d2c5afa470a8077ec44ea86"
+      "sha256": "f4be8d231a18549ee8678e6cdef2f277a6c51195306266ef3c0153083f304f70"
     },
     {
       "path": "NOTICE.md",
@@ -460,7 +460,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9a67f7bae83ef5c91746c542b56cedcfd0db3051603304ba4dde523fece50510"
+      "sha256": "62291966d732eb416c6d2a85c766d6646cc89170faf76d7e65e47f95a4188c1c"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -2383,6 +2383,18 @@
       "sha256": "d9bc4aebabea5a10c5ebc29ff2c92b20416ef867db883ab8959b71f6f0d12f92"
     },
     {
+      "path": "src/player/ui_clip.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "player-ui-clip-scope",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "963480c38e5f1c2c88919c884cd0d094156530c658f37ff95e2b994629471661"
+    },
+    {
       "path": "src/player/ui_renderer.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -2392,7 +2404,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0fc3c98ff6d58a096a4f73e2cb271d864c32588dda4a99d4600123f992373d14"
+      "sha256": "08c5f65de54cabdb9a205b860102ef3ee981500ba12d8bc5a3b78a70fc0bf369"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -4839,6 +4851,18 @@
         "upstream_attribution": null
       },
       "sha256": "a3b29f01afae570b3a4061a58c7d4ab972b66802f92df52cd84411fccc1bd96b"
+    },
+    {
+      "path": "tests/native/test_ui_clip.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "player-ui-clip-scope",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "e5cd2eb59b988628a1004ed8393902fd8f0d95e575c9af7ce8e9ea702ccca88f"
     },
     {
       "path": "tests/native/test_win32_process.c",
