@@ -461,7 +461,11 @@ static int cmd_wait_slot(SubmitSlot *slot, GeGpuReplayBoundaryKind boundary) {
     VKC(vkWaitForFences(s_dev, 1, &slot->fence, VK_TRUE, UINT64_MAX));
     uint64_t waited = SDL_GetTicksNS() - wait_started;
     replay_note_wait(boundary, waited);
-    sr_perf_ge_wait(perf_started, slot->reason);
+    if (perf_started) {
+        sr_perf_vulkan_wait(perf_started, slot->reason == SR_PERF_GE_DEPTH_READBACK ||
+                                       slot->reason == SR_PERF_GE_TARGET_READBACK_TRANSITION);
+        sr_perf_ge_wait(perf_started, slot->reason);
+    }
     if (slot->reason == SR_PERF_GE_RENDER_BATCH) {
         s_replay_stats.render_waits++;
         s_replay_stats.render_wait_ns += waited;
@@ -500,7 +504,11 @@ static int cmd_drain(GeGpuReplayBoundaryKind boundary) {
     VKC(vkWaitForFences(s_dev, count, fences, VK_TRUE, UINT64_MAX));
     uint64_t waited = SDL_GetTicksNS() - wait_started;
     replay_note_wait(boundary, waited);
-    sr_perf_ge_wait(perf_started, wait_reason);
+    if (perf_started) {
+        sr_perf_vulkan_wait(perf_started, wait_reason == SR_PERF_GE_DEPTH_READBACK ||
+                                       wait_reason == SR_PERF_GE_TARGET_READBACK_TRANSITION);
+        sr_perf_ge_wait(perf_started, wait_reason);
+    }
     if (wait_reason == SR_PERF_GE_RENDER_BATCH) {
         s_replay_stats.render_waits++;
         s_replay_stats.render_wait_ns += waited;
@@ -551,9 +559,11 @@ static int cmd_finish_submit(SrPerfGeReason reason, int defer) {
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &s_cmd;
     uint64_t submit_started = SDL_GetTicksNS();
+    uint64_t perf_submit_started = sr_perf_now_ns();
     VKC(vkQueueSubmit(s_queue, 1, &si, slot->fence));
+    if (perf_submit_started) sr_perf_vulkan_submit(perf_submit_started);
     replay_note_submit(reason, SDL_GetTicksNS() - submit_started);
-    sr_perf_ge_submit(reason);
+    if (sr_perf_enabled) sr_perf_ge_submit(reason);
     slot->reason = reason;
     slot->in_flight = 1;
     if (reason == SR_PERF_GE_RENDER_BATCH) s_replay_stats.render_submits++;
@@ -787,7 +797,10 @@ static int readback_finish(ReadbackSlot *r, int wait, int allow_commit) {
     uint64_t wait_started = wait ? sr_perf_now_ns() : 0;
     VkResult vr = wait ? vkWaitForFences(s_dev, 1, &r->fence, VK_TRUE, UINT64_MAX)
                        : vkGetFenceStatus(s_dev, r->fence);
-    if (wait) sr_perf_ge_wait(wait_started, SR_PERF_GE_TARGET_READBACK_TRANSITION);
+    if (wait && wait_started) {
+        sr_perf_vulkan_wait(wait_started, 1);
+        sr_perf_ge_wait(wait_started, SR_PERF_GE_TARGET_READBACK_TRANSITION);
+    }
     if (vr == VK_NOT_READY) return 0;
     if (vr != VK_SUCCESS) {
         fprintf(stderr, "gegpu: readback fence failed: %d\n", (int)vr);
@@ -800,6 +813,7 @@ static int readback_finish(ReadbackSlot *r, int wait, int allow_commit) {
         t->gpu_valid && t->render_gen == r->gen) {
         if (write_guest_fb(r->map, r->fba, r->stride, r->fmt)) {
             t->clean_gen = r->gen;
+            if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)(SCL_W * SCL_H * 4u));
             s_cnt_readback++;
         } else {
             commit_failed = 1;
@@ -915,7 +929,9 @@ static VkPipeline pipe_create(const PipeKey *k) {
     pci.layout = s_playout; pci.renderPass = s_rp;
 
     VkPipeline p = VK_NULL_HANDLE;
+    uint64_t perf_started = sr_perf_now_ns();
     VkResult r = vkCreateGraphicsPipelines(s_dev, VK_NULL_HANDLE, 1, &pci, NULL, &p);
+    if (perf_started) sr_perf_vulkan_pipeline(perf_started);
     if (r != VK_SUCCESS) fprintf(stderr, "gegpu: pipeline create failed: %d\n", (int)r);
     if (s_cpu_profile) {
         cpu_profile_add(GEGPU_CPU_PIPELINE_CREATE, profile_started);
@@ -1090,7 +1106,8 @@ static int submit_pending(void) {
     }
     for (uint32_t i = 0; i < s_nbatch; i++) {
         uint32_t flags = (uint32_t)s_batch[i].pc.cfg[0] >> 8;
-        if (flags & F_SHBLEND) sr_perf_ge_event(SR_PERF_GE_SHBLEND_BATCH, 1);
+        if ((flags & F_SHBLEND) && sr_perf_enabled)
+            sr_perf_ge_event(SR_PERF_GE_SHBLEND_BATCH, 1);
     }
     if (s_log)
         fprintf(stderr, "GEGPU submit #%lu batches=%u verts=%u tgt=0x%08x/%u fmt=%u\n",
@@ -1225,13 +1242,15 @@ static int target_prepare_present(Target *t) {
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &r->cmd;
     uint64_t submit_started = SDL_GetTicksNS();
+    uint64_t perf_submit_started = sr_perf_now_ns();
     if (vkQueueSubmit(s_queue, 1, &si, r->fence) != VK_SUCCESS) {
         t->layout = old_layout;
         return 0;
     }
+    if (perf_submit_started) sr_perf_vulkan_submit(perf_submit_started);
     replay_note_submit(SR_PERF_GE_TARGET_READBACK_TRANSITION,
                        SDL_GetTicksNS() - submit_started);
-    sr_perf_ge_submit(SR_PERF_GE_TARGET_READBACK_TRANSITION);
+    if (sr_perf_enabled) sr_perf_ge_submit(SR_PERF_GE_TARGET_READBACK_TRANSITION);
     r->target = t;
     r->image = t->img;
     r->gen = t->render_gen;
@@ -1931,18 +1950,26 @@ static VkDescriptorSet tex_get(void) {
         cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, lookup_started);
         if (s_cpu_profile) s_cpu_profile_stats.texture_hits++;
         e->lru = s_texlru++;
-        if (e->content_valid && e->hash == hash) { e->pending = 1; return e->set; }
+        if (e->content_valid && e->hash == hash) {
+            if (sr_perf_enabled) sr_perf_texture_cache(1);
+            e->pending = 1;
+            return e->set;
+        }
         if (!e->content_valid && e->hash == hash && tex_shadow_matches(e)) {
             e->content_valid = 1;
             e->pending = 1;
             s_cnt_shadow_avoided++;
+            if (sr_perf_enabled) sr_perf_texture_cache(1);
             return e->set;
         }
         /* same texture state, new contents: update in place (cache stays bounded) */
         if (e->pending) submit_pending();
         if (!e->content_valid) s_cnt_shadow_required++;
         uint64_t decode_started = cpu_profile_now();
+        uint64_t perf_decode_started = sr_perf_now_ns();
+        if (sr_perf_enabled) sr_perf_texture_cache(0);
         ge_decode_tex_rgba(s_texscratch);
+        if (perf_decode_started) sr_perf_texture_decode(perf_decode_started, tex_source_size());
         cpu_profile_add(GEGPU_CPU_TEXTURE_DECODE, decode_started);
         if (!tex_upload(e->img, s_texscratch, e->w, e->h)) return s_white_set;
         e->hash = hash;
@@ -1961,7 +1988,10 @@ static VkDescriptorSet tex_get(void) {
         tex_evict_lru();
     }
     uint64_t decode_started = cpu_profile_now();
+    uint64_t perf_decode_started = sr_perf_now_ns();
+    if (sr_perf_enabled) sr_perf_texture_cache(0);
     ge_decode_tex_rgba(s_texscratch);
+    if (perf_decode_started) sr_perf_texture_decode(perf_decode_started, tex_source_size());
     cpu_profile_add(GEGPU_CPU_TEXTURE_DECODE, decode_started);
     TexEnt *e = &s_tex[s_tex_n];
     memset(e, 0, sizeof(*e));
@@ -2010,12 +2040,12 @@ static int snapshot_refresh(Target *src) {
     cpu_profile_add(GEGPU_CPU_SNAPSHOT_TARGET, target_started);
     s_replay_stats.snapshot_requests++;
     if (s_cpu_profile) s_cpu_profile_stats.snapshot_requests++;
-    sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_REQUEST, 1);
+    if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_REQUEST, 1);
     if (s_nbatch) submit_pending();
     uint64_t decision_started = cpu_profile_now();
     if (s_snap_src == src && s_snap_srcgen == src->render_gen) {
         cpu_profile_add(GEGPU_CPU_SNAPSHOT_DECISION, decision_started);
-        sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_CACHE_HIT, 1);
+        if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_CACHE_HIT, 1);
         return 1;
     }
     cpu_profile_add(GEGPU_CPU_SNAPSHOT_DECISION, decision_started);
@@ -2042,7 +2072,7 @@ static int snapshot_refresh(Target *src) {
         if (!cmd_batch_record(SR_PERF_GE_SNAPSHOT_COPY)) return 0;
         s_replay_stats.snapshot_copies++;
         if (s_cpu_profile) s_cpu_profile_stats.snapshot_copies++;
-        sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_COPIED, 1);
+        if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_COPIED, 1);
     }
     uint64_t metadata_started = cpu_profile_now();
     s_snap_src = src;
@@ -2133,14 +2163,25 @@ static void build_state(int persp, int sprite, Batch *b) {
         shblend = (g->fbfmt & 3) != 3 || (g->dither_enable != 0) || eq == 5 ||
                   sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) || dual_fix;
         if (shblend) {
-            sr_perf_ge_event(SR_PERF_GE_SHBLEND_STATE, 1);
-            if ((g->fbfmt & 3) != 3) sr_perf_ge_event(SR_PERF_GE_SHBLEND_FB16, 1);
-            if (g->dither_enable != 0) sr_perf_ge_event(SR_PERF_GE_SHBLEND_DITHER, 1);
-            if (eq == 5) sr_perf_ge_event(SR_PERF_GE_SHBLEND_ABSDIFF, 1);
-            if (sfp == 8 || sfp == 9) sr_perf_ge_event(SR_PERF_GE_SHBLEND_DOUBLE_DST_ALPHA, 1);
-            if (dfp >= 6 && dfp <= 9)
-                sr_perf_ge_event(SR_PERF_GE_SHBLEND_DOUBLE_SRC_ALPHA_DST, 1);
-            if (dual_fix) sr_perf_ge_event(SR_PERF_GE_SHBLEND_DUAL_FIX, 1);
+            if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_STATE, 1);
+            if ((g->fbfmt & 3) != 3) {
+                if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_FB16, 1);
+            }
+            if (g->dither_enable != 0) {
+                if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_DITHER, 1);
+            }
+            if (eq == 5) {
+                if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_ABSDIFF, 1);
+            }
+            if (sfp == 8 || sfp == 9) {
+                if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_DOUBLE_DST_ALPHA, 1);
+            }
+            if (dfp >= 6 && dfp <= 9) {
+                if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_DOUBLE_SRC_ALPHA_DST, 1);
+            }
+            if (dual_fix) {
+                if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_DUAL_FIX, 1);
+            }
             /* pipeline blending stays OFF; psp.frag evaluates ge.c blend_chan() against
              * the destination snapshot (refreshed below, after texture binding) */
             b->pc.bl[0] = (int32_t)(sfp | (dfp << 8) | (eq << 16));
@@ -2376,7 +2417,7 @@ static void state_get(int persp, int sprite, Batch *out) {
 static void append(Batch *b, uint32_t first, uint32_t count) {
     if (s_cpu_profile) s_cpu_profile_stats.append_calls++;
     if (b->sw <= 0 || count == 0) return;
-    if (((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND)
+    if ((((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) && sr_perf_enabled)
         sr_perf_ge_event(SR_PERF_GE_SHBLEND_DRAW, 1);
     if (s_nbatch) {
         Batch *last = &s_batch[s_nbatch - 1];

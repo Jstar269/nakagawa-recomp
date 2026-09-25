@@ -228,6 +228,7 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     char *reason,
     size_t reason_size
 );
+bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game);
 
 #define NK_PLAYER_SETTINGS_SCHEMA_VERSION 1
 
