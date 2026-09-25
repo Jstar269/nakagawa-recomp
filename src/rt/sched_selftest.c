@@ -93,11 +93,14 @@ void sr_display_advance_vcount(uint32_t elapsed_periods) { (void)elapsed_periods
 void sr_callback_unregister_owner(uint32_t thread_uid) { (void)thread_uid; }
 void sr_hle_release_thread_resources(uint32_t thread_uid) { (void)thread_uid; }
 
-uint64_t sr_perf_now_ns(void) { return 0; }
+int sr_perf_enabled;
+uint64_t sr_perf_now_ns_impl(void) { return 0; }
 void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+void sr_perf_sched_state(SrPerfSchedState state, uint32_t uid) { (void)state; (void)uid; }
+void sr_perf_sched_switch(uint32_t from_uid, uint32_t to_uid) { (void)from_uid; (void)to_uid; }
 
 /* sr_newlib_malloc / g_hle_depth are referenced by sched.c but live in the full
  * runtime (recomp.c). The selftest does not exercise the real allocator, so we

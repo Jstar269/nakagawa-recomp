@@ -258,7 +258,7 @@ int main(int argc, char **argv) {
         cls.exe = os.path.join(cls.tmp, "iso_containment_test.exe")
         cmd = [
             CC, "-std=c11", "-O0", "-Wall", "-Wextra", "-Werror",
-            f"-I{RT}", "-o", cls.exe, str(cls.c_src), str(ROOT / "src" / "rt" / "iso_public.c")
+            f"-I{RT}", "-o", cls.exe, str(cls.c_src), str(ROOT / "src" / "rt" / "iso_public.c"), str(ROOT / "src" / "rt" / "perf.c")
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
