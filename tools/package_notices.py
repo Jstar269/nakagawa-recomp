@@ -330,6 +330,74 @@ def atrac3p_object_names(repo_root: Path = ROOT) -> list[str]:
     return objects
 
 
+PROJECT_REPOSITORY_URL = "https://github.com/Jstar269/nakagawa-recomp"
+
+
+def _git_text(repo_root: Path, *args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def source_reference(repo_root: Path = ROOT) -> dict[str, Any]:
+    """The exact source a package was built from (#421).
+
+    The whole program is GPL-3.0-or-later and the FFmpeg ATRAC3+ subset is
+    LGPL-2.1-or-later, statically linked. The maintainer's decision for #421 is
+    that the complete corresponding source is the relink mechanism, so every
+    package names the repository, commit and (when built from one) tag it came
+    from, and says so plainly when the working tree carried local changes.
+    Without git, the commit is recorded as unknown rather than guessed.
+    """
+    commit = _git_text(repo_root, "rev-parse", "HEAD")
+    tag = _git_text(repo_root, "describe", "--tags", "--exact-match", "HEAD") if commit else None
+    status = _git_text(repo_root, "status", "--porcelain", "--untracked-files=no") if commit else None
+    return {
+        "repository": PROJECT_REPOSITORY_URL,
+        "commit": commit or None,
+        "tag": tag or None,
+        "local_changes": bool(status) if status is not None else None,
+    }
+
+
+def render_source_notice(reference: dict[str, Any]) -> str:
+    """SOURCE.txt: where the complete corresponding source of this build is."""
+    commit = reference.get("commit") or "unknown (built without git metadata)"
+    lines = [
+        "COMPLETE CORRESPONDING SOURCE",
+        "",
+        "This package is Nakagawa Recomp, distributed under the GNU General Public",
+        "License version 3 or later. It statically links a subset of the FFmpeg",
+        "ATRAC3+ decoder, which is licensed under the GNU Lesser General Public",
+        "License version 2.1 or later. The complete corresponding source of this",
+        "build, including that subset, is available from:",
+        "",
+        f"  Repository: {reference.get('repository', PROJECT_REPOSITORY_URL)}",
+        f"  Commit:     {commit}",
+    ]
+    if reference.get("tag"):
+        lines.append(f"  Tag:        {reference['tag']}")
+    if reference.get("local_changes"):
+        lines.extend([
+            "",
+            "This build was made from a working tree with local changes to tracked",
+            "files; its source is the commit above plus those changes.",
+        ])
+    lines.extend([
+        "",
+        "You may modify that source, including the ATRAC3+ subset, rebuild, and",
+        "relink the program; RELINK.md describes the steps.",
+    ])
+    return "\n".join(lines) + "\n"
+
+
 def render_relink_guide(repo_root: Path = ROOT) -> str:
     """Generate the RELINK.md instructions explaining how to relink the runtime against modified ATRAC3+."""
     objects = atrac3p_object_names(repo_root)
@@ -339,6 +407,8 @@ def render_relink_guide(repo_root: Path = ROOT) -> str:
 Nakagawa Recomp incorporates a subset of the FFmpeg ATRAC3+ audio decoder (`src/rt/atrac3p/`), licensed under the GNU Lesser General Public License version 2.1 or later (LGPL-2.1-or-later).
 
 Under LGPL v2.1 Section 6 you may modify the ATRAC3+ decoder source code and relink the recompiled application executable with your modified library objects.
+
+The whole program is licensed under the GNU General Public License version 3 or later and its complete corresponding source is published, so you can rebuild and relink every part of it, not only the decoder. `SOURCE.txt` in this package names the exact repository commit this build came from.
 
 ## 1. ATRAC3+ Source Files
 
@@ -564,6 +634,12 @@ def generate_package_notices(
         dest_file.write_text(text + "\n", encoding="utf-8", newline="\n")
         copied_texts[display_name] = text
 
+    # Emit SOURCE.txt: the exact source of this build (#421 decision).
+    reference = source_reference(repo_root)
+    source_content = render_source_notice(reference)
+    (package_dir / "SOURCE.txt").write_text(source_content, encoding="utf-8", newline="\n")
+    (notices_dir / "SOURCE.txt").write_text(source_content, encoding="utf-8", newline="\n")
+
     # Emit RELINK.md into package root and THIRD_PARTY_NOTICES
     relink_content = render_relink_guide(repo_root)
     (package_dir / "RELINK.md").write_text(relink_content, encoding="utf-8", newline="\n")
@@ -573,6 +649,7 @@ def generate_package_notices(
     index_data = {
         "schema_version": 1,
         "bundle_type": "native_package_third_party_notices",
+        "source": reference,
         "components": components,
     }
     index_path = notices_dir / "index.json"
@@ -587,7 +664,8 @@ def generate_package_notices(
         "This distribution contains third-party software components licensed under",
         "open-source licenses. The complete text of each applicable notice and license",
         "is set forth below. See THIRD_PARTY_NOTICES/index.json for the machine-readable",
-        "index and RELINK.md for LGPL relinking documentation.",
+        "index, SOURCE.txt for where this build's complete source is, and RELINK.md",
+        "for LGPL relinking documentation.",
         "",
     ]
     for comp in components:

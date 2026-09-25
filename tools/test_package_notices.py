@@ -93,6 +93,10 @@ class TestPackageNotices(unittest.TestCase):
         self.assertTrue((notices_dir / "RELINK.md").is_file())
 
         self.assertTrue((self.pkg_dir / "RELINK.md").is_file())
+        # #421: every package names the exact source it was built from.
+        self.assertTrue((self.pkg_dir / "SOURCE.txt").is_file())
+        self.assertTrue((notices_dir / "SOURCE.txt").is_file())
+        self.assertEqual(result["source"]["repository"], package_notices.PROJECT_REPOSITORY_URL)
         self.assertTrue((self.pkg_dir / "THIRD_PARTY_NOTICES.txt").is_file())
 
         # The in-tree text is authoritative, so the emitted source_path is the
@@ -186,6 +190,33 @@ class TestPackageNotices(unittest.TestCase):
         comp_names = [c["name"] for c in result["components"]]
         self.assertIn("Custom Math Library", comp_names)
         self.assertTrue((self.pkg_dir / "THIRD_PARTY_NOTICES" / "Custom_Math_Library.txt").is_file())
+
+    def test_source_notice_names_repository_commit_and_local_changes(self) -> None:
+        """SOURCE.txt is the #421 relink mechanism: repository, commit, tag, changes."""
+        text = package_notices.render_source_notice({
+            "repository": package_notices.PROJECT_REPOSITORY_URL,
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "tag": "v0.0.1",
+            "local_changes": True,
+        })
+        self.assertIn("Repository: https://github.com/Jstar269/nakagawa-recomp", text)
+        self.assertIn("Commit:     0123456789abcdef0123456789abcdef01234567", text)
+        self.assertIn("Tag:        v0.0.1", text)
+        self.assertIn("working tree with local changes", text)
+        self.assertIn("GNU Lesser General Public", text)
+        clean = package_notices.render_source_notice({
+            "repository": package_notices.PROJECT_REPOSITORY_URL,
+            "commit": None, "tag": None, "local_changes": None,
+        })
+        self.assertIn("unknown (built without git metadata)", clean)
+        self.assertNotIn("Tag:", clean)
+        self.assertNotIn("local changes", clean)
+
+    def test_source_reference_reads_this_checkout(self) -> None:
+        reference = package_notices.source_reference(ROOT)
+        self.assertEqual(reference["repository"], package_notices.PROJECT_REPOSITORY_URL)
+        if reference["commit"] is not None:
+            self.assertRegex(reference["commit"], r"^[0-9a-f]{40}$")
 
     def test_system_dll_detection(self) -> None:
         """Standard Windows system DLLs are recognized; recorded loaders are not system DLLs."""
