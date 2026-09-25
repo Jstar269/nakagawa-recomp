@@ -212,10 +212,8 @@ class Elf:
         if base is not None and (
             e_type == ET_SCE_PRX or (base != 0 and (e_type == ET_REL or has_reloc_sections))
         ):
-            if memory_input:
-                raise ValueError("relocatable ELF input requires a file-backed path")
             from prxload import Prx
-            prx = Prx(path, base)
+            prx = Prx(self.data if memory_input else path, base)
             prx.relocate()
             self.reloc = prx
             self.entry = (self.entry + base) & 0xFFFFFFFF
