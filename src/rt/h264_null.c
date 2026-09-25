@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 the psp-recomp authors
 
 #include "sr_h264.h"
+#include "perf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -181,7 +182,10 @@ int sr_h264_frame_ex(int id, int eos, const SrH264FrameTarget *target,
         memset(info, 0, sizeof(*info));
         info->pts = -1;
     }
-    return instance->backend->frame(instance->backend_id, eos, target, info);
+    uint64_t perf_started = sr_perf_now_ns();
+    int result = instance->backend->frame(instance->backend_id, eos, target, info);
+    if (perf_started) sr_perf_h264(perf_started, result);
+    return result;
 }
 
 int sr_h264_drain(int id, const SrH264FrameTarget *target,

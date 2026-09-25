@@ -513,8 +513,13 @@ have_image:;
         sched_init(&s);
         sched_run(entry, s.r[4], s.r[5]);
     } else {
+        if (sr_perf_enabled) sr_perf_guest_begin();
+        if (sr_perf_enabled) sr_perf_aot_begin(entry);
         fn(&s);
+        if (sr_perf_enabled) sr_perf_aot_end();
+        if (sr_perf_enabled) sr_perf_guest_end();
     }
+    sr_perf_shutdown();
     sr_trace_close();
 
     const char *ppm_path = getenv("SR_PPM_DUMP");

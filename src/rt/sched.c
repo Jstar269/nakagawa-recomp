@@ -133,6 +133,9 @@ typedef struct {
     uint32_t uid;
     int      state;
     int      priority;
+    int      init_priority;
+    uint32_t attr;
+    char     name[32];
     uint32_t entry, arglen, argp;
     SrCoro  *coro;               /* this thread's coroutine (sr_coro); NULL until first started */
     int      started;            /* coroutine has begun running its body */
@@ -1687,7 +1690,8 @@ static void sched_release_thread_stack(TCB *t) {
     t->stack_released = 1;
 }
 
-uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
+uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
+                                uint32_t attr, const char *name) {
     if (sr_title_config_is_worker_entry(entry) && !getenv("SR_NO_THREAD_REUSE")) {
         TCB *existing = tcb_by_entry(entry);
         if (existing) {
@@ -1739,6 +1743,10 @@ uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) 
         t->uid = sr_alloc_uid();
         t->state = TH_DORMANT;
         t->priority = priority;
+        t->init_priority = priority;
+        t->attr = attr;
+        memset(t->name, 0, sizeof(t->name));
+        if (name) strncpy(t->name, name, sizeof(t->name) - 1u);
         t->entry = entry;
         t->started = 0;
         t->coro = NULL;
@@ -1750,10 +1758,18 @@ uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) 
     t->uid = sr_alloc_uid();
     t->state = TH_DORMANT;
     t->priority = priority;
+    t->init_priority = priority;
+    t->attr = attr;
+    memset(t->name, 0, sizeof(t->name));
+    if (name) strncpy(t->name, name, sizeof(t->name) - 1u);
     t->entry = entry;
     t->started = 0;
     t->coro = NULL;
     return sched_create_thread_finish(t, entry, priority, stack_size);
+}
+
+uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
+    return sched_create_thread_ex(entry, priority, stack_size, 0u, NULL);
 }
 
 /* Continuation of sched_create_thread: stack/UID seeding + libc/reent registration.
@@ -2092,6 +2108,19 @@ static int pick_next(void) {
     return -1;   /* unreachable: have_ready guarantees a match above */
 }
 
+static SrPerfSchedState sched_perf_state(void) {
+    if (s_cur < 0 || s_cur >= s_ntcb) return SR_PERF_SCHED_IDLE;
+    if (s_tcb[s_cur].state == TH_READY) return SR_PERF_SCHED_RUNNABLE;
+    if (s_tcb[s_cur].state == TH_WAIT_DELAY || s_tcb[s_cur].state == TH_WAIT_OBJ)
+        return SR_PERF_SCHED_BLOCKED;
+    if (s_tcb[s_cur].state == TH_DORMANT) return SR_PERF_SCHED_IDLE;
+    return SR_PERF_SCHED_RUNNING;
+}
+
+static uint32_t sched_perf_uid(void) {
+    return s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u;
+}
+
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
  * next thread. Called from a thread fiber. */
 static void switch_to_scheduler(void) {
@@ -2100,6 +2129,7 @@ static void switch_to_scheduler(void) {
         SCHED_LIVENESS_OWNER(s_tcb[s_cur].uid);
 #endif
     if (!s_sched_coro || sr_coro_current() == s_sched_coro) return;
+    if (sr_perf_enabled) sr_perf_sched_state(sched_perf_state(), sched_perf_uid());
     sr_coro_switch(s_sched_coro);
 }
 
@@ -3391,6 +3421,36 @@ int sched_thread_run_status(uint32_t uid, SrThreadRunStatus *out) {
     return 0;
 }
 
+int sched_thread_info(uint32_t uid, SrThreadInfo *out) {
+    uid = resolve_thread_uid(uid);
+    TCB *t = tcb_by_uid(uid);
+    if (!t || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    SrThreadRunStatus status;
+    if (sched_thread_run_status(uid, &status) != 0) return -1;
+    out->size = (uint32_t)sizeof(*out);
+    memcpy(out->name, t->name, sizeof(out->name));
+    out->attr = t->attr;
+    out->status = status.status;
+    out->entry = t->entry;
+    out->stack = t->stack_base;
+    out->stackSize = t->stack_size;
+    out->gpReg = s_cur >= 0 && t == &s_tcb[s_cur] && s_cpu
+               ? s_cpu->r[28] : t->saved.r[28];
+    out->initPriority = (uint32_t)t->init_priority;
+    out->currentPriority = status.currentPriority;
+    out->waitType = status.waitType;
+    out->waitId = status.waitId;
+    out->wakeupCount = status.wakeupCount;
+    out->exitStatus = (uint32_t)t->exit_status;
+    out->runClocksLow = status.runClocksLow;
+    out->runClocksHigh = status.runClocksHigh;
+    out->intrPreemptCount = status.intrPreemptCount;
+    out->threadPreemptCount = status.threadPreemptCount;
+    out->releaseCount = status.releaseCount;
+    return 0;
+}
+
 uint32_t sched_thread_exit_status(uint32_t uid) {
     uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
@@ -3579,6 +3639,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     /* Idle no-progress accounting; see the guard in the idle path below. */
     uint64_t idle_vbl_mark = s_vbl_count;
     int idle_no_progress = 0;
+    if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
     for (;;) {
         if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
@@ -3588,6 +3649,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         }
         int idx = pick_next();
         if (idx < 0) {
+            if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
             /* No thread is ready. If a timed wait expires before the next vblank is due,
              * sleep precisely to it (sub-frame delays keep their real duration); otherwise
              * advance the display source timeline and service its eligible pending interrupt.
@@ -3669,6 +3731,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             idle_vbl_mark = s_vbl_count;
         }
         TCB *t = &s_tcb[idx];
+        uint32_t previous_uid = 0;
+        if (sr_perf_enabled && s_cur >= 0 && s_cur < s_ntcb)
+            previous_uid = s_tcb[s_cur].uid;
         s_cur = idx;
         SCHED_LIVENESS_OWNER(t->uid);
         t->state = TH_RUNNING;
@@ -3706,9 +3771,13 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         }
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
-        sr_perf_guest_begin();
+        if (sr_perf_enabled) {
+            sr_perf_sched_state(SR_PERF_SCHED_RUNNING, t->uid);
+            sr_perf_sched_switch(previous_uid, t->uid);
+            sr_perf_guest_begin();
+        }
         sr_coro_switch(t->coro);           /* run until it yields/blocks/exits */
-        sr_perf_guest_end();
+        if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;
         g_hle_depth = 0;
         /* A coroutine cannot destroy itself from inside sched_exit_current;

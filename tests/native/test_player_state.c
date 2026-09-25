@@ -451,6 +451,25 @@ int main(int argc, char **argv) {
     player_app_sync_library(app);
     assert(app->game_count == 3);
 
+    /* Bundled showcase entries are merged into the visible view only. They
+       survive library resyncs without entering or leaving the user's library. */
+    memset(&app->showcase_games[0], 0, sizeof(app->showcase_games[0]));
+    snprintf(app->showcase_games[0].disc_id, sizeof(app->showcase_games[0].disc_id),
+             "TEST00007");
+    snprintf(app->showcase_games[0].title_id, sizeof(app->showcase_games[0].title_id),
+             "showcase-scene-v1");
+    app->showcase_count = 1;
+    player_app_sync_library(app);
+    assert(app->game_count == 4 && app->library.count == 3);
+    assert(player_game_is_showcase(&app->games[3]));
+    assert(!player_app_remove_game(app, 3));
+    assert(app->library.count == 3 && app->game_count == 4);
+    player_app_sync_library(app);
+    assert(app->game_count == 4 && strcmp(app->games[3].disc_id, "TEST00007") == 0);
+    app->showcase_count = 0;
+    player_app_sync_library(app);
+    assert(app->game_count == 3 && app->library.count == 3);
+
     /* 1. An entry that is NOT last is found at its real index.
      *
      * This is the case --launch-now got wrong: re-adding TEST00001 updates it
@@ -1494,6 +1513,68 @@ int main(int argc, char **argv) {
         assert(!bapp->build_session.is_building);
 
         free(bapp);
+    }
+
+    /* 18. Developer-layout catalog title launchability without a package. */
+    printf("[PLAYER_STATE_TEST] Subtest 18: developer-layout catalog title launchability\n");
+    fflush(stdout);
+    {
+        PlayerApp *dev_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(dev_app != NULL);
+        nk_library_init(&dev_app->library);
+
+        char cache_dir[NK_MAX_PATH];
+        char dev_root[576];
+        char build_dir[640];
+        char dev_exe[768];
+        char dev_image[768];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(dev_root, sizeof(dev_root), "%s%cdev_layout_root",
+                 cache_dir, nk_platform_path_separator());
+        snprintf(build_dir, sizeof(build_dir), "%s%cbuild%cdisplay-smoke-v1",
+                 dev_root, nk_platform_path_separator(), nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(build_dir));
+
+        snprintf(dev_exe, sizeof(dev_exe), "%s%cdisplay-smoke-v1.exe",
+                 build_dir, nk_platform_path_separator());
+        snprintf(dev_image, sizeof(dev_image), "%s%cdisplay-smoke-v1_image.bin",
+                 build_dir, nk_platform_path_separator());
+
+        write_text_file(dev_exe, "executable_stub");
+        write_text_file(dev_image, "image_stub");
+
+        player_app_set_runtime_root(dev_app, dev_root);
+        player_app_populate_sample_games(dev_app);
+
+        int disp_idx = player_app_find_game_by_disc_id(dev_app, "TEST00006");
+        assert(disp_idx >= 0);
+        /* Without a package in packages/TEST00006, the developer binary is discovered
+           and marks the title prepared. */
+        assert(dev_app->games[disp_idx].is_prepared == true);
+        assert(dev_app->games[disp_idx].status == NK_STATUS_PREPARED);
+        assert(player_app_game_has_runtime(dev_app, &dev_app->games[disp_idx]) == true);
+
+        /* Session preparation succeeds with the developer layout executable and image */
+        NkResult prep_res = nk_launch_prepare_session(
+            &dev_app->launch_session, &dev_app->games[disp_idx], dev_root);
+        assert(prep_res == NK_OK);
+        assert(dev_app->launch_session.package_launch == false);
+        assert(strcmp(dev_app->launch_session.executable_path, dev_exe) == 0);
+        assert(strcmp(dev_app->launch_session.image_path, dev_image) == 0);
+
+        /* Cleanup stub files and verify fallback to unprepared when binary is removed */
+        assert(remove(dev_exe) == 0);
+        assert(remove(dev_image) == 0);
+
+        nk_library_init(&dev_app->library);
+        dev_app->game_count = 0;
+        player_app_populate_sample_games(dev_app);
+        assert(dev_app->games[disp_idx].is_prepared == false);
+        assert(dev_app->games[disp_idx].status == NK_STATUS_IDENTIFIED);
+        assert(player_app_game_has_runtime(dev_app, &dev_app->games[disp_idx]) == false);
+        assert(player_app_launch_game(dev_app, disp_idx) == false);
+
+        free(dev_app);
     }
 
     free(app);

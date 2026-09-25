@@ -12,6 +12,7 @@
 #include <ctype.h>
 
 #include "iso.h"
+#include "perf.h"
 
 #define NK_ISO_NO_PLAYER_EXTRAS 1
 #include "../core/nk_iso.c"
@@ -161,14 +162,17 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     if (!dst) return -1;
     if (bytes == 0) return 0;
 
+    uint64_t perf_started = sr_perf_now_ns();
     ISO_LOCK();
     if (ensure_reader_locked() != 0) {
         ISO_UNLOCK();
+        if (perf_started) sr_perf_storage_read(SR_PERF_STORAGE_ISO, bytes, perf_started, 0);
         return -1;
     }
 
     int rc = nk_iso_reader_read(s_reader, lba, (uint64_t)offset, dst, bytes);
     ISO_UNLOCK();
+    if (perf_started) sr_perf_storage_read(SR_PERF_STORAGE_ISO, bytes, perf_started, rc >= 0);
 
     return rc;
 }
