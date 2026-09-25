@@ -43,6 +43,7 @@ typedef struct {
     char package_root[NK_MAX_PATH];
     char executable_path[NK_MAX_PATH];
     char image_path[NK_MAX_PATH];
+    bool validation_cache_hit;
 } NkRuntimePackageInfo;
 
 /* Parse and validate a manifest from a memory buffer.

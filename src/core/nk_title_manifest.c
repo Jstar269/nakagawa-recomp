@@ -89,6 +89,7 @@ typedef struct {
 
 static OverlayStorageSlot s_overlay_slots[NK_MANIFEST_MAX_OVERLAYS];
 static int s_overlay_slot_count = 0;
+static uint64_t s_catalog_epoch = 1;
 
 /* Installed into the catalog the first time an overlay is stored, so that
    nk_title_catalog_clear_overlay releases this storage as well as its own
@@ -98,6 +99,7 @@ static int s_overlay_slot_count = 0;
 static void nk_manifest_reset_overlay_storage(void) {
     memset(s_overlay_slots, 0, sizeof(s_overlay_slots));
     s_overlay_slot_count = 0;
+    s_catalog_epoch++;
 }
 
 static FILE *manifest_fopen(const char *path) {
@@ -1445,6 +1447,7 @@ bool nk_title_manifest_load_overlay_ext(
         for (int i = 0; i < s_overlay_slot_count; i++) {
             if (strcmp(s_overlay_slots[i].entry.id, entry.id) == 0) {
                 nk_title_catalog_register_overlay(&s_overlay_slots[i].entry);
+                s_catalog_epoch++;
                 break;
             }
         }
@@ -2305,6 +2308,179 @@ static bool package_hash_file(const char *path, char out_hex[65]) {
     return true;
 }
 
+typedef struct {
+    uint64_t size;
+    uint64_t modified;
+} PackageFileIdentity;
+
+static bool package_file_identity_equal(const PackageFileIdentity *left,
+                                        const PackageFileIdentity *right) {
+    return left && right && left->size == right->size &&
+           left->modified == right->modified;
+}
+
+typedef struct {
+    bool valid;
+    uint64_t catalog_epoch;
+    uint32_t player_abi_version;
+    char package_root[NK_MAX_PATH];
+    char disc_id[NK_MAX_DISC_ID_LEN];
+    char title_id[64];
+    char identity_digest[65];
+    NkRuntimePackageInfo info;
+} PackageValidationCache;
+
+static PackageValidationCache s_package_validation_cache;
+
+static bool package_file_identity(const char *path, PackageFileIdentity *identity) {
+    if (!path || !identity) return false;
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                           wide, 32768) <= 0) return false;
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW(wide, GetFileExInfoStandard, &data) ||
+        (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return false;
+    identity->size = ((uint64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+    identity->modified = ((uint64_t)data.ftLastWriteTime.dwHighDateTime << 32) |
+                         data.ftLastWriteTime.dwLowDateTime;
+#else
+    struct stat data;
+    if (stat(path, &data) != 0 || !S_ISREG(data.st_mode)) return false;
+    identity->size = (uint64_t)data.st_size;
+    identity->modified = (uint64_t)data.st_mtime * 1000000000ull +
+                         (uint64_t)data.st_mtim.tv_nsec;
+#endif
+    return true;
+}
+
+static void package_identity_update_u64(NkSha256 *ctx, uint64_t value) {
+    uint8_t bytes[8];
+    for (size_t i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = (uint8_t)(value >> (i * 8));
+    }
+    nk_sha256_update(ctx, bytes, sizeof(bytes));
+}
+
+static void package_identity_update_file(NkSha256 *ctx, const char *relative,
+                                         const PackageFileIdentity *identity) {
+    nk_sha256_update(ctx, (const uint8_t *)relative, strlen(relative) + 1);
+    package_identity_update_u64(ctx, identity->size);
+    package_identity_update_u64(ctx, identity->modified);
+}
+
+static void package_identity_finish(NkSha256 *ctx, char out_hex[65]) {
+    uint8_t digest[32];
+    static const char hex[] = "0123456789abcdef";
+    nk_sha256_finish(ctx, digest);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out_hex[i * 2] = hex[digest[i] >> 4];
+        out_hex[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out_hex[64] = '\0';
+}
+
+static bool package_completion_identity(const char *package_root,
+                                        char out_digest[65]) {
+    char completion_path[NK_MAX_PATH * 2];
+    if (!package_direct_file(package_root, NK_AOT_COMPLETION_MANIFEST,
+                             completion_path, sizeof(completion_path))) return false;
+    PackageFileIdentity completion_identity;
+    if (!package_file_identity(completion_path, &completion_identity)) return false;
+
+    char *completion_text = NULL;
+    size_t completion_length = 0;
+    char error[256] = "";
+    if (!package_read_json(completion_path, 1024u * 1024u,
+                           &completion_text, &completion_length,
+                           error, sizeof(error))) return false;
+    PackageFileIdentity completion_identity_after;
+    if (!package_file_identity(completion_path, &completion_identity_after) ||
+        !package_file_identity_equal(&completion_identity,
+                                     &completion_identity_after)) {
+        free(completion_text);
+        return false;
+    }
+    JsonNode *completion = json_parse(completion_text, completion_length,
+                                      error, sizeof(error));
+    free(completion_text);
+    if (!completion) return false;
+
+    const JsonNode *artifacts = obj_get(completion, "artifacts");
+    bool ok = artifacts && artifacts->type == JSON_ARRAY &&
+              artifacts->u.arr.count > 0;
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    if (ok) {
+        package_identity_update_file(&ctx, NK_AOT_COMPLETION_MANIFEST,
+                                     &completion_identity);
+        package_identity_update_u64(&ctx, artifacts->u.arr.count);
+        for (size_t i = 0; ok && i < artifacts->u.arr.count; i++) {
+            const JsonNode *record = artifacts->u.arr.items[i];
+            const char *relative = NULL;
+            char artifact_path[NK_MAX_PATH * 2];
+            PackageFileIdentity artifact_identity;
+            ok = record && record->type == JSON_OBJECT &&
+                 package_string(obj_get(record, "path"), &relative) &&
+                 is_valid_portable_path(relative) &&
+                 package_direct_file(package_root, relative, artifact_path,
+                                     sizeof(artifact_path)) &&
+                 package_file_identity(artifact_path, &artifact_identity);
+            if (ok) package_identity_update_file(&ctx, relative, &artifact_identity);
+        }
+    }
+    if (ok) package_identity_finish(&ctx, out_digest);
+    json_free(completion);
+    return ok;
+}
+
+static bool package_validation_cache_get(
+    const char *package_root,
+    const char *disc_id,
+    const char *title_id,
+    uint32_t player_abi_version,
+    uint64_t catalog_epoch,
+    NkRuntimePackageInfo *out_info
+) {
+    if (!s_package_validation_cache.valid ||
+        s_package_validation_cache.catalog_epoch != catalog_epoch ||
+        s_package_validation_cache.player_abi_version != player_abi_version ||
+        strcmp(s_package_validation_cache.package_root, package_root) != 0 ||
+        strcmp(s_package_validation_cache.disc_id, disc_id) != 0 ||
+        strcmp(s_package_validation_cache.title_id, title_id) != 0) return false;
+    char identity_digest[65];
+    if (!package_completion_identity(package_root, identity_digest) ||
+        strcmp(identity_digest, s_package_validation_cache.identity_digest) != 0) {
+        s_package_validation_cache.valid = false;
+        return false;
+    }
+    *out_info = s_package_validation_cache.info;
+    out_info->validation_cache_hit = true;
+    return true;
+}
+
+static void package_validation_cache_put(
+    const char *package_root,
+    const char *disc_id,
+    const char *title_id,
+    uint32_t player_abi_version,
+    uint64_t catalog_epoch,
+    const char *identity_digest,
+    const NkRuntimePackageInfo *info
+) {
+    PackageValidationCache *cache = &s_package_validation_cache;
+    cache->valid = true;
+    cache->catalog_epoch = catalog_epoch;
+    cache->player_abi_version = player_abi_version;
+    snprintf(cache->package_root, sizeof(cache->package_root), "%s", package_root);
+    snprintf(cache->disc_id, sizeof(cache->disc_id), "%s", disc_id);
+    snprintf(cache->title_id, sizeof(cache->title_id), "%s", title_id);
+    snprintf(cache->identity_digest, sizeof(cache->identity_digest), "%s",
+             identity_digest);
+    cache->info = *info;
+    cache->info.validation_cache_hit = false;
+}
+
 static void package_rebuild_reason(char *reason, size_t reason_size,
                                    const char *detail, const char *root,
                                    const char *disc_id) {
@@ -2742,6 +2918,8 @@ static bool package_validate_completion(const char *package_root,
                                         const JsonNode *package,
                                         const JsonNode *package_cache,
                                         const char *exe_relative,
+                                        const char *exe_hash,
+                                        char out_identity_digest[65],
                                         char *error, size_t error_size) {
     static const char * const allowed_keys[] = {
         "format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits", NULL
@@ -2754,12 +2932,33 @@ static bool package_validate_completion(const char *package_root,
     char *completion_text = NULL;
     size_t completion_length = 0;
     if (!package_direct_file(package_root, NK_AOT_COMPLETION_MANIFEST,
-                             completion_path, sizeof(completion_path)) ||
-        !package_read_json(completion_path, 1024u * 1024u,
-                           &completion_text, &completion_length, error, error_size)) {
+                             completion_path, sizeof(completion_path))) {
         snprintf(error, error_size, "Runtime package completion manifest is missing or unreadable.");
         return false;
     }
+    PackageFileIdentity completion_identity;
+    if (!package_file_identity(completion_path, &completion_identity)) {
+        snprintf(error, error_size, "Runtime package completion manifest identity is unavailable.");
+        return false;
+    }
+    if (!package_read_json(completion_path, 1024u * 1024u,
+                           &completion_text, &completion_length,
+                           error, error_size)) {
+        snprintf(error, error_size, "Runtime package completion manifest is missing or unreadable.");
+        return false;
+    }
+    PackageFileIdentity completion_identity_after;
+    if (!package_file_identity(completion_path, &completion_identity_after) ||
+        !package_file_identity_equal(&completion_identity,
+                                     &completion_identity_after)) {
+        snprintf(error, error_size, "Runtime package completion manifest changed during validation.");
+        free(completion_text);
+        return false;
+    }
+    NkSha256 identity_ctx;
+    nk_sha256_init(&identity_ctx);
+    package_identity_update_file(&identity_ctx, NK_AOT_COMPLETION_MANIFEST,
+                                 &completion_identity);
     JsonNode *completion = json_parse(completion_text, completion_length, error, error_size);
     free(completion_text);
     if (!completion) {
@@ -2785,6 +2984,7 @@ static bool package_validate_completion(const char *package_root,
         json_free(completion);
         return false;
     }
+    package_identity_update_u64(&identity_ctx, artifacts->u.arr.count);
     bool package_seen = false;
     bool report_seen = false;
     bool executable_seen = false;
@@ -2820,10 +3020,18 @@ static bool package_validate_completion(const char *package_root,
         }
         char artifact_path[NK_MAX_PATH * 2];
         char actual_hash[65];
+        PackageFileIdentity artifact_identity;
+        PackageFileIdentity artifact_identity_after;
         if (!package_direct_file(package_root, relative, artifact_path,
                                  sizeof(artifact_path)) ||
+            !package_file_identity(artifact_path, &artifact_identity) ||
             !package_hash_file(artifact_path, actual_hash) ||
-            strcmp(actual_hash, expected_hash) != 0) {
+            !package_file_identity(artifact_path, &artifact_identity_after) ||
+            !package_file_identity_equal(&artifact_identity,
+                                         &artifact_identity_after) ||
+            strcmp(actual_hash, expected_hash) != 0 ||
+            (strcmp(relative, exe_relative) == 0 &&
+             strcmp(actual_hash, exe_hash) != 0)) {
             if (strcmp(relative, exe_relative) == 0) {
                 snprintf(error, error_size,
                          "Package executable hash is stale; completion artifact digest mismatch: %s.", relative);
@@ -2834,6 +3042,7 @@ static bool package_validate_completion(const char *package_root,
             json_free(completion);
             return false;
         }
+        package_identity_update_file(&identity_ctx, relative, &artifact_identity);
         if (strcmp(relative, "package.json") == 0) package_seen = true;
         if (strcmp(relative, "build-report.json") == 0) report_seen = true;
         if (strcmp(relative, exe_relative) == 0) executable_seen = true;
@@ -2862,6 +3071,7 @@ static bool package_validate_completion(const char *package_root,
             return false;
         }
     }
+    package_identity_finish(&identity_ctx, out_identity_digest);
     json_free(completion);
     return true;
 }
@@ -2977,6 +3187,8 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     size_t reason_size
 ) {
     if (reason && reason_size) reason[0] = '\0';
+    NkRuntimePackageInfo resolved_info;
+    memset(&resolved_info, 0, sizeof(resolved_info));
     if (out_info) memset(out_info, 0, sizeof(*out_info));
     char normalized[10];
     if (!user_data_root || !*user_data_root || !title_id || !*title_id ||
@@ -3024,6 +3236,17 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     snprintf(package_root, sizeof(package_root), "%s", resolved_package_root);
+    if (!is_experimental &&
+        package_validation_cache_get(package_root, normalized, title_id,
+                                     player_abi_version, s_catalog_epoch,
+                                     &resolved_info)) {
+        if (out_info) *out_info = resolved_info;
+        if (reason && reason_size) {
+            snprintf(reason, reason_size,
+                     "Runtime package v1 is valid for %s.", normalized);
+        }
+        return NK_RUNTIME_PACKAGE_OK;
+    }
     if (!package_direct_file(package_root, "package.json", package_path,
                              sizeof(package_path))) {
         package_rebuild_reason(reason, reason_size, "Runtime package package.json is missing.", user_data_root, normalized);
@@ -3059,8 +3282,10 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         json_free(package);
         return status;
     }
+    char package_identity_digest[65] = "";
     if (!package_validate_completion(package_root, package, obj_get(package, "cache"),
-                                     exe_relative, parse_error, sizeof(parse_error))) {
+                                     exe_relative, exe_hash, package_identity_digest,
+                                     parse_error, sizeof(parse_error))) {
         package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
         json_free(package);
         return NK_RUNTIME_PACKAGE_STALE;
@@ -3095,15 +3320,6 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
             user_data_root, normalized);
         json_free(package);
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
-    }
-    char actual_exe_hash[65];
-    if (!package_hash_file(resolved_executable, actual_exe_hash) ||
-        strcmp(actual_exe_hash, exe_hash) != 0) {
-        package_rebuild_reason(reason, reason_size,
-            "Package executable hash is stale or the executable was modified.",
-            user_data_root, normalized);
-        json_free(package);
-        return NK_RUNTIME_PACKAGE_STALE;
     }
 
     char image_relative[NK_MAX_PATH];
@@ -3150,17 +3366,27 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     json_free(report);
     json_free(package);
 
-    if (out_info) {
-        if (strlen(package_root) >= sizeof(out_info->package_root) ||
-            strlen(resolved_executable) >= sizeof(out_info->executable_path) ||
-            strlen(resolved_image) >= sizeof(out_info->image_path)) {
-            package_rebuild_reason(reason, reason_size, "Package paths exceed the player path limit.", user_data_root, normalized);
-            return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
-        }
-        memcpy(out_info->package_root, package_root, strlen(package_root) + 1);
-        memcpy(out_info->executable_path, resolved_executable, strlen(resolved_executable) + 1);
-        memcpy(out_info->image_path, resolved_image, strlen(resolved_image) + 1);
+    bool cacheable = strlen(package_root) < sizeof(resolved_info.package_root) &&
+                     strlen(resolved_executable) < sizeof(resolved_info.executable_path) &&
+                     strlen(resolved_image) < sizeof(resolved_info.image_path);
+    if (out_info && !cacheable) {
+        package_rebuild_reason(reason, reason_size,
+                               "Package paths exceed the player path limit.",
+                               user_data_root, normalized);
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
+    if (cacheable) {
+        memcpy(resolved_info.package_root, package_root, strlen(package_root) + 1);
+        memcpy(resolved_info.executable_path, resolved_executable,
+               strlen(resolved_executable) + 1);
+        memcpy(resolved_info.image_path, resolved_image, strlen(resolved_image) + 1);
+        if (!is_experimental) {
+            package_validation_cache_put(package_root, normalized, title_id,
+                                         player_abi_version, s_catalog_epoch,
+                                         package_identity_digest, &resolved_info);
+        }
+    }
+    if (out_info) *out_info = resolved_info;
     if (reason && reason_size) snprintf(reason, reason_size, "Runtime package v1 is valid for %s.", normalized);
     return NK_RUNTIME_PACKAGE_OK;
 }
