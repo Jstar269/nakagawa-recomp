@@ -35,8 +35,10 @@ from __future__ import annotations
 import json
 import hashlib
 import subprocess
+import tempfile
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +49,7 @@ CANONICAL_POLICY = ROOT / "assets" / "public_source_profile.json"
 sys.path.insert(0, str(TOOLS))
 from nk_core.git_isolation import isolated_git_env, run_git  # noqa: E402
 import publication_policy  # noqa: E402
+import policy_sync  # noqa: E402
 from publication_policy import PolicyError, canonical_digest, load_policy  # noqa: E402
 from public_export import build_document, write_document  # noqa: E402
 
@@ -93,6 +96,18 @@ REQUIRED_FILES = {
     "AGENTS.md": "# Synthetic fixture\n",
 }
 
+
+
+class TestPolicySyncTrackedPaths(unittest.TestCase):
+    def test_worktree_deletions_are_not_reported_as_unclassified(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "kept.txt").write_text("kept\n", encoding="utf-8")
+            result = subprocess.CompletedProcess(
+                args=["git", "ls-files"], returncode=0,
+                stdout="kept.txt\ndeleted.txt\n", stderr="")
+            with mock.patch.object(policy_sync.subprocess, "run", return_value=result):
+                self.assertEqual(policy_sync.tracked_paths(root), ["kept.txt"])
 
 class TestGeneratedDocumentBytes(unittest.TestCase):
     def test_json_writer_uses_lf_bytes_on_every_host(self) -> None:

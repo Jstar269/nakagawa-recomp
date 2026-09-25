@@ -305,7 +305,7 @@ class TestReleaseAnchorRejectsSelfAuthorization(unittest.TestCase):
             "src/rt/attacker_smuggle.c": SPDX_C,
             "tools/evil_self_attest.py": SPDX_PY,
             "tools/psp_oracle/evil_runner.ps1": SPDX_PS1,
-            "interface/src/lib/attacker_module.ts": SPDX_TS,
+            "src/attacker_module.ts": SPDX_TS,
         }
 
     def _stage_forged_attack(self, repo: _AttestationRepo) -> dict[str, str]:

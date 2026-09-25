@@ -673,7 +673,7 @@ class TestPublishAudit(unittest.TestCase):
     def test_provenance_audit_requires_project_license_for_project_authored_source(self):
         cases = (
             ("src/project.c", b"/* SPDX-License-Identifier: GPL-2.0-or-later */\nint project;\n"),
-            ("interface/src/project.tsx", b"// SPDX-License-Identifier: GPL-2.0-or-later\nint project;\n"),
+            ("src/project.tsx", b"// SPDX-License-Identifier: GPL-2.0-or-later\nint project;\n"),
             ("CMakeLists.txt", b"# SPDX-License-Identifier: GPL-2.0-or-later\nproject(test)\n"),
             ("fixtures/Makefile", b"# SPDX-License-Identifier: GPL-2.0-or-later\ntest:\n\ttrue\n"),
         )
@@ -713,58 +713,6 @@ class TestPublishAudit(unittest.TestCase):
         removed = b"int imported;\n"
         findings = self._spdx_provenance_findings(
             source_path, removed, "upstream_derived", "LGPL-2.1-or-later"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
-
-    def test_provenance_audit_preserves_inherited_dashboard_spdx_declaration(self):
-        source_path = "interface/src/components/ui/button.tsx"
-        valid = b"// SPDX-License-Identifier: MIT\nexport const button = true;\n"
-        valid_findings = self._spdx_provenance_findings(
-            source_path, valid, "upstream_derived", "MIT"
-        )
-        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
-
-        bare_gpl = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const button = true;\n"
-        gpl_findings = self._spdx_provenance_findings(
-            source_path, bare_gpl, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in gpl_findings), gpl_findings)
-
-        dual_on_verbatim = b"// SPDX-License-Identifier: MIT AND GPL-3.0-or-later\nexport const button = true;\n"
-        dual_findings = self._spdx_provenance_findings(
-            source_path, dual_on_verbatim, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in dual_findings), dual_findings)
-
-        removed = b"export const button = true;\n"
-        findings = self._spdx_provenance_findings(
-            source_path, removed, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
-
-    def test_provenance_audit_requires_dual_license_for_modified_dashboard_source(self):
-        source_path = "interface/src/hooks/use-mobile.ts"
-        valid = b"// SPDX-License-Identifier: MIT AND GPL-3.0-or-later\nexport const useMobile = true;\n"
-        valid_findings = self._spdx_provenance_findings(
-            source_path, valid, "upstream_derived", "MIT"
-        )
-        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
-
-        bare_gpl = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const useMobile = true;\n"
-        gpl_findings = self._spdx_provenance_findings(
-            source_path, bare_gpl, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in gpl_findings), gpl_findings)
-
-        bare_mit = b"// SPDX-License-Identifier: MIT\nexport const useMobile = true;\n"
-        mit_findings = self._spdx_provenance_findings(
-            source_path, bare_mit, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in mit_findings), mit_findings)
-
-        removed = b"export const useMobile = true;\n"
-        findings = self._spdx_provenance_findings(
-            source_path, removed, "upstream_derived", "MIT"
         )
         self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
 
@@ -2145,20 +2093,16 @@ class TestPrivateRootDetection(unittest.TestCase):
         findings = publish_audit._debt_budget_findings(publish_audit.ROOT)
         self.assertEqual(findings, [], f"Debt budget findings on current repo: {findings}")
 
-    def test_debt_budgets_fail_on_increase(self):
-        """Issue #188 Finding 11 (O-11): gate fails when any debt surface count increases."""
+    def test_debt_budgets_fail_on_ruff_increase(self):
+        """Issue #188 Finding 11 (O-11): Ruff rule-family growth fails the debt gate."""
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            (repo / "interface").mkdir()
-            eslint_lines = ["// test"] + [f'  "rule_{i}": "off",' for i in range(30)]
-            (repo / "interface" / "eslint.config.mjs").write_text("rules: {\n" + "\n".join(eslint_lines) + "\n}", encoding="utf-8")
             (repo / "pyproject.toml").write_text("[tool.ruff.lint]\nselect = ['E9', 'F63', 'F7', 'F82', 'F811']\n", encoding="utf-8")
 
             findings = publish_audit._debt_budget_findings(repo, paths=[])
             debt_codes = {f.code for f in findings}
             self.assertIn("DEBT_BUDGET", debt_codes)
             details = " ".join(f.detail for f in findings)
-            self.assertIn("ESLint disabled rules count 30 exceeds debt ceiling 29", details)
             self.assertIn("Ruff select rule families count 5 exceeds debt ceiling 4", details)
 
     def test_workspace_topology_conformance(self):

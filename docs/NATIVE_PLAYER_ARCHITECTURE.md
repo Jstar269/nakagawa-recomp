@@ -66,7 +66,7 @@ Instead, the player UI honestly informs the user:
 
 ## 2. Evaluation of Native UI Technologies
 
-To replace the prototype localhost web dashboard (`interface/`), candidate desktop GUI frameworks were evaluated across sixteen engineering criteria:
+The native player uses the existing SDL3 and Vulkan runtime to render its in-window controls. Candidate desktop UI frameworks were evaluated across sixteen engineering criteria:
 
 | Criterion | SDL3 + In-Engine UI (Chosen) | Qt 6 / QML | Slint (C++/Rust) | Webview2 / Tauri v2 |
 | :--- | :--- | :--- | :--- | :--- |

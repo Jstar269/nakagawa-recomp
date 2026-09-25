@@ -5,6 +5,7 @@
 
 import pathlib
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -90,12 +91,27 @@ class TestDocFreshnessLinter(unittest.TestCase):
     def test_recursive_fallback_includes_nested_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
-            nested = root / "interface" / "README.md"
+            nested = root / "nested" / "README.md"
             nested.parent.mkdir()
             nested.write_text("# Interface\n", encoding="utf-8")
             with patch("tools.lint_docs.subprocess.run", side_effect=OSError("git missing")):
                 files = get_tracked_markdown_files(root)
         self.assertIn(nested, files)
+
+    def test_tracked_markdown_listing_ignores_worktree_deletions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "README.md").write_text(
+                "# Documentation\n\n| Path | Status |\n| --- | --- |\n", encoding="utf-8")
+            (docs / "gone.md").unlink(missing_ok=True)
+            result = subprocess.CompletedProcess(
+                args=["git", "ls-files"], returncode=0,
+                stdout="docs/README.md\ndocs/gone.md\n", stderr="")
+            with patch("tools.lint_docs.subprocess.run", return_value=result):
+                self.assertEqual(get_tracked_markdown_files(root), [docs / "README.md"])
+                self.assertEqual(lint_docs_index_completeness(root), [])
 
     def test_docs_index_completeness_passes_on_repo(self) -> None:
         errors = lint_docs_index_completeness(ROOT)

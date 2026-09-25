@@ -41,7 +41,6 @@ def _policy_excluded(path: str) -> bool:
     return policy.resolve(path).is_excluded
 
 RELEASE_MANIFEST = ROOT / "assets" / "release_manifest.json"
-NPM_LOCK = ROOT / "interface" / "package-lock.json"
 PY_LOCK = ROOT / "tools" / "requirements-lock.txt"
 
 
@@ -54,9 +53,8 @@ def load_manifest() -> dict:
 
 def load_sbom_inputs() -> tuple[dict, list[dict], list[dict]]:
     data = load_manifest()
-    npm_packages = generate_sbom.parse_npm_lockfile(NPM_LOCK)
     py_packages = generate_sbom.parse_python_lockfile(PY_LOCK)
-    return data, npm_packages, py_packages
+    return data, py_packages
 
 
 def sha256_of(path: Path) -> str:
@@ -74,8 +72,8 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(data["license"], "GPL-3.0-or-later")
 
     def test_generate_spdx23_shape(self):
-        data, npm_packages, py_packages = load_sbom_inputs()
-        sbom = generate_sbom.generate_spdx23(data, npm_packages, py_packages)
+        data, py_packages = load_sbom_inputs()
+        sbom = generate_sbom.generate_spdx23(data, py_packages)
         self.assertEqual(sbom["spdxVersion"], "SPDX-2.3")
         self.assertEqual(sbom["dataLicense"], "CC0-1.0")
         self.assertGreater(len(sbom["packages"]), 1, "SPDX 2.3 must include lockfile-derived packages")
@@ -90,29 +88,24 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(len(spdx_ids), len(sbom["packages"]), "SPDX 2.3 package IDs must be unique")
 
     def test_generate_spdx23_ingests_components_and_lockfiles(self):
-        data, npm_packages, py_packages = load_sbom_inputs()
-        sbom = generate_sbom.generate_spdx23(data, npm_packages, py_packages)
+        data, py_packages = load_sbom_inputs()
+        sbom = generate_sbom.generate_spdx23(data, py_packages)
 
         for comp in data.get("components", []):
             c_id = f"SPDXRef-comp-{comp.get('id', 'unknown')}"
             self.assertIn(c_id, {p["SPDXID"] for p in sbom["packages"]},
                           f"component {comp.get('id')} must appear in SPDX 2.3 packages")
 
-        npm_ids = {f"SPDXRef-npm-{pkg['name'].replace('/', '-')}-{pkg['version']}" for pkg in npm_packages}
-        sbom_npm = {p["SPDXID"] for p in sbom["packages"] if p["SPDXID"].startswith("SPDXRef-npm-")}
-        self.assertTrue(npm_ids.issubset(sbom_npm), "every parsed npm package must appear in SPDX 2.3")
-        self.assertGreaterEqual(len(sbom_npm), len(npm_packages))
-
         root_id = "SPDXRef-Package-nakagawa-recomp"
         depends = [
             r for r in sbom["relationships"]
             if r["spdxElementId"] == root_id and r["relationshipType"] == "DEPENDS_ON"
         ]
-        self.assertGreater(len(depends), 0, "root must DEPENDS_ON at least one npm package")
+        self.assertGreater(len(depends), 0, "root must DEPENDS_ON release components")
 
     def test_generate_spdx301_shape(self):
-        data, npm_packages, py_packages = load_sbom_inputs()
-        sbom3 = generate_sbom.generate_spdx301(data, npm_packages, py_packages)
+        data, py_packages = load_sbom_inputs()
+        sbom3 = generate_sbom.generate_spdx301(data, py_packages)
 
         self.assertEqual(sbom3["@context"], "https://spdx.org/rdf/3.0.1/spdx-context.jsonld")
         graph = sbom3["@graph"]
@@ -129,8 +122,8 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)), "SPDX 3 graph element ids must be unique")
 
     def test_generate_cyclonedx_shape(self):
-        data, npm_packages, py_packages = load_sbom_inputs()
-        cd = generate_sbom.generate_cyclonedx(data, npm_packages, py_packages)
+        data, py_packages = load_sbom_inputs()
+        cd = generate_sbom.generate_cyclonedx(data, py_packages)
 
         self.assertEqual(cd["bomFormat"], "CycloneDX")
         self.assertEqual(cd["specVersion"], "1.5")
@@ -156,7 +149,6 @@ class TestReleaseManifest(unittest.TestCase):
 
             code = generate_sbom.main([
                 "--manifest", str(RELEASE_MANIFEST),
-                "--npm-lock", str(NPM_LOCK),
                 "--py-lock", str(PY_LOCK),
                 "--spdx-out", str(spdx_out),
                 "--spdx3-out", str(spdx3_out),
@@ -256,6 +248,13 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(locks.get("status"), "DEPENDENCY_LOCKS_AND_TOOLCHAIN_POLICY_VERIFIED")
         self.assertNotEqual(locks.get("status"), "REPRODUCIBLE_MANIFEST_VERIFIED")
         self.assertIn("toolchain policy", locks.get("comment", "").lower())
+
+    def test_public_product_has_no_web_ui_or_npm_lock(self):
+        data = load_manifest()
+        self.assertEqual(set(data["lockfiles"]), {"python"})
+        self.assertFalse((ROOT / "interface").exists())
+        release_notes = (ROOT / "docs" / "PREVIEW_RELEASE_NOTES.md").read_text(encoding="utf-8")
+        self.assertNotIn("dashboard", release_notes.lower())
 
 
 

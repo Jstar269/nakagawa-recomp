@@ -65,7 +65,7 @@ class ClassifyTests(unittest.TestCase):
 
     def test_excluded_absence_alone_does_not_fail(self):
         findings = drift.classify({}, {}, EXCLUDED, GLOBS)
-        _, failed = drift.render(findings, [])
+        _, failed = drift.render(findings)
         self.assertFalse(failed)
 
     def test_excluded_path_present_in_export_is_unknown_not_silent(self):
@@ -104,50 +104,13 @@ class LineEndingTests(unittest.TestCase):
             self.assertNotEqual(drift.sha256_file(root / "a.txt"), drift.sha256_file(root / "b.txt"))
 
 
-class LockfileTests(unittest.TestCase):
-    def _lock(self, root: Path, versions: dict[str, str]) -> None:
-        payload = {"lockfileVersion": 3, "packages": {k: {"version": v} for k, v in versions.items()}}
-        _write(root, "interface/package-lock.json", json.dumps(payload))
-
-    def test_export_behind_public_is_flagged(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            export, public = Path(tmp) / "e", Path(tmp) / "p"
-            self._lock(export, {"node_modules/nanoid": "3.3.16"})
-            self._lock(public, {"node_modules/nanoid": "3.3.18"})
-            findings = drift.compare_lockfiles(export, public)
-            self.assertEqual(len(findings), 1)
-            self.assertTrue(findings[0]["export_behind"])
-
-    def test_matching_versions_report_nothing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            export, public = Path(tmp) / "e", Path(tmp) / "p"
-            self._lock(export, {"node_modules/nanoid": "3.3.18"})
-            self._lock(public, {"node_modules/nanoid": "3.3.18"})
-            self.assertEqual(drift.compare_lockfiles(export, public), [])
-
-    def test_export_ahead_is_reported_but_not_behind(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            export, public = Path(tmp) / "e", Path(tmp) / "p"
-            self._lock(export, {"node_modules/nanoid": "3.3.18"})
-            self._lock(public, {"node_modules/nanoid": "3.3.16"})
-            findings = drift.compare_lockfiles(export, public)
-            self.assertFalse(findings[0]["export_behind"])
-
-    def test_missing_lockfiles_are_not_an_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(drift.compare_lockfiles(Path(tmp), Path(tmp)), [])
-
-    def test_version_ordering_is_numeric_not_lexical(self):
-        self.assertLess(drift._version_key("3.3.9"), drift._version_key("3.3.18"))
-
-
 class RenderTests(unittest.TestCase):
     def test_unknown_findings_fail_closed(self):
-        _, failed = drift.render([{"path": "x", "category": "UNKNOWN", "detail": "d"}], [])
+        _, failed = drift.render([{"path": "x", "category": "UNKNOWN", "detail": "d"}])
         self.assertTrue(failed)
 
     def test_generic_drift_fails(self):
-        _, failed = drift.render([{"path": "x", "category": "GENERIC_DRIFT", "detail": "d"}], [])
+        _, failed = drift.render([{"path": "x", "category": "GENERIC_DRIFT", "detail": "d"}])
         self.assertTrue(failed)
 
     def test_expected_categories_pass(self):
@@ -155,14 +118,10 @@ class RenderTests(unittest.TestCase):
             {"path": "a", "category": "EXPECTED_PUBLIC_ONLY", "detail": "d"},
             {"path": "b", "category": "EXPECTED_PRIVATE_EXCLUSION", "detail": "d"},
         ]
-        text, failed = drift.render(findings, [])
+        text, failed = drift.render(findings)
         self.assertFalse(failed)
         self.assertIn("RESULT: OK", text)
 
-    def test_lockfile_regression_alone_fails(self):
-        lock = [{"package": "node_modules/nanoid", "export": "3.3.16", "public": "3.3.18", "export_behind": True}]
-        _, failed = drift.render([], lock)
-        self.assertTrue(failed)
 
 
 class ExcludedPathLoadingTests(unittest.TestCase):

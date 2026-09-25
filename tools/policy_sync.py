@@ -46,7 +46,7 @@ HIGH_RISK = (
 
 def tracked_paths(repo_root: Path) -> list[str]:
     out = subprocess.run(["git", "ls-files"], cwd=repo_root, capture_output=True, text=True, check=True)
-    return out.stdout.split()
+    return [path for path in out.stdout.split() if (repo_root / path).exists()]
 
 
 def is_high_risk(path: str) -> bool:

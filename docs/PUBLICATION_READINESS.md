@@ -289,7 +289,7 @@ Two consequences are worth stating plainly, because both look like tool faults:
 * An implementation path whose public entry exists but which has **no record in the
   detailed ledger** cannot be refreshed by anyone, and fails with `TRUSTED_PATH_MISSING`.
   Such entries exist: they were minted by the retired `tools/*` wildcard expansion and
-  the `interface/` configuration prefix, and the fail-closed rules deliberately refuse to
+  the former per-directory configuration override, and the fail-closed rules deliberately refuse to
   carry them onto new bytes. Editing one of those paths blocks the publication gate until
   a genuine record is authored for it. Authoring that record is a maintainer attestation
   about who wrote the code; an agent must stop with `PROVENANCE_UNRESOLVED` instead.
@@ -344,11 +344,11 @@ The resulting ledger and `PUBLIC_EXPORT.json` are mechanical outputs, not
 authorization. The release process must copy the refreshed ledger to its
 trusted location, run `publish_audit.py` against that external copy and the
 trusted manifest, and then run the non-attesting
-`--provenance-self-consistency` tripwire. A dashboard source file such as
-`interface/src/components/studio/test-lab-panel.tsx` cannot use a
+`--provenance-self-consistency` tripwire. An implementation file such as
+`tools/new_feature.py` cannot use a
 `reviewed_configuration` record; it remains blocked until a maintainer creates
 or confirms an exact trusted implementation record. The refresh command does
-not merge or otherwise authorize an unrelated dashboard change.
+not merge or otherwise authorize an unrelated source change.
 
 ## Reviewed refresh across an exact publication-policy delta
 
