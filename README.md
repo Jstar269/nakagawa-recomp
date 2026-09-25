@@ -70,6 +70,8 @@ Nakagawa Recomp strictly follows a **fail-closed** engineering policy: when some
 | Controller input / remapping | Partially works | SDL3 detects connected gamepads and navigates the player library with a fixed default mapping. A versioned host input-profile core exists but is not yet used by the runtime; in-app button remapping and calibration UI are in the works. | [#357](https://github.com/Jstar269/nakagawa-recomp/issues/357) |
 | Linux / macOS / Android | In the works | Only Windows 11 x64 is supported today. Linux is the first planned non-Windows platform once host seams are portable, followed by macOS (Apple Silicon) and Android ARM64. | [#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329), [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360) |
 
+See [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) for the per-title and subsystem compatibility breakdown with tracking issues, and [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md) for the release smoke test.
+
 ## Developer quick start
 
 ### Prerequisites

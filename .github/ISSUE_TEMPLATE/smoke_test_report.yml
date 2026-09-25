@@ -1,0 +1,83 @@
+name: Smoke test report
+description: Post results from running the release smoke test (docs/SMOKE_TEST.md)
+title: "[Smoke Test]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Follow the procedure in `docs/SMOKE_TEST.md`. Report results from a clean profile
+        without sharing proprietary game data, decrypted modules, or private paths.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Before submitting
+      options:
+        - label: I followed the procedure in docs/SMOKE_TEST.md starting from a fresh profile.
+          required: true
+        - label: I removed private paths, credentials, and game-derived data from this report.
+          required: true
+        - label: I did not attach proprietary game files, decrypted modules, or raw memory dumps.
+          required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit revision
+      description: Exact commit SHA of the tested build (git rev-parse HEAD).
+      placeholder: e.g. 7a1b2c3 or release tag
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Exact Windows version and build number.
+      placeholder: e.g. Windows 11 Pro 23H2 (build 22631.4169)
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU & Driver
+      description: Graphics card model and driver version.
+      placeholder: e.g. NVIDIA GeForce RTX 3080, Driver 560.94 / AMD Radeon RX 6700 XT
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: steps
+    attributes:
+      label: Smoke test steps (docs/SMOKE_TEST.md)
+      description: Check every step that passed. Leave failing or skipped steps unchecked and explain in Notes below.
+      options:
+        - label: Step 1 — Fresh profile (clean user-data folder)
+        - label: Step 2 — Start the player (smooth window creation at 1280x720)
+        - label: Step 3 — Empty-library first run (CTA banner and Add Game button)
+        - label: Step 4 — Settings persist across a restart
+        - label: Step 5 — Controller settings open (gamepad mapping & calibration)
+        - label: Step 6 — Add a disc image (ISO9660 PVD/SFO parsed in C)
+        - label: Step 7 — Encrypted-executable message names per-title folder
+        - label: Step 8 — Build package with progress, and cancel
+        - label: Step 9 — Error card wording (fail-closed boundary text)
+        - label: Step 10 — F1 overlay in a running package (HUD telemetry toggle)
+        - label: Step 11 — Quit (clean exit with return code 0)
+        - label: Step 12 — Log and report locations to attach
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes & Observations
+      description: Describe any failed or skipped steps, console output, or performance observations.
+      placeholder: |
+        - Step 8 was skipped because...
+        - Step 10 observed FPS: ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized log excerpt
+      description: Optional. Relevant lines from build or player logs (omit private paths).
+      render: text
