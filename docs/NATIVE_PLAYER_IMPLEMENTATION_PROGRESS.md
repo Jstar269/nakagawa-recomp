@@ -145,6 +145,21 @@ the driver then asserts the generated `--gui` argument and the child runtime's
 `window_ready`/`first_frame` boot events. This is a display-dependent developer
 gate, not a retail-title claim.
 
+The same player-owned launch runs headlessly with
+`--launch-index=N --headless-launch`. The child is spawned without `--gui`, and
+the player waits for it under a bounded timeout, reporting the child's own exit
+status and a distinct failure status if the bound expires; the headless child
+still emits the same `SR_BOOT_EVENT_FILE` startup milestones and consumes
+vblanks, so the guest-visible frame checkpoint is readable without a display.
+`tools/test_player_package_route.py` drives the whole consumer route on the
+source-owned display guest: the BUILD PACKAGE action
+(`package_builder_start` → `tools/nk_cli.py build-package`, real analysis,
+codegen and compilation), the player's own package validator, the headless
+launch, two named missing-prerequisite boundaries ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)
+decrypted inputs, [#296](https://github.com/Jstar269/nakagawa-recomp/issues/296)
+`--psp-header`), and a before/after check that the route changed no
+repository-tracked file.
+
 What it does not establish: any commercial-title compatibility, PSP timing or
 rendering correctness, GE/graphics-pipeline behaviour (this guest writes the
 framebuffer directly and submits no display list), audio, or that any other
