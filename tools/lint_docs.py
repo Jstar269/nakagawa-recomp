@@ -29,6 +29,11 @@ import subprocess
 import sys
 from urllib.parse import unquote
 
+try:
+    from .nk_core.git_isolation import isolated_git_env
+except ImportError:
+    from nk_core.git_isolation import isolated_git_env
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 EPHEMERAL_RUN_PATTERNS = [
@@ -163,6 +168,7 @@ def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.P
         res = subprocess.run(
             ["git", "ls-files", "*.md"],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             capture_output=True,
             text=True,
             check=True,
@@ -271,6 +277,7 @@ def _is_hst_manifest_tracked(repo_root: pathlib.Path = ROOT) -> bool:
         res = subprocess.run(
             ["git", "ls-files", f"{TITLES_DIR}/hst-ucus98701.json"],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             capture_output=True,
             text=True,
             check=True,
@@ -286,6 +293,7 @@ def _commit_exists_in_history(sha: str, repo_root: pathlib.Path = ROOT) -> bool:
         res = subprocess.run(
             ["git", "cat-file", "-e", sha],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             capture_output=True,
             text=True,
         )
@@ -363,6 +371,7 @@ def lint_titles_readme(repo_root: pathlib.Path = ROOT) -> list[str]:
         res = subprocess.run(
             ["git", "ls-files", f"{TITLES_DIR}/*.json"],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             capture_output=True,
             text=True,
             check=True,
@@ -408,6 +417,7 @@ def lint_docs_index_completeness(repo_root: pathlib.Path = ROOT) -> list[str]:
         res = subprocess.run(
             ["git", "ls-files", "docs/*.md", "docs/**/*.md"],
             cwd=repo_root,
+            env=isolated_git_env(root=repo_root),
             capture_output=True,
             text=True,
             check=True,
