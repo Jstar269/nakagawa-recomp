@@ -19,16 +19,30 @@
  * save, which is the whole point of the assertion.
  */
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "player_state.h"
 #include "iso_reader.h"
 #include "nk_font.h"
 #include "nk_platform.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <direct.h>
+#define test_rmdir _rmdir
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define test_rmdir rmdir
+#endif
 
 static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name) {
     memset(entry, 0, sizeof(*entry));
@@ -51,6 +65,163 @@ static void write_text_file(const char *path, const char *text) {
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
     assert(fclose(file) == 0);
+}
+
+/* Seed a fixture executable with real bytes (a self-copy of this test binary
+ * standing in for a recompiled runtime). The stub path keeps writing the
+ * historical "fixture" payload, whose digest is FIXTURE_SHA256 below. */
+static void copy_executable_file(const char *source_path,
+                                 const char *destination_path) {
+    FILE *source = fopen(source_path, "rb");
+    FILE *destination = fopen(destination_path, "wb");
+    assert(source != NULL);
+    assert(destination != NULL);
+    uint8_t buffer[16384];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) != 0) {
+        assert(fwrite(buffer, 1, count, destination) == count);
+    }
+    assert(!ferror(source));
+#if !defined(_WIN32) && !defined(_WIN64)
+    assert(fchmod(fileno(destination), S_IRUSR | S_IWUSR | S_IXUSR) == 0);
+#endif
+    assert(fclose(destination) == 0);
+    assert(fclose(source) == 0);
+}
+
+static void set_environment_value(const char *name, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, value) == 0);
+#else
+    assert(setenv(name, value, 1) == 0);
+#endif
+}
+
+static void restore_environment_value(const char *name, const char *value,
+                                      bool was_set) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, was_set ? value : "") == 0);
+#else
+    if (was_set) assert(setenv(name, value, 1) == 0);
+    else assert(unsetenv(name) == 0);
+#endif
+}
+
+static char *capture_environment_value(const char *name, bool *was_set) {
+    const char *current = getenv(name);
+    *was_set = current != NULL;
+    if (!current) return NULL;
+    size_t length = strlen(current);
+    char *copy = (char *)malloc(length + 1);
+    assert(copy != NULL);
+    memcpy(copy, current, length + 1);
+    return copy;
+}
+
+static bool path_prefix_equal(const char *a, const char *b, size_t n) {
+#if defined(_WIN32) || defined(_WIN64)
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ca = (unsigned char)a[i];
+        unsigned char cb = (unsigned char)b[i];
+        if (ca == '/') ca = '\\';
+        if (cb == '/') cb = '\\';
+        if (tolower(ca) != tolower(cb)) return false;
+    }
+    return true;
+#else
+    return strncmp(a, b, n) == 0;
+#endif
+}
+
+static bool path_is_within(const char *child, const char *parent) {
+    size_t parent_length = strlen(parent);
+    if (!path_prefix_equal(child, parent, parent_length)) return false;
+    return child[parent_length] == '\0' || child[parent_length] == '/' ||
+           child[parent_length] == '\\';
+}
+
+static bool get_working_directory(char *out, size_t size) {
+#if defined(_WIN32) || defined(_WIN64)
+    return _getcwd(out, (int)size) != NULL;
+#else
+    return getcwd(out, size) != NULL;
+#endif
+}
+
+/* Repository cleanliness gate (#511): the launch runs must not change any
+ * repository-tracked file. Uses the shell's redirection because the platform
+ * spawn API offers no stdout capture; reports false when git is unavailable
+ * so the caller can print an explicit SKIP rather than a silent pass. */
+static bool git_status_snapshot(const char *out_path) {
+    char command[1200];
+    int written = snprintf(command, sizeof(command),
+                           "git status --porcelain > \"%s\" 2>&1", out_path);
+    if (written <= 0 || (size_t)written >= sizeof(command)) return false;
+    return system(command) == 0;
+}
+
+static bool files_identical(const char *left, const char *right) {
+    FILE *a = fopen(left, "rb");
+    FILE *b = fopen(right, "rb");
+    if (!a || !b) {
+        if (a) fclose(a);
+        if (b) fclose(b);
+        return false;
+    }
+    bool equal = true;
+    for (;;) {
+        int ca = fgetc(a);
+        int cb = fgetc(b);
+        if (ca != cb) {
+            equal = false;
+            break;
+        }
+        if (ca == EOF) break;
+    }
+    fclose(a);
+    fclose(b);
+    return equal;
+}
+
+typedef struct {
+    char memstick[1024];
+    bool marker_present;
+    bool valid;
+} RepeatLaunchReport;
+
+static RepeatLaunchReport read_repeat_launch_report(const char *path) {
+    RepeatLaunchReport report;
+    memset(&report, 0, sizeof(report));
+    FILE *file = fopen(path, "rb");
+    if (!file) return report;
+    char line[2048];
+    while (fgets(line, sizeof(line), file)) {
+        size_t length = strlen(line);
+        while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r')) {
+            line[--length] = '\0';
+        }
+        if (strncmp(line, "SR_MEMSTICK=", 12) == 0) {
+            snprintf(report.memstick, sizeof(report.memstick), "%s", line + 12);
+        } else if (strcmp(line, "MARKER_PRESENT=1") == 0) {
+            report.marker_present = true;
+            report.valid = true;
+        } else if (strcmp(line, "MARKER_PRESENT=0") == 0) {
+            report.marker_present = false;
+            report.valid = true;
+        }
+    }
+    fclose(file);
+    return report;
+}
+
+static void assert_session_released(const NkLaunchSession *session) {
+    /* nk_platform_close_process ran: nothing from the finished child is
+       still held by the session (a leaked Win32 process/job handle would
+       survive here across relaunches). */
+    assert(session->process.native_handle == NULL);
+    assert(session->process.job_handle == NULL);
+    assert(session->process.process_id == 0);
+    assert(session->process.is_active == false);
 }
 
 typedef struct {
@@ -238,7 +409,8 @@ static void write_runtime_package_fixture(const char *user_root,
                                           const char *title_id,
                                           uint32_t abi_version,
                                           const char *executable_relative_path,
-                                          const char *input_executable_sha256) {
+                                          const char *input_executable_sha256,
+                                          const char *seed_executable_path) {
     char packages[768], package_dir[896], executable[1100], image[1100];
     char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
     char aot_components_json[2048], native_components_json[2048];
@@ -255,8 +427,17 @@ static void write_runtime_package_fixture(const char *user_root,
              nk_platform_path_separator(), title_id);
     snprintf(image, sizeof(image), "%s%c%s_image.bin", package_dir,
              nk_platform_path_separator(), title_id);
-    write_file(executable);
+    if (seed_executable_path) {
+        copy_executable_file(seed_executable_path, executable);
+    } else {
+        write_file(executable);
+    }
     write_file(image);
+    /* package.json must carry the digest of the bytes actually on disk: the
+       validator compares it against the file ("Package executable hash is
+       stale"). For the stub payload this is exactly FIXTURE_SHA256. */
+    char executable_hash[65];
+    fixture_sha_file(executable, executable_hash);
 
     fixture_sha_bytes("[]\n", 3, modules_digest);
     int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
@@ -321,17 +502,16 @@ static void write_runtime_package_fixture(const char *user_root,
         "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
         "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
         cache_json, title_id, 0, 0, 0, input_executable_sha256, (unsigned)abi_version,
-        0, executable_relative_path, FIXTURE_SHA256);
+        0, executable_relative_path, executable_hash);
     assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
     char package_path[1100];
     snprintf(package_path, sizeof(package_path), "%s%cpackage.json", package_dir,
              nk_platform_path_separator());
     write_text_file(package_path, package_json);
 
-    char package_hash[65], report_hash[65], executable_hash[65], image_hash[65];
+    char package_hash[65], report_hash[65], image_hash[65];
     fixture_sha_file(package_path, package_hash);
     fixture_sha_file(report_path, report_hash);
-    fixture_sha_file(executable, executable_hash);
     fixture_sha_file(image, image_hash);
     char image_relative[256];
     const char *extension = strrchr(executable_relative_path, '.');
@@ -409,7 +589,77 @@ static const char *runtime_package_status_name(NkRuntimePackageStatus status) {
     }
 }
 
+/* Fake-runtime child mode for the repeat-launch subtest (#511): spawned by
+ * nk_launch_start as `--image <path> ...`. Observes the save root the session
+ * handed over (SR_MEMSTICK), reports what it saw BEFORE writing, then leaves
+ * one line of savedata behind for the next launch to observe. Exit code is
+ * scripted through NK_REPEAT_LAUNCH_EXIT_CODE so early-failure handling can
+ * be exercised deterministically. */
+static int repeat_launch_child_mode(void) {
+    const char *report_path = getenv("NK_REPEAT_LAUNCH_REPORT_FILE");
+    if (!report_path || !*report_path) return 2;
+    int exit_code = 0;
+    const char *code_text = getenv("NK_REPEAT_LAUNCH_EXIT_CODE");
+    if (code_text && *code_text) {
+        char *end = NULL;
+        long parsed = strtol(code_text, &end, 10);
+        if (!end || *end || parsed < 0 || parsed > 125) return 2;
+        exit_code = (int)parsed;
+    }
+    const char *memstick = getenv("SR_MEMSTICK");
+    char marker[NK_MAX_PATH * 2];
+    marker[0] = '\0';
+    bool marker_present = false;
+    if (memstick && *memstick) {
+        snprintf(marker, sizeof(marker), "%s%cf511_repeat.marker", memstick,
+                 nk_platform_path_separator());
+        FILE *existing = fopen(marker, "rb");
+        if (existing) {
+            marker_present = true;
+            fclose(existing);
+        }
+    }
+    FILE *report = fopen(report_path, "wb");
+    if (!report) return 3;
+    int ok = fprintf(report, "SR_MEMSTICK=%s\nMARKER_PRESENT=%d\n",
+                     (memstick && *memstick) ? memstick : "<unset>",
+                     marker_present ? 1 : 0) >= 0;
+    if (fclose(report) != 0) ok = 0;
+    if (!ok) return 4;
+    if (marker[0]) {
+        FILE *save = fopen(marker, "ab");
+        if (!save) return 5;
+        ok = fputs("run\n", save) >= 0;
+        if (fclose(save) != 0) ok = 0;
+        if (!ok) return 5;
+    }
+    return exit_code;
+}
+
+/* Launch through the player-owned session path, let the child reach a
+ * bounded exit, then settle the session at `settle_tick`. Pins the repeat
+ * contract: identical save root, no stuck running state, no retained child
+ * handle, and no new structured error on a clean exit. */
+static void repeat_launch_and_settle(PlayerApp *app, int game_index,
+                                     uint64_t launch_tick, uint64_t settle_tick,
+                                     const char *expected_memstick) {
+    char error_before[32];
+    snprintf(error_before, sizeof(error_before), "%s", app->last_error.error_code);
+    assert(player_app_launch_game(app, game_index));
+    assert(app->is_game_running);
+    assert(strcmp(app->launch_session.memstick_root, expected_memstick) == 0);
+    app->launch_time_ms = launch_tick;
+    assert(nk_launch_wait(&app->launch_session, 10000) == 0);
+    assert(player_app_monitor_game_session(app, settle_tick));
+    assert(!app->is_game_running);
+    assert_session_released(&app->launch_session);
+    assert(strcmp(app->last_error.error_code, error_before) == 0);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--image") == 0) {
+        return repeat_launch_child_mode();
+    }
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);
@@ -638,7 +888,7 @@ int main(int argc, char **argv) {
     snprintf(fixture_report, sizeof(fixture_report), "%s%cbuild-report.json",
              fixture_package_dir, nk_platform_path_separator());
     write_runtime_package_fixture(fixture_root, "TEST00006", "display-smoke-v1", 2,
-                                  "display-smoke-v1.exe", FIXTURE_SHA256);
+                                  "display-smoke-v1.exe", FIXTURE_SHA256, NULL);
     player_app_set_runtime_root(fresh, fixture_root);
 
     player_app_populate_sample_games(fresh);
@@ -1066,7 +1316,7 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_MISSING);
         write_runtime_package_fixture(preflight_root, synthetic_disc_id,
                                       "synthetic-allegrex-v1", 2,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         assert(nk_platform_mkdir_p(font_dir));
         write_file(font_path);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -1167,7 +1417,7 @@ int main(int argc, char **argv) {
                                            FIXTURE_SHA256);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
-                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_OK);
@@ -1178,26 +1428,27 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "#316") != NULL);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
-                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
                                       "experimental-ulus99998.exe",
-                                      "0000000000000000000000000000000000000000000000000000000000000000");
+                                      "0000000000000000000000000000000000000000000000000000000000000000",
+                                      NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_STALE);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 99,
-                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
-                                      "../escape.exe", FIXTURE_SHA256);
+                                      "../escape.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
@@ -1642,7 +1893,7 @@ int main(int argc, char **argv) {
         assert(nk_platform_mkdir_p(package_dir));
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
 
         NkGameEntry game;
         memset(&game, 0, sizeof(game));
@@ -1677,6 +1928,262 @@ int main(int argc, char **argv) {
         remove(report_json);
         remove(executable);
         remove(image);
+    }
+
+    /* 20. A prepared package launched TWICE through the player-owned session
+     * path (#511).
+     *
+     * The repeat contract: both launches resolve the same save root outside
+     * the repository working tree, the second launch's child sees the
+     * savedata the first one wrote, early child failures produce the
+     * documented structured errors (RUNTIME_PACKAGE_NOT_READY,
+     * RUNTIME_PREMATURE_EXIT, RUNTIME_ERROR_EXIT) with a recovery action,
+     * every launch after a failure still works -- no stuck running state, no
+     * retained child handle -- and no repository-tracked file changes across
+     * all runs. The staged executable is a self-copy of this test binary
+     * standing in for a recompiled runtime; the package is synthetic. */
+    printf("[PLAYER_STATE_TEST] Subtest 20: repeat launch through the player session path\n");
+    fflush(stdout);
+    {
+        char sep = nk_platform_path_separator();
+        char self_path[NK_MAX_PATH];
+        assert(nk_platform_absolute_path(argv[0], self_path, sizeof(self_path)));
+
+        /* Buffer sizes nest so no path can ever be truncated mid-copy. */
+        char cache_dir[384];
+        char scratch[448];
+        char user_root[700];
+        char iso_path[NK_MAX_PATH];
+        char report_path[760];
+        char git_before[760];
+        char git_after[760];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(scratch, sizeof(scratch), "%s%cplayer_repeat_launch_511",
+                 cache_dir, sep);
+        snprintf(user_root, sizeof(user_root), "%s%cuser", scratch, sep);
+        assert(nk_platform_mkdir_p(user_root));
+        snprintf(iso_path, sizeof(iso_path), "%s%cgame.iso", scratch, sep);
+        write_text_file(iso_path, "NOT-A-REAL-ISO");
+        snprintf(report_path, sizeof(report_path), "%s%crepeat_report.txt",
+                 scratch, sep);
+        snprintf(git_before, sizeof(git_before), "%s%cgit_before.txt", scratch, sep);
+        snprintf(git_after, sizeof(git_after), "%s%cgit_after.txt", scratch, sep);
+
+        const NkTitleEntry *title =
+            nk_title_catalog_find_by_id("synthetic-allegrex-v1");
+        assert(title && title->primary_disc_id && title->primary_disc_id[0]);
+        const char *disc_id = title->primary_disc_id;
+
+        write_runtime_package_fixture(user_root, disc_id, "synthetic-allegrex-v1",
+                                      2, "synthetic-allegrex-v1.exe",
+                                      FIXTURE_SHA256, self_path);
+        char package_exe[1100];
+        snprintf(package_exe, sizeof(package_exe),
+                 "%s%cpackages%c%s%csynthetic-allegrex-v1.exe", user_root, sep,
+                 sep, disc_id, sep);
+
+        PlayerApp *rep = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(rep != NULL);
+        nk_library_init(&rep->library);
+        NkGameEntry entry;
+        memset(&entry, 0, sizeof(entry));
+        snprintf(entry.disc_id, sizeof(entry.disc_id), "%s", disc_id);
+        snprintf(entry.title_id, sizeof(entry.title_id), "synthetic-allegrex-v1");
+        snprintf(entry.title_name, sizeof(entry.title_name),
+                 "Repeat Launch Fixture");
+        snprintf(entry.selected_executable, sizeof(entry.selected_executable),
+                 "EBOOT.BIN");
+        snprintf(entry.iso_path, sizeof(entry.iso_path), "%s", iso_path);
+        entry.status = NK_STATUS_IDENTIFIED;
+        assert(nk_library_add_or_update(&rep->library, &entry) == NK_OK);
+        player_app_sync_library(rep);
+        assert(rep->game_count == 1);
+        player_app_set_runtime_root(rep, user_root);
+
+        bool had_report_env;
+        bool had_code_env;
+        char *old_report_env =
+            capture_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", &had_report_env);
+        char *old_code_env =
+            capture_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", &had_code_env);
+        set_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", report_path);
+
+        bool git_available = git_status_snapshot(git_before);
+        if (!git_available) {
+            printf("[PLAYER_STATE_TEST] SKIP git-clean check: `git status` is unavailable here.\n");
+            fflush(stdout);
+        }
+
+        char memstick1[NK_MAX_PATH];
+        memstick1[0] = '\0';
+
+        /* The per-disc save slot survives between runs of this test, so clear
+           this fixture's own savedata first: launch 1 must observe an empty
+           save root. Resolving the session here is the same preparation the
+           launch path performs. */
+        {
+            NkLaunchSession probe;
+            assert(nk_launch_prepare_session(&probe, &rep->games[0], user_root) == NK_OK);
+            assert(probe.memstick_root[0] != '\0');
+            snprintf(memstick1, sizeof(memstick1), "%s", probe.memstick_root);
+            nk_launch_stop(&probe);
+            char stale_marker[1200];
+            snprintf(stale_marker, sizeof(stale_marker), "%s%cf511_repeat.marker",
+                     memstick1, sep);
+            remove(stale_marker);
+        }
+
+        /* Launch 1: the child observes an empty save root, writes savedata,
+           and exits cleanly (elapsed >= 500 ms, code 0: no error). */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        {
+            char error_before[32];
+            snprintf(error_before, sizeof(error_before), "%s",
+                     rep->last_error.error_code);
+            assert(player_app_launch_game(rep, 0));
+            assert(rep->is_game_running);
+            assert(rep->launch_session.argv_has_gui == true);
+            assert(rep->launch_session.memstick_root[0] != '\0');
+            assert(strcmp(rep->launch_session.memstick_root, memstick1) == 0);
+            char cwd[NK_MAX_PATH];
+            char resolved_memstick[NK_MAX_PATH];
+            assert(get_working_directory(cwd, sizeof(cwd)));
+            assert(nk_platform_absolute_path(memstick1, resolved_memstick,
+                                             sizeof(resolved_memstick)));
+            /* The save root must live outside the repository working tree
+               the harness runs from (a bare "saves"-style relative root would
+               land inside it). */
+            assert(!path_is_within(resolved_memstick, cwd));
+            rep->launch_time_ms = 1000;
+            assert(nk_launch_wait(&rep->launch_session, 10000) == 0);
+            assert(player_app_monitor_game_session(rep, 1500));
+            assert(!rep->is_game_running);
+            assert_session_released(&rep->launch_session);
+            assert(strcmp(rep->last_error.error_code, error_before) == 0);
+        }
+        {
+            RepeatLaunchReport report = read_repeat_launch_report(report_path);
+            assert(report.valid);
+            assert(report.marker_present == false);
+            assert(strcmp(report.memstick, memstick1) == 0);
+        }
+
+        /* Launch 2 in the same process: same save root, and the child sees
+           the savedata the first launch wrote. */
+        repeat_launch_and_settle(rep, 0, 2000, 2500, memstick1);
+        {
+            RepeatLaunchReport report = read_repeat_launch_report(report_path);
+            assert(report.valid);
+            assert(report.marker_present == true);
+            assert(strcmp(report.memstick, memstick1) == 0);
+        }
+
+        /* Early failure A: the staged executable vanishes. The player must
+           report a structured, actionable error and leave no stuck state. */
+        assert(remove(package_exe) == 0);
+        assert(player_app_launch_game(rep, 0) == false);
+        assert(rep->is_game_running == false);
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
+        assert(rep->last_error.message[0] != '\0');
+        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(rep->last_error.return_view == VIEW_LIBRARY);
+        /* Recovery: restore the executable and launch again. */
+        copy_executable_file(self_path, package_exe);
+        repeat_launch_and_settle(rep, 0, 3000, 3500, memstick1);
+
+        /* Early failure B: the child exits non-zero immediately. The
+           documented classification is RUNTIME_PREMATURE_EXIT. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "7");
+        assert(player_app_launch_game(rep, 0));
+        assert(rep->is_game_running);
+        rep->launch_time_ms = 5000;
+        assert(nk_launch_wait(&rep->launch_session, 10000) == 7);
+        assert(player_app_monitor_game_session(rep, 5100));
+        assert(!rep->is_game_running);
+        assert_session_released(&rep->launch_session);
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_PREMATURE_EXIT") == 0);
+        assert(strstr(rep->last_error.message, "exit code 7") != NULL);
+        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(rep->last_error.return_view == VIEW_LIBRARY);
+        /* Recovery after the premature exit. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        repeat_launch_and_settle(rep, 0, 6000, 6500, memstick1);
+
+        /* Failure C: a longer-lived child exiting non-zero is classified as
+           RUNTIME_ERROR_EXIT. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "9");
+        assert(player_app_launch_game(rep, 0));
+        assert(rep->is_game_running);
+        rep->launch_time_ms = 8000;
+        assert(nk_launch_wait(&rep->launch_session, 10000) == 9);
+        assert(player_app_monitor_game_session(rep, 10000));
+        assert(!rep->is_game_running);
+        assert_session_released(&rep->launch_session);
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_ERROR_EXIT") == 0);
+        assert(strstr(rep->last_error.message, "with code 9") != NULL);
+        /* Final recovery launch: the session is never stuck. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        repeat_launch_and_settle(rep, 0, 11000, 12000, memstick1);
+
+        /* (d) No repository-tracked file changed across the runs. */
+        if (git_available) {
+            bool after_ok = git_status_snapshot(git_after);
+            if (!after_ok || !files_identical(git_before, git_after)) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] repository-tracked state "
+                                "changed during the repeat-launch runs\n");
+            }
+            assert(after_ok);
+            assert(files_identical(git_before, git_after));
+        }
+
+        restore_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", old_report_env,
+                                  had_report_env);
+        restore_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", old_code_env,
+                                  had_code_env);
+        free(old_report_env);
+        free(old_code_env);
+        free(rep);
+
+        char marker_path[1200];
+        snprintf(marker_path, sizeof(marker_path), "%s%cf511_repeat.marker",
+                 memstick1, sep);
+        remove(marker_path);
+        /* Only removed when this test created it and it is now empty; a
+           pre-existing per-disc save slot is left alone. */
+        test_rmdir(memstick1);
+        remove(report_path);
+        remove(git_before);
+        remove(git_after);
+        remove(iso_path);
+        remove(package_exe);
+        char package_json[1300];
+        char build_report_json[1300];
+        char completion_json[1300];
+        char image_bin[1300];
+        char package_dir[1100];
+        snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s", user_root,
+                 sep, sep, disc_id);
+        snprintf(package_json, sizeof(package_json), "%s%cpackage.json",
+                 package_dir, sep);
+        snprintf(build_report_json, sizeof(build_report_json),
+                 "%s%cbuild-report.json", package_dir, sep);
+        snprintf(completion_json, sizeof(completion_json),
+                 "%s%ccompletion-manifest.json", package_dir, sep);
+        snprintf(image_bin, sizeof(image_bin),
+                 "%s%csynthetic-allegrex-v1_image.bin", package_dir, sep);
+        remove(package_json);
+        remove(build_report_json);
+        remove(completion_json);
+        remove(image_bin);
+        test_rmdir(package_dir);
+        char packages_dir[1100];
+        snprintf(packages_dir, sizeof(packages_dir), "%s%cpackages", user_root, sep);
+        test_rmdir(packages_dir);
+        test_rmdir(user_root);
+        test_rmdir(scratch);
     }
 
     free(app);
