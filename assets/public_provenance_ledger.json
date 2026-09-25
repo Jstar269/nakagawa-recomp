@@ -8141,7 +8141,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d1351910cd1419fc8bca7216203010d6c18910c296b287a10af53f432858a412"
+      "sha256": "ce8ea530cc1de53500f1f2aa368ef490614c6550f0a7a71bd9fe18feb8c08a3b"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
@@ -8870,7 +8870,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "7ac580d14ed9234850f0e0c353509819bb8acfc126f0ee00dd8d134ff17a570b"
+      "sha256": "cad81180a55efb392ea571c1df3b2996edfe9a1977f5599b3ed39b5c1d941daa"
     },
     {
       "path": "tools/test_mem_debug.py",
@@ -9101,7 +9101,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "394028e15d2899976ad410fa6dca36c6905d165ae12bfe78aa5f20719f8fe18b"
+      "sha256": "5c121709d0af016caff2849d104d6d4b517c5d4bc49ca0c4ad2dd2b73514922f"
     },
     {
       "path": "tools/test_progress_evidence.py",
@@ -9383,7 +9383,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b2d52edaad4a5a7f1fa41a635afe97a54b246b863771ea76da24b2f6c4a6cfa0"
+      "sha256": "d52cc113edb333e461e539251435fa1d8edbb12a7407b4eb5f7812adca538e3e"
     },
     {
       "path": "tools/test_sbom_binding.py",
