@@ -47,12 +47,15 @@ msub(0x04)/msubu(0x05)/clz(0x20)/clo(0x21) at DIFFERENT funct values than PSP SP
 These generic encodings must NOT be accepted as PSP Allegrex instructions.
 """
 
+from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 

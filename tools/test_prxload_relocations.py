@@ -12,8 +12,13 @@ These tests exercise Prx._apply directly (not the full ELF/section parser) so
 each scenario is a small, explicit table of relocation records.
 """
 
+from pathlib import Path
 import struct
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
 import prxload
 from prxload import (

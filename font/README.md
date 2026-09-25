@@ -37,19 +37,24 @@ headers parsed per PPSSPP `Core/Font/PGF.h` from exact upstream bytes):
 
 - jpn0.pgf descends from a **Source Han Sans** (SIL OFL 1.1, Adobe, Reserved
   Font Name 'Source') conversion: header `Source Han Sans / Regular` at
-  `388ac3c` (2020-11-23, "Update jpn0.pgf … Fixes #13702"). The October 2020
+  `388ac3c` (2020-11-23, "Update jpn0.pgf … Fixes
+  [#13702](https://github.com/hrydgard/ppsspp/pull/13702)"). The October 2020
   predecessors named Ume Gothic S5 (`77c1e96`) and Ume Hy Gothic (`f68e0fe`,
-  PR #13588, "fixed manually all of JIS Kanji-Level1 (2946 character)").
+  PR [#13588](https://github.com/hrydgard/ppsspp/pull/13588), "fixed manually
+  all of JIS Kanji-Level1 (2946 character)").
 - kr0.pgf descends from a **Source Han Sans** conversion: header
   `Source Han Sans / Regular` at `75bdb5f` (2020-11-30, "Switch to
-  nassau-tk's latest Korean font. See issue #13190").
+  nassau-tk's latest Korean font. See issue
+  [#13190](https://github.com/hrydgard/ppsspp/issues/13190)").
 - ltn0.pgf and ltn8.pgf descend from **Ume Hy Gothic** (Ume-family licence,
   modified BSD) conversions: header `Ume Hy Gothic / Regular` at `b5e2300`
-  (2020-11-29, PR #13721) and `737e0d5` (2020-11-23). The Ume P Mincho
+  (2020-11-29, PR [#13721](https://github.com/hrydgard/ppsspp/pull/13721)) and
+  `737e0d5` (2020-11-23). The Ume P Mincho
   history applies to odd ltn1/3/5/7, not ltn0.
-- Conversion chain (contributor's own notes, PPSSPP #13718/#13589): TTF → PGF
-  via tpunix pgftool / ttf2pgfj.exe, glyph shaping in a font editor, and
-  hex-editor metric patching (ascender/descender in 26.6 fixed point).
+- Conversion chain (contributor's own notes, PPSSPP
+  [#13718](https://github.com/hrydgard/ppsspp/issues/13718)/[#13589](https://github.com/hrydgard/ppsspp/issues/13589)):
+  TTF → PGF via tpunix pgftool / ttf2pgfj.exe, glyph shaping in a font editor,
+  and hex-editor metric patching (ascender/descender in 26.6 fixed point).
 - On 2021-01-20 (`dc34bea`, "PGF Fixed Bold & Italic property and
   **camouflage the Font name**") the headers were rewritten to compatibility
   names: jpn0 → `FTT-NewRodin Pro DB`, kr0 → `AsiaKNHH-SONY-uni`, ltn0/ltn8 →

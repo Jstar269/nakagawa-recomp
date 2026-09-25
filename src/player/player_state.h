@@ -213,6 +213,12 @@ typedef struct {
 /* State management API */
 void player_app_init(PlayerApp *app);
 bool player_app_add_game(PlayerApp *app, const GameRecord *game);
+/* Re-adding a disc that is already in the library re-inspects it, which yields a
+ * record with no staging state. When `incoming` is the same disc as `existing`
+ * (disc ID, version and image size), carry over the staged-asset state, the
+ * prepared root and last-played time so re-adding never discards a completed
+ * extraction. Returns true when anything was carried over. */
+bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming);
 bool player_app_remove_game(PlayerApp *app, int game_index);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);

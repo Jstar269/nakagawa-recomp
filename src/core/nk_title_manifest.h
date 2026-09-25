@@ -72,6 +72,12 @@ bool nk_title_manifest_load_overlay(
     size_t error_buf_len
 );
 
+/* Load every *.json title manifest in dir as an overlay, in file-name order,
+ * up to the overlay capacity. A missing dir loads nothing and is not an error.
+ * Returns the number loaded; each refused or skipped file is described in
+ * report (one line per file, truncated to report_len). */
+int nk_title_manifest_load_overlay_dir(const char *dir, char *report, size_t report_len);
+
 bool nk_title_manifest_load_overlay_ext(
     const char *manifest_path,
     bool allow_override,

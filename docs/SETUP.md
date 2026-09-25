@@ -214,7 +214,22 @@ When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight c
 └── <module>.prx
 ```
 
-On Windows, the default per-user data directory is `%LOCALAPPDATA%\Nakagawa\data` (resolving to `<user data>/titles/<DISC_ID>/decrypted/`). When a valid plain MIPS ELF32 `EBOOT.elf` is placed in this folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). The project ships no decryption tools or keys ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) in the works).
+On Windows, the default per-user data directory is `%LOCALAPPDATA%\Nakagawa\data` (resolving to `<user data>/titles/<DISC_ID>/decrypted/`). When a valid plain MIPS ELF32 `EBOOT.elf` is placed in this folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). If an experimental profile was created while the disc executable was still encrypted (binding no executable), supplying `EBOOT.elf` in this folder is automatically used by `nk_cli build-package` without requiring re-import.
+
+Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be named either after their file name on the disc (for example `psmf.prx`) or after their manifest module name (for example `scePsmf_library.prx`). When a module is encrypted, invalid, or missing, error messages display both names (for example `psmf.prx (scePsmf_library.prx)`). The project ships no decryption tools or keys ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) in the works).
+
+### User title manifests (`<user data>/manifests`)
+
+For titles requiring a title manifest overlay, place the manifest JSON files in:
+
+```text
+<user data>/manifests/
+└── <manifest_name>.json
+```
+
+On start-up, `nakagawa_player.exe` automatically scans `<user data>/manifests` and loads every `*.json` file as an overlay in alphabetical filename order (via `nk_title_manifest_load_overlay_dir`, capped at `NK_MANIFEST_MAX_OVERLAYS` = 8). Any malformed or skipped files are reported to stderr.
+
+Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first and then `<user data>/manifests`, resolving title manifests identically to the native player so user-configured titles build without command-line overlay arguments.
 
 ### System fonts
 
@@ -316,7 +331,9 @@ To build a generated v1 runtime package for an imported disc in the player libra
 python tools/nk_cli.py build-package <disc_id>
 ```
 
-This extracts the plaintext executable (or automatically uses `EBOOT.elf` and guest PRXs from `<user data>/titles/<DISC_ID>/decrypted/`), runs the build pipeline, stages runtime assets, and promotes the package to `<user data>/packages/<DISC_ID>/`. The native player (`build/nakagawa_player.exe`) discovers, validates, and launches packages from that directory ([#297](https://github.com/Jstar269/nakagawa-recomp/issues/297)). An explicit `--module-dir <directory>` can be passed when modules are located elsewhere. In a public checkout this route packages source-owned synthetic fixtures only: a retail title needs the production runtime backends, which are not part of the public tree, and the command refuses with a message naming [#297](https://github.com/Jstar269/nakagawa-recomp/issues/297).
+This extracts the plaintext executable (or automatically uses `EBOOT.elf` and guest PRXs from `<user data>/titles/<DISC_ID>/decrypted/`), runs the build pipeline, stages runtime assets, and promotes the package to `<user data>/packages/<DISC_ID>/`. The native player (`build/nakagawa_player.exe`) discovers, validates, and launches packages from that directory ([#297](https://github.com/Jstar269/nakagawa-recomp/issues/297)). An explicit `--module-dir <directory>` can be passed when modules are located elsewhere. When a manifest reads BSS metadata from the disc's `~PSP` executable header (`bss_metadata_source: "psp-header"`), `build-package` extracts it directly from the disc image into `cache/packages/<DISC_ID>/selected.psp` and verifies the `~PSP` magic, so `--psp-header` is only needed if the file on the disc lacks that header.
+
+The built package ships its required guest modules inside `<package>/modules/` (copied under their manifest names), and the launcher sets `SR_MODULE_DIR` to `<package>/modules` so launches are self-contained without external dependencies. A run begins at the title's resolved run entry (`run_entry`: a declared `runtime_bindings.fallback_entry`, else `executable.entry`), ensuring that titles requiring a fallback entry point start there across both the native player and CLI launchers. Re-adding an already imported disc in the library preserves its completed staging and extraction state (`player_merge_readded_game`) when the disc ID, version, and image size match. In a checkout without the private PGF/PGD runtime backends, `build-package` builds with the public backends automatically; PGD-protected game data is then unavailable at run time ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) in the works). Only an explicit private-backend build (`PUBLIC_SAFE=0`) refuses in such a checkout, with a message naming [#297](https://github.com/Jstar269/nakagawa-recomp/issues/297).
 
 Package work is content-addressed below `<user data>/cache/packages/<DISC_ID>/`; the cache key covers executable bytes, analyzer/codegen semantics, codegen options, generated-code/runtime ABI epochs, compiler identity/target, and native flags. An unchanged key reuses the published package, an ABI-compatible runtime or compiler change recompiles native objects while retaining generated C, and any other semantic change regenerates AOT. The builder writes and verifies `completion-manifest.json` before an atomic directory promotion; interrupted or corrupt entries are refused by the player and launcher. The full contract and rebuild-component names are in [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#6-private-content-addressed-cache-contract-316), tracked by [#316](https://github.com/Jstar269/nakagawa-recomp/issues/316).
 
