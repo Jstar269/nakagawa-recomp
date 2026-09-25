@@ -2,6 +2,7 @@
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 from contextlib import redirect_stderr, redirect_stdout
+import importlib.metadata
 import io
 import json
 from pathlib import Path
@@ -31,6 +32,22 @@ class TestSBOMTooling(unittest.TestCase):
         )
         self.assertEqual(len(packages[0]["declared_sha256"]), 2)
         self.assertEqual(len(packages[1]["declared_sha256"]), 18)
+        # License resolution reads installed dist metadata for the exact pins
+        # (generate_sbom._resolve_python_package_license).  CI installs
+        # tools/requirements-lock.txt into the test interpreter; a different
+        # interpreter (e.g. a mingw/MSYS2 python selected via PATH) has its own
+        # site-packages and cannot resolve these licenses at all.
+        missing = []
+        for pkg in packages:
+            try:
+                importlib.metadata.metadata(pkg["name"])
+            except importlib.metadata.PackageNotFoundError:
+                missing.append(pkg["name"])
+        if missing:
+            self.skipTest(
+                "license resolution requires the locked packages installed in the "
+                f"running interpreter ({sys.executable}); missing: {', '.join(missing)}"
+            )
         self.assertEqual(packages[0]["license"], "GPL-3.0-or-later")
         self.assertEqual(packages[1]["license"], "MIT")
         for pkg in packages:

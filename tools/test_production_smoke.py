@@ -500,6 +500,26 @@ class TestProductionSmokePackage(unittest.TestCase):
                           if "sdl3 dependency is missing" in line.lower())
             self.skipTest(reason.strip())
 
+    def skip_if_sdl3_toolchain_unavailable(self):
+        """Prerequisite probe for in-process ``build_package`` calls.
+
+        ``build_package`` streams make's output to the inherited console, so a
+        failing build cannot be fed to ``skip_if_toolchain_unusable`` afterwards.
+        Probe the Makefile's own ``sdl3-check`` gate first (it has no side
+        effects): SDL3 ships with the MSYS2 UCRT64 toolchain (docs/SETUP.md),
+        and the gate states the remedy. The documented missing-toolchain
+        condition is a SKIP with that remedy; every other build failure stays a
+        failure of the route.
+        """
+        make_name = "mingw32-make" if os.name == "nt" else "make"
+        probe = subprocess.run(
+            [make_name, "--no-print-directory", "sdl3-check"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.skip_if_toolchain_unusable(probe)
+
     def package_command(self, *, executable=None, output_dir=None):
         return [
             sys.executable,
@@ -584,6 +604,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
             self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+        self.skip_if_sdl3_toolchain_unavailable()
         safe_build_root = self.root / "safe_build_root"
         safe_build_root.mkdir(parents=True)
         spaced_dest = self.root / "Spaced Destination Root"
@@ -612,6 +633,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
             self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+        self.skip_if_sdl3_toolchain_unavailable()
         safe_short_root = self.root / "SHORTP~1"
         safe_short_root.mkdir(parents=True)
         spaced_dest = self.root / "Spaced Destination Short"
@@ -643,6 +665,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         required = ("mingw32-make", "gcc", "pwsh")
         if os.name != "nt" or not all(shutil.which(name) for name in required):
             self.skipTest("real 8.3 short-path route needs Windows and the native toolchain")
+        self.skip_if_sdl3_toolchain_unavailable()
         spaced_parent = self.root / "Real Spaced Parent"
         spaced_parent.mkdir(parents=True)
         short = title_codegen_plan._windows_short_path(spaced_parent)
