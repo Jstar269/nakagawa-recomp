@@ -4049,7 +4049,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d55206a8719e44a482e3ebba13d6f0e82f0b3e52c1a968b5086aeb0e95c31c83"
+      "sha256": "93e3dfd0ad37b526c29a4ad4af6a9d1e1213d83ff475fc81f595d5dc5fffa3fb"
     },
     {
       "path": "src/core/nk_xb.h",
@@ -4061,7 +4061,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3a9f6c4008faccec50fdc46a3a22c97058fd6c22c95e5a1c28ef261f90c83a63"
+      "sha256": "c012147e659abc3c4408a4f2e724ad3143e4da73c17351e622c0676c755022eb"
     },
     {
       "path": "src/player/input_settings.c",
@@ -4294,7 +4294,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "68f05d5736f0925611460597d5e3d7b986155d282e62c2ad6bd6db5893ab112e"
+      "sha256": "9dc6d61a1aced9a4a74885a40756db1f4f7594d67454f3152e830f1ced6caaf1"
     },
     {
       "path": "src/rt/archive_vfs.h",
@@ -6675,7 +6675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "05f6dddd1d164b768c0ad2a068ec0fafa3684f577b42c419b862c31b1dad2460"
+      "sha256": "ad17f6768fc456a0d5ff106b162b742d92dcb492372f83ff9558abd4be11e852"
     },
     {
       "path": "tools/README.md",
