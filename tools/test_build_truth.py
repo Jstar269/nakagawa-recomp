@@ -449,6 +449,56 @@ def _is_link_statement(text: str) -> bool:
     return " -o " in text
 
 
+class PortableCoreSourceSetTests(unittest.TestCase):
+    """The hosted-Linux portable compile set is pinned and cannot silently shrink.
+
+    ``make portable-core-objects`` (ci.yml, native_tools) is the only hosted
+    proof that every PORTABLE_CORE_SRCS translation unit still compiles without
+    Windows-only dependencies; the strict-C sweep contract in AGENTS.md sec. 9
+    rides on the same set.  This test pins the set exactly: dropping (or
+    silently reordering) an entry fails here, so no file can lose its Linux
+    compile coverage without a deliberate, reviewed edit to this expectation.
+    It also keeps the documented exclusions honest: sched.c, the gpu_sdl3vk
+    backend and the *_selftest mains are deliberately NOT in the set (SDL3 or
+    Vulkan host dependencies; selftest mains, not library objects).
+    """
+
+    EXPECTED_PORTABLE_SRCS = (
+        "src/rt/recomp.c",
+        "src/rt/flight_recorder.c",
+        "src/rt/cpu_lle.c",
+        "src/rt/domain_mode.c",
+        "src/rt/nested_frames.c",
+        "src/rt/stale_code.c",
+        "src/rt/guest_interp.c",
+        "src/rt/title_config.c",
+        "src/rt/vfpu_tables.c",
+        "src/rt/archive_vfs.c",
+        "src/rt/debug.c",
+        "src/rt/watchpoints_file.c",
+        "src/rt/guest_printf.c",
+        "src/rt/perf.c",
+        "src/rt/vfpu_interp.c",
+        "$(ISO_BACKEND_SRC)",
+        "$(PGD_BACKEND_SRC)",
+        "src/rt/mpeg.c",
+        "$(PGF_BACKEND_SRC)",
+        "src/rt/savedata.c",
+        "src/rt/ge.c",
+        "src/rt/h264_null.c",
+        "src/rt/sr_coro.c",
+    )
+
+    def test_portable_core_srcs_is_pinned(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        match = re.search(
+            r"^PORTABLE_CORE_SRCS :=((?:.*\\\n)*.*)$", makefile, re.MULTILINE
+        )
+        self.assertIsNotNone(match, "PORTABLE_CORE_SRCS missing from the Makefile")
+        entries = tuple(match.group(1).replace("\\\n", " ").split())
+        self.assertEqual(entries, self.EXPECTED_PORTABLE_SRCS)
+
+
 class NestedFramesLinkDependencyTests(unittest.TestCase):
     """hle.c, mpeg.c and sched.c call into nested_frames.c, so every recipe that
     links one of them must also supply it.  This is the same failure shape as
