@@ -422,7 +422,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6903d06563e649857bc5ebad67390c415159eeed69f21188660c85a94d4860df"
+      "sha256": "0acd693ced5eb2a2beb34705d66f0e8e1455e10ad8fae33be9061805c35ee9cb"
     },
     {
       "path": "assets/issue_routing.json",
@@ -4285,7 +4285,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "68f05d5736f0925611460597d5e3d7b986155d282e62c2ad6bd6db5893ab112e"
+      "sha256": "c3c5b29d60fb4fef757ae84f8a5e22298fe2c50289505c90ce0034e1a3c40b1b"
     },
     {
       "path": "src/rt/archive_vfs.h",
@@ -4297,7 +4297,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c7bc18b442f247019703db96d64724e99fb1c6e250a98a9487668220ef38e6c"
+      "sha256": "b5a8f72d9d7aa3f73564e3b97fd8b1cafa11c29719566c8ff4c7d2940cf164bb"
     },
     {
       "path": "src/rt/asset_index.h",
@@ -5391,7 +5391,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94f8709d9cf6ad323fb88316dcd6720aaf7d41fc081cfbe4c1c0b7317a696b17"
+      "sha256": "80002127f52316fa91e66c42e0c137c636d0e5a44aa3c226709cd90f4127eede"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -5403,7 +5403,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a05fabfd6fafc4baf65b69f033d80232e8668ac8f2c2643d41aee47fdeecaf9"
+      "sha256": "8f32b29b7c01f7c6b64553a55882b899a8392ae5ea125bc80452ea38fbaad948"
     },
     {
       "path": "src/rt/fp_convert.h",
@@ -5791,7 +5791,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "968264fd7f8a60389f37970350bcd1858b8d5eb01fba13753bae4918be36d651"
+      "sha256": "00ef5a90b503105c312b8838f355807307a7f84957513eeb85ffe96f5aed6c85"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5829,7 +5829,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c51ffc35ba46ff795fbbd4b0f0557520e7c9cefc799e27ae98d521833fdec54b"
+      "sha256": "d34de696673d41edeaaa7db9d9515db91fa107f9b76901e3c41c13b04b9a8250"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6666,7 +6666,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "05f6dddd1d164b768c0ad2a068ec0fafa3684f577b42c419b862c31b1dad2460"
+      "sha256": "ea0aef16b5eb84d42946e5009599f99e6d73873ebf52fb1eaa2d0c8b12674f65"
     },
     {
       "path": "tools/README.md",
@@ -6951,7 +6951,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f40c2974f1ec29d65f14fa701cc994d3e51f2d78c0d8369c91f7541d4d7b518a"
+      "sha256": "5d0d09611ef579603331538477affed622abd46842dba514f4fc055728987f88"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -8537,7 +8537,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "68ab18dc11d5566217aefb3df9941c2507660febc815709016630e51fef402f9"
+      "sha256": "7f8cc00499a2c3b202d48883c34f1b021387c4a6bb6e7e4614a121dcfdbfb580"
     },
     {
       "path": "tools/test_font_provisioning.py",
