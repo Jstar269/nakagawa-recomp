@@ -1151,7 +1151,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "65e73cf4cdd19504d4753276f426b0fafb39841066e95eb40678495ad04e55e9"
+      "sha256": "1bde1cb6cb08d3fdf6fb5e0d28bab56f0f1a7e464b74a5cf4fa6b9174108a37d"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1160,7 +1160,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "44265d0aad4458a167b48528146d27ca699edd16a99a9b29fe25d8e318ba3c1f"
+      "sha256": "1bff17fe7e1df01e61bc6769e97e16b52f8de8c0f15176d4acf0ede37f10607e"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1286,7 +1286,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0a183d1422b896efaf3599e66b9edf6291fddbb84579ea29756fb71221c7e3db"
+      "sha256": "4660cf9fc0eb36d9c439e4c95ea975aafafe2beab44057085558e58419d8d60d"
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
@@ -1295,7 +1295,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c6ba6a81519bec97dfc1bb376ebad9454b15ce88f487bad8d4c6a78a09a5aa1d"
+      "sha256": "6fc4d16ac15e20de271542afb0d42f59fbcc7ec77e132ca89ac97e5f0ca1678e"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -4191,7 +4191,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db5bd6a8272a5c4c8c566497459018f2c7061b3e8b9a9650380e870866a821e8"
+      "sha256": "55db42aa336e4e35ae26952650eddda40d1ca9294ca297535808ca94633e288e"
     },
     {
       "path": "src/player/player_state.h",
@@ -4239,7 +4239,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ab1793a864b0b4245d8f731cccf7a0332230fd195274e7c49b6b229ecf3aa87"
+      "sha256": "0fc3c98ff6d58a096a4f73e2cb271d864c32588dda4a99d4600123f992373d14"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -6661,7 +6661,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "47be108d179d8bfaecd46f01b71a20a819cc1daa35e1b911213e286e0f1818a7"
+      "sha256": "55fdb979182158ceb04f9b5aa56300fee2b6eb43b4d274bc00023ab6f3dd9f8e"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -7481,7 +7481,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d00d89cc60bff307ddf0948663d1a06d81f5bf576f1061fb421c1cb032bd7fb"
+      "sha256": "f9005474f267e60766a72d575067bf49bb57f9e0f96a68233d22796681d31ade"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7529,7 +7529,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b7686ba644c1568d59b9943f58c186114666c4ab3176e9e8b7f5b7cd39e7f1d"
+      "sha256": "5b55a734870102716399085645ab06857e1c276dbcd0f8e818e1a1c7fd338d0f"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -8933,7 +8933,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "85abc384e606eba01faba24c4202c4eb0d2368d24dc942b357d469b54726334a"
+      "sha256": "347dd924842ffd3bf2d3c768b27e35e0e754a5ec5f4707f2ae6d45df7057e078"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -9233,7 +9233,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e70b3afd3dc9139b8f12939592840cefc7b2e679ebbc0987ec0d61867b20e02"
+      "sha256": "0604d4d863bb47d3ce50c77ec82f5b23f2067d88cc9b27be09c2613c9c00cb4a"
     },
     {
       "path": "tools/test_progress_evidence.py",
@@ -9941,7 +9941,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b57dcce6b4790323a05cc6b18455d0826d273d5c200ba5ccc931128dcb09c24"
+      "sha256": "4c02cdcc4b5b2f311a655367ad59b057189ed91deca7e5b4ce79d229889cacfc"
     },
     {
       "path": "tools/title_manager_plan.ps1",
