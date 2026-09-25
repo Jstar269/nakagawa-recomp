@@ -1185,7 +1185,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 lines.append(f"_d[{cos_lane}]=sr_vfpu_cos(_d[{dnames.index(vs)}]);")
         # PSP ignores destination saturation and write-mask bits for the cosine lane.
         dmask=(3<<cos_lane)|(1<<(8+cos_lane))
-        lines.append(_nanv(addr, "vrot", vd, "_d", n, "_a", 1)
+        lines.append(_nanv(addr, "vrot", vd, "_d", n, "(&_a)", 1)
                      + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]&~0x{dmask:x}u);{_EAT}")
         return "{ " + " ".join(lines) + " }", None, 0
     if (op == 0x18 and sub in (0, 1, 7)) or (op == 0x19 and sub == 0):

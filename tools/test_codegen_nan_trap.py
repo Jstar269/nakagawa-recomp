@@ -265,6 +265,47 @@ class TestGeneratedFixtureIsUnchangedWhenOff(unittest.TestCase):
         self.assertGreater(len(objects["plain"]), 0)
 
 
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestEveryTrappedVfpuFormCompiles(unittest.TestCase):
+    """Compile, with -DSR_NAN_TRAP, every VFPU statement the generator traps.
+
+    String-shape tests passed while a real title build failed twice: once on a
+    7-argument SR_NAN_TRAP_V2 and once on a scalar handed to a const float *
+    parameter (vrot). This sweeps the VFPU encoding space through the real
+    generator and asks the compiler.
+    """
+
+    def test_all_trapped_vfpu_statements_compile(self):
+        snippets = {}
+        with nan_trap_codegen_state():
+            size_bits = {1: 0, 2: 1 << 7, 3: 1 << 15, 4: (1 << 7) | (1 << 15)}
+            for op in range(0x18, 0x40):
+                for field in range(1 << 10):  # bits 16..25: function select and vt
+                    for size in (1, 2, 3, 4):
+                        word = ((op << 26) | (field << 16) | (2 << 8) | 3
+                                | size_bits[size])
+                        try:
+                            text = codegen.effect(0x00001000, word)[0]
+                        except Exception:
+                            continue
+                        if text and "SR_NAN_TRAP" in text and text not in snippets:
+                            snippets[text] = f"0x{word:08x}"
+        self.assertGreater(len(snippets), 20, "the sweep found too few trapped forms")
+        body = ['#include "recomp.h"', "#include <math.h>"]
+        for i, (text, word) in enumerate(snippets.items()):
+            body.append(f"/* {word} */ void nan_trap_form_{i}(CpuState *s) {{ {text} }}")
+        tmp = Path(tempfile.mkdtemp(prefix="nan_trap_sweep_"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = tmp / "sweep.c"
+        src.write_text("\n".join(body) + "\n", encoding="ascii")
+        result = subprocess.run(
+            [CC, "-std=c11", "-fsyntax-only", "-Werror=incompatible-pointer-types",
+             "-Werror=int-conversion", "-Isrc/rt", "-Isrc/core", "-DSR_NAN_TRAP",
+             os.fspath(src)],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr[-3000:])
+
+
 WATCHPOINT_STUB = """
 #include "watchpoints_file.h"
 int sr_parse_watchpoints_file(const char *path, SrWatchpointEntry *out, int out_cap,
