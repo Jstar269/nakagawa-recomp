@@ -14,8 +14,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import sys
 import unittest
 from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
 import hle_manifest
 import hle_registry_meta as meta

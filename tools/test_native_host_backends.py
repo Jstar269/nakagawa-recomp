@@ -24,10 +24,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools"))
 
 #: The host platform backend, chosen the same way the Makefile chooses it.
 _WINDOWS = os.name == "nt"
