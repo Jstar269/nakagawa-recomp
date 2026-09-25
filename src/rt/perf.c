@@ -127,6 +127,7 @@ typedef struct SrPerfState {
     unsigned current_tier;
     uint64_t run_start_ns;
     uint64_t interval_start_ns;
+    uint64_t attrib_report_ns;   /* last cumulative phase-attribution line, host ns */
     uint64_t guest_start_ns;
     uint64_t total_vblanks;
     uint64_t interval_count;
@@ -632,6 +633,7 @@ void sr_perf_shutdown(void) {
     if (!s_perf.enabled || !s_perf.initialized || s_perf.shutdown) return;
     s_perf.shutdown = 1;
     sr_perf_enabled = 0;
+    sr_perf_phase_report(1);
     uint64_t now = raw_now_ns();
     stop_timers(now);
     uint64_t wall_ns = s_perf.run_start_ns && now > s_perf.run_start_ns
@@ -715,6 +717,107 @@ void sr_perf_vblank(void) {
     report_if_due(raw_now_ns());
 }
 
+/* ---- display-source service cadence ------------------------------------------------
+ * The display source counts a period per elapsed rational deadline, but delivery
+ * happens only at an eligible service point and the pending bit coalesces. A latch
+ * whose host-time gap since the previous latch exceeds one display period is
+ * therefore a period the guest could not be told about, and attributing it to the
+ * phase that was executing when the period came due is what turns "the rate is
+ * low" into "this construct holds the CPU".  Counted here, not derived afterwards:
+ * after the fact the phase is unknowable. */
+#define SR_PERF_DISPLAY_PERIOD_US 16683u   /* 60000/1001 Hz */
+#define SR_PERF_PHASE_SAMPLE_N 4u          /* guest-PC/NID samples kept per phase */
+
+typedef struct SrPerfPhaseAttrib {
+    uint64_t latches;            /* latches whose gap fit inside one period */
+    uint64_t late;               /* latches whose gap exceeded one period */
+    uint64_t lost_us;            /* sum of (gap - one period) over those latches */
+    uint64_t max_gap_us;         /* worst single gap seen in this phase */
+    uint64_t periods_lost;       /* whole source periods the coalesced bit swallowed */
+    uint32_t pc[SR_PERF_PHASE_SAMPLE_N];    /* interrupted guest PCs, power-of-two sampled */
+    uint32_t nid[SR_PERF_PHASE_SAMPLE_N];   /* NIDs in progress, power-of-two sampled */
+    uint32_t uid[SR_PERF_PHASE_SAMPLE_N];   /* running thread uid at the latch */
+    uint64_t sample_mask;        /* 2^n - 1: keep every 2^n-th late latch */
+} SrPerfPhaseAttrib;
+
+static SrPerfPhaseAttrib s_phase_attrib[SR_RT_PHASE_COUNT];
+static uint64_t s_late_total;
+static uint64_t s_periods_masked;   /* display periods that elapsed with IE clear */
+
+const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
+    "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
+};
+
+/* Read by the attribution above and written at the cheap phase seams; a plain
+ * global so a phase change costs one store and no call. */
+int sr_rt_phase = SR_RT_PHASE_OTHER;
+uint32_t sr_rt_nid = 0u;
+/* Installed by the scheduler, which owns the live CpuState; NULL in a build with
+ * no scheduler, where there is no guest PC to report. */
+uint32_t (*sr_rt_pc_fn)(void) = NULL;
+uint32_t (*sr_rt_uid_fn)(void) = NULL;
+
+void sr_perf_phase_report(int force) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    uint64_t now = raw_now_ns();
+    if (!force && now - s_perf.attrib_report_ns < 60000000000ull) return;
+    s_perf.attrib_report_ns = now;
+    uint64_t total_late = 0, total_lost = 0;
+    for (int i = 0; i < SR_RT_PHASE_COUNT; i++) {
+        total_late += s_phase_attrib[i].late;
+        total_lost += s_phase_attrib[i].lost_us;
+    }
+    fprintf(stderr, "PERF_ATTRIB vblank_late total=%llu lost_ms=%llu masked_periods=%llu\n",
+            (unsigned long long)total_late, (unsigned long long)(total_lost / 1000u),
+            (unsigned long long)s_periods_masked);
+    for (int i = 0; i < SR_RT_PHASE_COUNT; i++) {
+        const SrPerfPhaseAttrib *a = &s_phase_attrib[i];
+        if (!a->late) continue;
+        fprintf(stderr, "  PERF_ATTRIB_LATE phase=%s n=%llu lost_ms=%llu max_gap_ms=%llu periods=%llu",
+                sr_rt_phase_name[i], (unsigned long long)a->late,
+                (unsigned long long)(a->lost_us / 1000u),
+                (unsigned long long)(a->max_gap_us / 1000u),
+                (unsigned long long)a->periods_lost);
+        for (unsigned k = 0; k < SR_PERF_PHASE_SAMPLE_N; k++) {
+            if (!a->pc[k] && !a->nid[k] && !a->uid[k]) continue;
+            fprintf(stderr, " [uid=0x%x pc=0x%08x%s]",
+                    a->uid[k], a->pc[k], a->nid[k] ? " nid" : "");
+            if (a->nid[k]) fprintf(stderr, "=0x%08x", a->nid[k]);
+        }
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+}
+
+void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    if (masked) {                 /* the guest's own interrupt mask, not a lost edge */
+        s_periods_masked += periods;
+        return;
+    }
+    unsigned phase = (unsigned)sr_rt_phase;
+    if (phase >= SR_RT_PHASE_COUNT) phase = SR_RT_PHASE_OTHER;
+    SrPerfPhaseAttrib *a = &s_phase_attrib[phase];
+    a->latches++;
+    if (gap_us <= SR_PERF_DISPLAY_PERIOD_US) return;
+    uint64_t lost = gap_us - SR_PERF_DISPLAY_PERIOD_US;
+    a->late++;
+    a->lost_us += lost;
+    if (periods > 1u) a->periods_lost += periods - 1u;
+    if (gap_us > a->max_gap_us) a->max_gap_us = gap_us;
+    /* Guest PCs and NIDs are functional facts, not private bytes: keep a
+     * power-of-two sample so a long run stays readable and bounded. */
+    a->sample_mask++;
+    if ((a->sample_mask & (a->sample_mask - 1u)) == 0u) {
+        unsigned slot = (unsigned)(a->sample_mask >> 1) % SR_PERF_PHASE_SAMPLE_N;
+        a->pc[slot] = sr_rt_pc_fn ? sr_rt_pc_fn() : 0u;
+        a->uid[slot] = sr_rt_uid_fn ? sr_rt_uid_fn() : 0u;
+        a->nid[slot] = (phase == (unsigned)SR_RT_PHASE_SYSCALL) ? sr_rt_nid : 0u;
+    }
+    s_late_total++;
+    sr_perf_phase_report(0);
+}
+
 void sr_perf_ge_submit(SrPerfGeReason reason) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     ADD(ge_submits, 1);
@@ -724,6 +827,7 @@ void sr_perf_ge_submit(SrPerfGeReason reason) {
 
 void sr_perf_ge_wait(uint64_t started_ns, SrPerfGeReason reason) {
     if (!s_perf.enabled || s_perf.shutdown || !started_ns) return;
+    sr_rt_phase = SR_RT_PHASE_GE;   /* a GE completion wait, not host sleep */
     uint64_t elapsed = elapsed_ns(started_ns);
     ADD(ge_wait_ns, elapsed);
     ADD(ge_waits, 1);
@@ -734,6 +838,7 @@ void sr_perf_ge_wait(uint64_t started_ns, SrPerfGeReason reason) {
     if (reason == SR_PERF_GE_DEPTH_READBACK ||
         reason == SR_PERF_GE_TARGET_READBACK_TRANSITION)
         ADD(readback_waits, 1);
+    sr_rt_phase = SR_RT_PHASE_OTHER;
 }
 
 void sr_perf_ge_event(SrPerfGeEvent event, uint64_t count) {
@@ -742,7 +847,9 @@ void sr_perf_ge_event(SrPerfGeEvent event, uint64_t count) {
 }
 
 void sr_perf_present_submit(void) {
-    if (s_perf.enabled && !s_perf.shutdown) ADD(present_submits, 1);
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    sr_rt_phase = SR_RT_PHASE_PRESENT;
+    ADD(present_submits, 1);
 }
 
 void sr_perf_present_wait(uint64_t started_ns) {
@@ -752,9 +859,10 @@ void sr_perf_present_wait(uint64_t started_ns) {
 }
 
 void sr_perf_present_done(uint64_t started_ns, int result) {
-    if (!s_perf.enabled || s_perf.shutdown || !started_ns) return;
-    ADD(present_ns, elapsed_ns(started_ns));
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    if (started_ns) ADD(present_ns, elapsed_ns(started_ns));
     if (result == 1) ADD(presents, 1);
+    sr_rt_phase = SR_RT_PHASE_OTHER;
 }
 
 void sr_perf_present_skip(void) {
@@ -769,6 +877,10 @@ void sr_perf_aot_begin(uint32_t pc) {
         s_perf.aot_seen = 1;
     if (s_perf.current_tier != SR_PERF_TIER_AOT)
         switch_to_aot(now);
+    /* The tag names the INNERMOST active tier, so it is re-asserted on every
+     * entry rather than only on the outermost one: a late latch is attributed to
+     * the code actually running, not to whatever context last ran a scheduler. */
+    sr_rt_phase = SR_RT_PHASE_AOT;
     s_perf.aot_depth++;
     ADD(aot_calls, 1);
 }
@@ -777,7 +889,10 @@ void sr_perf_aot_end(void) {
     if (!s_perf.enabled || s_perf.shutdown || !s_perf.aot_depth) return;
     uint64_t now = raw_now_ns();
     s_perf.aot_depth--;
-    if (s_perf.aot_depth) return;
+    if (s_perf.aot_depth) {
+        sr_rt_phase = SR_RT_PHASE_AOT;
+        return;
+    }
     if (s_perf.current_tier == SR_PERF_TIER_AOT && s_perf.aot_start_ns &&
         now > s_perf.aot_start_ns)
         ADD(aot_ns, now - s_perf.aot_start_ns);
@@ -786,9 +901,11 @@ void sr_perf_aot_end(void) {
         s_perf.current_tier = SR_PERF_TIER_INTERP;
         s_perf.interp_start_ns = now;
         sr_perf_aot_active = 0;
+        sr_rt_phase = SR_RT_PHASE_INTERP;
     } else {
         s_perf.current_tier = SR_PERF_TIER_NONE;
         sr_perf_aot_active = 0;
+        sr_rt_phase = SR_RT_PHASE_OTHER;
     }
 }
 
@@ -814,6 +931,7 @@ void sr_perf_interp_begin(uint32_t entry_pc) {
         s_perf.aot_seen = 0;
         switch_to_interp(entry_pc, s_perf.pending_interp_reason, now, 1);
     }
+    sr_rt_phase = SR_RT_PHASE_INTERP;
     s_perf.interp_depth++;
     ADD(interp_calls, 1);
     s_perf.pending_interp_reason = SR_PERF_INTERP_DISPATCH_MISS;
@@ -848,9 +966,11 @@ void sr_perf_interp_end(uint32_t exit_pc, int result) {
         s_perf.current_tier = SR_PERF_TIER_AOT;
         s_perf.aot_start_ns = now;
         sr_perf_aot_active = 1;
+        sr_rt_phase = SR_RT_PHASE_AOT;
     } else {
         s_perf.current_tier = SR_PERF_TIER_NONE;
         sr_perf_aot_active = 0;
+        sr_rt_phase = SR_RT_PHASE_OTHER;
     }
 }
 

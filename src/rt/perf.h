@@ -74,6 +74,34 @@ typedef enum SrPerfStorageSource {
     SR_PERF_STORAGE_SOURCE_COUNT,
 } SrPerfStorageSource;
 
+/* Runtime phase, for display-source service-cadence attribution.  A vblank source
+ * period that elapses between two eligible service points is not lost guest time --
+ * guest VCOUNT counts every elapsed period -- but the guest then observes fewer
+ * VBLANK episodes than display periods, because the interrupt is coalesced into a
+ * single pending bit.  Naming the phase that was executing when the period came
+ * due is the only way to tell a long guest stretch from a host wait.  The tag is a
+ * plain global written only at the cheap seams that already exist (AOT/interp
+ * entry, syscall entry, GE list execution, a host sleep, the scheduler idle path,
+ * the presenter), never per instruction. */
+typedef enum SrRtPhase {
+    SR_RT_PHASE_OTHER = 0,   /* host work with no more specific owner */
+    SR_RT_PHASE_AOT,         /* recompiled guest code */
+    SR_RT_PHASE_INTERP,      /* the guest interpreter */
+    SR_RT_PHASE_SYSCALL,     /* inside an HLE syscall handler (see sr_rt_nid) */
+    SR_RT_PHASE_GE,          /* GE list execution (ge_run_list) */
+    SR_RT_PHASE_HOST_WAIT,   /* inside a host sleep (SDL_DelayPrecise) */
+    SR_RT_PHASE_SCHED,       /* the scheduler loop, between guest frames */
+    SR_RT_PHASE_PRESENT,     /* inside the presenter */
+    SR_RT_PHASE_COUNT
+} SrRtPhase;
+
+extern int sr_rt_phase;      /* current phase; write directly, read only when attributing */
+extern uint32_t sr_rt_nid;   /* NID of the syscall in progress, valid in SR_RT_PHASE_SYSCALL */
+extern const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT];
+/* Live guest PC accessor, installed by the scheduler (NULL when there is none). */
+extern uint32_t (*sr_rt_pc_fn)(void);
+extern uint32_t (*sr_rt_uid_fn)(void);
+
 extern int sr_perf_aot_active;
 extern int sr_perf_enabled;
 
@@ -85,6 +113,14 @@ void     sr_perf_guest_begin(void);
 void     sr_perf_guest_end(void);
 void     sr_perf_guest_idle_wait(uint64_t started_ns);
 void     sr_perf_vblank(void);
+/* One latch of the display source: `gap_us` is host-time microseconds since the
+ * previous latch, `periods` how many source periods elapsed, `masked` non-zero
+ * when those periods elapsed with the CPU interrupt bit CLEAR (a gap the guest
+ * chose not to be told about, credited once at resume by the measured rule).
+ * A gap over one display period is attributed here because the phase that owned
+ * the CPU is unknowable afterwards. */
+void     sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked);
+void     sr_perf_phase_report(int force);
 void     sr_perf_ge_submit(SrPerfGeReason reason);
 void     sr_perf_ge_wait(uint64_t started_ns, SrPerfGeReason reason);
 void     sr_perf_ge_event(SrPerfGeEvent event, uint64_t count);
