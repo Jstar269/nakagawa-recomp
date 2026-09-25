@@ -145,6 +145,7 @@ extern int sr_hle_test_data_state(void);
 extern size_t sr_hle_test_data_entry_count(void);
 extern int sr_hle_test_data_key_seen(const char *key_prefix);
 extern void sr_hle_test_data_reset(int pace_ms);
+extern unsigned long long sr_hle_test_data_phase_ms(unsigned int phase);
 
 /* Issue #178 white-box message-pipe probes (defined in hle.c, selftest-only). */
 typedef struct {
@@ -1871,6 +1872,251 @@ static void test_controlled_unsupported_registration(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x4b85c861u) == 0u,
            "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
+}
+
+/* ---- sceUtilityOsk. The keyboard is answered by a person through a native Win32 box
+ * (src/rt/osk_win.c), which this host test cannot open, and by SR_OSK_SCRIPT / SR_OSK_TEXT
+ * for automation. The stub below stands in for the native box and counts how often it was
+ * asked, which is what makes "a scripted run never opens it" an observable claim.
+ *
+ * The status machine under test is the public PSPSDK one: sceUtilityOskGetStatus returns
+ * pspUtilityDialogState (psputility.h) NONE=0, INIT=1, VISIBLE=2, QUIT=3, FINISHED=4, and the
+ * SDK's OSK sample calls ShutdownStart on QUIT and stops on NONE. QUIT is reported whether
+ * the person confirmed or cancelled; the per-field result tells them apart. */
+static int s_osk_native_calls;
+static int s_osk_native_answer = 1;                        /* what the stub "person" pressed */
+
+int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
+    (void)desc;
+    (void)initial;
+    s_osk_native_calls++;
+    if (s_osk_native_answer && out && cap > 1) { out[0] = (wchar_t)L'N'; out[1] = 0; }
+    return s_osk_native_answer;
+}
+
+#define OSK_PARAM_ADDR  0x09030000u
+#define OSK_FIELDS_ADDR 0x09030100u
+#define OSK_DESC_ADDR   0x09030200u
+#define OSK_IN_ADDR     0x09030280u
+#define OSK_OUT_ADDR    0x09030300u
+#define OSK_SCRIPT_PATH "build/hle_osk_script_selftest.txt"
+#define NID_OSK_INIT     0xf6269b82u
+#define NID_OSK_STATUS  0xf3f76017u
+#define NID_OSK_SHUTDOWN 0x3dfaeba9u
+
+static void osk_guest_write_wstr(uint32_t addr, const wchar_t *text) {
+    for (int i = 0; text[i]; i++) MEM_W16(addr + (uint32_t)i * 2u, (uint16_t)text[i]);
+    MEM_W16(addr + (uint32_t)wcslen(text) * 2u, 0);
+}
+
+static uint32_t osk_out_addr(int field) { return OSK_OUT_ADDR + (uint32_t)field * 0x40u; }
+
+/* Lay out one SceUtilityOskParams with `fields` input fields, as the public header
+ * describes them: common header (result at +0x1c), datacount at +0x30, data at +0x34,
+ * state at +0x38, then SceUtilityOskData records of 0x34 bytes each. Every field gets its
+ * own outtext buffer, as a real caller does, so one field's answer cannot overwrite
+ * another's. */
+static void osk_guest_build(int fields, uint32_t out_len, uint32_t out_limit) {
+    for (int i = 0; i < fields; i++) {
+        uint32_t f = OSK_FIELDS_ADDR + (uint32_t)i * 0x34u;
+        MEM_W32(f + 0x1cu, OSK_DESC_ADDR);
+        MEM_W32(f + 0x20u, OSK_IN_ADDR);
+        MEM_W32(f + 0x24u, out_len);
+        MEM_W32(f + 0x28u, osk_out_addr(i));
+        MEM_W32(f + 0x2cu, 0u);                            /* result: UNCHANGED */
+        MEM_W32(f + 0x30u, out_limit);
+    }
+    MEM_W32(OSK_PARAM_ADDR + 0x30u, (uint32_t)fields);
+    MEM_W32(OSK_PARAM_ADDR + 0x34u, OSK_FIELDS_ADDR);
+    MEM_W32(OSK_PARAM_ADDR + 0x38u, 0u);
+    osk_guest_write_wstr(OSK_DESC_ADDR, L"Name");
+    osk_guest_write_wstr(OSK_IN_ADDR, L"old");
+    for (int i = 0; i < fields * 16; i++) MEM_W16(OSK_OUT_ADDR + (uint32_t)i * 2u, 0);
+}
+
+static int osk_guest_out_is(int field, const uint16_t *units, int count) {
+    uint32_t out = osk_out_addr(field);
+    for (int i = 0; i < count; i++)
+        if (MEM_R16(out + (uint32_t)i * 2u) != units[i]) return 0;
+    return MEM_R16(out + (uint32_t)count * 2u) == 0;
+}
+
+static uint32_t osk_poll(CpuState *cpu) {
+    memset(cpu, 0, sizeof(*cpu));
+    return sr_syscall(cpu, NID_OSK_STATUS);
+}
+
+static void osk_env(const char *name, const char *value) {
+    SetEnvironmentVariableA(name, value);
+    _putenv_s(name, value ? value : "");      /* an empty value removes it from the CRT env */
+}
+
+static int osk_write_script(const char *const *lines, int count) {
+    CreateDirectoryA("build", NULL);
+    FILE *f = fopen(OSK_SCRIPT_PATH, "w");
+    if (!f) return 0;
+    for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
+    fclose(f);
+    return 1;
+}
+
+static void test_osk_scripted_answer(void) {
+    CpuState cpu;
+    const uint32_t k_init = NID_OSK_INIT, k_status = NID_OSK_STATUS, k_down = NID_OSK_SHUTDOWN;
+    static const uint16_t play[] = { 'P', 'L', 'A', 'Y' };
+    static const uint16_t ace[] = { 'A', 'C', 'E' };
+    static const uint16_t n[] = { 'N' };
+    static const uint16_t old[] = { 'o', 'l', 'd' };
+    /* UTF-8 in the script: 'e' with an acute accent, hiragana 'a', and a byte that is not
+     * valid UTF-8 at all. The guest field is UTF-16, never the raw script bytes. */
+    static const char *const utf8_lines[] = { "\xc3\xa9\xe3\x81\x82\xff" };
+    static const uint16_t utf8[] = { 0x00e9, 0x3042, 0xfffd };
+    const char *const cancel_lines[] = { "PLAY", "# a comment", "", "CANCEL" };
+    const char *const short_lines[] = { "ACE" };
+    sr_hle_init();
+    s_osk_native_calls = 0;
+    s_osk_native_answer = 1;
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    /* Unconfigured: the keyboard is answered by a person, through the native box, once per
+     * field, and the status machine reports the public sequence and then NONE after
+     * ShutdownStart. Nothing about this path changes when the script variables exist. */
+    osk_guest_build(2, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, k_init) == 0u, "sceUtilityOskInitStart accepts an OSK parameter block");
+    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u,
+           "GetStatus reports INIT then VISIBLE, one step per poll");
+    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "GetStatus reports QUIT once the text has been collected, and QUIT stands until the "
+           "game calls ShutdownStart, as the SDK's OSK sample expects");
+    expect(s_osk_native_calls == 2, "an unconfigured keyboard opens the native box once per field");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, n, 1),
+           "the answered field is written as UTF-16 and reported CHANGED");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 2u && osk_guest_out_is(1, n, 1),
+           "every field is answered, not only the first");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, k_down) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u &&
+               osk_poll(&cpu) == 0u,
+           "after ShutdownStart GetStatus reports FINISHED once, then NONE, which a game "
+           "spinning on a non-zero status can leave");
+
+    /* A cancelled keyboard also reports QUIT; only the field result differs. */
+    s_osk_native_calls = 0;
+    s_osk_native_answer = 0;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, k_init) == 0u, "a second keyboard starts for the cancelled path");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "a cancelled keyboard reports QUIT and keeps reporting it until ShutdownStart");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u && osk_guest_out_is(0, old, 3),
+           "a cancelled field keeps the initial text and reports CANCELLED");
+    s_osk_native_answer = 1;
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, k_down);
+    (void)osk_poll(&cpu);
+
+    /* Scripted: one answer per field in order, the native box is never opened, the text
+     * lands as UTF-16, and a CANCEL answer reports CANCELLED. */
+    expect(osk_write_script(cancel_lines, 4), "the OSK answer script fixture is written");
+    osk_env("SR_OSK_SCRIPT", OSK_SCRIPT_PATH);
+    s_osk_native_calls = 0;
+    osk_guest_build(2, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, k_init) == 0u, "a scripted keyboard starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "a scripted keyboard follows the same status sequence as a person's");
+    expect(s_osk_native_calls == 0, "a scripted answer never opens the native input box");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, play, 4),
+           "the first scripted answer is written as UTF-16 and reported CHANGED");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 1u &&
+               osk_guest_out_is(1, old, 3),
+           "the CANCEL answer reports CANCELLED and keeps the initial text");
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, k_down);
+    (void)osk_poll(&cpu);
+
+    /* outLimit is the field's own capacity: a longer answer is truncated, never overrun. */
+    osk_guest_build(1, 8u, 3u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, k_init) == 0u, "a limited scripted keyboard starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_guest_out_is(0, play, 3),
+           "a scripted answer longer than outLimit is truncated at the limit and terminated");
+    expect(MEM_R16(OSK_OUT_ADDR + 4u * 2u) == 0,
+           "truncation leaves nothing written past the field's limit");
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, k_down);
+    (void)osk_poll(&cpu);
+
+    /* A short script must not leave an automated run waiting on host UI. */
+    expect(osk_write_script(short_lines, 1), "the short OSK answer script fixture is written");
+    osk_guest_build(2, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, k_init) == 0u, "a short scripted keyboard starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(s_osk_native_calls == 0, "a short script still never opens the native input box");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 1u,
+           "a field with no scripted answer is answered CANCELLED rather than left to a person");
+    expect(osk_poll(&cpu) == 3u,
+           "a keyboard with a cancelled field reports QUIT");
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, k_down);
+    (void)osk_poll(&cpu);
+
+    /* SR_OSK_TEXT answers every field with one text. */
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", "ACE");
+    s_osk_native_calls = 0;
+    osk_guest_build(2, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, k_init) == 0u, "a keyboard with SR_OSK_TEXT starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(s_osk_native_calls == 0 && MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u &&
+               osk_guest_out_is(0, ace, 3),
+           "SR_OSK_TEXT answers every field with the same text");
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, k_down);
+    (void)osk_poll(&cpu);
+
+    /* UTF-8 script text becomes UTF-16, and a malformed byte is visible rather than dropped. */
+    expect(osk_write_script(utf8_lines, 1), "the UTF-8 OSK answer script fixture is written");
+    osk_env("SR_OSK_SCRIPT", OSK_SCRIPT_PATH);
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, k_init) == 0u, "a UTF-8 scripted keyboard starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_guest_out_is(0, utf8, 3),
+           "a UTF-8 script answer reaches the guest as UTF-16, with U+FFFD for a bad byte");
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, k_down);
+    (void)osk_poll(&cpu);
+
+    /* A parameter block that is not readable is refused instead of being written into. */
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x0bffffffu;
+    expect(sr_syscall(&cpu, k_init) == 0x80110004u,
+           "sceUtilityOskInitStart refuses a parameter block outside the guest arena");
+
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+    remove(OSK_SCRIPT_PATH);
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -3750,6 +3996,169 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     sr_hle_test_data_reset(0);
     DeleteFileA(archive_path);
     RemoveDirectoryA(root);
+}
+
+enum {
+    HOST_DATA_PHASE_ARCHIVE_DISCOVER,
+    HOST_DATA_PHASE_PRIMARY_WALK,
+    HOST_DATA_PHASE_LOOSE_WALK,
+    HOST_DATA_PHASE_FINALIZE,
+    HOST_DATA_PHASE_VALIDATE,
+    HOST_DATA_PHASE_PUBLISH
+};
+
+static int host_data_bench_dir(const char *base, size_t bucket,
+                               char *path, size_t capacity, int create) {
+    if (!base || !path || capacity == 0u) return 0;
+    size_t used = (size_t)snprintf(path, capacity, "%s", base);
+    if (used >= capacity) return 0;
+    unsigned depth = 1u + (unsigned)(bucket % 4u);
+    int written = snprintf(path + used, capacity - used, "\\Pack%03zu.XB%u.D",
+                           bucket, (unsigned)(bucket % 3u));
+    if (written < 0 || (size_t)written >= capacity - used) return 0;
+    used += (size_t)written;
+    if (create && !hle_make_directory(path)) return 0;
+    unsigned components[] = {
+        (unsigned)bucket,
+        (unsigned)((bucket / 4u) % 20u),
+        (unsigned)((bucket / 16u) % 5u)
+    };
+    static const char *const names[] = { "Group", "Scope", "Cell" };
+    for (unsigned level = 1; level < depth; level++) {
+        written = snprintf(path + used, capacity - used, "\\%s%03u",
+                           names[level - 1u], components[level - 1u]);
+        if (written < 0 || (size_t)written >= capacity - used) return 0;
+        used += (size_t)written;
+        if (create && !hle_make_directory(path)) return 0;
+    }
+    return 1;
+}
+
+static int host_data_bench_write_files(const char *base, size_t count,
+                                       char prefix) {
+    char directory[MAX_PATH];
+    char path[MAX_PATH];
+    for (size_t bucket = 0; bucket < 80u; bucket++) {
+        if (!host_data_bench_dir(base, bucket, directory,
+                                 sizeof(directory), 1)) return 0;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (!host_data_bench_dir(base, i % 80u, directory,
+                                 sizeof(directory), 0)) return 0;
+        int written = snprintf(path, sizeof(path), "%s\\%c%05zu.DaTa",
+                              directory, prefix, i);
+        if (written < 0 || (size_t)written >= sizeof(path)) return 0;
+        FILE *file = fopen(path, "wb");
+        if (!file) return 0;
+        int ok = fputc((int)(unsigned char)prefix, file) != EOF;
+        if (fclose(file) != 0) ok = 0;
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
+static void host_data_bench_remove_tree(const char *root) {
+    if (!root || !root[0]) return;
+    char pattern[MAX_PATH];
+    int pattern_size = snprintf(pattern, sizeof(pattern), "%s\\*", root);
+    if (pattern_size < 0 || (size_t)pattern_size >= sizeof(pattern)) return;
+    WIN32_FIND_DATAA data;
+    HANDLE handle = FindFirstFileA(pattern, &data);
+    if (handle != INVALID_HANDLE_VALUE) {
+        do {
+            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0)
+                continue;
+            char child[MAX_PATH];
+            int child_size = snprintf(child, sizeof(child), "%s\\%s", root, data.cFileName);
+            if (child_size < 0 || (size_t)child_size >= sizeof(child)) continue;
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                host_data_bench_remove_tree(child);
+                RemoveDirectoryA(child);
+            } else {
+                DeleteFileA(child);
+            }
+        } while (FindNextFileA(handle, &data));
+        FindClose(handle);
+    }
+    RemoveDirectoryA(root);
+}
+
+static int host_data_bench_make_tree(const char *root, size_t total_files,
+                                     char *dataroot, size_t dataroot_capacity) {
+    char usrdir[MAX_PATH];
+    char loose[MAX_PATH];
+    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\xbdata_extracted", root);
+    if (n < 0 || (size_t)n >= dataroot_capacity) return 0;
+    n = snprintf(usrdir, sizeof(usrdir), "%s\\USRDIR", root);
+    if (n < 0 || (size_t)n >= sizeof(usrdir)) return 0;
+    n = snprintf(loose, sizeof(loose), "%s\\data", usrdir);
+    if (n < 0 || (size_t)n >= sizeof(loose) ||
+        !hle_make_directory(root) || !hle_make_directory(usrdir) ||
+        !hle_make_directory(dataroot) || !hle_make_directory(loose)) return 0;
+    size_t primary_count = total_files * 4u / 5u;
+    size_t loose_count = total_files - primary_count;
+    return host_data_bench_write_files(dataroot, primary_count, 'P') &&
+           host_data_bench_write_files(loose, loose_count, 'L');
+}
+
+static void test_host_data_scan_scaling(void) {
+    static const size_t counts[] = { 15000u, 30000u, 60000u };
+    unsigned long long elapsed_ms[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    char cwd[MAX_PATH];
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) {
+        expect(0, "the synthetic host-data benchmark has a working directory");
+        return;
+    }
+    if (!hle_make_directory("build")) {
+        expect(0, "the synthetic host-data benchmark build directory exists");
+        return;
+    }
+    for (size_t sample = 0; sample < sizeof(counts) / sizeof(counts[0]); sample++) {
+        char root[MAX_PATH];
+        char dataroot[MAX_PATH];
+        root[0] = '\0';
+        int n = snprintf(root, sizeof(root), "%s\\build\\host_data_scan_%lu_%llu",
+                         cwd, (unsigned long)GetCurrentProcessId(),
+                         (unsigned long long)GetTickCount64());
+        int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
+        int tree_ok = root_path_ok &&
+            host_data_bench_make_tree(root, counts[sample], dataroot, sizeof(dataroot));
+        expect(tree_ok, "the mixed-case 1-to-4-level synthetic host-data tree was created");
+        if (!tree_ok) {
+            if (root_path_ok) host_data_bench_remove_tree(root);
+            continue;
+        }
+        SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+        sr_hle_test_data_reset(0);
+        ULONGLONG started = GetTickCount64();
+        int state = sr_host_data_prepare();
+        elapsed_ms[sample] = GetTickCount64() - started;
+        expect(state == SR_DATA_TEST_STATE_READY,
+               "the synthetic prepared-tree route reaches READY");
+        expect(sr_hle_test_data_entry_count() == counts[sample],
+               "the primary and loose walks publish every synthetic file exactly once");
+        fprintf(stderr,
+                "[HOST_DATA_SCALE] files=%zu total_ms=%llu archive_discover_ms=%llu "
+                "walk_ms=%llu loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu "
+                "publish_ms=%llu\n",
+                counts[sample], elapsed_ms[sample],
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_ARCHIVE_DISCOVER),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PRIMARY_WALK),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_LOOSE_WALK),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_FINALIZE),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_VALIDATE),
+                sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PUBLISH));
+        SetEnvironmentVariableA("SR_DATAROOT", NULL);
+        sr_hle_test_data_reset(0);
+        host_data_bench_remove_tree(root);
+    }
+    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u,
+           "all three synthetic scaling sizes were measured");
+    expect(elapsed_ms[1] <= elapsed_ms[0] * 3u + 1000u &&
+               elapsed_ms[2] <= elapsed_ms[0] * 7u + 2000u,
+           "host-data preparation growth stays near-linear from 15k to 60k files");
+    expect(elapsed_ms[2] <= 20000u,
+           "a 60k-file primary-plus-loose synthetic tree prepares within 20 seconds");
 }
 
 typedef struct {
@@ -15444,6 +15853,7 @@ int main(int argc, char **argv) {
     test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
+    test_osk_scripted_answer();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
@@ -15496,6 +15906,7 @@ int main(int argc, char **argv) {
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
     test_direct_xb_many_members_skip_loose_walk();
+    test_host_data_scan_scaling();
     test_archive_mode_preserves_loose_routes();
     test_unprepared_route_lookup_fails_closed_without_building();
     test_slow_enumeration_completes_before_guest_start();

@@ -1308,10 +1308,7 @@ try {
         }
 
         if ($env:SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS -eq "1") {
-            $env:SR_DISPATCH_FATAL = $null
-            Write-Host "[!] SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS=1: dispatch misses will NOT be fatal." -ForegroundColor Yellow
-        } else {
-            $env:SR_DISPATCH_FATAL = "1"
+            Write-Host "[!] SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS has no effect: dispatch is unconditionally fail-closed." -ForegroundColor Yellow
         }
 
         if ($NoGui) {

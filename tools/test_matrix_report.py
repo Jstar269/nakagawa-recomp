@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the psp-recomp authors
 
 """Generate a conservative, machine-readable unittest evidence matrix.
@@ -270,6 +270,32 @@ def build_report() -> dict[str, object]:
         },
         "cases": cases,
     }
+
+
+class MatrixReportGenerationTests(unittest.TestCase):
+    """The file matches ``test_*.py`` and must also be runnable as a unittest.
+
+    Running ``python -m unittest tools.test_matrix_report`` previously ended
+    with ``NO TESTS RAN`` (exit code 5) because the file only exposed a
+    generator ``main()``.  These invariants additionally fail if the report
+    ever regresses to an empty or mislabelled evidence matrix.
+    """
+
+    def test_build_report_matches_the_documented_shape(self) -> None:
+        report = build_report()
+        self.assertEqual(report["schema"], 1)
+        self.assertEqual(report["generated_by"], "tools/test_matrix_report.py")
+        self.assertEqual(
+            report["discovery_contract"],
+            "python -m unittest discover -s tools -p 'test_*.py'",
+        )
+        self.assertGreater(report["case_count"], 0)
+        self.assertGreater(report["module_count"], 1)
+        for case in report["cases"]:
+            self.assertIn(case["source_shape_classification"], _DISPOSITION_BY_SHAPE)
+            self.assertNotEqual(case["disposition"], "")
+            for issue in case["related_issues"]:
+                self.assertRegex(issue, r"^#\d{1,4}$")
 
 
 def main(argv: list[str] | None = None) -> int:

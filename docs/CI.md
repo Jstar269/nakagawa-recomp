@@ -317,6 +317,43 @@ separate hosted-validation decision. Consult the current
 instead of treating a dated image version or tool inventory as an evergreen
 repository guarantee.
 
+## Windows Python and PATH contract
+
+Repository tools in hosted jobs must not depend on which Python happens to be
+first on `PATH` (#294). The contract is explicit:
+
+| Job / environment | Python running `tools/*` and the fixture generators |
+| --- | --- |
+| Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `dashboard`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
+| `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
+| Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
+
+Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
+the runner's Windows `PATH` explicitly with `MSYS2_PATH_TYPE: inherit` and assert
+`command -v pwsh` themselves. Under `inherit` the MSYS2 UCRT64 directories still
+precede the inherited Windows `PATH`, so `python` remains the UCRT64 CPython and
+only `pwsh` resolves from the runner image. No hosted step relies on undeclared
+PATH order.
+
+## Public release-path gates (#294)
+
+The hosted matrix now exercises the same public, source-owned release path a
+developer runs locally, without private inputs:
+
+- `windows_runtime` links the native player (`mingw32-make player`), runs the
+  complete platform ladder (`mingw32-make --no-print-directory platform-ladder`),
+  and runs the production smoke with its executable staged into a fresh
+  directory outside the build tree (`production-smoke-staged`).
+- `hygiene`'s "Exercise public-export generation and candidate audit" step runs
+  on `security_publication` changes and every manual `workflow_dispatch`. One
+  `build_public_export.py --export-dir ... --public-safe-profile` invocation
+  runs the publication gates, generates the public-safe candidate, and audits
+  the candidate-tree staging bytes. Hosted CI holds no trusted ledger, so the
+  export must fail closed with `PROVENANCE_UNVERIFIED` and promote nothing; the
+  step asserts that named boundary and the #293 immutability rule (no candidate
+  at the requested path). Clearing a candidate belongs to the release flow and
+  requires the release-controlled trusted ledger.
+
 ## Dependabot policy
 
 `.github/dependabot.yml` checks GitHub Actions, dashboard npm, root pip, and
