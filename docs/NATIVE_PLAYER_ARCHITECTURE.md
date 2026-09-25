@@ -1,10 +1,13 @@
 # Native Cross-Platform Player UI Architecture
 
 > **Status: CURRENT — maintained architecture record.** The native SDL3 player,
-> launch/session core, and bounded ISO/XB staging pipeline exist in the public
-> source. Module decryption, complete retail preparation, progress reporting for
-> every preparation route, and end-user productization remain unbuilt and are
-> marked as targets below.
+> launch/session core, bounded ISO/XB staging pipeline, and the library's
+> build-package / validate / launch route exist in the public source
+> ([#465](https://github.com/Jstar269/nakagawa-recomp/pull/465),
+> [#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). Module
+> decryption, retail-disc hash validation, progress reporting for every
+> preparation route, and end-user productization without the developer
+> toolchain remain unbuilt and are marked as targets below.
 >
 > **Current build boundary:** The native player connects a bounded ISO/XB
 > staging pipeline for the first-time setup wizard. It records the extracted
@@ -13,8 +16,13 @@
 > per-title Memory Stick root for launch preparation. Plain staged ELF32/MIPS
 > images receive program-header, entry, load-range, and BSS geometry checks;
 > retail `~PSP` containers are recognized but their encrypted inner ELF remains
-> a separate decryption capability. The native `VIEW_PREPARING` screen is still
-> an honest unavailable state for legacy/library preparation requests.
+> a separate decryption capability. The library card drives the same route
+> without scripts: **BUILD PACKAGE** runs `tools/nk_cli.py build-package` with
+> live stage progress, and **PLAY NOW** starts a validated package (or a
+> non-experimental catalog title's developer runtime,
+> [#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)). The legacy
+> `VIEW_PREPARING` screen is still an honest unavailable state, reachable today
+> only as a captured view.
 
 ## 1. Executive Vision: The Honest "Program + ISO" Contract
 
@@ -86,9 +94,9 @@ To replace the prototype localhost web dashboard (`interface/`), candidate deskt
 ## 3. Architecture & Separation of Concerns
 
 The diagram below is the target separation. The implemented public slice currently reaches
-title lookup, bounded ISO inspection and ISO/XB staging, launch-session validation, and
-child-process lifecycle. Preparation beyond bounded staging, complete archive/decryption
-work, and overlay parity remain unbuilt.
+title lookup, bounded ISO inspection and ISO/XB staging, library package build and
+validation, launch-session validation, and child-process lifecycle. Retail-disc hash
+validation, module decryption, and overlay parity remain unbuilt.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -127,9 +135,11 @@ capability layers rather than being reimplemented in the launcher.
 ## 4. First-Run & Onboarding Flow
 
 The flow below is the complete productization target, not a description of the current
-executable. Today the player opens a native SDL file picker, inspects a selected ISO, and
-runs bounded ISO/XB staging for supported inputs. Retail hash validation, encrypted-module
-decryption, generated-runtime provisioning, and arbitrary-ISO one-click play remain unbuilt.
+executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
+bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
+live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). Retail-disc hash
+validation, encrypted-module decryption, and one-click play from an arbitrary ISO without
+the developer toolchain remain unbuilt ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
 1. **Immediate Window Appearance**: The SDL3 window initializes and presents the UI in under 100 milliseconds.
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.
@@ -145,9 +155,13 @@ decryption, generated-runtime provisioning, and arbitrary-ISO one-click play rem
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
    - Encrypted `~PSP`/`~SCE` executables are not supported (open maintainer legal
      decision, #295); a missing recompiled child is reported instead of fabricated.
-6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a runtime is
-   available and *"LAUNCH PREPARED"* when assets are staged but runtime
-   preparation is still pending.
+6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a validating
+   package is present or, for a non-experimental catalog title, when the
+   launcher resolves that title's developer runtime ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)).
+   Otherwise it shows *"REBUILD PACKAGE"* for a stale package, *"BUILD
+   PACKAGE"* for a missing one, a `PACKAGE INCOMPATIBLE` status for an
+   incompatible one, `RUNTIME REQUIRED` for a staged entry with no runnable
+   runtime, and `PREPARATION UNAVAILABLE` when nothing is staged.
 
 ---
 

@@ -108,8 +108,9 @@ with explicit target and unbuilt boundaries.
 - [`cleanroom/PRX_LOADER_SPEC.md`](cleanroom/PRX_LOADER_SPEC.md) specifies the
   runtime PSP module (PRX) loader for clean-room rewrite unit G3.
 - [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
-  PGF reader for clean-room rewrite unit G4. A spec only — reader support is
-  still in the works (#349).
+  PGF reader for clean-room rewrite unit G4. The public reader built from it
+  landed as `src/rt/pgf_public.c` (PR #474); composite glyphs and the remaining
+  spec variants are still in the works (#349).
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
@@ -165,10 +166,10 @@ in this slice; classification comes first, directory moves separately.
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
 | `PREVIEW_RELEASE_NOTES.md` | CURRENT | Proposed preview copy, same proposal-only scope |
 | `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build |
-| `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202), while module decryption and full retail preparation remain unbuilt and are marked inline |
-| `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; recommended routes remain unimplemented |
-| `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and distributable title packages remain unbuilt |
-| `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and absent retail-preparation stages are distinguished inline |
+| `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202) and the library's build-package → validate → launch route exists (PR #487), while module decryption, retail-disc hash validation, and one-click play without the developer toolchain remain unbuilt and are marked inline |
+| `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; the zero-toolchain recommended routes remain unimplemented |
+| `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and one-click end-user preparation remain unbuilt |
+| `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and the remaining retail-preparation stages are distinguished inline |
 | `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; the wizard staging slice landed (PR #202), while web retirement and full parity remain unbuilt |
 | `WEB_UI_RETIREMENT.md` | DRAFT | Web dashboard retirement plan and native parity audit |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |

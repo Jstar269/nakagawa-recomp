@@ -1,11 +1,12 @@
 # Gap Analysis: Achieving Authentic Execution from "Program + ISO"
 
 > **Status: CURRENT — maintained LLE gap analysis.** This document distinguishes
-> existing bounded ISO helpers from the absent retail-preparation path. Its proposed
-> cryptography, middleware, VFS, and firmware work is not implemented merely because
+> existing bounded ISO helpers from the remaining retail-preparation gaps. Its proposed
+> cryptography, middleware, and firmware work is not implemented merely because
 > it appears in a resolution column. The current player performs bounded ISO/PARAM.SFO
-> inspection plus staged XB extraction for supported wizard inputs; it does not
-> decrypt retail containers or serve guest reads from archives at runtime.
+> inspection, staged XB extraction, and package build/launch for supported inputs; it
+> does not decrypt retail containers. The runtime now also serves guest reads from the
+> read-only archive-backed VFS (#298) when `SR_DATAROOT` holds `.xb` archives.
 
 ## 1. Architectural Correction & Superseded Recommendations
 
@@ -24,8 +25,8 @@
 ## 2. Updated Gap Analysis Matrix: True LLE Resolution Path
 
 The matrix is a decision and gap record. In the current public source, ISO/PARAM.SFO
-inspection and bounded file extraction exist; encrypted retail preparation, module
-decryption, complete archive mounting, and title acceptance remain open.
+inspection, bounded file extraction, and the read-only archive-backed VFS exist;
+encrypted retail preparation, module decryption, and title acceptance remain open.
 
 | Preparation Surface | Current Manual Requirement | Technical Root Cause | True Low-Level (LLE) Resolution Path | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -33,7 +34,7 @@ decryption, complete archive mounting, and title acceptance remain open.
 | **Encrypted PRXs** | Decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx` | Modules are encrypted `~PSP`/`~SCE` containers; `module_start` previously hung on `WaitSema` | Same decryption boundary as the main executable ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); fix kernel semaphore/scheduler contracts to execute original `module_start` | **REQUIRES_NEW_IMPLEMENTATION** (Kernel synchronization) |
 | **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` driving it over a bounded PSMF producer (see `docs/LLE_FIDELITY_ARCHITECTURE.md` §3.4) | The host-HLE player works, but the genuine `psmf.prx` / `libpsmfplayer.prx` middleware is not executing yet | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **PARTIAL — CODEC BRIDGE AND PRODUCER LANDED; GUEST MIDDLEWARE EXECUTION OPEN** |
-| **Game Assets** | Unpacked `xbdata_extracted/` (~56k loose files) | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **TARGET — NOT CONNECTED** |
+| **Game Assets** | Loose `xbdata_extracted/` (~56k files) or the `.xb` archives | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **LANDED — READ-ONLY ARCHIVE-BACKED VFS (#298); LOOSE LAYOUT STILL ACCEPTED** |
 | **Title Manifest** | Private title-specific manifest | Excluded from public tree due to guest addresses | Generic title-catalog parameterization without hardcoded patches | **GENERIC SUPPORT EXISTS; TITLE ACCEPTANCE NOT RUN** |
 
 ---
@@ -97,8 +98,10 @@ are not evidence that the paths have landed in the current player.
 ### 3.5 XB Archive & Filesystem Invariants
 
 * **Preserving PSP-Visible Filesystem Invariants:**
-  * Direct XB access is a future target for a transparent block driver; the current
-    public ISO helper is `src/core/nk_iso.c` and does not provide the complete guest VFS.
+  * Direct XB access now has a read-only route: the archive-backed VFS serves
+    validated `.xb` members directly (#298) while the loose-content route stays
+    available; the current public ISO helper is `src/core/nk_iso.c` and does not
+    provide the complete guest VFS.
   * The guest program must observe identical file paths, file sizes, seek offsets, partial reads, and error codes (`SCE_ERROR_ERRNO_FILE_NOT_FOUND`).
   * No game-specific path aliases or asset redirects may leak into generic guest execution.
 
@@ -111,5 +114,7 @@ $$\text{Authentic Reality:} \quad \text{Nakagawa} + \text{Game ISO} + \text{User
 
 The project can continue automating everything possible (ISO inspection,
 transparent VFS mounting, and dynamic module loading) without compromising
-fidelity or cutting architectural corners. At this snapshot, only the bounded ISO
-inspection/file-helper slice is present; the other items remain proposed work.
+fidelity or cutting architectural corners. At this snapshot, the bounded ISO
+inspection/file-helper slice and the read-only archive-backed VFS (#298) are
+present; module decryption and guest PRX middleware execution remain proposed
+work.

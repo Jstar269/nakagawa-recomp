@@ -103,16 +103,18 @@ graph TD
   (`VIEW_SETUP_WIZARD` in `src/player/player_state.h`), not in the web
   prototype; the web tree has no player panel today.
 * Transactional staging for supported inputs landed with the wizard (PR #202);
-  module decryption and end-user AOT generation remain unconnected and must
-  not be inferred from this phase label.
+  module decryption remains unconnected, and the player's package build still
+  requires the developer toolchain, so neither must be inferred from this phase
+  label.
 
 ### Phase 2: Native SDL3 Launcher & In-Engine Overlay (PARTIAL / TARGET)
 
 * The native SDL3 Game Library window, platform file picker, and bounded transactional
   ISO/XB staging are implemented for supported inputs.
-* Wire the eventual complete preparation core into the native launcher; retail
-  decryption, generated-runtime provisioning, and arbitrary-ISO one-click play remain
-  targets.
+* Wire the remaining preparation pieces into the native launcher; the
+  build-package → validate → launch route already landed there (PR #487), while
+  retail decryption, retail-disc hash validation, and arbitrary-ISO one-click
+  play without the developer toolchain remain targets.
 * Embed an in-engine overlay into the SDL3 Vulkan swapchain for the in-game pause menu.
 
 ### Phase 3: Feature Parity & Complete Retirement of Web Components (UNBUILT / TARGET)
