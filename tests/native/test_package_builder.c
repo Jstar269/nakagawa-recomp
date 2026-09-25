@@ -1,6 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* Feature-test macro first: the environment probes below use setenv/unsetenv,
+   which ISO C99 hides but POSIX.1-2001 declares. Windows uses _putenv. */
+#if !defined(_WIN32) && !defined(_WIN64)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200112L
+#endif
+#endif
+
 #include "package_builder.h"
 #include "nk_platform.h"
 
@@ -8,6 +16,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <direct.h>
+#define nk_tb_chdir _chdir
+#define nk_tb_getcwd _getcwd
+#else
+#include <unistd.h>
+#define nk_tb_chdir chdir
+#define nk_tb_getcwd getcwd
+#endif
+
+/* Set (value non-NULL) or clear (value NULL) a process environment variable
+ * for the duration of a probe, restored by the caller. */
+static void nk_tb_set_env(const char *key, const char *value) {
+    size_t len = strlen(key) + (value ? strlen(value) : 0) + 2;
+    char *pair = (char *)malloc(len);
+    assert(pair != NULL);
+    if (value) snprintf(pair, len, "%s=%s", key, value);
+    else snprintf(pair, len, "%s=", key);
+#if defined(_WIN32) || defined(_WIN64)
+    /* _putenv may retain the pointer, so the string outlives this call. */
+    _putenv(pair);
+#else
+    if (value) setenv(key, value, 1); /* setenv copies */
+    else unsetenv(key);
+    free(pair);
+#endif
+}
 
 static void test_progress_line_parsing(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 1: progress JSON parsing\n");
@@ -170,12 +206,129 @@ static void test_session_cancellation(void) {
     assert(strcmp(session.current_stage_name, "cancelled") == 0);
 }
 
+static void test_cli_search_order_and_guidance(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 6: CLI search order and not-found guidance\n");
+    char cands[PACKAGE_BUILDER_CLI_MAX_CANDIDATES][NK_MAX_PATH];
+
+    /* Documented order: override, exe dir, exe parent, release layout, cwd, cwd parent. */
+    int n = package_builder_cli_candidate_paths("C:/rel/bin", "D:/ovr", cands,
+                                                PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 6);
+    assert(strcmp(cands[0], "D:/ovr/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[1], "C:/rel/bin/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[2], "C:/rel/bin/../tools/nk_cli.py") == 0);
+    assert(strcmp(cands[3], "C:/rel/bin/../source/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[4], "tools/nk_cli.py") == 0);
+    assert(strcmp(cands[5], "../tools/nk_cli.py") == 0);
+
+    /* No override: the executable folder leads. */
+    n = package_builder_cli_candidate_paths("C:/rel/bin", NULL, cands,
+                                            PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 5);
+    assert(strcmp(cands[0], "C:/rel/bin/tools/nk_cli.py") == 0);
+
+    /* Trailing separators never double up. */
+    n = package_builder_cli_candidate_paths("C:/rel/bin/", "D:/ovr/", cands,
+                                            PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 6);
+    assert(strcmp(cands[0], "D:/ovr/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[1], "C:/rel/bin/tools/nk_cli.py") == 0);
+
+    /* Unknown executable folder: the working-directory pair still applies. */
+    n = package_builder_cli_candidate_paths("", "", cands,
+                                            PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 2);
+    assert(strcmp(cands[0], "tools/nk_cli.py") == 0);
+    assert(strcmp(cands[1], "../tools/nk_cli.py") == 0);
+
+    /* The not-found card names every searched location and every fix. */
+    char msg[512];
+    package_builder_describe_cli_not_found("C:/rel/bin", msg, sizeof(msg));
+    assert(strstr(msg, "C:/rel/bin/tools") != NULL);
+    assert(strstr(msg, "C:/rel/bin/../source/tools") != NULL);
+    assert(strstr(msg, "NK_INSTALL_ROOT") != NULL);
+    assert(strstr(msg, "source checkout") != NULL);
+
+    /* End to end: isolated cwd, no override -> not found; NK_INSTALL_ROOT -> found. */
+    char saved_cwd[NK_MAX_PATH];
+    char probe_dir[NK_MAX_PATH + 64];
+    assert(nk_tb_getcwd(saved_cwd, sizeof(saved_cwd)) != NULL);
+    assert(nk_platform_get_path(NK_PATH_CACHE, probe_dir, sizeof(probe_dir)));
+    size_t plen = strlen(probe_dir);
+    snprintf(probe_dir + plen, sizeof(probe_dir) - plen, "%ccli_probe",
+             nk_platform_path_separator());
+    assert(nk_platform_mkdir_p(probe_dir));
+
+    /* Copy the prior value out: clearing or resetting invalidates getenv's pointer. */
+    char prior_override[1024];
+    prior_override[0] = '\0';
+    const char *live_override = getenv("NK_INSTALL_ROOT");
+    if (live_override && live_override[0]) {
+        snprintf(prior_override, sizeof(prior_override), "%s", live_override);
+    }
+    nk_tb_set_env("NK_INSTALL_ROOT", NULL);
+    assert(nk_tb_chdir(probe_dir) == 0);
+
+    char found[NK_MAX_PATH];
+    assert(!package_builder_find_cli(probe_dir, found, sizeof(found)));
+
+    nk_tb_set_env("NK_INSTALL_ROOT", saved_cwd);
+    assert(package_builder_find_cli(probe_dir, found, sizeof(found)));
+    assert(strstr(found, "nk_cli.py") != NULL);
+
+    assert(nk_tb_chdir(saved_cwd) == 0);
+    if (prior_override[0]) {
+        nk_tb_set_env("NK_INSTALL_ROOT", prior_override);
+    } else {
+        nk_tb_set_env("NK_INSTALL_ROOT", NULL);
+    }
+}
+
+static void test_toolchain_preflight(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 7: toolchain preflight\n");
+    char tool[32];
+    char msg[512];
+
+    assert(!package_builder_toolchain_missing(true, true, true,
+                                              tool, sizeof(tool), msg, sizeof(msg)));
+    assert(tool[0] == '\0');
+    assert(msg[0] == '\0');
+
+    assert(package_builder_toolchain_missing(true, false, true,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "gcc") == 0);
+    assert(strstr(msg, "BUILD_TOOLCHAIN_MISSING") != NULL);
+    assert(strstr(msg, "gcc") != NULL);
+    assert(strstr(msg, "PATH") != NULL);
+
+    assert(package_builder_toolchain_missing(true, true, false,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "mingw32-make") == 0);
+    assert(strstr(msg, "mingw32-make") != NULL);
+
+    assert(package_builder_toolchain_missing(false, true, true,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "python") == 0);
+    assert(strstr(msg, "python") != NULL);
+
+    /* With several absent, the compiler is named first. */
+    assert(package_builder_toolchain_missing(true, false, false,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "gcc") == 0);
+
+    /* PATH lookup refuses a name that cannot exist anywhere. */
+    char found[NK_MAX_PATH];
+    assert(!package_builder_find_tool("nk_no_such_tool_zz9", found, sizeof(found)));
+}
+
 int main(void) {
     test_progress_line_parsing();
     test_state_machine_transitions();
     test_output_line_circular_buffer();
     test_python_and_cli_discovery();
     test_session_cancellation();
+    test_cli_search_order_and_guidance();
+    test_toolchain_preflight();
 
     printf("ALL PACKAGE BUILDER TESTS PASSED\n");
     return 0;
