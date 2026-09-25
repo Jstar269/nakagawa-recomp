@@ -214,6 +214,8 @@ The diagnostic does not skip guest work or change GE execution.
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4) |
 | `SR_PADSTART=N` | Pad override start frame |
 | `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
+| `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
+| `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
 | `SR_NOINPUT=1` | Disable the automatic START pulse; live and scripted input still work |
 | `SR_ROUTE_LEARN=1` | Print the route signature of every sampled and captured frame (`ROUTE_SIG v=<n> <hex>`) |
 | `SR_ROUTE_NO_EXIT=1` | Do not terminate on a route failure (executable regression tests only) |
@@ -237,6 +239,44 @@ $env:SR_NOINPUT = "1"
 The converter expands shorter presses because a one-vblank desktop automation
 pulse can fall between the game's controller reads. Use
 `--minimum-width 1` only when an exact-width replay is required.
+
+### Scripted keyboard answers
+
+`SR_PADSCRIPT` decides what a person *presses*; `SR_OSK_SCRIPT` decides what they *type*. The
+on-screen keyboard a title opens for a name is otherwise answered by a modal Windows input box,
+which an automated route cannot reach: it has to find that window and type into it, and the
+attempt races the game's own dialog timing. Both variables are off unless set, and neither
+changes how a person plays.
+
+`SR_OSK_SCRIPT=FILE` holds one answer per keyboard field, in the order the keyboard presents
+them. Each line is the text to enter, or the keyword `CANCEL` to answer that field as
+cancelled. Blank lines and lines starting with `#` are skipped:
+
+```text
+# name entry, then a confirmation the route does not want to accept
+ACE
+CANCEL
+```
+
+`SR_OSK_TEXT=TEXT` is the short form: the same text for every field, `CANCEL` included. The
+answer is truncated at the field's own `outtextlimit` exactly as typed text would be, and is
+written into the field as UTF-16 whether the script file is ASCII or UTF-8. A byte that is not
+valid UTF-8 becomes U+FFFD, so a broken script shows up in the guest's text instead of
+vanishing.
+
+While either variable is set **no native input box is ever opened**. A field the script does
+not cover is answered `CANCELLED` and the shortfall is named on stderr, because an automated
+run that reached an unanswered keyboard would otherwise block on a window nothing is going to
+dismiss. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
+played one are read the same way.
+
+A scripted answer follows the same status sequence as a person's. `sceUtilityOskGetStatus`
+returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE`, then `QUIT`
+(whether the text was confirmed or cancelled; each field's result tells them apart) until the
+title calls `sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`.
+`sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
+([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
+progression instead.
 
 ### State-qualified route programs (issue #64)
 
