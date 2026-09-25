@@ -23,11 +23,14 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 #define SAVE_NAME "BREAKOUT"
 #define MAX_RECTANGLES 128
 
-typedef struct __attribute__((packed)) {
+/* The GE pads every vertex to the alignment of its largest component, here the
+ * 32-bit colour, so this layout has a 12-byte stride: colour, x, y, z, then two
+ * bytes of padding. The struct must not be packed. */
+typedef struct {
     unsigned int color;
     short x, y, z;
 } FlatVertex;
-typedef char FlatVertexMustMatchGuStride[(sizeof(FlatVertex) == 10u) ? 1 : -1];
+typedef char FlatVertexMustMatchGuStride[(sizeof(FlatVertex) == 12u) ? 1 : -1];
 
 static unsigned int __attribute__((aligned(16))) display_list[65536];
 /* The frame uses at most 125 rectangles: 48 playfield objects and 77 score segments. */
