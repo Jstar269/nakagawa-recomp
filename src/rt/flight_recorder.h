@@ -19,7 +19,7 @@ enum {
     SR_FLIGHT_CLASS_FATAL = 1u << 5,
     SR_FLIGHT_CLASS_ALL = (1u << 6) - 1u,
     SR_FLIGHT_MAX_EVENTS = 4096u,
-    SR_FLIGHT_SCHEMA_VERSION = 1u
+    SR_FLIGHT_SCHEMA_VERSION = 2u
 };
 
 enum {
@@ -58,6 +58,9 @@ typedef struct {
     uint32_t arg1;
     uint32_t arg2;
     uint32_t arg3;
+    uint32_t arguments[4];
+    uint32_t has_return;
+    uint32_t return_value;
 } SrFlightEvent;
 
 typedef struct {
@@ -80,8 +83,11 @@ void sr_flight_init(void);
 int sr_flight_class_enabled(uint32_t event_class);
 void sr_flight_record(uint32_t event_class, uint32_t kind, uint32_t arg0, uint32_t arg1,
                       uint32_t arg2, uint32_t arg3);
-void sr_flight_hle_import(uint32_t nid, uint32_t uid, uint32_t object_uid, uint32_t pc,
-                          uint32_t ra);
+uint64_t sr_flight_hle_import(uint32_t nid, uint32_t uid, uint32_t object_uid, uint32_t pc,
+                              uint32_t ra);
+void sr_flight_hle_arguments(uint64_t sequence, uint32_t arg0, uint32_t arg1, uint32_t arg2,
+                             uint32_t arg3);
+void sr_flight_hle_return(uint64_t sequence, uint32_t return_value);
 void sr_flight_unsupported(uint32_t nid, uint32_t error, uint32_t uid, uint32_t pc);
 void sr_flight_unsupported_fatal(uint32_t nid, uint32_t uid, uint32_t pc);
 void sr_flight_prx_load(uint32_t base, uint32_t result, uint32_t entry, uint32_t imports,
@@ -121,13 +127,26 @@ static inline void sr_flight_record(uint32_t event_class, uint32_t kind, uint32_
     (void)arg2;
     (void)arg3;
 }
-static inline void sr_flight_hle_import(uint32_t nid, uint32_t uid, uint32_t object_uid, uint32_t pc,
-                                        uint32_t ra) {
+static inline uint64_t sr_flight_hle_import(uint32_t nid, uint32_t uid, uint32_t object_uid,
+                                            uint32_t pc, uint32_t ra) {
     (void)nid;
     (void)uid;
     (void)object_uid;
     (void)pc;
     (void)ra;
+    return 0u;
+}
+static inline void sr_flight_hle_arguments(uint64_t sequence, uint32_t arg0, uint32_t arg1,
+                                           uint32_t arg2, uint32_t arg3) {
+    (void)sequence;
+    (void)arg0;
+    (void)arg1;
+    (void)arg2;
+    (void)arg3;
+}
+static inline void sr_flight_hle_return(uint64_t sequence, uint32_t return_value) {
+    (void)sequence;
+    (void)return_value;
 }
 static inline void sr_flight_unsupported(uint32_t nid, uint32_t error, uint32_t uid, uint32_t pc) {
     (void)nid;

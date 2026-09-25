@@ -91,6 +91,25 @@ def _validate_schema(value: Any, schema: dict[str, Any], path: str = "$") -> Non
         for key, child_schema in properties.items():
             if key in value:
                 _validate_schema(value[key], child_schema, f"{path}.{key}")
+    if "allOf" in schema:
+        for child_schema in schema["allOf"]:
+            _validate_schema(value, child_schema, path)
+    if "not" in schema:
+        try:
+            _validate_schema(value, schema["not"], path)
+        except FlightDiffError:
+            pass
+        else:
+            _fail(path, "value matches a forbidden schema")
+    if "if" in schema:
+        try:
+            _validate_schema(value, schema["if"], path)
+        except FlightDiffError:
+            branch = schema.get("else")
+        else:
+            branch = schema.get("then")
+        if branch is not None:
+            _validate_schema(value, branch, path)
 
 
 def _forbid_embedded_text(value: Any, path: str = "$") -> None:
@@ -113,6 +132,9 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     _validate_schema(bundle, schema)
     _forbid_embedded_text(bundle)
+    version = bundle["schema_version"]
+    if any(event["schema_version"] != version for event in bundle["events"]):
+        _fail("$.events", "event schema versions must match the bundle")
     recorder = bundle["recorder"]
     events = bundle["events"]
     if recorder["recorded"] != len(events) + recorder["dropped"]:

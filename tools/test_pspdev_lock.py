@@ -6,13 +6,15 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
 import pspdev_lock
 
-
-ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "assets" / "upstream" / "pspdev.lock.json"
 EVIDENCE_PATH = ROOT / "assets" / "upstream" / "pspdev.evidence.json"
 

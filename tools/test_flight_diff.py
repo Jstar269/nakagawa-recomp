@@ -83,6 +83,36 @@ class FlightBundleTests(unittest.TestCase):
         bundle["recorder"]["triggers"]["fired"] = 1
         flight_diff.validate_bundle(bundle)
 
+    def test_schema_v2_accepts_hle_return_value_and_diff_detects_changes(self):
+        bundle = make_bundle([event(1, "hle", arg0=0x1234)])
+        bundle["schema_version"] = 2
+        bundle["events"][0]["schema_version"] = 2
+        bundle["events"][0]["arguments"] = [1, 2, 3, 4]
+        bundle["events"][0]["return_value"] = 0x80020001
+        flight_diff.validate_bundle(bundle)
+
+        candidate = copy.deepcopy(bundle)
+        candidate["events"][0]["return_value"] = 0
+        divergence = flight_diff.diff_bundles(bundle, candidate, "sequence")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "sequence 1")
+
+    def test_schema_v2_requires_return_field_for_hle_import(self):
+        bundle = make_bundle([event(1, "hle")])
+        bundle["schema_version"] = 2
+        bundle["events"][0]["schema_version"] = 2
+        bundle["events"][0]["arguments"] = [0, 0, 0, 0]
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "return_value"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_v2_rejects_hle_event_with_mismatched_version(self):
+        bundle = make_bundle([event(1, "hle")])
+        bundle["schema_version"] = 2
+        bundle["events"][0]["arguments"] = [0, 0, 0, 0]
+        bundle["events"][0]["return_value"] = None
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "forbidden schema"):
+            flight_diff.validate_bundle(bundle)
+
     def test_sanitizer_rejects_guest_derived_event_string(self):
         bundle = make_bundle([event(1, "hle")])
         bundle["events"][0]["guest_text"] = "private title payload"

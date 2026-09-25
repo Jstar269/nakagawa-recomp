@@ -140,10 +140,10 @@ int sr_flight_class_enabled(uint32_t event_class) {
     return (s_flight_classes & event_class) != 0u;
 }
 
-static void record_locked(uint32_t event_class, uint32_t kind, uint32_t arg0, uint32_t arg1,
-                          uint32_t arg2, uint32_t arg3) {
-    if (s_flight_classes == 0u || s_flight_limit == 0u || s_flight_trigger_count != 0u) return;
-    if (s_flight_recorded == UINT64_MAX) return;
+static uint64_t record_locked(uint32_t event_class, uint32_t kind, uint32_t arg0, uint32_t arg1,
+                              uint32_t arg2, uint32_t arg3) {
+    if (s_flight_classes == 0u || s_flight_limit == 0u || s_flight_trigger_count != 0u) return 0u;
+    if (s_flight_recorded == UINT64_MAX) return 0u;
     uint64_t sequence = s_flight_recorded + 1u;
     uint32_t slot = (uint32_t)((sequence - 1u) % s_flight_limit);
     s_flight_events[slot] = (SrFlightEvent){
@@ -155,34 +155,71 @@ static void record_locked(uint32_t event_class, uint32_t kind, uint32_t arg0, ui
         arg1,
         arg2,
         arg3,
+        {0u, 0u, 0u, 0u},
+        0u,
+        0u,
     };
     s_flight_recorded = sequence;
     s_flight_last_sequence = sequence;
     s_flight_last_kind = kind;
+    return sequence;
 }
 
 void sr_flight_record(uint32_t event_class, uint32_t kind, uint32_t arg0, uint32_t arg1,
                       uint32_t arg2, uint32_t arg3) {
     if (!sr_flight_class_enabled(event_class)) return;
-    record_locked(event_class, kind, arg0, arg1, arg2, arg3);
+    (void)record_locked(event_class, kind, arg0, arg1, arg2, arg3);
 }
 
-void sr_flight_hle_import(uint32_t nid, uint32_t uid, uint32_t object_uid, uint32_t pc,
-                          uint32_t ra) {
+uint64_t sr_flight_hle_import(uint32_t nid, uint32_t uid, uint32_t object_uid, uint32_t pc,
+                              uint32_t ra) {
     uint32_t classes = s_flight_classes;
+    uint64_t sequence = 0u;
     if (classes & SR_FLIGHT_CLASS_HLE) {
-        record_locked(SR_FLIGHT_CLASS_HLE, SR_FLIGHT_KIND_HLE_IMPORT, nid, uid, pc, ra);
+        sequence = record_locked(SR_FLIGHT_CLASS_HLE, SR_FLIGHT_KIND_HLE_IMPORT, nid, uid, pc, ra);
     }
-    if (!(classes & SR_FLIGHT_CLASS_PRX)) return;
+    if (!(classes & SR_FLIGHT_CLASS_PRX)) return sequence;
     uint32_t kind = 0u;
     switch (nid) {
     case 0x977de386u: kind = SR_FLIGHT_KIND_PRX_LOAD; object_uid = 0u; break;
     case 0x50f0c1ecu: kind = SR_FLIGHT_KIND_PRX_START; break;
     case 0xd1ff982au: kind = SR_FLIGHT_KIND_PRX_STOP; break;
     case 0x2e0911aau: kind = SR_FLIGHT_KIND_PRX_UNLOAD; break;
-    default: return;
+    default: return sequence;
     }
-    record_locked(SR_FLIGHT_CLASS_PRX, kind, object_uid, pc, 0u, 0u);
+    (void)record_locked(SR_FLIGHT_CLASS_PRX, kind, object_uid, pc, 0u, 0u);
+    return sequence;
+}
+
+static SrFlightEvent *event_for_sequence(uint64_t sequence) {
+    if (sequence == 0u || s_flight_limit == 0u || sequence > s_flight_recorded) return NULL;
+    uint64_t first = s_flight_recorded > s_flight_limit ? s_flight_recorded - s_flight_limit : 0u;
+    if (sequence <= first) return NULL;
+    uint32_t slot = (uint32_t)((sequence - 1u) % s_flight_limit);
+    SrFlightEvent *event = &s_flight_events[slot];
+    return event->sequence == sequence && event->event_class == SR_FLIGHT_CLASS_HLE &&
+                   event->kind == SR_FLIGHT_KIND_HLE_IMPORT
+               ? event
+               : NULL;
+}
+
+void sr_flight_hle_arguments(uint64_t sequence, uint32_t arg0, uint32_t arg1, uint32_t arg2,
+                             uint32_t arg3) {
+    if (!(s_flight_classes & SR_FLIGHT_CLASS_HLE)) return;
+    SrFlightEvent *event = event_for_sequence(sequence);
+    if (!event) return;
+    event->arguments[0] = arg0;
+    event->arguments[1] = arg1;
+    event->arguments[2] = arg2;
+    event->arguments[3] = arg3;
+}
+
+void sr_flight_hle_return(uint64_t sequence, uint32_t return_value) {
+    if (!(s_flight_classes & SR_FLIGHT_CLASS_HLE)) return;
+    SrFlightEvent *event = event_for_sequence(sequence);
+    if (!event) return;
+    event->has_return = 1u;
+    event->return_value = return_value;
 }
 
 static void trigger(int reason, uint32_t kind, uint32_t arg) {
@@ -344,10 +381,24 @@ static int write_bundle(int reason) {
         const SrFlightEvent *event = &s_flight_events[slot];
         ok = fprintf(file,
                      "%s    {\"schema_version\": %u, \"sequence\": %llu, \"class\": \"%s\", "
-                     "\"kind\": %u, \"arg0\": %u, \"arg1\": %u, \"arg2\": %u, \"arg3\": %u}",
+                     "\"kind\": %u, \"arg0\": %u, \"arg1\": %u, \"arg2\": %u, \"arg3\": %u",
                      i ? ",\n" : "\n", event->schema_version, (unsigned long long)event->sequence,
                      class_name(event->event_class), event->kind, event->arg0, event->arg1,
                      event->arg2, event->arg3) >= 0;
+        if (ok && event->event_class == SR_FLIGHT_CLASS_HLE &&
+            event->kind == SR_FLIGHT_KIND_HLE_IMPORT) {
+            ok = fprintf(file, ", \"arguments\": [%u, %u, %u, %u], \"return_value\": ",
+                         event->arguments[0], event->arguments[1], event->arguments[2],
+                         event->arguments[3]) >= 0;
+            if (ok) {
+                if (event->has_return) {
+                    ok = fprintf(file, "%u", event->return_value) >= 0;
+                } else {
+                    ok = fputs("null", file) != EOF;
+                }
+            }
+        }
+        ok = ok && fputc('}', file) != EOF;
     }
     ok = ok && fputs(count ? "\n  ]\n}\n" : "]\n}\n", file) != EOF;
     int file_error = ferror(file);
