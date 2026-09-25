@@ -8614,6 +8614,7 @@ static uint32_t h_IoRead(CpuState *s) {
         return 0x80010009; /* baseline behavior preserved for standard streams */
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
+    uint64_t perf_started = sr_perf_now_ns();
     if (f->archive_vfs) {
         if (dst && !sr_guest_span_writable(dst, count)) return 0x80010016u;
         if (f->off >= f->size || count == 0u) return 0u;
@@ -8638,6 +8639,8 @@ static uint32_t h_IoRead(CpuState *s) {
             done += (uint32_t)got;
         }
         f->off += done;
+        if (perf_started)
+            sr_perf_storage_read(SR_PERF_STORAGE_VFS, done, perf_started, done == count);
         return done;
     }
     if (f->pgd) {
@@ -8657,6 +8660,7 @@ static uint32_t h_IoRead(CpuState *s) {
             done += n;
         }
         f->off += done;
+        if (perf_started) sr_perf_storage_read(SR_PERF_STORAGE_VFS, done, perf_started, done == count);
         return done;
     }
     if (f->off + count > f->size) count = f->size - f->off;
@@ -8675,6 +8679,8 @@ static uint32_t h_IoRead(CpuState *s) {
         done += n;
         if (n == 0) break;
     }
+    if (f->host && perf_started)
+        sr_perf_storage_read(SR_PERF_STORAGE_VFS, done, perf_started, done == count);
     f->off += done;
     if (getenv("SR_IOLOG")) {
         static int n = 0;
@@ -8828,6 +8834,7 @@ static uint32_t h_IoIoctl(CpuState *s) {
         uint32_t count = MEM_R32(in);
         if (!out || count > outlen) return 0x80010016;
         if (f->off + count > f->size) count = f->size - f->off;
+        uint64_t perf_started = sr_perf_now_ns();
         if (f->archive_vfs) {
             if (!out || !sr_guest_span_writable(out, count)) return 0x80010016u;
             uint8_t archive_tmp[4096];
@@ -8848,6 +8855,9 @@ static uint32_t h_IoIoctl(CpuState *s) {
                 archive_done += (uint32_t)got;
             }
             f->off += archive_done;
+            if (perf_started)
+                sr_perf_storage_read(SR_PERF_STORAGE_VFS, archive_done, perf_started,
+                                     archive_done == count);
             return archive_done;
         }
         uint8_t tmp[4096];
@@ -8864,6 +8874,8 @@ static uint32_t h_IoIoctl(CpuState *s) {
             done += n;
             if (n == 0) break;
         }
+        if (f->host && perf_started)
+            sr_perf_storage_read(SR_PERF_STORAGE_VFS, done, perf_started, done == count);
         f->off += done;
         return done;
     }
@@ -12850,6 +12862,7 @@ static int sas_next_sample(SasVoice *v, int *sample) {
 
 /* Mix one grain into out (s16 stereo or four planar channels). add=0 overwrites. */
 static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gain) {
+    uint64_t perf_started = sr_perf_now_ns();
     int32_t mixl[2048], mixr[2048], mixsl[2048], mixsr[2048];
     int n = s_sas_core.grain;
     for (int i = 0; i < n; i++) mixl[i] = mixr[i] = mixsl[i] = mixsr[i] = 0;
@@ -12946,6 +12959,7 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         if (post_peak > g_sas_post_peak) g_sas_post_peak = post_peak;
         if (pre_peak && !post_peak) g_sas_erased++;
     }
+    if (perf_started) sr_perf_audio_mix(perf_started);
 }
 
 static uint32_t h_SasInit(CpuState *s) {
@@ -16021,7 +16035,9 @@ static int link_started_export(CpuState *s, uint32_t nid) {
         const char *nm = sr_nid_name(nid);
         fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
     }
+    if (sr_perf_enabled) sr_perf_aot_begin(target);
     gfn(s);
+    if (sr_perf_enabled) sr_perf_aot_end();
     return 1;
 }
 

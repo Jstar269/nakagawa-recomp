@@ -29,6 +29,7 @@
 
 #include "atrac3p_bridge.h"
 #include "vfpu_tables.h"
+#include "perf.h"
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -209,6 +210,7 @@ static void test_imdct_path_decode(void)
 
 int main(void)
 {
+    sr_perf_init();
     test_create_validation();
     test_decode_contract();
     test_terminator_decode();

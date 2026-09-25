@@ -397,11 +397,39 @@ unsigned long g_mpeg_put;
 unsigned long g_mpeg_getavc;
 unsigned long g_mpeg_avcdec;
 unsigned long g_mpeg_nodata;
-uint64_t sr_perf_now_ns(void) { return 0; }
+int sr_perf_enabled;
+uint64_t sr_perf_now_ns_impl(void) { return 0; }
 void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+int sr_perf_aot_active;
+void sr_perf_aot_begin(uint32_t pc) { (void)pc; }
+void sr_perf_aot_end(void) {}
+void sr_perf_aot_instruction(uint32_t pc, uint32_t opcode) { (void)pc; (void)opcode; }
+void sr_perf_interp_set_reason(SrPerfInterpReason reason) { (void)reason; }
+void sr_perf_interp_begin(uint32_t pc) { (void)pc; }
+void sr_perf_interp_instruction(void) {}
+void sr_perf_interp_end(uint32_t pc, int result) { (void)pc; (void)result; }
+void sr_perf_vfpu(uint32_t opcode, uint64_t started_ns, int result) { (void)opcode; (void)started_ns; (void)result; }
+void sr_perf_sched_state(SrPerfSchedState state, uint32_t uid) { (void)state; (void)uid; }
+void sr_perf_sched_switch(uint32_t from_uid, uint32_t to_uid) { (void)from_uid; (void)to_uid; }
+void sr_perf_ge_submit(SrPerfGeReason reason) { (void)reason; }
+void sr_perf_ge_wait(uint64_t started_ns, SrPerfGeReason reason) { (void)started_ns; (void)reason; }
+void sr_perf_ge_event(SrPerfGeEvent event, uint64_t count) { (void)event; (void)count; }
+void sr_perf_ge_cpu(uint64_t started_ns) { (void)started_ns; }
+void sr_perf_ge_cpu_phase(uint64_t transform_ns, uint64_t raster_ns) { (void)transform_ns; (void)raster_ns; }
+void sr_perf_vulkan_submit(uint64_t started_ns) { (void)started_ns; }
+void sr_perf_vulkan_wait(uint64_t started_ns, int readback) { (void)started_ns; (void)readback; }
+void sr_perf_vulkan_pipeline(uint64_t started_ns) { (void)started_ns; }
+void sr_perf_vulkan_readback(uint32_t bytes) { (void)bytes; }
+void sr_perf_texture_cache(int hit) { (void)hit; }
+void sr_perf_texture_decode(uint64_t started_ns, uint32_t bytes) { (void)started_ns; (void)bytes; }
+void sr_perf_storage_read(SrPerfStorageSource source, uint32_t bytes, uint64_t started_ns, int success) { (void)source; (void)bytes; (void)started_ns; (void)success; }
+void sr_perf_h264(uint64_t started_ns, int result) { (void)started_ns; (void)result; }
+void sr_perf_atrac(uint64_t started_ns, int result) { (void)started_ns; (void)result; }
+void sr_perf_audio_mix(uint64_t started_ns) { (void)started_ns; }
+void sr_perf_audio_output(uint64_t started_ns, uint32_t frames) { (void)started_ns; (void)frames; }
 
 /* The FD fixture deliberately exercises the writable host-backed branch.  Keep
  * the ISO side absent and deterministic rather than making the selftest depend

@@ -899,7 +899,9 @@ try {
         $captures | ForEach-Object { Copy-Item $_.FullName (Join-Path $outDir $_.Name) -Force }
         if ($RunProfile -eq "Benchmark") {
             $perfCsv = Join-Path $script:LogDir "perf.csv"
+            $perfJson = Join-Path $script:LogDir "perf.json"
             if (Test-Path $perfCsv) { Copy-Item $perfCsv (Join-Path $outDir "perf.csv") -Force }
+            if (Test-Path $perfJson) { Copy-Item $perfJson (Join-Path $outDir "perf.json") -Force }
         }
 
         $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
@@ -1211,6 +1213,7 @@ try {
         $env:SR_QUIET = $null
         $env:SR_PERF = $null
         $env:SR_PERF_CSV = $null
+        $env:SR_PERF_JSON = $null
         $env:SR_PROFILE = $null
         $env:SR_PROFILE_DUMP_VBLANKS = $null
         $env:SR_HLE_DIAGNOSTICS = $null
@@ -1256,7 +1259,8 @@ try {
                 $env:SR_ALLOC_MAX = "04000000"
                 $env:SR_PERF = "1"
                 $env:SR_PERF_CSV = "$LogDir/perf.csv"
-                Remove-Item $env:SR_PERF_CSV -ErrorAction SilentlyContinue
+                $env:SR_PERF_JSON = "$LogDir/perf.json"
+                Remove-Item $env:SR_PERF_CSV, $env:SR_PERF_JSON -ErrorAction SilentlyContinue
                 $env:SR_THLOG = $null
                 $env:SR_BLOCKLOG = $null
                 $env:SR_SYSLOG = $null

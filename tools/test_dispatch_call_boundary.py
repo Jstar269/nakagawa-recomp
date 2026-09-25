@@ -24,6 +24,7 @@ CC = shutil.which("gcc")
 SELFTEST = ROOT / "src" / "rt" / "dispatch_isolation_selftest.c"
 RECOMP = ROOT / "src" / "rt" / "recomp.c"
 GUEST_INTERP = ROOT / "src" / "rt" / "guest_interp.c"
+PERF = ROOT / "src" / "rt" / "perf.c"
 TITLE_CONFIG_TOOL = ROOT / "tools" / "title_runtime_config.py"
 
 
@@ -60,8 +61,9 @@ def _build_and_run(mutated_recomp: str | None = None,
                 CC, "-std=c11", "-O0", "-fno-strict-aliasing",
                 "-Wall", "-Wextra", "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
                 "-I", str(work), "-I", str(ROOT / "src" / "rt"),
-                str(work / "dispatch_isolation_selftest.c"), str(interp_path),
-                str(ROOT / "src" / "rt" / "cpu_lle.c"),
+                 str(work / "dispatch_isolation_selftest.c"), str(interp_path),
+                 str(PERF),
+                 str(ROOT / "src" / "rt" / "cpu_lle.c"),
                 str(ROOT / "src" / "rt" / "domain_mode.c"),
                 str(ROOT / "src" / "rt" / "stale_code.c"),
                 str(ROOT / "src" / "rt" / "title_config.c"),
@@ -184,6 +186,8 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
             "M6-duplicate-return-delay",
             interp_old=(
                 "            instruction_count += 2u;\n"
+                "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
+                "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
                 "            pc = transfer.taken ? transfer.target : pc + 8u;"
             ),
             interp_new=(
@@ -191,6 +195,8 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
                 "                                     &delay_store_address, "
                 "&delay_store_size, fault);\n"
                 "            instruction_count += 2u;\n"
+                "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
+                "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
                 "            pc = transfer.taken ? transfer.target : pc + 8u;"
             ),
             diagnostic="return delay slot did not execute exactly once",
