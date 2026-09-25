@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
 
+/* clock_gettime(CLOCK_MONOTONIC) is POSIX: strict -std=c99/c11 builds hide it unless
+ * the feature macro is set, and the timer would silently fall back to clock(). */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "perf.h"
 
 #include <stdio.h>
