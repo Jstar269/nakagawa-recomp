@@ -466,7 +466,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "45bfdbde515dc041d57d437fe19bebab8ef9a72d0c7ae68ef1869ace744457f0"
+      "sha256": "d0fe7744c440eb8407e64b4adfa3b3329ccfc490646af5af1b5680e6f0c66bdb"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-24.json",
@@ -1123,7 +1123,16 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b4bab5c84c34371d4c54d7e77d258e9493d818e24d8061e48fca2944e93b1789"
+      "sha256": "65e73cf4cdd19504d4753276f426b0fafb39841066e95eb40678495ad04e55e9"
+    },
+    {
+      "path": "docs/RELEASE_NOTES_v0.0.1.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "44265d0aad4458a167b48528146d27ca699edd16a99a9b29fe25d8e318ba3c1f"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
