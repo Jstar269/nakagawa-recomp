@@ -449,6 +449,25 @@ int main(int argc, char **argv) {
     player_app_sync_library(app);
     assert(app->game_count == 3);
 
+    /* Bundled showcase entries are merged into the visible view only. They
+       survive library resyncs without entering or leaving the user's library. */
+    memset(&app->showcase_games[0], 0, sizeof(app->showcase_games[0]));
+    snprintf(app->showcase_games[0].disc_id, sizeof(app->showcase_games[0].disc_id),
+             "TEST00007");
+    snprintf(app->showcase_games[0].title_id, sizeof(app->showcase_games[0].title_id),
+             "showcase-scene-v1");
+    app->showcase_count = 1;
+    player_app_sync_library(app);
+    assert(app->game_count == 4 && app->library.count == 3);
+    assert(player_game_is_showcase(&app->games[3]));
+    assert(!player_app_remove_game(app, 3));
+    assert(app->library.count == 3 && app->game_count == 4);
+    player_app_sync_library(app);
+    assert(app->game_count == 4 && strcmp(app->games[3].disc_id, "TEST00007") == 0);
+    app->showcase_count = 0;
+    player_app_sync_library(app);
+    assert(app->game_count == 3 && app->library.count == 3);
+
     /* 1. An entry that is NOT last is found at its real index.
      *
      * This is the case --launch-now got wrong: re-adding TEST00001 updates it

@@ -1109,8 +1109,13 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
+    bool showcase_demo = player_game_is_showcase(game);
+    if (showcase_demo && hero_w >= 760.0f) {
+        draw_badge(ren, hero_x + 350.0f, hero_y + 28.0f, "SHOWCASE DEMO", COLOR_LIME);
+    }
     if (hero_w >= 760.0f) {
-        draw_badge(ren, hero_x + 350.0f, hero_y + 28.0f, fps_label(app->settings.fps_cap), COLOR_LIME);
+        draw_badge(ren, hero_x + (showcase_demo ? 510.0f : 350.0f), hero_y + 28.0f,
+                   fps_label(app->settings.fps_cap), COLOR_LIME);
     }
     /* Generated title mark: hue from the disc ID, initials from the title.
      * Runtime-drawn, zero art assets to license. */
@@ -1293,19 +1298,21 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     }
     focus++;
 
-    bool remove_focused = (app->focus_index == focus);
-    if (hero_w >= 760.0f) {
-        if (draw_button_focused(ren, hero_x + 512.0f, btn_y, 180.0f, 54.0f, "REMOVE", false, in, remove_focused)) {
-            player_app_remove_game(app, app->selected_game_index);
-            return;
+    if (!showcase_demo) {
+        bool remove_focused = (app->focus_index == focus);
+        if (hero_w >= 760.0f) {
+            if (draw_button_focused(ren, hero_x + 512.0f, btn_y, 180.0f, 54.0f, "REMOVE", false, in, remove_focused)) {
+                player_app_remove_game(app, app->selected_game_index);
+                return;
+            }
+        } else {
+            if (draw_button_focused(ren, hero_x + hero_w - 140.0f, hero_y + 24.0f, 108.0f, 32.0f, "REMOVE", false, in, remove_focused)) {
+                player_app_remove_game(app, app->selected_game_index);
+                return;
+            }
         }
-    } else {
-        if (draw_button_focused(ren, hero_x + hero_w - 140.0f, hero_y + 24.0f, 108.0f, 32.0f, "REMOVE", false, in, remove_focused)) {
-            player_app_remove_game(app, app->selected_game_index);
-            return;
-        }
+        focus++;
     }
-    focus++;
 
     /* Lower Library Strip.
      *
@@ -1362,7 +1369,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             draw_rounded_outline(ren, card_x - 2.0f, card_y - 2.0f, cw + 4.0f, ch + 4.0f, 10.0f, COLOR_LIME);
         }
 
-        draw_badge(ren, card_x + 12.0f, card_y + 12.0f, app->games[i].disc_id, active ? COLOR_EMERALD : COLOR_TEXT_DIM);
+        draw_badge(ren, card_x + 12.0f, card_y + 12.0f,
+                   player_game_is_showcase(&app->games[i]) ? "SHOWCASE DEMO" : app->games[i].disc_id,
+                   active ? COLOR_EMERALD : COLOR_TEXT_DIM);
         float title_avail = cw - 24.0f;
         if (ch >= 80.0f) {
             draw_monogram(ren, card_x + cw - 46.0f, card_y + 8.0f, 36.0f,

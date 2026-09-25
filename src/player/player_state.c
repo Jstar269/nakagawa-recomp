@@ -11,6 +11,26 @@ static const char *player_runtime_root(const PlayerApp *app) {
     return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
 }
 
+bool player_game_is_showcase(const GameRecord *game) {
+    return game && strncmp(game->title_id, "showcase-", 9) == 0;
+}
+
+static const char *player_package_root(const PlayerApp *app, const GameRecord *game) {
+    if (app && game && player_game_is_showcase(game) && app->showcase_root[0]) {
+        return app->showcase_root;
+    }
+    return player_runtime_root(app);
+}
+
+static bool player_join_path(char *out, size_t out_size, const char *root,
+                             const char *relative) {
+    char sep = nk_platform_path_separator();
+    int written;
+    if (!out || !out_size || !root || !root[0] || !relative || !relative[0]) return false;
+    written = snprintf(out, out_size, "%s%c%s", root, sep, relative);
+    return written > 0 && (size_t)written < out_size;
+}
+
 void player_app_init(PlayerApp *app) {
     if (!app) return;
     memset(app, 0, sizeof(*app));
@@ -68,7 +88,7 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     size_t reason_size
 ) {
     char default_root[NK_MAX_PATH];
-    const char *root = app && app->runtime_root[0] ? app->runtime_root : NULL;
+    const char *root = player_package_root(app, game);
     if (!root) {
         if (!nk_platform_get_app_data_dir(default_root, sizeof(default_root))) {
             if (reason && reason_size) snprintf(reason, reason_size,
@@ -88,6 +108,16 @@ void player_app_sync_library(PlayerApp *app) {
         app->games[i] = app->library.entries[i];
         app->game_count++;
     }
+    for (int i = 0; i < app->showcase_count && app->game_count < MAX_LIBRARY_GAMES; i++) {
+        bool already_present = false;
+        for (int j = 0; j < app->game_count; j++) {
+            if (strcmp(app->games[j].disc_id, app->showcase_games[i].disc_id) == 0) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) app->games[app->game_count++] = app->showcase_games[i];
+    }
     if (app->game_count <= 0) {
         app->selected_game_index = -1;
         app->library_scroll_index = 0;
@@ -97,6 +127,49 @@ void player_app_sync_library(PlayerApp *app) {
             app->selected_game_index = app->game_count - 1;
         }
     }
+}
+
+bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
+    if (!app || !executable_directory || !executable_directory[0]) return false;
+    int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
+                           "%sdemos", executable_directory);
+    if (written <= 0 || (size_t)written >= sizeof(app->showcase_root)) {
+        app->showcase_root[0] = '\0';
+        return false;
+    }
+
+    app->showcase_count = 0;
+    for (int i = 0; i < nk_title_catalog_count && app->showcase_count < MAX_SHOWCASE_GAMES; i++) {
+        const NkTitleEntry *title = &nk_title_catalog_entries[i];
+        if (!title->id || strncmp(title->id, "showcase-", 9) != 0 ||
+            !title->primary_disc_id || !title->display_name) continue;
+        GameRecord game;
+        memset(&game, 0, sizeof(game));
+        snprintf(game.disc_id, sizeof(game.disc_id), "%s", title->primary_disc_id);
+        snprintf(game.title_name, sizeof(game.title_name), "%s", title->display_name);
+        snprintf(game.title_id, sizeof(game.title_id), "%s", title->id);
+        snprintf(game.disc_version, sizeof(game.disc_version), "1.00");
+        snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
+        if (!player_join_path(game.iso_path, sizeof(game.iso_path), app->showcase_root,
+                              "images")) continue;
+        size_t image_root_len = strlen(game.iso_path);
+        int image_written = snprintf(game.iso_path + image_root_len,
+            sizeof(game.iso_path) - image_root_len, "%c%s.iso",
+            nk_platform_path_separator(), title->primary_disc_id);
+        if (image_written <= 0 ||
+            (size_t)image_written >= sizeof(game.iso_path) - image_root_len ||
+            !nk_platform_file_exists(game.iso_path)) continue;
+        snprintf(game.prepared_root, sizeof(game.prepared_root), "%s", app->showcase_root);
+        game.iso_size_bytes = (uint64_t)nk_platform_get_file_size(game.iso_path);
+        game.is_prepared = nk_launch_validate_runtime_package(
+            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
+        if (!game.is_prepared) continue;
+        game.status = NK_STATUS_PREPARED;
+        snprintf(game.last_played, sizeof(game.last_played), "Never");
+        app->showcase_games[app->showcase_count++] = game;
+    }
+    player_app_sync_library(app);
+    return app->showcase_count > 0;
 }
 
 bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
@@ -157,7 +230,7 @@ int player_app_focus_count(const PlayerApp *app) {
                     player_app_validate_runtime_package(app, game, NULL, NULL, 0) ==
                         NK_RUNTIME_PACKAGE_OK;
                 if (game && (game_has_package || app->is_game_running)) count++;
-                count += 2; /* add + remove */
+                count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
             }
@@ -310,6 +383,7 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const char *disc_id = app->games[game_index].disc_id;
     if (!disc_id || disc_id[0] == '\0') return false;
+    if (player_game_is_showcase(&app->games[game_index])) return false;
     /* Only the library entry is removed. The user's ISO file on disk is
      * never touched. */
     if (nk_library_remove(&app->library, disc_id) != NK_OK) return false;
@@ -427,7 +501,8 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
-    NkResult res = nk_launch_prepare_session(&app->launch_session, game, player_runtime_root(app));
+    NkResult res = nk_launch_prepare_session(&app->launch_session, game,
+                                              player_package_root(app, game));
     /* nk_launch defaults gui_mode to false for headless harnesses. */
     app->launch_session.config.gui_mode = true;
     if (res != NK_OK) {

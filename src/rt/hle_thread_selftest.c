@@ -6659,6 +6659,8 @@ static void test_wait_thread_end_cb_execution(void) {
 #define NID_SCE_DMAC_TRY_MEMCPY 0xd97f94d8u
 #define NID_SCE_KERNEL_MEMSET 0xa089eca4u
 #define NID_SCE_KERNEL_MEMCPY 0x1839852au
+#define NID_SYSLIB_MEMSET 0x10f3bb61u
+#define NID_SYSLIB_STRLEN 0x52df196cu
 /* PSP DMAC error classes, measured on hardware (see test_dmac_semantics). */
 #define SCE_DMAC_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ILLEGAL_SIZE 0x80000104u
@@ -6685,6 +6687,80 @@ static uint32_t bulk_call(uint32_t nid, uint32_t dst, uint32_t src_or_value, uin
     s_cpu->r[5] = src_or_value;
     s_cpu->r[6] = size;
     return sr_syscall(s_cpu, nid);
+}
+
+static void test_sysclib_memory_imports(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t string_addr = 0x08301000u;
+    const uint32_t fill_addr = 0x08302000u;
+    title_hle_write_cstr(string_addr, "showcase");
+    s_cpu->r[4] = string_addr;
+    expect(sr_syscall(s_cpu, NID_SYSLIB_STRLEN) == 8u,
+           "SysclibForKernel strlen dispatch returns the guest byte length");
+
+    for (uint32_t i = 0; i < 32u; i++) MEM_W8(fill_addr + i, 0x5au);
+    s_cpu->r[4] = fill_addr;
+    s_cpu->r[5] = 0xc3u;
+    s_cpu->r[6] = 32u;
+    expect(sr_syscall(s_cpu, NID_SYSLIB_MEMSET) == fill_addr,
+           "SysclibForKernel memset dispatch returns its destination");
+    int filled = 1;
+    for (uint32_t i = 0; i < 32u; i++) {
+        if (MEM_R8(fill_addr + i) != 0xc3u) filled = 0;
+    }
+    expect(filled,
+           "SysclibForKernel memset writes the complete validated guest span");
+}
+
+static void test_refer_thread_status(void) {
+    enum {
+        THREAD_NAME = 0x08301000u,
+        THREAD_INFO = 0x08302000u,
+        THREAD_ENTRY = 0x08001234u,
+        THREAD_PRIORITY = 37u,
+        THREAD_STACK_SIZE = 0x1800u,
+        THREAD_ATTR = 0x1000u,
+        NID_REFER_THREAD_STATUS = 0x17c1684eu,
+        TEST_ILLEGAL_ADDR = 0x80000103u,
+        TEST_UNKNOWN_THID = 0x80020198u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    title_hle_write_cstr(THREAD_NAME, "showcase-worker");
+    s_cpu->r[4] = THREAD_NAME;
+    s_cpu->r[5] = THREAD_ENTRY;
+    s_cpu->r[6] = THREAD_PRIORITY;
+    s_cpu->r[7] = THREAD_STACK_SIZE;
+    s_cpu->r[8] = THREAD_ATTR;
+    uint32_t uid = sr_syscall(s_cpu, NID_SCE_KERNEL_CREATE_THREAD);
+    expect(uid >= 0x110u, "CreateThread production dispatch returns a thread UID");
+
+    memset((void *)SR_HOST(THREAD_INFO), 0xa5, sizeof(SrThreadInfo));
+    s_cpu->r[4] = uid;
+    s_cpu->r[5] = THREAD_INFO;
+    expect(sr_syscall(s_cpu, NID_REFER_THREAD_STATUS) == 0u,
+           "ReferThreadStatus production dispatch accepts a writable SceKernelThreadInfo");
+    expect(MEM_R32(THREAD_INFO) == sizeof(SrThreadInfo) &&
+           memcmp((const void *)SR_HOST(THREAD_INFO + 4u), "showcase-worker", 15u) == 0 &&
+           MEM_R32(THREAD_INFO + 0x24u) == THREAD_ATTR &&
+           MEM_R32(THREAD_INFO + 0x28u) == 16u &&
+           MEM_R32(THREAD_INFO + 0x2cu) == THREAD_ENTRY &&
+           MEM_R32(THREAD_INFO + 0x30u) != 0u &&
+           MEM_R32(THREAD_INFO + 0x34u) == THREAD_STACK_SIZE &&
+           MEM_R32(THREAD_INFO + 0x3cu) == THREAD_PRIORITY &&
+           MEM_R32(THREAD_INFO + 0x40u) == THREAD_PRIORITY,
+           "ReferThreadStatus returns stored metadata and scheduler state");
+
+    s_cpu->r[4] = 0x7fffffffu;
+    s_cpu->r[5] = THREAD_INFO;
+    expect(sr_syscall(s_cpu, NID_REFER_THREAD_STATUS) == TEST_UNKNOWN_THID,
+           "ReferThreadStatus reports an unknown thread UID");
+    s_cpu->r[4] = uid;
+    s_cpu->r[5] = 0x0bfffff0u;
+    expect(sr_syscall(s_cpu, NID_REFER_THREAD_STATUS) == TEST_ILLEGAL_ADDR,
+           "ReferThreadStatus validates the complete output structure span");
 }
 
 /* ---------------------------------------------------------------------------
@@ -14216,6 +14292,8 @@ int main(int argc, char **argv) {
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
+    test_sysclib_memory_imports();
+    test_refer_thread_status();
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();

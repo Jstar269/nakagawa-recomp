@@ -582,6 +582,10 @@ int main(int argc, char *argv[]) {
 
     PlayerApp app;
     player_app_init(&app);
+    const char *executable_directory = SDL_GetBasePath();
+    if (executable_directory) {
+        player_app_discover_showcase(&app, executable_directory);
+    }
 
     const char *screenshot_path = NULL;
     const char *test_view = NULL;

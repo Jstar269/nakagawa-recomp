@@ -201,6 +201,28 @@ HANDLER_METADATA = {
             "src/rt/hle.c:h_IoRemove",
         ],
     },
+    "h_Memset": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_sysclib_memory_imports",
+            "src/rt/hle.c:h_Memset",
+            "public C library contract (memset)",
+        ],
+        "description": "Fills a fully validated guest span and returns the guest destination.",
+    },
+    "h_Strlen": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_sysclib_memory_imports",
+            "src/rt/hle.c:h_Strlen",
+            "public C library contract (strlen)",
+        ],
+        "description": "Returns the byte length through a guest NUL terminator within readable memory.",
+    },
+    "h_ReferThreadStatus": {
+        "status": "partial",
+        "limitation": "run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#309)",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.

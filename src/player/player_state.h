@@ -18,6 +18,7 @@
 #define MAX_TITLE_LEN NK_MAX_TITLE_LEN
 #define MAX_PATH_LEN NK_MAX_PATH
 #define MAX_DISC_ID_LEN NK_MAX_DISC_ID_LEN
+#define MAX_SHOWCASE_GAMES 8
 
 typedef enum {
     VIEW_LIBRARY = 0,
@@ -161,6 +162,11 @@ typedef struct {
        launcher's normal current-directory default. Keeping it on the app makes
        demo and test launches use the same root as PLAY NOW. */
     char runtime_root[MAX_PATH_LEN];
+    /* Read-only package root beside the player executable. Bundled showcase
+       records are transient and never enter the user's persisted library. */
+    char showcase_root[MAX_PATH_LEN];
+    GameRecord showcase_games[MAX_SHOWCASE_GAMES];
+    int showcase_count;
     bool is_game_running;
     uint64_t launch_time_ms;
 
@@ -199,6 +205,8 @@ void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
+bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory);
+bool player_game_is_showcase(const GameRecord *game);
 void player_app_set_runtime_root(PlayerApp *app, const char *root);
 NkRuntimePackageStatus player_app_validate_runtime_package(
     const PlayerApp *app,
