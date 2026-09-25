@@ -1261,14 +1261,20 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     }
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
 
-    /* Status Pills: a successful staging transaction is distinct from runtime
-     * preparation. The card must expose that useful intermediate state without
-     * claiming that a recompiled child is already available. */
+    /* Staged assets still need a runtime unless the same readiness predicate
+       used by PLAY NOW can resolve one. Keep that boundary visible while the
+       primary action below remains BUILD PACKAGE when the package is missing. */
+    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+        app, game, NULL, NULL, 0);
+    bool package_ready = player_app_game_has_runtime(app, game);
+    bool runtime_required = game->assets_staged && !package_ready &&
+                            package_status == NK_RUNTIME_PACKAGE_MISSING;
     const char *card_status = game->is_experimental ? "EXPERIMENTAL"
-        : ((game->assets_staged && !game->is_prepared)
-            ? "ASSETS STAGED" : status_label(game->status));
+        : (runtime_required ? "RUNTIME REQUIRED"
+            : ((game->assets_staged && !game->is_prepared)
+                ? "ASSETS STAGED" : status_label(game->status)));
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
-               game->is_experimental ? COLOR_AMBER : COLOR_EMERALD);
+               (game->is_experimental || runtime_required) ? COLOR_AMBER : COLOR_EMERALD);
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
@@ -1416,9 +1422,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     float btn_y = hero_y + hero_h - 62.0f;
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-        app, game, NULL, NULL, 0);
-    bool package_ready = player_app_game_has_runtime(app, game);
     if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);
@@ -2832,6 +2835,10 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float btn_y = card_y + card_h - 58.0f;
     if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
         player_app_set_view(app, app->last_error.return_view);
+        if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+            strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
+            app->request_file_picker = true;
+        }
     }
 }
 
