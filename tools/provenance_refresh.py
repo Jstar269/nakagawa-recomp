@@ -157,6 +157,18 @@ def generate_controls(
         raise verifier.VerifyError(
             "REFRESH_PATH_NOT_PUBLIC", "changed paths must all be present in the trusted public scope",
         )
+    for path in changed:
+        record_finding = verifier._exact_record_finding_for_change(
+            path,
+            base_blobs=controls.base_blobs,
+            candidate_blobs=controls.candidate_blobs,
+            exact_records=controls.exact_records,
+        )
+        if record_finding is not None:
+            raise verifier.VerifyError(
+                record_finding,
+                f"changed executable/security-sensitive path lacks qualifying exact authority: {path}",
+            )
 
     reconciled = verifier._reconcile_refresh_audit(
         generated=controls.generated_ledger,

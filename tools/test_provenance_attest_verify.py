@@ -196,6 +196,7 @@ class GateCase(unittest.TestCase):
         "src/rt/core.c": b"int core(void) { return 1; }\n",
         "src/rt/widget.c": b"int widget(void) { return 2; }\n",
         "tools/legacy.py": b"print('legacy')\n",
+        "tools/test_recordless.py": b"def test_recordless():\n    return 0\n",
         "README.md": b"# fixture\n",
         # No trusted record of any kind names this one, so it is classified by
         # path rule alone -- the "deterministic" backing case.
@@ -342,6 +343,9 @@ class GateCase(unittest.TestCase):
                 "tools/legacy.py": ("project_authored_attested", {
                     "source": "public provenance census",
                     "authorship": "independent project implementation",
+                }),
+                "tools/test_recordless.py": ("synthetic_fixture", {
+                    "source": "path-reviewed fixture/test census",
                 }),
                 "README.md": ("reviewed_documentation", {"source": "public documentation review"}),
                 "docs/notes.md": ("reviewed_documentation", {"source": "public documentation review"}),
@@ -522,7 +526,7 @@ class UnbackedAttestationTests(GateCase):
         self.assertFatal(self.run_verify(head), "CLAIM_UNBACKED")
 
     def test_relabelling_implementation_as_configuration_is_refused(self) -> None:
-        """Deterministic classes need no record; the path must actually be one."""
+        """A changed executable cannot borrow a deterministic claim."""
         raw = b"export const x = 1;\n"
         head = self._add_public_file("src/rt/relabelled.ts", raw, {
             "path": "src/rt/relabelled.ts",
@@ -611,6 +615,7 @@ class AttestationInheritanceTests(GateCase):
 
     LEGACY = "tools/legacy.py"          # claim disagrees with authority (blanket backing)
     ATTESTED = "src/rt/widget.c"        # claim agrees with authority (exact record)
+    RECORDLESS_TEST = "tools/test_recordless.py"
 
     def _edit(self, path: str, raw: bytes, *, update_hash: bool = True,
               entry_mutator=None, branch: str = "attack") -> str:
@@ -644,6 +649,18 @@ class AttestationInheritanceTests(GateCase):
         self.assertEqual(sorted(debt), ["README.md", self.LEGACY])
         self.assertEqual(debt[self.LEGACY]["backing"], verifier.BACKING_BLANKET)
         self.assertEqual(verdict["changed_unattested_paths"], [])
+
+    def test_unchanged_recordless_test_helper_keeps_deterministic_status(self) -> None:
+        verdict = self.run_verify(self.base)
+        self.assertPasses(verdict)
+        self.assertNotIn(self.RECORDLESS_TEST, verdict["changed_unattested_paths"])
+
+    def test_changed_recordless_test_helper_requires_an_exact_record(self) -> None:
+        changed = b"def test_recordless():\n    return 1\n"
+        head = self._edit(self.RECORDLESS_TEST, changed, branch="recordless-test-edit")
+        verdict = self.run_verify(head)
+        self.assertFatal(verdict, "TRUSTED_PATH_MISSING")
+        self.assertNotIn("CONTENT_MISMATCH", self.codes(verdict))
 
     # -- B ------------------------------------------------------------------
     def test_B_same_claim_changed_bytes_updated_hash_is_refused(self) -> None:
@@ -1268,7 +1285,7 @@ class ExactBlobAuthorizationTests(GateCase):
         self.assertPasses(self.run_verify(self.base))
 
     def test_a_deterministic_path_needs_no_blob_approval(self) -> None:
-        """Only implementation-class claims are content-gated."""
+        """Pure documentation stays outside the executable content gate."""
         head = self.edit_backed(b"# fixture notes, revised\n", path="docs/notes.md")
         self.assertPasses(self.run_verify(head))
 
@@ -1406,9 +1423,9 @@ class ClassificationFloorTests(GateCase):
         self.assertFatal(self.run_verify(head), "CLASSIFICATION_DOWNGRADE")
 
     def test_moving_source_under_a_test_looking_name_does_not_exempt_it(self) -> None:
-        """``tools/test_*`` is deterministic by path, so the move is a new path.
+        """``tools/test_*`` derives a fixture class, but the move is still new.
 
-        The copy needs its own path treatment; inheriting the old path's
+        The copy needs its own exact path authority; inheriting the old path's
         treatment by renaming into a fixture-shaped name must not work.
         """
         self.repo.branch("attack", self.base)
@@ -1421,9 +1438,7 @@ class ClassificationFloorTests(GateCase):
         }])
         head = self.repo.commit("smuggle source under a fixture name")
         verdict = self.run_verify(head)
-        # The path really is deterministic by rule, so it is not content-gated;
-        # what must not happen is the ORIGINAL path escaping its treatment.
-        self.assertPasses(verdict)
+        self.assertFatal(verdict, "TRUSTED_PATH_MISSING")
         self.assertEqual(
             self.run_verify(self.base)["blobs_unapproved"], [],
             "the original attested path is untouched and still governed",
@@ -1956,6 +1971,33 @@ class PolicyTamperTests(GateCase):
 class MergePathTamperTests(GateCase):
     """The gate's own merge-path wiring is part of what it verifies."""
 
+    def _authorized_workflow_entry(self, raw: bytes) -> dict:
+        authority = json.loads(json.dumps(AUTHORITY_RECORDS))
+        authority["records"] = [
+            record for record in authority["records"]
+            if record["id"] != "workflow-independent"
+        ]
+        authority["records"].append({
+            "id": "workflow-independent",
+            "paths": [TRUSTED_WORKFLOW],
+            "classification": "project-authored-independent",
+            "upstream": None,
+            "evidence_tier": "H",
+        })
+        self.write_trusted(authority)
+        return {
+            "path": TRUSTED_WORKFLOW,
+            "classification": "project_authored_attested",
+            "evidence": {
+                "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+                "record_id": "workflow-independent",
+                "evidence_tier": "H",
+                "authorship": "independent implementation record",
+                "upstream_attribution": None,
+            },
+            "sha256": _sha(raw),
+        }
+
     def _commit_workflow(self, path: str, raw: bytes) -> str:
         self.repo.branch("attack", self.base)
         self.repo.write(path, raw)
@@ -1968,7 +2010,7 @@ class MergePathTamperTests(GateCase):
             self.write_policy(list(self.FILES) + [TRUSTED_WORKFLOW, verifier.LEDGER_PATH, path])
         else:
             entries = [
-                dict(entry, sha256=_sha(raw)) if entry["path"] == path else entry
+                self._authorized_workflow_entry(raw) if entry["path"] == path else entry
                 for entry in self.current_entries(self.base)
             ]
             self.write_ledger(entries)
@@ -2021,8 +2063,7 @@ class MergePathTamperTests(GateCase):
         self.repo.write(TRUSTED_WORKFLOW, workflow)
         self.write_policy(list(self.FILES) + [TRUSTED_WORKFLOW])
         self.write_ledger(self.current_entries(older) + [
-            self.entry(TRUSTED_WORKFLOW, workflow, classification="reviewed_configuration",
-                       evidence={"source": "configuration review"}),
+            self._authorized_workflow_entry(workflow),
         ])
         head = self.repo.commit("introduce the gate workflow")
         verdict = self.run_verify(head, base=older)
@@ -2199,6 +2240,9 @@ class EphemeralGenerationTests(unittest.TestCase):
             }),
             "tools/legacy.py": ("project_authored_attested", {
                 "source": "public provenance census",
+            }),
+            "tools/test_recordless.py": ("synthetic_fixture", {
+                "source": "path-reviewed fixture/test census",
             }),
         }
         classification, evidence = defaults.get(
@@ -2419,6 +2463,75 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         )
         self.assertEqual(fixed_point.generated_ledger_bytes, local.generated_ledger_bytes)
         self.assertEqual(fixed_point.generated_export_bytes, local.generated_export_bytes)
+
+    def _changed_recordless_test_head(self, branch: str) -> str:
+        self.repo.branch(branch, self.base)
+        self.repo.write(
+            "tools/test_recordless.py",
+            b"def test_recordless():\n    return 1\n",
+        )
+        document = json.loads(
+            (self.repo.root / verifier.LEDGER_PATH).read_text(encoding="utf-8")
+        )
+        for entry in document["entries"]:
+            if entry["path"] == "tools/test_recordless.py":
+                entry["sha256"] = _sha(b"def test_recordless():\n    return 1\n")
+        self.write_ledger(document["entries"])
+        return self.repo.commit("change recordless test helper")
+
+    def test_ephemeral_attestation_preserves_unchanged_recordless_test_helpers(self) -> None:
+        verdict = self.run_ephemeral(self.base)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+
+    def test_ephemeral_attestation_rejects_changed_recordless_test_helper(self) -> None:
+        head = self._changed_recordless_test_head("ephemeral-recordless-test-edit")
+        verdict = self.run_ephemeral(head)
+        self.assertEqual(verdict["verdict"], "fail", verdict["findings"])
+        self.assertIn("TRUSTED_PATH_MISSING", {
+            finding["code"] for finding in verdict["findings"]
+        })
+
+    def test_new_test_helper_without_exact_record_fails_closed(self) -> None:
+        self.repo.branch("new-recordless-test-helper", self.base)
+        path = "tools/test_new_recordless.py"
+        raw = b"def test_new_recordless():\n    return 0\n"
+        self.repo.write(path, raw)
+        self.write_policy(list(GateCase.FILES) + [TRUSTED_WORKFLOW, path])
+        document = json.loads(
+            (self.repo.root / verifier.LEDGER_PATH).read_text(encoding="utf-8")
+        )
+        document["entries"].append({
+            "path": path,
+            "classification": "synthetic_fixture",
+            "evidence": {"source": "path-reviewed fixture/test census"},
+            "sha256": _sha(raw),
+        })
+        self.write_ledger(document["entries"])
+        head = self.repo.commit("new recordless test helper")
+
+        verdict = self.run_ephemeral(head)
+
+        self.assertEqual(verdict["verdict"], "fail", verdict["findings"])
+        self.assertIn("TRUSTED_PATH_MISSING", {
+            finding["code"] for finding in verdict["findings"]
+        })
+
+    def test_local_refresh_rejects_changed_recordless_test_helper_before_outputs(self) -> None:
+        self.back_legacy_path()
+        head = self._changed_recordless_test_head("local-recordless-test-edit")
+        ledger_before = (self.repo.root / verifier.LEDGER_PATH).read_bytes()
+        export_before = (self.repo.root / verifier.EXPORT_PATH).read_bytes()
+        with self.assertRaises(verifier.VerifyError) as caught:
+            provenance_refresh.generate_controls(
+                repo=self.repo.root,
+                base_rev=self.base,
+                candidate_tree=verifier._rev_tree(self.repo.root, head),
+                trusted_ledger=self.trusted_ledger,
+                workdir=self.outside / "recordless-test-generation",
+            )
+        self.assertEqual(caught.exception.code, "TRUSTED_PATH_MISSING")
+        self.assertEqual(ledger_before, (self.repo.root / verifier.LEDGER_PATH).read_bytes())
+        self.assertEqual(export_before, (self.repo.root / verifier.EXPORT_PATH).read_bytes())
 
     def test_local_refresh_reports_missing_trusted_authority(self) -> None:
         with self.assertRaises(verifier.VerifyError) as ctx:
@@ -2830,7 +2943,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         verdict = self.run_ephemeral(head)
 
         codes = {finding["code"] for finding in verdict["findings"]}
-        self.assertIn("TRUSTED_PATH_UNQUALIFIED", codes)
+        self.assertIn("TRUSTED_PATH_MISSING", codes)
 
     def test_candidate_policy_cannot_hide_a_new_build_file(self) -> None:
         self.repo.branch("hidden-build-file", self.base)
@@ -2846,7 +2959,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
 
 
 class RealHistoryParityTests(unittest.TestCase):
-    """Ephemeral mode must preserve the committed verifier's PR verdict."""
+    """Historical parity may gain only the explicit changed-test boundary."""
 
     BASE = "24e25d9e761a700a97e21a090ac7bb19ac82bdda"
     CANDIDATE = "70a4aec365bd5ffceda504c7c003e4b38db432c2"
@@ -2923,7 +3036,7 @@ class RealHistoryParityTests(unittest.TestCase):
             "reviewed_blobs": sorted(approvals, key=lambda approval: approval["path"]),
         }
 
-    def test_real_history_ordinary_pr_matches_committed_verifier_fatal_set(self) -> None:
+    def test_real_history_modes_agree_on_recordless_changed_test_fatal(self) -> None:
         self._require_history()
         base_ledger_raw = self._git_blob(self.BASE, verifier.LEDGER_PATH)
         candidate_ledger = json.loads(
@@ -2962,7 +3075,10 @@ class RealHistoryParityTests(unittest.TestCase):
             (finding["code"], finding["path"])
             for finding in ephemeral["findings"] if finding["fatal"]
         }
-        self.assertEqual(committed_fatal, set(), committed["findings"])
+        expected = {
+            ("TRUSTED_PATH_MISSING", "tools/test_discovery_contract.py"),
+        }
+        self.assertEqual(committed_fatal, expected, committed["findings"])
         self.assertEqual(ephemeral_fatal, committed_fatal, ephemeral["findings"])
 
 
