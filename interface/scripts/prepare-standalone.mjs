@@ -38,4 +38,3 @@ if (notices.status !== 0) {
   console.error(`DASHBOARD_NOTICES_FAILED: ${generator} exited with status ${notices.status}`);
   process.exit(notices.status ?? 1);
 }
-
