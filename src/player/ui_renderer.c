@@ -1418,7 +1418,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     bool primary_focused = (app->focus_index == focus);
     NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
         app, game, NULL, NULL, 0);
-    bool package_ready = package_status == NK_RUNTIME_PACKAGE_OK;
+    bool package_ready = player_app_game_has_runtime(app, game);
     if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);

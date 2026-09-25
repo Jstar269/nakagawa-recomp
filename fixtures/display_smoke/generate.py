@@ -538,10 +538,10 @@ def run(build_dir: Path, gui: bool = False) -> int:
     manifest = _read_manifest(fixture)
     frames = int(manifest["frames"])
     expected = final_frame_first_pixel(frames)
-    executable = build_dir / f"{ARTIFACT_STEM}.exe"
+    executable = (build_dir / f"{ARTIFACT_STEM}.exe").resolve()
     if not executable.exists():
-        executable = build_dir / ARTIFACT_STEM
-    image_path = build_dir / f"{ARTIFACT_STEM}_image.bin"
+        executable = (build_dir / ARTIFACT_STEM).resolve()
+    image_path = (build_dir / f"{ARTIFACT_STEM}_image.bin").resolve()
     command = [
         str(executable),
         "--image",

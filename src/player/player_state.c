@@ -108,6 +108,20 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
                                               reason_size);
 }
 
+bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game) {
+    if (!game) return false;
+    NkRuntimePackageStatus status = player_app_validate_runtime_package(
+        app, game, NULL, NULL, 0);
+    if (status == NK_RUNTIME_PACKAGE_OK) {
+        return true;
+    }
+    if (status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+        nk_launch_runtime_available(player_package_root(app, game), game->title_id)) {
+        return true;
+    }
+    return false;
+}
+
 void player_app_sync_library(PlayerApp *app) {
     if (!app) return;
     app->game_count = 0;
@@ -236,10 +250,11 @@ int player_app_focus_count(const PlayerApp *app) {
                 NkRuntimePackageStatus pkg_status = game ?
                     player_app_validate_runtime_package(app, game, NULL, NULL, 0) :
                     NK_RUNTIME_PACKAGE_MISSING;
-                bool game_has_package = game && pkg_status == NK_RUNTIME_PACKAGE_OK;
-                bool can_build = game && (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
-                                          pkg_status == NK_RUNTIME_PACKAGE_STALE);
-                if (game && (game_has_package || app->is_game_running || can_build)) count++;
+                bool game_ready = game && player_app_game_has_runtime(app, game);
+                bool can_build = game && !game_ready &&
+                                 (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
+                                  pkg_status == NK_RUNTIME_PACKAGE_STALE);
+                if (game && (game_ready || app->is_game_running || can_build)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
@@ -769,8 +784,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
     snprintf(disp.prepared_root, sizeof(disp.prepared_root), "fixtures/display_smoke");
     snprintf(disp.title_id, sizeof(disp.title_id), "display-smoke-v1");
     disp.iso_size_bytes = 0ULL;
-    disp.is_prepared = player_app_validate_runtime_package(app, &disp, NULL, NULL, 0) ==
-                       NK_RUNTIME_PACKAGE_OK;
+    disp.is_prepared = player_app_game_has_runtime(app, &disp);
     disp.status = disp.is_prepared ? NK_STATUS_PREPARED : NK_STATUS_IDENTIFIED;
     snprintf(disp.last_played, sizeof(disp.last_played), "Never");
 
@@ -787,9 +801,9 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     app->launch_session.config.gui_mode = true;
 
     char package_error[2048] = "";
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+    player_app_validate_runtime_package(
         app, game, NULL, package_error, sizeof(package_error));
-    if (package_status != NK_RUNTIME_PACKAGE_OK) {
+    if (!player_app_game_has_runtime(app, game)) {
         player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
                              package_error[0] ? package_error :
                                  "Runtime package is missing or incompatible (#297).",
