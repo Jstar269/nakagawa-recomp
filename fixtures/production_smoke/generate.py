@@ -39,9 +39,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -813,13 +815,25 @@ def assert_gap_runtime_evidence(combined: str, returncode: int) -> None:
         raise RuntimeError(f"AOT-gap production runtime exited {returncode}")
 
 
-def run(build_dir: Path, mode: str = "aot") -> int:
+def run(
+    build_dir: Path,
+    mode: str = "aot",
+    staged_executable: Path | None = None,
+) -> int:
     plan = MODES.get(mode)
     if plan is None:
         raise RuntimeError(
             f"unknown execution mode {mode!r}; known modes: " + ", ".join(sorted(MODES))
         )
-    executable = (build_dir / f"{_artifact_stem(mode)}.exe").resolve()
+    # Always spawn by RESOLVED absolute path: a cwd-relative program path is
+    # resolved by CreateProcess against a cwd that is not the caller's frame
+    # (#294). A staged copy replaces only the executable; the image stays the
+    # build tree's resolved artifact.
+    executable = (
+        Path(staged_executable).resolve()
+        if staged_executable is not None
+        else (build_dir / f"{_artifact_stem(mode)}.exe").resolve()
+    )
     image_path = (build_dir / f"{_artifact_stem(mode)}_image.bin").resolve()
     command = [
         str(executable),
@@ -880,6 +894,47 @@ def run(build_dir: Path, mode: str = "aot") -> int:
     return 0
 
 
+STAGING_ERROR = "PRODUCTION_SMOKE_STAGING_FAILED"
+
+
+def stage_executable(executable: Path, stage_dir: Path) -> Path:
+    """Copy the built runtime and its side-by-side DLLs into ``stage_dir``.
+
+    A staged run executes the production runtime from OUTSIDE its build
+    directory (#294's staged-run gate): anything the loader resolves relative
+    to the executable's own directory must travel with it. The stage directory
+    is created first so an impossible path is reported as the named
+    PRODUCTION_SMOKE_STAGING_FAILED error, never as a confusing spawn failure
+    later.
+    """
+    try:
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        staged = stage_dir / executable.name
+        shutil.copy2(executable, staged)
+        for dll in sorted(executable.parent.glob("*.dll")):
+            shutil.copy2(dll, stage_dir / dll.name)
+    except OSError as error:
+        raise RuntimeError(
+            f"{STAGING_ERROR}: cannot stage {executable} into {stage_dir}: {error}"
+        ) from error
+    return staged
+
+
+def run_staged(build_dir: Path, mode: str = "aot", stage_dir: Path | None = None) -> int:
+    """Run the production smoke with the executable staged outside the build tree."""
+    executable = (build_dir / f"{_artifact_stem(mode)}.exe").resolve()
+    if not executable.is_file():
+        raise RuntimeError(f"{STAGING_ERROR}: built runtime {executable} is missing")
+    if stage_dir is None:
+        with tempfile.TemporaryDirectory(prefix="production_smoke_stage_") as tmp:
+            return run(
+                build_dir, mode, staged_executable=stage_executable(executable, Path(tmp))
+            )
+    return run(
+        build_dir, mode, staged_executable=stage_executable(executable, stage_dir)
+    )
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -889,6 +944,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--build-dir", type=Path, required=True)
         command_parser.add_argument("--mode", default="aot", choices=sorted(MODES))
+    staged_parser = subparsers.add_parser("run-staged")
+    staged_parser.add_argument("--build-dir", type=Path, required=True)
+    staged_parser.add_argument("--mode", default="aot", choices=sorted(MODES))
+    staged_parser.add_argument("--stage-dir", type=Path, default=None)
     generate_parser.add_argument("--mode", default="aot", choices=sorted(MODES))
     return parser.parse_args(argv)
 
@@ -902,6 +961,8 @@ def main(argv: list[str] | None = None) -> int:
             return verify(args.build_dir, mode=args.mode)
         if args.command == "run":
             return run(args.build_dir, mode=args.mode)
+        if args.command == "run-staged":
+            return run_staged(args.build_dir, mode=args.mode, stage_dir=args.stage_dir)
         raise AssertionError(f"unhandled command {args.command}")
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         sys.stderr.write(f"PRODUCTION_SMOKE_{args.command.upper()} status=FAIL: {error}\n")

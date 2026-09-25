@@ -447,6 +447,72 @@ class TestProductionSmoke(unittest.TestCase):
         )
 
 
+class TestStagedRunFailClosed(unittest.TestCase):
+    """A broken staging path must fail closed with a named error (#294)."""
+
+    STAGING_ERROR = "PRODUCTION_SMOKE_STAGING_FAILED"
+
+    def _dummy_build_dir(self, root: Path) -> Path:
+        build_dir = root / "build"
+        build_dir.mkdir()
+        (build_dir / "production_smoke.exe").write_bytes(b"MZ-stub-not-executed")
+        return build_dir
+
+    def test_staging_helper_fails_closed_on_impossible_stage_dir(self):
+        with tempfile.TemporaryDirectory(prefix="nk_stage_helper_") as tmp_dir:
+            root = Path(tmp_dir)
+            build_dir = self._dummy_build_dir(root)
+            blocker = root / "not_a_directory"
+            blocker.write_text("a file, not a directory", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, self.STAGING_ERROR):
+                generator.stage_executable(
+                    build_dir / "production_smoke.exe", blocker / "stage"
+                )
+
+    def test_run_staged_cli_fails_closed_on_impossible_stage_dir(self):
+        with tempfile.TemporaryDirectory(prefix="nk_stage_cli_") as tmp_dir:
+            root = Path(tmp_dir)
+            build_dir = self._dummy_build_dir(root)
+            blocker = root / "not_a_directory"
+            blocker.write_text("a file, not a directory", encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(GENERATOR_PATH),
+                    "run-staged",
+                    "--build-dir", str(build_dir),
+                    "--stage-dir", str(blocker / "stage"),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(self.STAGING_ERROR, result.stdout + result.stderr)
+
+    def test_run_staged_spawns_the_staged_copy_by_absolute_path(self):
+        with tempfile.TemporaryDirectory(prefix="nk_stage_spawn_") as tmp_dir:
+            root = Path(tmp_dir)
+            build_dir = self._dummy_build_dir(root)
+            stage_dir = root / "stage"
+            captured = {}
+
+            def fake_run(command, **kwargs):
+                captured["command"] = list(command)
+                return subprocess.CompletedProcess(list(command), 1, stdout="", stderr="")
+
+            with mock.patch.object(generator.subprocess, "run", side_effect=fake_run):
+                with self.assertRaises(RuntimeError):
+                    generator.run_staged(build_dir, mode="aot", stage_dir=stage_dir)
+            staged = stage_dir / "production_smoke.exe"
+            self.assertTrue(staged.is_file())
+            self.assertTrue(os.path.isabs(captured["command"][0]))
+            self.assertEqual(Path(captured["command"][0]).resolve(), staged.resolve())
+            self.assertNotEqual(
+                Path(captured["command"][0]).resolve(),
+                (build_dir / "production_smoke.exe").resolve(),
+            )
+
+
 class TestProductionSmokePackage(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-package-smoke-")
