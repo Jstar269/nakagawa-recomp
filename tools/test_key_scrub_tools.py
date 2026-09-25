@@ -25,6 +25,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gen_key_scrub_spec as gen  # noqa: E402
+from nk_core.git_isolation import run_git  # noqa: E402
 import verify_key_scrub as vks  # noqa: E402
 
 # A synthetic 16-byte value with a sub-16 byte (0x01) and a >=16 byte, to exercise
@@ -34,8 +35,8 @@ SAMPLE = bytes([0x01, 0x02, 0xab, 0xCD, 0x10, 0x0f, 0x7e, 0x80,
 
 
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=False, timeout=60,
+    return run_git(
+        args, cwd=repo, capture_output=True, text=True, check=False, timeout=60,
     )
 
 
@@ -43,15 +44,15 @@ def _init_repo(*, bare: bool = False, empty: bool = False, initial_branch: str =
     """Create a hermetic temp repository with a deterministic local identity."""
 
     def seeded_repo(path: Path) -> None:
-        init = subprocess.run(
-            ["git", "init", "--initial-branch", initial_branch, str(path)],
-            capture_output=True, text=True, check=False, timeout=60,
+        init = run_git(
+            ["init", "--initial-branch", initial_branch, str(path)],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
         )
         assert init.returncode == 0, init.stderr
-        _run_git(path, "config", "user.name", "Key Scrub Tests")
-        _run_git(path, "config", "user.email", "key-scrub-tests@example.invalid")
-        _run_git(path, "config", "commit.gpgsign", "false")
-        _run_git(path, "config", "tag.gpgsign", "false")
         if not empty:
             (path / "seed.txt").write_text("seed\n", encoding="utf-8")
             assert _run_git(path, "add", "-A").returncode == 0
@@ -66,9 +67,13 @@ def _init_repo(*, bare: bool = False, empty: bool = False, initial_branch: str =
     seed = Path(tempfile.mkdtemp(prefix="key-scrub-seed-"))
     try:
         seeded_repo(seed)
-        clone = subprocess.run(
-            ["git", "clone", "--bare", str(seed), str(root)],
-            capture_output=True, text=True, check=False, timeout=60,
+        clone = run_git(
+            ["clone", "--bare", str(seed), str(root)],
+            cwd=seed,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
         )
         assert clone.returncode == 0, clone.stderr
     finally:
@@ -135,8 +140,7 @@ class TestSearchVerdicts(unittest.TestCase):
     def tearDown(self):
         # Keep the throwaway repo small; ignore errors if Windows still holds
         # a file handle briefly while the rmtree below runs.
-        subprocess.run(["git", "-C", str(self.repo), "gc", "--prune=now"],
-                       capture_output=True, timeout=60, check=False)
+        _run_git(self.repo, "gc", "--prune=now")
         shutil.rmtree(self.repo, ignore_errors=True)
 
     def test_not_found_in_clean_repo(self):

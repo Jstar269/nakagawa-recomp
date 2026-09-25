@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
@@ -22,6 +23,7 @@ import nk_doctor  # noqa: E402
 import nk_doctor_checks  # noqa: E402
 import nk_doctor_core  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
+from nk_core.git_isolation import isolated_git_env, run_git  # noqa: E402
 
 
 def retail_manifest() -> dict[str, object]:
@@ -502,15 +504,21 @@ class AgentIdentityChecks(unittest.TestCase):
 
     def _repo(self, tmp: str, *config: tuple[str, ...]) -> Path:
         root = Path(tmp) / "repo"
-        subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+        root.mkdir()
+        run_git(["init", "-q"], cwd=root, check=True, capture_output=True)
         for args in config:
-            subprocess.run(["git", "-C", str(root), "config", *args],
-                           check=True, capture_output=True)
+            run_git(["config", *args], cwd=root, check=True, capture_output=True)
         return root
 
     def _run(self, root: Path):
-        report = nk_doctor.Report(root, "identity")
-        nk_doctor_checks.check_agent_identity(report)
+        original_config = {
+            key: value for key, value in os.environ.items() if key.startswith("GIT_CONFIG")
+        }
+        env = isolated_git_env(root=root)
+        env.update(original_config)
+        with mock.patch.dict(os.environ, env, clear=True):
+            report = nk_doctor.Report(root, "identity")
+            nk_doctor_checks.check_agent_identity(report)
         results = [r for r in report.results if r.code == "GIT_IDENTITY"]
         self.assertEqual(len(results), 1, "the check must report exactly once")
         return results[0]
@@ -589,8 +597,7 @@ class AgentIdentityChecks(unittest.TestCase):
             self.assertIsNotNone(commands, "the warning must carry a remediation")
             for command in commands.group(1).split(" && "):
                 self.assertTrue(command.startswith("git config "), command)
-                proc = subprocess.run(["git", "-C", str(root), *command.split()[1:]],
-                                      capture_output=True, text=True)
+                proc = run_git(command.split()[1:], cwd=root, capture_output=True, text=True)
                 self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")
             self.assertEqual(self._run(root).status, "PASS")
 
@@ -604,8 +611,8 @@ class AgentIdentityChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._repo(tmp)
             for value in ("first@x.invalid", "second@x.invalid"):
-                subprocess.run(["git", "-C", str(root), "config", "--add",
-                                "user.email", value], check=True, capture_output=True)
+                run_git(["config", "--add", "user.email", value],
+                        cwd=root, check=True, capture_output=True)
             result = self._run(root)
             self.assertEqual(result.status, "WARN")
             self.assertIn("(2 values)", result.summary)
@@ -613,8 +620,7 @@ class AgentIdentityChecks(unittest.TestCase):
             self.assertIsNotNone(commands)
             self.assertIn("--unset-all", commands.group(1))
             for command in commands.group(1).split(" && "):
-                proc = subprocess.run(["git", "-C", str(root), *command.split()[1:]],
-                                      capture_output=True, text=True)
+                proc = run_git(command.split()[1:], cwd=root, capture_output=True, text=True)
                 self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")
             self.assertEqual(self._run(root).status, "PASS")
 
@@ -632,15 +638,18 @@ class AgentIdentityChecks(unittest.TestCase):
             include.write_text(
                 "[user]\n\tname = IncludedBot\n\temail = included@x.invalid\n",
                 encoding="utf-8", newline="\n")
-            subprocess.run(["git", "-C", str(root), "config", "include.path",
-                            "identity.inc"], check=True, capture_output=True)
+            run_git(["config", "include.path", "identity.inc"],
+                    cwd=root, check=True, capture_output=True)
 
             # Confirm the premise on this Git before asserting on the check.
-            effective = subprocess.run(
-                ["git", "-C", str(root), "config", "--get", "user.email"],
-                capture_output=True, text=True, check=False,
-                env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
-                     "GIT_CONFIG_SYSTEM": os.devnull})
+            effective = run_git(
+                ["config", "--get", "user.email"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=isolated_git_env(root=root),
+            )
             self.assertEqual(effective.stdout.strip(), "included@x.invalid",
                              "precondition: Git resolves the included identity")
 

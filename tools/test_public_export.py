@@ -3,7 +3,6 @@
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,7 +11,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from tools import build_public_export, history_audit, publication_policy, public_export
+from tools.nk_core.git_isolation import isolated_git_env, run_git
 from tools.build_public_export import (
     ROOT,
     GateResult,
@@ -33,27 +35,8 @@ from tools.build_public_export import (
 _PUBLIC_SAFE_TREE = is_public_safe_export_tree()
 
 
-def _git(argv: list[str], cwd: Path, env: dict | None = None) -> None:
-    subprocess.run(["git", *argv], cwd=cwd, check=True, capture_output=True, env=env)
-
-
-def _hermetic_git_env(repo: Path) -> dict:
-    """Git environment with host-global/system config disabled.
-
-    Hermetic fixtures must decide their own blob bytes: a host ``filter.lfs``
-    clean driver (common in global/system Git config) would rewrite ``git add``
-    content for matching patterns, so the staged blob -- the exact bytes the
-    export materializes -- would depend on the machine running the test. Point
-    both config env vars at one empty file. Call after ``git init`` so the
-    empty file lives under ``.git/`` and is never enumerated as a fixture path.
-    """
-    empty = repo / ".git" / "_empty_git_config"
-    if not empty.exists():
-        empty.write_text("", encoding="utf-8", newline="\n")
-    env = os.environ.copy()
-    env["GIT_CONFIG_GLOBAL"] = str(empty)
-    env["GIT_CONFIG_SYSTEM"] = str(empty)
-    return env
+def _git(argv: list[str], cwd: Path) -> None:
+    run_git(argv, cwd=cwd, check=True, capture_output=True)
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:
@@ -83,11 +66,7 @@ def _init_synthetic_repo(root: Path, sensitive: bool) -> None:
     multi-commit history that must pass.  The repo is deliberately tiny and
     synthetic: no private bytes, no network, no shared refs.
     """
-    for argv in (
-        ("init", "-q"),
-        ("config", "user.email", "t@example.invalid"),
-        ("config", "user.name", "history-audit-test"),
-    ):
+    for argv in (("init", "-q"),):
         _git(argv, root)
     (root / "safe.txt").write_text("safe\n", encoding="utf-8")
     _git(["add", "safe.txt"], root)
@@ -106,7 +85,7 @@ def _init_synthetic_repo(root: Path, sensitive: bool) -> None:
 
 class TestPublicExport(unittest.TestCase):
     def test_in_place_metadata_is_idempotent_across_its_own_previous_bytes(self):
-        policy = publication_policy.load_policy(Path("assets/public_source_profile.json"))
+        policy = publication_policy.load_policy(ROOT / "assets/public_source_profile.json")
         common = [("README.md", b"source bytes\n")]
         first = public_export.build_document(
             policy,
@@ -256,7 +235,7 @@ class TestPublicExport(unittest.TestCase):
     def test_profile_excludes_unreviewed_components_without_materializing_them(self):
         from tools import public_candidate
 
-        profile = public_candidate.load_profile(Path("assets/public_source_profile.json"))
+        profile = public_candidate.load_profile(ROOT / "assets/public_source_profile.json")
         for rel in (
             "font/jpn0.pgf",
             "src/rt/pgf.c",
@@ -313,7 +292,7 @@ class TestCandidateImmutability293(unittest.TestCase):
                 target,
                 public_safe_profile=True,
                 audit_candidate=lambda root: run_candidate_audit(
-                    root, trusted_ledger=Path("assets/public_provenance_ledger.json")
+                    root, trusted_ledger=ROOT / "assets/public_provenance_ledger.json"
                 ),
             )
             self.assertTrue(ok)
@@ -369,7 +348,10 @@ class TestCandidateImmutability293(unittest.TestCase):
                 "--public-scope",
                 "--provenance-ledger", "assets/public_provenance_ledger.json",
             ],
-            cwd=ROOT, capture_output=True, text=True,
+            cwd=ROOT,
+            env=isolated_git_env(root=self.tampered),
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("PROVENANCE_CONTENT_MISMATCH", res.stdout + res.stderr)
@@ -381,20 +363,20 @@ class TestCandidateImmutability293(unittest.TestCase):
         # are not part of the recorded identity.
         self.assertEqual(self.manifest_a, self.manifest_b)
         self.assertEqual(_tree_bytes(self.export_a), _tree_bytes(self.export_b))
-        commit_a = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.export_a,
+        commit_a = run_git(
+            ["rev-parse", "HEAD"], cwd=self.export_a,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
-        commit_b = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.export_b,
+        commit_b = run_git(
+            ["rev-parse", "HEAD"], cwd=self.export_b,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
-        tree_a = subprocess.run(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=self.export_a,
+        tree_a = run_git(
+            ["rev-parse", "HEAD^{tree}"], cwd=self.export_a,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
-        tree_b = subprocess.run(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=self.export_b,
+        tree_b = run_git(
+            ["rev-parse", "HEAD^{tree}"], cwd=self.export_b,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
         # Tracked identity is the tree plus the recorded digest; commit ids are
@@ -419,7 +401,10 @@ class TestCandidateImmutability293(unittest.TestCase):
                 "--public-scope",
                 "--provenance-self-consistency",
             ],
-            cwd=self.export_a, capture_output=True, text=True,
+            cwd=self.export_a,
+            env=isolated_git_env(root=self.export_a),
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertEqual(before, _tree_bytes(self.export_a), "the audit must not mutate the candidate")
@@ -436,7 +421,13 @@ class TestCandidateImmutability293(unittest.TestCase):
             "--candidate-tree",
             "--public-scope",
         ]
-        no_authority = subprocess.run(base_cmd, cwd=ROOT, capture_output=True, text=True)
+        no_authority = subprocess.run(
+            base_cmd,
+            cwd=ROOT,
+            env=isolated_git_env(root=self.export_a),
+            capture_output=True,
+            text=True,
+        )
         self.assertNotEqual(no_authority.returncode, 0)
         no_authority_out = no_authority.stdout + no_authority.stderr
         self.assertIn("PROVENANCE_UNVERIFIED", no_authority_out)
@@ -451,7 +442,10 @@ class TestCandidateImmutability293(unittest.TestCase):
                 "--public-scope",
                 "--provenance-ledger", "assets/public_provenance_ledger.json",
             ],
-            cwd=ROOT, capture_output=True, text=True,
+            cwd=ROOT,
+            env=isolated_git_env(root=self.tampered),
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(invalid.returncode, 0)
         invalid_out = invalid.stdout + invalid.stderr
@@ -635,7 +629,6 @@ class TestCandidateImmutability293(unittest.TestCase):
             synth = Path(tmpdir) / "synth source"
             synth.mkdir()
             _git(["init", "-q"], synth)
-            env = _hermetic_git_env(synth)
             assets = synth / "assets"
             assets.mkdir()
             shutil.copy2(
@@ -646,7 +639,7 @@ class TestCandidateImmutability293(unittest.TestCase):
             worktree_b = b"unstaged worktree payload B"
             victim = synth / ".pre-commit-config.yaml"
             victim.write_bytes(staged_a)
-            _git(["add", ".pre-commit-config.yaml"], synth, env=env)
+            _git(["add", ".pre-commit-config.yaml"], synth)
             victim.write_bytes(worktree_b)
 
             target = Path(tmpdir) / "export_ab"
@@ -656,9 +649,9 @@ class TestCandidateImmutability293(unittest.TestCase):
 
             self.assertEqual((target / ".pre-commit-config.yaml").read_bytes(), staged_a)
             self.assertEqual(victim.read_bytes(), worktree_b)
-            index_a = subprocess.run(
-                ["git", "show", ":.pre-commit-config.yaml"],
-                cwd=synth, capture_output=True, check=True, env=env,
+            index_a = run_git(
+                ["show", ":.pre-commit-config.yaml"],
+                cwd=synth, capture_output=True, check=True,
             ).stdout
             self.assertEqual(index_a, staged_a)
 
