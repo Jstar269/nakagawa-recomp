@@ -259,6 +259,11 @@ HARNESS_SRC = r"""
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #define ARENA_SIZE 0x30000u
 #define GUARD 0xAAu
 
@@ -299,6 +304,37 @@ int main(int argc, char **argv) {
     uint32_t i, k;
     if (argc < 3) {
         printf("RESULT fail\nERR usage\nARENA_CLEAN 1\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "--fuzz-stream") == 0) {
+        base = strtoul(argv[2], NULL, 0);
+#ifdef _WIN32
+        _setmode(_fileno(stdin), _O_BINARY);
+#endif
+        while (1) {
+            uint32_t len = 0;
+            if (fread(&len, 1, 4, stdin) != 4) {
+                break;
+            }
+            blob = (unsigned char *)malloc(len > 0 ? (size_t)len : 1);
+            if (blob == NULL) {
+                printf("RESULT fail\nERR harness out of memory\n");
+                return 1;
+            }
+            if (len > 0 && fread(blob, 1, (size_t)len, stdin) != (size_t)len) {
+                free(blob);
+                printf("RESULT fail\nERR harness short read\n");
+                return 1;
+            }
+            memset(g_arena, GUARD, sizeof g_arena);
+            memset(&img, 0, sizeof img);
+            memset(err, 0, sizeof err);
+            rc = sr_prx_load_from_memory(blob, (size_t)len, (uint32_t)base, &img, err, sizeof err);
+            (void)rc;
+            sr_prx_image_free(&img);
+            free(blob);
+        }
+        printf("RESULT ok\n");
         return 0;
     }
     path = argv[1];
@@ -466,17 +502,23 @@ class PrxTestBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if PrxTestBase.EXE is not None and os.path.exists(PrxTestBase.EXE):
+            cls.TMP = PrxTestBase.TMP
+            cls.EXE = PrxTestBase.EXE
+            return
         if shutil.which("gcc") is None:
             raise unittest.SkipTest("gcc not on PATH")
         root = repo_root()
         src = os.path.join(root, "src", "rt", "prx_loader.c")
         if not os.path.exists(src):
             raise unittest.SkipTest("prx_loader.c not built yet")
-        cls.TMP = tempfile.mkdtemp(prefix="prxclean_")
+        PrxTestBase.TMP = tempfile.mkdtemp(prefix="prxclean_")
+        cls.TMP = PrxTestBase.TMP
         hc = os.path.join(cls.TMP, "harness.c")
         with open(hc, "w") as f:
             f.write(HARNESS_SRC)
-        cls.EXE = os.path.join(cls.TMP, "harness.exe")
+        PrxTestBase.EXE = os.path.join(cls.TMP, "harness.exe")
+        cls.EXE = PrxTestBase.EXE
         r = subprocess.run(
             ["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror",
              "-I", os.path.join(root, "src", "rt"),
@@ -1522,10 +1564,9 @@ class TestFuzz(PrxTestBase):
         m.add_reloc(PT_REL_A, reloc_a(52, 2) + reloc_a(56, 1))
         seed_blob = m.build()
         rng = random.Random(0xC10A4E)
-        fx = os.path.join(self.TMP, "fuzz.prx")
         n = 10000
-        crashes = 0
         t0 = time.monotonic()
+        stream = bytearray()
         for _i in range(n):
             mut = bytearray(seed_blob)
             op = rng.randrange(4)
@@ -1542,21 +1583,16 @@ class TestFuzz(PrxTestBase):
                     pos = rng.randrange(len(mut))
                     mut[pos:pos] = bytes(rng.randrange(256) for _ in range(
                         rng.randrange(0, 8)))
-            with open(fx, "wb") as f:
-                f.write(mut)
-            try:
-                r = subprocess.run([self.EXE, fx, "0x%X" % BASE],
-                                   capture_output=True, text=True,
-                                   errors="replace", timeout=20)
-            except subprocess.TimeoutExpired:
-                crashes += 1
-                continue
-            if r.returncode != 0 or "RESULT " not in (r.stdout or ""):
-                crashes += 1
+            stream += struct.pack("<I", len(mut)) + mut
+        r = subprocess.run([self.EXE, "--fuzz-stream", "0x%X" % BASE],
+                           input=bytes(stream),
+                           capture_output=True, timeout=60)
+        out_text = r.stdout.decode("ascii", errors="replace") if r.stdout else ""
+        crashes = 0 if (r.returncode == 0 and "RESULT ok" in out_text) else 1
         dt = time.monotonic() - t0
         print("\nfuzz: %d mutations in %.1fs, crashes/hangs=%d"
               % (n, dt, crashes))
-        self.assertEqual(crashes, 0, "%d fuzz crashes/hangs" % crashes)
+        self.assertEqual(crashes, 0, "%d fuzz crashes/hangs: %s" % (crashes, r.stderr))
         self.assertLess(dt, 540, "fuzz exceeded time bound")
 
 
