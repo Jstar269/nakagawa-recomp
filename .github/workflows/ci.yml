@@ -346,7 +346,7 @@ jobs:
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest
           gcc -std=c11 -O1 $INC -o build/atrac3p_bridge_selftest \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest
           SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
@@ -354,7 +354,7 @@ jobs:
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest_san
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_bridge_selftest_san \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest_san
 
