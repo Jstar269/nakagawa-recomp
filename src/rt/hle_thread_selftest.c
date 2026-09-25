@@ -411,7 +411,10 @@ unsigned long g_mpeg_getavc;
 unsigned long g_mpeg_avcdec;
 unsigned long g_mpeg_nodata;
 int sr_perf_enabled;
-uint64_t sr_perf_now_ns_impl(void) { return 0; }
+/* Non-zero, and never repeating: every `sr_perf_now_ns()` caller uses the value only as
+ * a "the counters are live" predicate before handing it to a stub, so a constant 0 would
+ * silently disable the media-telemetry call sites this harness has to observe. */
+uint64_t sr_perf_now_ns_impl(void) { static uint64_t t = 1000; t += 1000; return t; }
 void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
@@ -442,7 +445,13 @@ void sr_perf_storage_read(SrPerfStorageSource source, uint32_t bytes, uint64_t s
 void sr_perf_h264(uint64_t started_ns, int result) { (void)started_ns; (void)result; }
 void sr_perf_atrac(uint64_t started_ns, int result) { (void)started_ns; (void)result; }
 void sr_perf_audio_mix(uint64_t started_ns) { (void)started_ns; }
-void sr_perf_audio_output(uint64_t started_ns, uint32_t frames) { (void)started_ns; (void)frames; }
+static unsigned long s_perf_output_calls;
+static uint64_t s_perf_output_frames;
+void sr_perf_audio_output(uint64_t started_ns, uint32_t frames) {
+    (void)started_ns;
+    s_perf_output_calls++;
+    s_perf_output_frames += frames;
+}
 
 /* The FD fixture deliberately exercises the writable host-backed branch.  Keep
  * the ISO side absent and deterministic rather than making the selftest depend
@@ -2067,6 +2076,52 @@ static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
     cpu->r[5] = a1;
     cpu->r[6] = a2;
     return sr_syscall(cpu, nid);
+}
+
+/* Media telemetry truthfulness on the production audio hand-off.
+ *
+ * audio_output_calls / audio_output_frames used to be raised only inside the SDL3 host
+ * audio backend. That made the two columns a property of the selected backend rather
+ * than of the guest: a flagship run whose music was plainly audible reported
+ * audio_output_calls=0 and audio_output_frames=0 for every second of the session, while
+ * audio_mix_calls (a project-owned call site) counted normally. The counters now live at
+ * the sceAudioOutput* hand-off, which is the event they are named after, so this drives
+ * the production NID and asserts the reported total is the guest's own frame count -- and
+ * that a hand-off refused before submission is not counted at all. */
+static void test_audio_output_telemetry_counts_guest_frames(void) {
+    const uint32_t STEREO_BUF = 0x08a00000u;   /* 64 stereo frames, well inside the arena */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "telemetry fixture reserves the regular channel");
+
+    /* Counters are collected only while the telemetry subsystem is live, exactly as in
+     * production; the fixture enables them for the duration of this test and restores. */
+    int saved_enabled = sr_perf_enabled;
+    sr_perf_enabled = 1;
+    s_perf_output_calls = 0;
+    s_perf_output_frames = 0;
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING, 0u, 0x80008000u,
+                          STEREO_BUF) == 64u,
+           "sceAudioOutputBlocking returns the fixture's 64-frame length");
+    expect(s_perf_output_calls == 1u,
+           "the guest output hand-off is counted exactly once");
+    expect(s_perf_output_frames == 64u,
+           "the counted frame total is the guest frame count, not a backend queue depth");
+
+    /* A hand-off refused before submission must not appear in the counters. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING, 0u, 0x80008000u,
+                          STEREO_BUF + 0x08000000u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "an out-of-arena buffer is refused before submission");
+    expect(s_perf_output_calls == 1u && s_perf_output_frames == 64u,
+           "a refused hand-off adds no call and no frames");
+
+    sr_perf_enabled = saved_enabled;
+    s_perf_output_calls = 0;
+    s_perf_output_frames = 0;
+    sr_hle_test_audio_reset();
 }
 
 /* PRODUCTION_DISPATCH host regression, with CORROBORATIVE_ONLY PSP contract
@@ -15404,6 +15459,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();
     test_ctrl_sample_timestamp_microsecond_contract();

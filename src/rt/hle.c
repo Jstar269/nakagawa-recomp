@@ -9963,7 +9963,13 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
             if (mono) { int16_t v = (int16_t)MEM_R16(buf + i * 2); lr[i*2] = v; lr[i*2+1] = v; }
             else { lr[i*2] = (int16_t)MEM_R16(buf + i * 4); lr[i*2+1] = (int16_t)MEM_R16(buf + i * 4 + 2); }
         }
+        /* The output counters live here, on the guest-visible sceAudioOutput* hand-off,
+         * not inside a host audio backend. A backend that does not instrument itself made
+         * audio_output_calls/frames read zero for a run whose music was plainly audible,
+         * which is exactly the case the counters exist to describe. */
+        uint64_t out_started = sr_perf_now_ns();
         sr_audio_push((int)ch, lr, (int)n, voll, volr);
+        if (out_started) sr_perf_audio_output(out_started, n);
     }
     int q = sr_audio_queued((int)ch);
     if (q < 0 || n == 0) {                 /* no host audio: open-loop pacing as before */
