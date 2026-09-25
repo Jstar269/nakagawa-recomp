@@ -3,9 +3,9 @@
 This index covers the active sanitized public source repository and its
 public-safe candidate/export boundary. Source code, tests and the
 Makefile remain authoritative for implementation behavior; curated GitHub Issues
-are authoritative for actionable work. Private operational, title-run, legal
-review and historical-archive documents are intentionally outside the public
-source tree.
+are authoritative for actionable work. Private operational, title-run and legal
+review documents are intentionally outside the public source tree; explicitly
+labelled historical evidence stays in the tree for provenance.
 
 ## Start here
 
@@ -24,6 +24,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
 | Touch provenance, notices, or attribution | [`NOTICE.md`](../NOTICE.md), [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json), [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) |
 | Decide whether a surface is title-specific or generic | [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) |
+| Operate an AI agent | [`AGENTS.md`](../AGENTS.md) (the policy authority), then [`REVIEW.md`](../REVIEW.md) when reviewing |
 | Contribute, sign off, or report a vulnerability | [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`DCO_POLICY.md`](DCO_POLICY.md) |
 
 ## Maintained engineering guides
