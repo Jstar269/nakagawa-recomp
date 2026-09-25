@@ -55,6 +55,7 @@ The FFmpeg ATRAC3+ subset (LGPL-2.1-or-later) is statically linked. The whole
 program is distributed under GPL-3.0-or-later with its complete corresponding
 source, and `SOURCE.txt` names the exact repository commit or tag of each
 package, which is what lets a user modify and relink it (issue #421).
+
 ## Public-safe exclusions
 
 The public source profile excludes the PGF parser/font payloads and PGD/amctrl
