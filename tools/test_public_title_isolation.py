@@ -27,6 +27,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+from nk_core.git_isolation import run_git
 import publication_policy
 import title_catalog_codegen
 import title_manifest
@@ -580,15 +581,7 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
     def test_synthetic_ignored_inputs_isolation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="synthetic-workspace-") as tmp:
             repo_root = Path(tmp)
-            subprocess.run(["git", "init"], cwd=str(repo_root), capture_output=True, check=True)
-            subprocess.run(
-                ["git", "config", "user.name", "Synthetic Author"],
-                cwd=str(repo_root), capture_output=True, check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.email", "synthetic@example.com"],
-                cwd=str(repo_root), capture_output=True, check=True,
-            )
+            run_git(["init"], cwd=repo_root, capture_output=True, check=True)
 
             titles_dir = repo_root / "assets" / "titles"
             titles_dir.mkdir(parents=True)
@@ -629,8 +622,8 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            subprocess.run(["git", "add", "."], cwd=str(repo_root), capture_output=True, check=True)
-            subprocess.run(["git", "commit", "-m", "init", "--no-gpg-sign"], cwd=str(repo_root), capture_output=True, check=True)
+            run_git(["add", "."], cwd=repo_root, capture_output=True, check=True)
+            run_git(["commit", "-m", "init", "--no-gpg-sign"], cwd=repo_root, capture_output=True, check=True)
 
             # Add synthetic ignored private inputs
             fake_private_manifest = titles_dir / "hst-ucus98701.json"
@@ -670,9 +663,9 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
             self.assertEqual(ambient_manifests, ["hst-ucus98701.json", "synthetic.json"])
 
             # 2. Tracked paths helper ignores the untracked / ignored lookalike
-            tracked_out = subprocess.run(
-                ["git", "ls-files", "assets/titles/*.json"],
-                cwd=str(repo_root),
+            tracked_out = run_git(
+                ["ls-files", "assets/titles/*.json"],
+                cwd=repo_root,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -682,9 +675,9 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
             self.assertNotIn("hst-ucus98701.json", tracked_set)
 
             # 3. Ignored private inputs are completely untracked
-            all_tracked = subprocess.run(
-                ["git", "ls-files"],
-                cwd=str(repo_root),
+            all_tracked = run_git(
+                ["ls-files"],
+                cwd=repo_root,
                 capture_output=True,
                 text=True,
                 check=True,

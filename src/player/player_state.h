@@ -9,6 +9,7 @@
 #include "nk_library.h"
 #include "nk_launch.h"
 #include "input_settings.h"
+#include "package_builder.h"
 #include "generated/nk_title_catalog.h"
 
 #include <stdbool.h>
@@ -33,7 +34,8 @@ typedef enum {
        card, but lets tests and the event loop distinguish a newly completed
        setup transaction from an ordinary library visit. */
     PLAYER_VIEW_READY_LIBRARY,
-    VIEW_CONTROLLER_SETTINGS
+    VIEW_CONTROLLER_SETTINGS,
+    VIEW_BUILDING_PACKAGE
 } PlayerView;
 
 typedef enum {
@@ -90,6 +92,9 @@ typedef struct {
     char message[512];
     char recovery_action_label[64];
     PlayerView return_view;
+    char failed_stage[64];
+    char boundary_text[512];
+    char log_file_path[MAX_PATH_LEN];
 } ErrorState;
 
 typedef enum {
@@ -153,6 +158,7 @@ typedef struct {
     PlayerSettings settings;
     ErrorState last_error;
     SetupWizardState wizard;
+    PackageBuildSession build_session;
 
     /* Native core state */
     NkLibrary library;
@@ -161,6 +167,9 @@ typedef struct {
        launcher's normal current-directory default. Keeping it on the app makes
        demo and test launches use the same root as PLAY NOW. */
     char runtime_root[MAX_PATH_LEN];
+    /* Directory holding the player executable; the package builder finds
+       tools/nk_cli.py relative to it. Empty when unknown. */
+    char install_root[MAX_PATH_LEN];
     bool is_game_running;
     uint64_t launch_time_ms;
 
@@ -183,6 +192,10 @@ typedef struct {
     InputSettingsState input_settings;
     bool host_buttons_live[NK_HOST_BUTTON_COUNT];
     int16_t host_axes_live[NK_HOST_AXIS_COUNT];
+
+    /* Settings persistence */
+    char settings_path[MAX_PATH_LEN];
+    char settings_notice[128];
 
     /* Window & layout metrics */
     int window_width;
@@ -208,11 +221,17 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     size_t reason_size
 );
 
+#define NK_PLAYER_SETTINGS_SCHEMA_VERSION 1
+
 /* Settings mutations. All values are validated and clamped; invalid inputs
  * are ignored so a stray click or keypress can never corrupt launch config.
- * Settings are in-memory launch preferences in this build (applied to the
- * child runtime via nk_launch_prepare_session); they are not yet persisted
- * to disk. */
+ * Settings are persisted to a versioned JSON file (settings.json) in the
+ * per-user config directory and applied to the child runtime where supported
+ * via nk_launch_prepare_session. */
+void player_app_settings_init_default(PlayerSettings *settings);
+NkResult player_app_load_settings(PlayerApp *app, const char *file_path);
+NkResult player_app_save_settings(const PlayerApp *app, const char *file_path);
+
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
@@ -267,5 +286,15 @@ void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables);
+
+/* Package build actions */
+bool player_app_start_package_build(PlayerApp *app, int game_index);
+void player_app_cancel_package_build(PlayerApp *app);
+void player_app_set_build_error(
+    PlayerApp *app,
+    const char *failed_stage,
+    const char *boundary_text,
+    const char *log_file_path
+);
 
 #endif /* NAKAGAWA_PLAYER_STATE_H */

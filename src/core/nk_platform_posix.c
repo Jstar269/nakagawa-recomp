@@ -252,7 +252,9 @@ bool nk_platform_spawn_process(
     }
 
     if (pid == 0) {
-        /* Child process */
+        /* Child process: establish own process group to allow tree-wide signals */
+        (void)setpgid(0, 0);
+
         if (working_directory && *working_directory) {
             if (chdir(working_directory) != 0) {
                 _exit(127);
@@ -278,7 +280,11 @@ bool nk_platform_spawn_process(
         _exit(127);
     }
 
+    /* Parent process: close race by setting child's process group */
+    (void)setpgid(pid, pid);
+
     out_process->native_handle = (void *)(intptr_t)pid;
+    out_process->job_handle = NULL;
     out_process->process_id = (int)pid;
     out_process->is_active = true;
     return true;
@@ -387,10 +393,15 @@ int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {
 #define NK_KILL_GRACE_MS 1000
 
 void nk_platform_terminate_process(NkProcessHandle *process) {
-    if (!process || !process->is_active) return;
-    pid_t pid = (pid_t)(intptr_t)process->native_handle;
+    if (!process) return;
+    pid_t pid = (pid_t)process->process_id;
+    if (pid <= 0) {
+        pid = (pid_t)(intptr_t)process->native_handle;
+    }
+    if (pid <= 0) return;
+    if (!process->is_active && kill(-pid, 0) != 0) return;
 
-    if (kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+    if (kill(-pid, SIGTERM) != 0 && errno != ESRCH) {
         /* Not ours to signal; there is nothing useful left to do. */
         process->is_active = false;
         return;
@@ -404,9 +415,11 @@ void nk_platform_terminate_process(NkProcessHandle *process) {
        nk_platform_wait_process leaves is_active true on a timeout and clears
        it once the child is reaped, which is what distinguishes the two. */
     nk_platform_wait_process(process, NK_TERM_GRACE_MS);
-    if (process->is_active) {
-        kill(pid, SIGKILL);
-        nk_platform_wait_process(process, NK_KILL_GRACE_MS);
+    if (process->is_active || kill(-pid, 0) == 0) {
+        kill(-pid, SIGKILL);
+        if (process->is_active) {
+            nk_platform_wait_process(process, NK_KILL_GRACE_MS);
+        }
     }
     process->is_active = false;
 }
@@ -414,6 +427,7 @@ void nk_platform_terminate_process(NkProcessHandle *process) {
 void nk_platform_close_process(NkProcessHandle *process) {
     if (!process) return;
     process->native_handle = NULL;
+    process->job_handle = NULL;
     process->process_id = 0;
     process->is_active = false;
     process->has_cached_exit = false;

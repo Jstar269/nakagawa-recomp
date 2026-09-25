@@ -139,12 +139,12 @@ decryption, generated-runtime provisioning, and arbitrary-ISO one-click play rem
    - Staging directory created under `.staging_<disc_id>/` in local application data.
    - `EBOOT.BIN` and `PSP_GAME/USRDIR/xbdata` are copied by the native ISO reader.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named already-decrypted support PRXs are copied from standard PPSSPP dump locations into `EXTRACTED/decrypted/`.
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`; the player never decrypts.
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
-   - KIRK decryption and validation of an encrypted `~PSP` inner ELF remain later
-     capabilities; a missing recompiled child is reported instead of fabricated.
+   - Encrypted `~PSP`/`~SCE` executables are not supported (open maintainer legal
+     decision, #295); a missing recompiled child is reported instead of fabricated.
 6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a runtime is
    available and *"LAUNCH PREPARED"* when assets are staged but runtime
    preparation is still pending.
@@ -203,7 +203,12 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
 - **Live Input Monitor**: A real-time visualizer panel displays active host button presses, numerical stick coordinates, and an interactive 2D deadzone box so users can immediately observe calibration effects.
 - **Safe Navigation & Defaults**: Keyboard Escape always backs out or cancels capture, preventing navigation lockouts. "RESET DEFAULTS" restores the baseline profile.
 - **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the profile via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime.
-- **In the Works**: Continuous trigger resting/extreme value calibration (#357) and in-game pause overlay controller configuration remain in the works.
+- **Guided Stick & Trigger Calibration**: A multi-stage calibration wizard ("CALIBRATE STICK & TRIGGERS") guides the user through:
+  1. *Resting state*: sampling resting analog stick and trigger axes for 1000 ms to establish neutral/center points.
+  2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
+  3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
+  Values are stored in the unified `input_profile.json` (schema 1 backward compatible) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
+- **In the Works**: In-game pause overlay controller configuration remains in the works (pause menu requires guest-clock semantics; out of scope for this milestone).
 
 ---
 

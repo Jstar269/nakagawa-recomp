@@ -3,9 +3,9 @@
 This index covers the active sanitized public source repository and its
 public-safe candidate/export boundary. Source code, tests and the
 Makefile remain authoritative for implementation behavior; curated GitHub Issues
-are authoritative for actionable work. Private operational, title-run, legal
-review and historical-archive documents are intentionally outside the public
-source tree.
+are authoritative for actionable work. Private operational, title-run and legal
+review documents are intentionally outside the public source tree; explicitly
+labelled historical evidence stays in the tree for provenance.
 
 ## Start here
 
@@ -13,7 +13,10 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 
 | When you are about to | Read |
 | --- | --- |
-| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md) |
+| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) |
+| Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
+| Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
+| Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
@@ -21,6 +24,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
 | Touch provenance, notices, or attribution | [`NOTICE.md`](../NOTICE.md), [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json), [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) |
 | Decide whether a surface is title-specific or generic | [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) |
+| Operate an AI agent | [`AGENTS.md`](../AGENTS.md) (the policy authority), then [`REVIEW.md`](../REVIEW.md) when reviewing |
 | Contribute, sign off, or report a vulnerability | [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`DCO_POLICY.md`](DCO_POLICY.md) |
 
 ## Maintained engineering guides
@@ -28,10 +32,16 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — runtime, code generation, renderer and
   two-phase build structure.
 - [`SETUP.md`](SETUP.md) — supported toolchain and documented external inputs.
+- [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — what the player needs to play a game you own.
+- [`COMPATIBILITY.md`](COMPATIBILITY.md) — per-title and subsystem compatibility
+  states, semantic boundaries, and tracking issues.
+- [`SMOKE_TEST.md`](SMOKE_TEST.md) — numbered pass/fail release smoke test for the
+  native player.
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
+- [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) — Linux/WSL development commands and gate inventory (issue #306).
 - [`ENHANCEMENT_CONTRACT.md`](ENHANCEMENT_CONTRACT.md) — authentic-vs-enhanced
   boundary and package declarations; no enhancement loader yet (in the works).
 - [`STATIC_VERIFY.md`](STATIC_VERIFY.md) — oracle-free verification and blocked
@@ -95,6 +105,9 @@ with explicit target and unbuilt boundaries.
   scheduler it describes replacing is still the shipped code.
 - [`cleanroom/PRX_LOADER_SPEC.md`](cleanroom/PRX_LOADER_SPEC.md) specifies the
   runtime PSP module (PRX) loader for clean-room rewrite unit G3.
+- [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
+  PGF reader for clean-room rewrite unit G4. A spec only — reader support is
+  still in the works (#349).
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
@@ -116,11 +129,15 @@ in this slice; classification comes first, directory moves separately.
 | --- | --- | --- |
 | `ARCHITECTURE.md` | CURRENT | Implementation behavior (source/tests remain authoritative) |
 | `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims |
+| `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
+| `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
+| `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
 | `DEBUGGING.md` | CURRENT | Diagnostics and safe local troubleshooting |
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
 | `PLATFORM_PORTABILITY.md` | CURRENT | Portability plan; host-neutral gate is not platform support |
+| `LINUX_DEVELOPMENT.md` | CURRENT | Linux/WSL dev commands and gate inventory (issue #306) |
 | `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract and package validator; loader in the works |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
 | `HARDWARE_ORACLE.md` | CURRENT | Bounded proposal + measured-cells index; trace oracle unbuilt |
@@ -154,11 +171,13 @@ in this slice; classification comes first, directory moves separately.
 | `INDEPENDENCE_CAMPAIGN.md` | DRAFT | Independence route plan; read for intent, never cite as built state |
 | `cleanroom/SCHED_SPEC.md` | DRAFT | Scheduler clean-room behaviour spec; read for intent, never cite as shipped behaviour |
 | `cleanroom/PRX_LOADER_SPEC.md` | DRAFT | Runtime PRX loader clean-room behaviour spec (G3); read for intent, never cite as shipped behaviour |
+| `cleanroom/PGF_SPEC.md` | DRAFT | Runtime PGF reader clean-room behaviour spec (G4); read for intent, never cite as shipped behaviour |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
 | `provenance/FONT_ORIGINS.md` | CURRENT | PGF replacement-font origin evidence and route decision |
 | `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
+| `PSP_INTR_WAITS_CENSUS.md` | CURRENT | Generated registration census for the waits matrix; regenerate with `tools/waits_census.py` |
 | `IMPORT_AUDIT.md` | HISTORICAL | Method current, snapshot example superseded |
 | `ISSUE196_DIRECT_XB.md` | HISTORICAL | Superseded hypothesis preserved with scope banner |
 | `provenance/MODIFIED_FILE_NOTICES.md` | HISTORICAL | Retained notice contract, capture-time scope |

@@ -140,6 +140,14 @@ and used as a control, never compared against hardware.
 `sceKernelReferTlsplStatus`, `sceKernelSendMsgPipe`,
 `sceKernelSendMsgPipeCB`, `sceKernelTerminateThread`.
 
+**Snapshot note (mailbox superseded).** `sceKernelCreateMbx`, `sceKernelDeleteMbx`,
+`sceKernelReceiveMbx` and `sceKernelReceiveMbxCB` now resolve to dedicated production
+handlers (`h_CreateMbx`, `h_DeleteMbx`, `h_ReceiveMbx`, `h_ReceiveMbxCB`, issue #339),
+alongside the `sceKernelSendMbx` / `sceKernelPollMbx` / `sceKernelCancelReceiveMbx` /
+`sceKernelReferMbxStatus` NIDs this snapshot did not list. Live registration status is
+regenerated in [`PSP_INTR_WAITS_CENSUS.md`](PSP_INTR_WAITS_CENSUS.md); the cells below
+stay pinned until harness probe cases for the object model land.
+
 Of the registered remainder the harness covers 54 probe cases. The registered APIs
 deliberately left out of the executable matrix, with their reasons:
 

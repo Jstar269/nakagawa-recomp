@@ -125,6 +125,39 @@ class PackageCacheTests(unittest.TestCase):
         self.assertTrue(compatible.generated_c_reusable)
         self.assertIn("aot:runtime_abi_epoch", compatible.reasons)
 
+    def test_cache_key_differs_by_public_safe_mode(self) -> None:
+        key_public = self.key(compile_flags=package_cache.native_compile_flags(public_safe=True))
+        key_private = self.key(compile_flags=package_cache.native_compile_flags(public_safe=False))
+        self.assertNotEqual(key_public["native"]["digest"], key_private["native"]["digest"])
+        decision = package_cache.compare_cache_keys(key_public, key_private)
+        self.assertEqual(decision.action, "native-recompile")
+        self.assertIn("native:compile_flags", decision.reasons)
+        self.assertTrue(decision.generated_c_reusable)
+
+        manifest_path = self.root / "manifest.json"
+        manifest_path.write_text("{}", encoding="utf-8")
+        manifest = {"modules": [], "executable": {"base": 0x08804000, "entry": 0x08804000}}
+        cli_key_pub = nk_cli._current_package_cache_key(
+            manifest,
+            manifest_path,
+            "2" * 64,
+            None,
+            None,
+            public_safe=True,
+        )
+        cli_key_priv = nk_cli._current_package_cache_key(
+            manifest,
+            manifest_path,
+            "2" * 64,
+            None,
+            None,
+            public_safe=False,
+        )
+        self.assertNotEqual(
+            cli_key_pub["native"]["digest"],
+            cli_key_priv["native"]["digest"],
+        )
+
     def test_completion_manifest_rejects_interruption_and_corruption(self) -> None:
         package_dir = self.root / "package"
         package_dir.mkdir()
@@ -216,21 +249,22 @@ class PackageCacheTests(unittest.TestCase):
             manifest_path, elf_path, [], {}, None
         )
         environment = dict(os.environ)
-        with mock.patch.object(
-            nk_cli, "_runtime_build_environment", return_value=environment
-        ):
-            cli_key = nk_cli._current_package_cache_key(
-                manifest, manifest_path, executable_hash, None, None
+        for mode in (None, True, False):
+            with mock.patch.object(
+                nk_cli, "_runtime_build_environment", return_value=environment
+            ):
+                cli_key = nk_cli._current_package_cache_key(
+                    manifest, manifest_path, executable_hash, None, None, public_safe=mode
+                )
+            planner_key = title_codegen_plan._cache_key_for_build(
+                input_hashes=input_hashes,
+                plan=plan,
+                selected_optional=set(),
+                funcs_per_chunk=2000,
+                public_safe=mode,
+                compiler_name=environment.get("CC", "gcc"),
             )
-        planner_key = title_codegen_plan._cache_key_for_build(
-            input_hashes=input_hashes,
-            plan=plan,
-            selected_optional=set(),
-            funcs_per_chunk=2000,
-            public_safe=False,
-            compiler_name=environment.get("CC", "gcc"),
-        )
-        self.assertEqual(cli_key, planner_key)
+            self.assertEqual(cli_key, planner_key)
 
     def test_promotion_refuses_a_copy_that_fails_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

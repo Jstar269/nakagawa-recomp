@@ -1,11 +1,27 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* fileno/fsync are POSIX: without this, -std=c99 on glibc leaves them undeclared. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "player_state.h"
 #include "nk_font.h"
+#include "nk_json.h"
+#include "nk_platform.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 static const char *player_runtime_root(const PlayerApp *app) {
     return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
@@ -21,18 +37,9 @@ void player_app_init(PlayerApp *app) {
     app->dpi_scale = 1.0f;
     app->should_quit = false;
 
-    /* Default settings */
-    app->settings.resolution_scale = 4; /* 1080p modern default */
-    app->settings.fullscreen = false;
-    app->settings.vsync = true;
-    app->settings.fps_cap = 60;
-    app->settings.master_volume = 80;
-    app->settings.reduce_motion = false;
-    /* Controller state: no fabrication. The event loop in src/player/main.c
-       fills these in when SDL reports a gamepad, and clears them when it goes. */
-    app->settings.controller_name[0] = '\0';
-    app->settings.controller_connected = false;
-    snprintf(app->settings.save_directory, sizeof(app->settings.save_directory), "savedata");
+    /* Initialize settings from disk or defaults */
+    player_app_settings_init_default(&app->settings);
+    player_app_load_settings(app, NULL);
 
     /* Default preparation state */
     app->prep_state.stage = STAGE_IDLE;
@@ -145,7 +152,7 @@ int player_app_focus_count(const PlayerApp *app) {
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
-                 * (PLAY/STOP only when actionable), add, remove, then the
+                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, then the
                  * paging stops when the library overflows. The unavailable
                  * pill is never a stop. */
                 int count = 0;
@@ -153,14 +160,19 @@ int player_app_focus_count(const PlayerApp *app) {
                                           app->selected_game_index < app->game_count)
                     ? &app->games[app->selected_game_index]
                     : NULL;
-                bool game_has_package = game &&
-                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) ==
-                        NK_RUNTIME_PACKAGE_OK;
-                if (game && (game_has_package || app->is_game_running)) count++;
+                NkRuntimePackageStatus pkg_status = game ?
+                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) :
+                    NK_RUNTIME_PACKAGE_MISSING;
+                bool game_has_package = game && pkg_status == NK_RUNTIME_PACKAGE_OK;
+                bool can_build = game && (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
+                                          pkg_status == NK_RUNTIME_PACKAGE_STALE);
+                if (game && (game_has_package || app->is_game_running || can_build)) count++;
                 count += 2; /* add + remove */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
             }
+        case VIEW_BUILDING_PACKAGE:
+            return 1;
         case VIEW_INSPECTING:
             return 1;
         case VIEW_SUPPORTED_TITLE:
@@ -176,10 +188,21 @@ int player_app_focus_count(const PlayerApp *app) {
              * in draw order. */
             return 14;
         case VIEW_CONTROLLER_SETTINGS:
+            if (input_settings_is_calibrating(&app->input_settings)) {
+                switch (input_settings_get_calibration_stage(&app->input_settings)) {
+                    case CALIBRATION_STAGE_REST:
+                        return 1;
+                    case CALIBRATION_STAGE_EXTREMES:
+                    case CALIBRATION_STAGE_RESULT:
+                        return 2;
+                    default:
+                        return 1;
+                }
+            }
             /* 14 digital controls rebind buttons + deadzone [-]/[+] (2) +
-             * trigger threshold [-]/[+] (2) + save (1) + reset (1) + back (1),
+             * trigger threshold [-]/[+] (2) + guided calibration (1) + save (1) + reset (1) + back (1),
              * in draw order. */
-            return 21;
+            return 22;
         case VIEW_ERROR:
             return 1;
         case VIEW_SETUP_WIZARD:
@@ -224,13 +247,282 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count) {
     app->focus_index = focus;
 }
 
+void player_app_settings_init_default(PlayerSettings *settings) {
+    if (!settings) return;
+    settings->resolution_scale = 4; /* 1080p modern default */
+    settings->fullscreen = false;
+    settings->vsync = true;
+    settings->fps_cap = 60;
+    settings->master_volume = 80;
+    settings->reduce_motion = false;
+    settings->controller_name[0] = '\0';
+    settings->controller_connected = false;
+    snprintf(settings->save_directory, sizeof(settings->save_directory), "savedata");
+}
+
 static bool resolution_scale_valid(int scale) {
     return scale == 1 || scale == 2 || scale == 3 || scale == 4 || scale == 8;
+}
+
+/* Settings paths come from the per-user config directory, which is UTF-8 and
+ * may contain non-ASCII characters; the narrow CRT fopen would misread them on
+ * Windows, so open through the wide API there. */
+static FILE *settings_fopen(const char *path, const char *mode) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wpath[32768];
+    WCHAR wmode[16];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 32768) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wmode, 16) <= 0) {
+        return NULL;
+    }
+    return _wfopen(wpath, wmode);
+#else
+    return fopen(path, mode);
+#endif
+}
+
+static bool fps_cap_valid(int cap) {
+    return cap == 30 || cap == 60 || cap == 0;
+}
+
+NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
+    if (!app) return NK_ERROR_GENERIC;
+
+    char resolved_path[MAX_PATH_LEN];
+    const char *target = file_path;
+    if (!target || !target[0]) {
+        if (app->settings_path[0]) {
+            target = app->settings_path;
+        } else {
+            char config_dir[MAX_PATH_LEN];
+            if (!nk_platform_get_path(NK_PATH_CONFIG, config_dir, sizeof(config_dir))) {
+                player_app_settings_init_default(&app->settings);
+                return NK_ERROR_IO;
+            }
+            size_t dlen = strlen(config_dir);
+            if (dlen + 16 >= sizeof(resolved_path)) {
+                player_app_settings_init_default(&app->settings);
+                return NK_ERROR_IO;
+            }
+            char sep = nk_platform_path_separator();
+            memcpy(resolved_path, config_dir, dlen);
+            resolved_path[dlen] = sep;
+            memcpy(resolved_path + dlen + 1, "settings.json", 14);
+            target = resolved_path;
+        }
+    }
+    snprintf(app->settings_path, sizeof(app->settings_path), "%s", target);
+
+    if (!nk_platform_file_exists(target)) {
+        player_app_settings_init_default(&app->settings);
+        app->settings_notice[0] = '\0';
+        return NK_OK;
+    }
+
+    FILE *f = settings_fopen(target, "rb");
+    if (!f) {
+        player_app_settings_init_default(&app->settings);
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Could not open settings file; defaults restored.");
+        return NK_ERROR_IO;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (sz <= 0 || sz > 1024 * 1024) {
+        fclose(f);
+        player_app_settings_init_default(&app->settings);
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Settings file has invalid size; defaults restored.");
+        return NK_ERROR_GENERIC;
+    }
+
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) {
+        fclose(f);
+        player_app_settings_init_default(&app->settings);
+        return NK_ERROR_OUT_OF_MEMORY;
+    }
+
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[got] = '\0';
+
+    char err_buf[256] = {0};
+    NkJsonNode *root = nk_json_parse(buf, got, err_buf, sizeof(err_buf));
+    free(buf);
+
+    if (!root || !nk_json_is_object(root)) {
+        if (root) nk_json_free(root);
+        player_app_settings_init_default(&app->settings);
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Settings file is corrupt; defaults restored.");
+        return NK_ERROR_GENERIC;
+    }
+
+    NkJsonNode *sv_node = nk_json_obj_get(root, "schema_version");
+    int64_t sv = 0;
+    if (!sv_node || !nk_json_get_int64(sv_node, &sv) || sv != NK_PLAYER_SETTINGS_SCHEMA_VERSION) {
+        nk_json_free(root);
+        player_app_settings_init_default(&app->settings);
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Unsupported settings schema version; defaults restored.");
+        return NK_ERROR_GENERIC;
+    }
+
+    /* Reset defaults first then apply fields */
+    player_app_settings_init_default(&app->settings);
+
+    NkJsonNode *scale_node = nk_json_obj_get(root, "resolution_scale");
+    int64_t scale_val = 0;
+    if (scale_node && nk_json_get_int64(scale_node, &scale_val) && resolution_scale_valid((int)scale_val)) {
+        app->settings.resolution_scale = (int)scale_val;
+    }
+
+    NkJsonNode *fps_node = nk_json_obj_get(root, "fps_cap");
+    int64_t fps_val = 0;
+    if (fps_node && nk_json_get_int64(fps_node, &fps_val) && fps_cap_valid((int)fps_val)) {
+        app->settings.fps_cap = (int)fps_val;
+    }
+
+    NkJsonNode *vsync_node = nk_json_obj_get(root, "vsync");
+    bool vsync_val = false;
+    if (vsync_node && nk_json_get_bool(vsync_node, &vsync_val)) {
+        app->settings.vsync = vsync_val;
+    }
+
+    NkJsonNode *fs_node = nk_json_obj_get(root, "fullscreen");
+    bool fs_val = false;
+    if (fs_node && nk_json_get_bool(fs_node, &fs_val)) {
+        app->settings.fullscreen = fs_val;
+    }
+
+    NkJsonNode *rm_node = nk_json_obj_get(root, "reduce_motion");
+    bool rm_val = false;
+    if (rm_node && nk_json_get_bool(rm_node, &rm_val)) {
+        app->settings.reduce_motion = rm_val;
+    }
+
+    NkJsonNode *vol_node = nk_json_obj_get(root, "master_volume");
+    int64_t vol_val = 0;
+    if (vol_node && nk_json_get_int64(vol_node, &vol_val)) {
+        if (vol_val < 0) vol_val = 0;
+        if (vol_val > 100) vol_val = 100;
+        app->settings.master_volume = (int)vol_val;
+    }
+
+    nk_json_free(root);
+    app->settings_notice[0] = '\0';
+    return NK_OK;
+}
+
+NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
+    if (!app) return NK_ERROR_GENERIC;
+
+    char resolved_path[MAX_PATH_LEN];
+    const char *target = file_path;
+    if (!target || !target[0]) {
+        if (app->settings_path[0]) {
+            target = app->settings_path;
+        } else {
+            char config_dir[MAX_PATH_LEN];
+            if (!nk_platform_get_path(NK_PATH_CONFIG, config_dir, sizeof(config_dir))) {
+                return NK_ERROR_IO;
+            }
+            size_t dlen = strlen(config_dir);
+            if (dlen + 16 >= sizeof(resolved_path)) {
+                return NK_ERROR_IO;
+            }
+            char sep = nk_platform_path_separator();
+            memcpy(resolved_path, config_dir, dlen);
+            resolved_path[dlen] = sep;
+            memcpy(resolved_path + dlen + 1, "settings.json", 14);
+            target = resolved_path;
+        }
+    }
+
+    char tmp_path[MAX_PATH_LEN + 16];
+    size_t tlen = strlen(target);
+    if (tlen + 8 >= sizeof(tmp_path)) return NK_ERROR_IO;
+    memcpy(tmp_path, target, tlen);
+    memcpy(tmp_path + tlen, ".tmp", 5);
+
+    char parent[MAX_PATH_LEN];
+    snprintf(parent, sizeof(parent), "%s", target);
+    char *slash = strrchr(parent, '/');
+    char *bslash = strrchr(parent, '\\');
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+    if (slash && slash != parent) {
+        *slash = '\0';
+        if (!nk_platform_dir_exists(parent)) nk_platform_mkdir_p(parent);
+    }
+
+    FILE *f = settings_fopen(tmp_path, "wb");
+    if (!f) return NK_ERROR_IO;
+
+    fprintf(f, "{\n");
+    fprintf(f, "  \"schema_version\": %d,\n", NK_PLAYER_SETTINGS_SCHEMA_VERSION);
+    fprintf(f, "  \"resolution_scale\": %d,\n", app->settings.resolution_scale);
+    fprintf(f, "  \"fps_cap\": %d,\n", app->settings.fps_cap);
+    fprintf(f, "  \"vsync\": %s,\n", app->settings.vsync ? "true" : "false");
+    fprintf(f, "  \"fullscreen\": %s,\n", app->settings.fullscreen ? "true" : "false");
+    fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
+    fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
+    fprintf(f, "}\n");
+
+    if (fflush(f) != 0) {
+        fclose(f);
+        remove(tmp_path);
+        return NK_ERROR_IO;
+    }
+
+#if defined(_WIN32) || defined(_WIN64)
+    int fd = _fileno(f);
+    if (fd >= 0) {
+        HANDLE hFile = (HANDLE)_get_osfhandle(fd);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(hFile);
+        }
+    }
+    fclose(f);
+
+    WCHAR wtmp[32768], wtarget[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 32768) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, target, -1, wtarget, 32768) <= 0) {
+        DeleteFileA(tmp_path);
+        return NK_ERROR_IO;
+    }
+
+    if (!MoveFileExW(wtmp, wtarget, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(wtmp);
+        return NK_ERROR_IO;
+    }
+#else
+    int fd = fileno(f);
+    if (fd >= 0) fsync(fd);
+    fclose(f);
+
+    if (rename(tmp_path, target) != 0) {
+        remove(tmp_path);
+        return NK_ERROR_IO;
+    }
+#endif
+
+    return NK_OK;
+}
+
+static void maybe_persist_settings(PlayerApp *app) {
+    if (app && app->settings_path[0]) {
+        player_app_save_settings(app, app->settings_path);
+    }
 }
 
 void player_app_set_resolution_scale(PlayerApp *app, int scale) {
     if (!app || !resolution_scale_valid(scale)) return;
     app->settings.resolution_scale = scale;
+    maybe_persist_settings(app);
 }
 
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
@@ -253,15 +545,13 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
         at = (at + 1) % 4;
     }
     app->settings.resolution_scale = kOrder[at];
-}
-
-static bool fps_cap_valid(int cap) {
-    return cap == 30 || cap == 60 || cap == 0;
+    maybe_persist_settings(app);
 }
 
 void player_app_set_fps_cap(PlayerApp *app, int cap) {
     if (!app || !fps_cap_valid(cap)) return;
     app->settings.fps_cap = cap;
+    maybe_persist_settings(app);
 }
 
 void player_app_cycle_fps_cap(PlayerApp *app, int direction) {
@@ -281,21 +571,25 @@ void player_app_cycle_fps_cap(PlayerApp *app, int direction) {
         at = (at + 1) % 3;
     }
     app->settings.fps_cap = kOrder[at];
+    maybe_persist_settings(app);
 }
 
 void player_app_toggle_fullscreen(PlayerApp *app) {
     if (!app) return;
     app->settings.fullscreen = !app->settings.fullscreen;
+    maybe_persist_settings(app);
 }
 
 void player_app_toggle_vsync(PlayerApp *app) {
     if (!app) return;
     app->settings.vsync = !app->settings.vsync;
+    maybe_persist_settings(app);
 }
 
 void player_app_toggle_reduce_motion(PlayerApp *app) {
     if (!app) return;
     app->settings.reduce_motion = !app->settings.reduce_motion;
+    maybe_persist_settings(app);
 }
 
 void player_app_adjust_volume(PlayerApp *app, int delta) {
@@ -304,6 +598,7 @@ void player_app_adjust_volume(PlayerApp *app, int delta) {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
     app->settings.master_volume = volume;
+    maybe_persist_settings(app);
 }
 
 bool player_app_remove_game(PlayerApp *app, int game_index) {
@@ -344,6 +639,9 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     snprintf(app->last_error.message, sizeof(app->last_error.message), "%s", msg ? msg : "An unexpected error occurred.");
     snprintf(app->last_error.recovery_action_label, sizeof(app->last_error.recovery_action_label), "%s", recovery_label ? recovery_label : "Return to Library");
     app->last_error.return_view = return_view;
+    app->last_error.failed_stage[0] = '\0';
+    app->last_error.boundary_text[0] = '\0';
+    app->last_error.log_file_path[0] = '\0';
     app->active_view = VIEW_ERROR;
 }
 
@@ -479,6 +777,16 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     app->is_game_running = true;
     app->launch_time_ms = 0;
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    if (tm_info) {
+        strftime(app->games[game_index].last_played, sizeof(app->games[game_index].last_played),
+                 "%Y-%m-%d %H:%M", tm_info);
+        if (app->library.library_path[0]) {
+            nk_library_add_or_update(&app->library, &app->games[game_index]);
+            nk_library_save(&app->library, app->library.library_path);
+        }
+    }
     printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
     return true;
 }
@@ -503,6 +811,87 @@ void player_app_stop_game(PlayerApp *app) {
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+}
+
+bool player_app_start_package_build(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    const GameRecord *game = &app->games[game_index];
+
+    package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
+
+    char python_path[NK_MAX_PATH];
+    if (!package_builder_find_python(python_path, sizeof(python_path))) {
+        player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
+                             "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
+                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    char cli_path[NK_MAX_PATH];
+    if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
+                             "tools/nk_cli.py could not be located in the current workspace or install root.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    /* Build into the same per-user root that package validation reads. */
+    char user_data_root[NK_MAX_PATH];
+    if (app->runtime_root[0]) {
+        snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
+    } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+                             "The per-user data directory is unavailable, so there is nowhere to build the package.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+    char log_dir[NK_MAX_PATH];
+    snprintf(log_dir, sizeof(log_dir), "%.490s%clogs", user_data_root, nk_platform_path_separator());
+    nk_platform_mkdir_p(log_dir);
+
+    NkResult res = package_builder_start(&app->build_session, python_path, cli_path, user_data_root, log_dir);
+    if (res != NK_OK) {
+        player_app_set_error(app, "SPAWN_FAILED", "Failed to Start Package Builder",
+                             "Failed to spawn the package builder child process.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+    return true;
+}
+
+void player_app_cancel_package_build(PlayerApp *app) {
+    if (!app) return;
+    package_builder_cancel(&app->build_session);
+}
+
+void player_app_set_build_error(
+    PlayerApp *app,
+    const char *failed_stage,
+    const char *boundary_text,
+    const char *log_file_path
+) {
+    if (!app) return;
+    char msg[512];
+    if (boundary_text && boundary_text[0]) {
+        snprintf(msg, sizeof(msg), "%s", boundary_text);
+    } else {
+        snprintf(msg, sizeof(msg), "Package build failed during stage '%s'. Check logs for details.",
+                 failed_stage && failed_stage[0] ? failed_stage : "unknown");
+    }
+    player_app_set_error(app, "PACKAGE_BUILD_FAILED", "Package Build Failed",
+                         msg, "Return to Library", VIEW_LIBRARY);
+    if (failed_stage) {
+        snprintf(app->last_error.failed_stage, sizeof(app->last_error.failed_stage), "%s", failed_stage);
+    }
+    if (boundary_text) {
+        snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text), "%s", boundary_text);
+    }
+    if (log_file_path) {
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path), "%s", log_file_path);
+    }
 }
 
 void player_app_start_setup_wizard(PlayerApp *app) {

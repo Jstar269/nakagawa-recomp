@@ -157,6 +157,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 try:
+    from .nk_core.git_isolation import isolated_git_env
     from .provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
@@ -165,6 +166,7 @@ try:
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
 except ImportError:
+    from nk_core.git_isolation import isolated_git_env
     from provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
@@ -229,7 +231,13 @@ class Finding:
 
 
 def _git(repo: Path, *args: str) -> bytes:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, check=False)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=isolated_git_env(root=repo),
+        capture_output=True,
+        check=False,
+    )
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise VerifyError("GIT_ERROR", detail or f"git {' '.join(args)} failed")
@@ -239,7 +247,10 @@ def _git(repo: Path, *args: str) -> bytes:
 def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=repo, capture_output=True, check=False,
+        cwd=repo,
+        env=isolated_git_env(root=repo),
+        capture_output=True,
+        check=False,
     )
     return result.returncode == 0
 
@@ -362,6 +373,7 @@ def _stream_tree_entries(repo: Path, tree_sha: str):
     """
     proc = subprocess.Popen(
         ["git", "ls-tree", "-r", "-z", "--full-tree", tree_sha], cwd=repo,
+        env=isolated_git_env(root=repo),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdout
@@ -470,6 +482,7 @@ def read_tree(repo: Path, tree_sha: str) -> dict[str, bytes]:
 
     proc = subprocess.Popen(
         ["git", "cat-file", "--batch"], cwd=repo,
+        env=isolated_git_env(root=repo),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdin and proc.stdout
@@ -867,7 +880,9 @@ def _safe_public_claim(path: str, record: dict | None) -> tuple[str, dict]:
     elif classification == "upstream_derived":
         safe.update({
             "upstream": "documented upstream family",
-            "license": "see NOTICE.md",
+            # The SPDX identifier is public (it is in the file header) and the
+            # publication audit checks the header against it.
+            "license": record.get("upstream_license") or "see NOTICE.md",
             "modification_status": "modified_or_translated; see trusted record",
         })
     elif classification == "generated_from_public_source":
@@ -876,6 +891,62 @@ def _safe_public_claim(path: str, record: dict | None) -> tuple[str, dict]:
             "source_family": "public source data",
         })
     return classification, safe
+
+
+def generate_authority_baseline(*, repo: Path, base_rev: str, trusted_ledger: Path, workdir: Path) -> bytes:
+    """Build the public baseline envelope for ``base_rev`` from the trusted authority alone.
+
+    The committed ledger on the base branch is not consulted: every path the
+    base policy publishes gets the same safe public claim the verifier gives a
+    newly admitted path, derived from its exact trusted record.  The result is
+    bound to the base commit, tree and policy exactly like any external
+    baseline, and is then checked by ``_validate_public_baseline`` on use.  A
+    published path without a qualifying record makes the baseline unresolved,
+    which that validation refuses.
+    """
+
+    repo = repo.resolve()
+    trusted_ledger = _external_input(trusted_ledger, repo=repo, label="trusted detailed ledger")
+    workdir = workdir.resolve()
+    if _path_is_within(workdir, repo):
+        raise VerifyError(
+            "OUTPUT_CANDIDATE_CONTROLLED",
+            "baseline scratch must live outside the repository under verification",
+        )
+    base_commit = _rev_commit(repo, base_rev)
+    base_tree = _rev_tree(repo, base_commit)
+    base_blobs = read_tree(repo, base_tree)
+    trusted_policy = _load_policy_bytes(
+        base_blobs.get(POLICY_PATH) or b"", workdir, "baseline_policy.json", code="TRUSTED_POLICY_INVALID",
+    )
+    exact_records, _patterns, _ids = load_trusted_records(trusted_ledger.read_bytes())
+
+    entries: list[dict] = []
+    for path in sorted(p for p in base_blobs if trusted_policy.resolve(p).disposition == "included"):
+        classification, evidence = _safe_public_claim(path, exact_records.get(path))
+        entry = {"path": path, "classification": classification, "evidence": evidence}
+        if path not in CONTROL_PATHS:
+            entry["sha256"] = hashlib.sha256(base_blobs[path]).hexdigest()
+        entries.append(entry)
+    ledger = {
+        "schema_version": 1,
+        "generated_by": "tools/provenance_ledger.py",
+        "policy_profile": trusted_policy.name,
+        "classification_vocabulary": sorted(ALLOWED_CLASSES),
+        "entries": entries,
+    }
+    envelope = {
+        "kind": BASELINE_KIND,
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "binding": {
+            "base_commit": base_commit,
+            "base_tree": base_tree,
+            "policy_sha256": trusted_policy.digest,
+            "ledger_sha256": hashlib.sha256(_canonical_json_bytes(ledger)).hexdigest(),
+        },
+        "ledger": ledger,
+    }
+    return _canonical_json_bytes(envelope)
 
 
 def _generate_ephemeral_ledger(
@@ -2187,7 +2258,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify a candidate provenance ledger against external authority.")
     parser.add_argument("--repo", type=Path, default=Path.cwd(),
                         help="repository holding both the candidate and base objects")
-    parser.add_argument("--candidate", required=True, help="candidate commit-ish under verification")
+    parser.add_argument("--candidate", default=None,
+                        help="candidate commit-ish under verification (required unless --emit-authority-baseline)")
     parser.add_argument("--base", required=True, help="trusted base commit-ish supplying policy and prior ledger")
     parser.add_argument("--trusted-ledger", type=Path, required=True,
                         help="external detailed implementation ledger; must be outside --repo")
@@ -2196,6 +2268,13 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "generate the candidate ledger and PUBLIC_EXPORT.json outside the repository from the trusted "
             "base baseline; any legacy candidate controls are comparison-only"
+        ),
+    )
+    parser.add_argument(
+        "--emit-authority-baseline", type=Path, default=None, metavar="OUT",
+        help=(
+            "write the public baseline envelope for --base, generated from --trusted-ledger alone, to OUT "
+            "(outside --repo) and exit; pass it to a later run as --trusted-baseline"
         ),
     )
     parser.add_argument(
@@ -2245,6 +2324,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.emit_authority_baseline is not None:
+            if args.candidate is not None or args.ephemeral:
+                raise VerifyError(
+                    "BASELINE_ARGUMENT_CONFLICT",
+                    "--emit-authority-baseline takes only --repo, --base, --trusted-ledger and --workdir",
+                )
+            out = args.emit_authority_baseline
+            if _path_is_within(out.parent if not out.exists() else out, args.repo):
+                raise VerifyError(
+                    "OUTPUT_CANDIDATE_CONTROLLED",
+                    "the emitted baseline must live outside the repository under verification",
+                )
+            with tempfile.TemporaryDirectory(prefix="nakagawa-baseline-") as scratch:
+                envelope = generate_authority_baseline(
+                    repo=args.repo, base_rev=args.base, trusted_ledger=args.trusted_ledger,
+                    workdir=args.workdir or Path(scratch),
+                )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(envelope)
+            print(f"authority baseline for {args.base}: sha256 {hashlib.sha256(envelope).hexdigest()}")
+            return 0
+        if args.candidate is None:
+            raise VerifyError("CANDIDATE_REQUIRED", "--candidate is required")
         if not args.ephemeral and (
             args.trusted_candidate_policy is not None or args.policy_delta_authority is not None
         ):
