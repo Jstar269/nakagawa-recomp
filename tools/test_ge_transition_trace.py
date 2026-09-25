@@ -216,7 +216,7 @@ class TestTransitionTraceC(unittest.TestCase):
              "-o", os.fspath(cls.exe),
              os.fspath(harness_c),
              os.fspath(RT / "ge.c"),
-             os.fspath(RT / "ge_capture.c"), "-lm"],
+             os.fspath(RT / "ge_capture.c"), os.fspath(RT / "perf.c"), "-lm"],
             capture_output=True, text=True, cwd=ROOT,
         )
         if result.returncode != 0:

@@ -311,13 +311,13 @@ jobs:
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic -Ibuild \
             -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
-            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c -lm
           ./build/vfpu_interp_selftest
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic -Ibuild \
             -D_CRT_SECURE_NO_WARNINGS \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
-            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c -lm
+            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c -lm
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
@@ -346,7 +346,7 @@ jobs:
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest
           gcc -std=c11 -O1 $INC -o build/atrac3p_bridge_selftest \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest
           SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
@@ -354,7 +354,7 @@ jobs:
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest_san
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_bridge_selftest_san \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest_san
 

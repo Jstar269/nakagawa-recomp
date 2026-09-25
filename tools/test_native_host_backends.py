@@ -252,7 +252,7 @@ class NativeHostBackendTests(unittest.TestCase):
         cmd = [
             "gcc", "-std=c99", "-Wall", "-Wextra",
             "-Isrc/rt", "-DSR_AUDIO_SELFTEST",
-            "src/rt/audio_unavailable.c",
+            "src/rt/audio_unavailable.c", "src/rt/perf.c",
             "-lSDL3", "-lm",
             "-o", str(out),
         ]

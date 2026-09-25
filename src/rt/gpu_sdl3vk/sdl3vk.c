@@ -173,7 +173,10 @@ static int wait_present_frame(PresentFrame *f) {
     if (!f->submitted) return 1;
     uint64_t wait_started = sr_perf_now_ns();
     VkResult r=vkWaitForFences(s_dev,1,&f->fence,VK_TRUE,UINT64_MAX);
-    sr_perf_present_wait(wait_started);
+    if (wait_started) {
+        sr_perf_vulkan_wait(wait_started, 0);
+        sr_perf_present_wait(wait_started);
+    }
     if(r!=VK_SUCCESS)return 0;
     f->submitted=0;
     f->source=VK_NULL_HANDLE;
@@ -1166,7 +1169,10 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         if (s_swap_img_fence[idx] && s_swap_img_fence[idx] != f->fence) {
             uint64_t wait_started = sr_perf_now_ns();
             vkWaitForFences(s_dev, 1, &s_swap_img_fence[idx], VK_TRUE, UINT64_MAX);
-            sr_perf_present_wait(wait_started);
+            if (wait_started) {
+                sr_perf_vulkan_wait(wait_started, 0);
+                sr_perf_present_wait(wait_started);
+            }
         }
         s_swap_img_fence[idx] = f->fence;
 
@@ -1251,10 +1257,12 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &f->sem_done;
         vkResetFences(s_dev, 1, &f->fence);
+        uint64_t perf_submit_started = sr_perf_now_ns();
         if (vkQueueSubmit(s_queue, 1, &si, f->fence) != VK_SUCCESS) {
             why = "vkQueueSubmit failed"; goto fail;
         }
-        sr_perf_present_submit();
+        if (perf_submit_started) sr_perf_vulkan_submit(perf_submit_started);
+        if (sr_perf_enabled) sr_perf_present_submit();
         f->submitted = 1;
         f->source = upload ? VK_NULL_HANDLE : src;
         if (s_cap_state == CAP_ARMED) s_cap_state = CAP_RECORDED;
@@ -1358,9 +1366,11 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
      * The fence covers this submission; presentation itself stays asynchronous. */
     if (s_cap_state == CAP_RECORDED) {
         if (f->submitted) {
+            uint64_t perf_wait_started = sr_perf_now_ns();
             if (vkWaitForFences(s_dev, 1, &f->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
                 why = "capture fence wait failed"; goto fail;
             }
+            if (perf_wait_started) sr_perf_vulkan_wait(perf_wait_started, 0);
             f->submitted = 0;
             f->source = VK_NULL_HANDLE;
         }
@@ -1389,7 +1399,7 @@ fail_quit:
 int sdl3vk_present_rgba(const uint32_t *px) {
     uint64_t started = sr_perf_now_ns();
     int result = present_common(VK_NULL_HANDLE, PSP_W, PSP_H, px);
-    sr_perf_present_done(started, result);
+    if (started) sr_perf_present_done(started, result);
     return result;
 }
 
@@ -1397,7 +1407,7 @@ int sdl3vk_present_image(void *vk_image) {
     /* 512x272 GE target: only the visible 480x272 region is shown */
     uint64_t started = sr_perf_now_ns();
     int result = present_common((VkImage)vk_image, PSP_W, PSP_H, NULL);
-    sr_perf_present_done(started, result);
+    if (started) sr_perf_present_done(started, result);
     return result;
 }
 
@@ -1405,7 +1415,7 @@ int sdl3vk_present_image_ex(void *vk_image, int srcw, int srch) {
     /* render-scaled GE target: the visible region scales with the internal resolution */
     uint64_t started = sr_perf_now_ns();
     int result = present_common((VkImage)vk_image, srcw, srch, NULL);
-    sr_perf_present_done(started, result);
+    if (started) sr_perf_present_done(started, result);
     return result;
 }
 
@@ -1618,8 +1628,12 @@ static int cap_test_image_upload(CapTestImage *t) {
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_cmd;
+    uint64_t perf_submit_started = sr_perf_now_ns();
     if (vkQueueSubmit(s_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) return 0;
+    if (perf_submit_started) sr_perf_vulkan_submit(perf_submit_started);
+    uint64_t perf_wait_started = sr_perf_now_ns();
     if (vkQueueWaitIdle(s_queue) != VK_SUCCESS) return 0;
+    if (perf_wait_started) sr_perf_vulkan_wait(perf_wait_started, 0);
     return 1;
 }
 

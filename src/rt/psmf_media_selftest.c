@@ -29,6 +29,7 @@
 
 #include "psmf_producer.h"
 #include "sr_h264.h"
+#include "perf.h"
 #include "mpeg.c"
 #include <stdint.h>
 #include <stdio.h>
@@ -1321,6 +1322,7 @@ static void test_mpeg_ycbcr_guest_contract(void) {
 }
 
 int main(int argc, char **argv) {
+    sr_perf_init();
     unsigned fuzz_iterations = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--fuzz-iters") == 0 && i + 1 < argc) {
