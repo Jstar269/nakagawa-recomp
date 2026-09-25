@@ -1012,7 +1012,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertTrue((package_dir / "build-report.json").is_file())
         report = json.loads((package_dir / "build-report.json").read_text(encoding="utf-8"))
         self.assertEqual(report.get("backends"), "public")
-        self.assertIn("fonts: import your own PSP fonts; public font reader in the works (#349)", report.get("limits", []))
+        self.assertIn("fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)", report.get("limits", []))
         self.assertIn("PGD-protected data: unavailable (#295)", report.get("limits", []))
 
     def test_bad_executable_is_rejected_with_a_named_reason(self):
@@ -1704,6 +1704,44 @@ class TestSanitizedBringup(unittest.TestCase):
         report["unsupported_imports"] = [{"library": "sceKernel", "nid_name": "0x08800000"}]
         with self.assertRaises(ValueError):
             nk_cli.validate_bringup_report(report)
+
+
+class TestProductStatusCopy(unittest.TestCase):
+    """Product status copy must match what the shipped build actually does.
+
+    The player builds runtime packages from the library (#465/#469) and the
+    clean-room public PGF reader landed in #474, closing #349, so wizard,
+    checklist and completion-manifest text that still described those as
+    missing was a false product claim. Boundaries that really are unavailable
+    stay named with their tracking issue: automatic executable decryption and
+    PGD-protected data (#295).
+    """
+
+    def _source(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
+        ui = self._source("src/player/ui_renderer.c")
+        self.assertIn("does not decrypt encrypted executables (#295). It builds runtime ", ui)
+        self.assertIn("packages from the library (#296/#297). Verify also lists font (#300)", ui)
+        self.assertNotIn("or create runtime packages", ui)
+        self.assertNotIn("Runtime package is missing (#296/#297)", ui)
+        self.assertEqual(ui.count("Build the runtime package from the library (#296/#297)"), 3)
+
+    def test_library_checklist_points_at_the_library_package_builder(self):
+        inspect = self._source("tools/nk_core/iso_inspect.py")
+        self.assertIn("build it from the library (#296/#297)", inspect)
+        self.assertNotIn("generation is in the works (#296/#297)", inspect)
+
+    def test_public_build_limits_report_the_font_reader_as_available(self):
+        for relative in ("tools/nk_cli.py", "tools/title_codegen_plan.py"):
+            with self.subTest(source=relative):
+                source = self._source(relative)
+                self.assertIn(
+                    "fonts: import your own PSP fonts; the public PGF reader is "
+                    "available for supported inputs (#474)", source)
+                self.assertIn("PGD-protected data: unavailable (#295)", source)
+                self.assertNotIn("public font reader in the works (#349)", source)
 
 
 if __name__ == "__main__":

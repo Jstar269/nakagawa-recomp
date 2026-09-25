@@ -1031,7 +1031,7 @@ def inspect_compatibility_preflight(
     if is_experimental:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
-            "message": "Experimental title runtime package is missing; generation is in the works (#296/#297).",
+            "message": "Experimental title runtime package is missing; build it from the library (#296/#297).",
             "issues": [296, 297],
         }
     elif metadata.matched_profile is None:
@@ -1048,7 +1048,7 @@ def inspect_compatibility_preflight(
     else:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
-            "message": "Runtime package missing; generation is in the works (#296/#297).",
+            "message": "Runtime package missing; build it from the library (#296/#297).",
             "issues": [296, 297],
         }
 
