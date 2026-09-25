@@ -786,7 +786,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         decrypted_eboot = preflight.get("decrypted_executable") if uses_decrypted_eboot else None
         if preflight.get("modified_dump_cfw_loader") and not uses_decrypted_eboot:
             raise PackageBuildError(
-                "This disc image was modified by a custom-firmware patch. The original "
+                "This disc image was modified by a custom-firmware patch. The game "
                 "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
                 "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
                 "This boundary is "
@@ -1190,7 +1190,11 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         print(f"Catalogued: {'YES' if meta.is_supported else 'NO'}")
         if meta.matched_profile:
             print(f"Profile:    {meta.matched_profile.name} ({meta.matched_profile.id})")
-        print(f"Executable: {preflight['selected_executable'] or 'none'}")
+        if preflight.get("modified_dump_cfw_loader"):
+            print(f"Game executable: {preflight['selected_executable_source']}")
+            print(f"Analysis input: {preflight['selected_executable'] or 'none'}")
+        else:
+            print(f"Executable: {preflight['selected_executable'] or 'none'}")
         print("Compatibility preflight:")
         for check in preflight["checks"]:
             print(f"  {check['status']}: {check['message']}")
@@ -1338,7 +1342,7 @@ def _new_bringup_report() -> dict:
 
 
 def _update_issues(report: dict, values) -> None:
-    allowed = {71, 118, 280, 285, 295, 296, 297, 298, 300, 308}
+    allowed = {118, 280, 285, 295, 296, 297, 298, 300, 308}
     report["issue_numbers"] = sorted(
         set(report["issue_numbers"]) | {value for value in values if value in allowed}
     )
@@ -1390,7 +1394,7 @@ def _bringup_human_summary(report: dict) -> str:
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
         return (
             "Bring-up stopped at inspect: this disc image was modified by a custom-firmware "
-            "patch. The original executable is EBOOT.OLD (encrypted); supply its decrypted "
+            "patch. The game executable is EBOOT.OLD (encrypted); supply its decrypted "
             "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
             "This boundary is in the works (#308)."
         )
@@ -1879,7 +1883,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         print(_bringup_human_summary(report))
         return 1
     _set_bringup_stage(report, "analyze", "PASS", int((time.perf_counter() - started) * 1000))
-    _update_issues(report, [71] if report["unsupported_imports"] else [])
+    _update_issues(report, [308] if report["unsupported_imports"] else [])
 
     started = time.perf_counter()
     codegen_dir = work_dir / "codegen-stage"
@@ -2051,7 +2055,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     report["exit_classification"] = "HEADLESS_UNAVAILABLE"
                 elif (report["runtime_imports"] or "unknown nid" in folded
                       or "unimplemented import" in folded):
-                    failure, issues = "UNSUPPORTED_IMPORT", [71]
+                    failure, issues = "UNSUPPORTED_IMPORT", [308]
                 elif (report["runtime_output_kind"] == "UNSUPPORTED_INSTRUCTION"
                       or "unsupported instruction" in folded or "aot-gap" in folded):
                     failure, issues = "UNSUPPORTED_INSTRUCTION", [118]
