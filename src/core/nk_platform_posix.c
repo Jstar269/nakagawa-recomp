@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -69,6 +70,24 @@ bool nk_platform_dir_exists(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) return false;
     return S_ISDIR(st.st_mode);
+}
+
+bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
+    if (!dir || !*dir || !fn) return false;
+    DIR *handle = opendir(dir);
+    if (!handle) return false;
+    struct dirent *item;
+    while ((item = readdir(handle)) != NULL) {
+        if (item->d_name[0] == '.') continue;
+        char path[4096];
+        int written = snprintf(path, sizeof(path), "%s/%s", dir, item->d_name);
+        if (written < 0 || (size_t)written >= sizeof(path)) continue;
+        struct stat st;
+        if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        if (!fn(item->d_name, ctx)) break;
+    }
+    closedir(handle);
+    return true;
 }
 
 int64_t nk_platform_get_file_size(const char *path) {

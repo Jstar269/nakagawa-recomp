@@ -394,7 +394,10 @@ class NkCoreTests(unittest.TestCase):
         registry = TitleRegistry(include_defaults=True)
         profile = registry.lookup_by_disc_id("TEST00001")
         self.assertEqual(int(cmd[3], 16), profile.executable_base)
-        self.assertEqual(int(cmd[4], 16), profile.executable_entry)
+        # The run entry: a declared runtime_bindings.fallback_entry, else
+        # executable.entry (title_codegen_plan._resolve_run_entry, and the native
+        # catalog's run_entry), so every launcher starts the title at one address.
+        self.assertEqual(int(cmd[4], 16), int(profile.fallback_entry, 16))
 
     def test_runtime_launcher_does_not_inherit_parent_iso_without_session_iso(self) -> None:
         game_dir = self.temp_dir / "TEST00001"
@@ -973,7 +976,12 @@ class GenericLauncherHostileTests(unittest.TestCase):
         self.assertEqual(Path(cmd[0]), exe)
         self.assertEqual(Path(cmd[2]), img)
         self.assertEqual(int(cmd[3], 16), 0)
-        self.assertEqual(int(cmd[4], 16), 0)
+        # Its ELF entry is 0, which dispatch resolves as a real function, so the
+        # runtime's own fallback never fires: the launcher must pass the declared
+        # fallback entry itself (title_codegen_plan._resolve_run_entry).
+        legacy = _legacy_retail_manifest()
+        self.assertEqual(int(cmd[4], 16), legacy["runtime_bindings"]["fallback_entry"])
+        self.assertNotEqual(int(cmd[4], 16), legacy["executable"]["entry"])
 
         # Without it, generic code has no default title: fail closed.
         public_only = RuntimeLauncher(repo_root=self.temp_dir)

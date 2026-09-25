@@ -150,6 +150,31 @@ void player_app_sync_library(PlayerApp *app) {
     }
 }
 
+bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming) {
+    if (!existing || !incoming) return false;
+    if (strcmp(existing->disc_id, incoming->disc_id) != 0 ||
+        strcmp(existing->disc_version, incoming->disc_version) != 0 ||
+        existing->iso_size_bytes != incoming->iso_size_bytes) return false;
+    bool merged = false;
+    if (existing->assets_staged && !incoming->assets_staged && existing->prepared_root[0]) {
+        incoming->assets_staged = true;
+        incoming->is_prepared = existing->is_prepared;
+        snprintf(incoming->prepared_root, sizeof(incoming->prepared_root), "%s",
+                 existing->prepared_root);
+        incoming->extracted_asset_count = existing->extracted_asset_count;
+        incoming->extracted_audio_count = existing->extracted_audio_count;
+        incoming->extracted_visual_count = existing->extracted_visual_count;
+        incoming->extracted_layout_count = existing->extracted_layout_count;
+        merged = true;
+    }
+    if (!incoming->last_played[0] && existing->last_played[0]) {
+        snprintf(incoming->last_played, sizeof(incoming->last_played), "%s",
+                 existing->last_played);
+        merged = true;
+    }
+    return merged;
+}
+
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
     if (!app || !executable_directory || !executable_directory[0]) return false;
     int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
@@ -195,6 +220,15 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
 
 bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
     if (!app || !game || game->disc_id[0] == '\0') return false;
+
+    GameRecord merged = *game;
+    for (int i = 0; i < app->library.count; i++) {
+        if (strcmp(app->library.entries[i].disc_id, game->disc_id) == 0) {
+            player_merge_readded_game(&app->library.entries[i], &merged);
+            break;
+        }
+    }
+    game = &merged;
 
     /* Both results used to be discarded before returning an unconditional
        true, so a rejected insert (the 64-entry limit) or an unwritable or full

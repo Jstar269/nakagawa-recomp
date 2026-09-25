@@ -63,6 +63,26 @@ bool nk_platform_dir_exists(const char *path) {
     return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
+    if (!dir || !*dir || !fn) return false;
+    char pattern[32768];
+    int written = snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+    if (written < 0 || (size_t)written >= sizeof(pattern)) return false;
+    WCHAR wpattern[32768];
+    if (!utf8_to_wide(pattern, wpattern, sizeof(wpattern) / sizeof(WCHAR))) return false;
+    WIN32_FIND_DATAW data;
+    HANDLE find = FindFirstFileW(wpattern, &data);
+    if (find == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    do {
+        if (data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        char name[1024];
+        if (!wide_to_utf8(data.cFileName, name, sizeof(name))) continue;
+        if (!fn(name, ctx)) break;
+    } while (FindNextFileW(find, &data));
+    FindClose(find);
+    return true;
+}
+
 int64_t nk_platform_get_file_size(const char *path) {
     if (!path) return -1;
     WCHAR wpath[32768];
