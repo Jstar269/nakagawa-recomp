@@ -64,6 +64,40 @@ TITLE_ID = "experimental-ulus99998"
 LAUNCH_TIMEOUT_MS = 180000
 
 
+def synthetic_manifest() -> dict:
+    """The hand-written title manifest this route binds the imported disc to.
+
+    The build half consumes this from the library's experimental profile, so it is
+    the consumer-facing spelling of a title the analyzer never derived for us.
+    tools/test_player_package_determinism.py contrasts it with the same manifest
+    whose guest addresses come from the fixture recipe's generated metadata.
+    """
+    return {
+        "schema_version": 1,
+        "id": TITLE_ID,
+        "display_name": "Synthetic player package route",
+        "kind": "retail",
+        "disc": {"id": DISC_ID, "region": "NA", "revision_policy": "exact-disc-id"},
+        "game_name": "display_smoke",
+        "executable": {
+            "base": 0x08810000,
+            "entry": 0x08810000,
+            "bss_metadata_source": "elf",
+            "extra_executable_spans": [],
+        },
+        "modules": [],
+        "filesystem": {
+            "data_root": "fixtures/display_smoke",
+            "memory_stick_root": "build/display-smoke-v1/memstick",
+            "device_prefixes": ["host0:", "ms0:"],
+        },
+        "hle_profile": "synthetic-minimal",
+        "codegen_profile": "none",
+        "feature_requirements": ["allegrex-core", "psp-hle"],
+        "verification_profile": "synthetic-public",
+    }
+
+
 def tracked_status() -> str:
     """The repository's tracked-file status, with untracked output excluded."""
     completed = subprocess.run(
@@ -137,30 +171,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         digest = hashlib.sha256(executable_bytes).hexdigest()
         self.executable_sha256 = digest
 
-        manifest = {
-            "schema_version": 1,
-            "id": TITLE_ID,
-            "display_name": "Synthetic player package route",
-            "kind": "retail",
-            "disc": {"id": DISC_ID, "region": "NA", "revision_policy": "exact-disc-id"},
-            "game_name": "display_smoke",
-            "executable": {
-                "base": 0x08810000,
-                "entry": 0x08810000,
-                "bss_metadata_source": "elf",
-                "extra_executable_spans": [],
-            },
-            "modules": [],
-            "filesystem": {
-                "data_root": "fixtures/display_smoke",
-                "memory_stick_root": "build/display-smoke-v1/memstick",
-                "device_prefixes": ["host0:", "ms0:"],
-            },
-            "hle_profile": "synthetic-minimal",
-            "codegen_profile": "none",
-            "feature_requirements": ["allegrex-core", "psp-hle"],
-            "verification_profile": "synthetic-public",
-        }
+        manifest = synthetic_manifest()
         self.stage_library(self.user_root, manifest, iso_path, executable_bytes)
         return manifest
 
