@@ -580,7 +580,6 @@
     "tools/codegen.py",
     "tools/codegen_gate.py",
     "tools/compat_overrides.py",
-    "tools/dashboard_notices.py",
     "tools/decompme_export.py",
     "tools/discovery_contract.py",
     "tools/elf_bounds.py",
