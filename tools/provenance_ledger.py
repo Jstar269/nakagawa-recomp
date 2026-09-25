@@ -21,9 +21,10 @@ Classification is fail-closed:
   ``upstream_derived``, ``generated_from_public_source``, or ``unresolved``);
 * wildcard records such as ``tools/*`` are never expanded, so adding a new tool
   cannot inherit an old blanket authorship attestation without its own record;
-* documentation, configuration, public factual metadata, and explicitly
-  synthetic fixtures keep narrow deterministic classifications that need no
-  ledger record;
+* documentation, configuration, public factual metadata, and non-executable
+  synthetic fixtures keep narrow deterministic classifications; executable
+  paths may keep one only while their trusted bytes and claim are frozen, and
+  require an exact record before their bytes change;
 * any other path -- in particular an unrecorded implementation path under
   ``src/``, ``tools/``, or the dashboard -- resolves to ``unresolved``, and the
   generator refuses to write release evidence while any included path is
@@ -112,11 +113,11 @@ REFRESHABLE_CLASSES = frozenset({
     "upstream_derived",
     "generated_from_public_source",
 })
-# Existing public documentation, configuration, metadata, and synthetic test
-# paths can be refreshed mechanically when their trusted baseline already
-# carries the same deterministic class.  They do not become implementation
-# authorization by virtue of this set; implementation paths still require an
-# exact detailed-ledger record.
+# Existing public documentation, configuration, metadata, and non-executable
+# synthetic fixture paths can be refreshed mechanically when their trusted
+# baseline already carries the same deterministic class. Executable paths in
+# this set retain it only while their trusted bytes remain frozen; changing
+# their bytes requires an exact detailed-ledger record.
 DETERMINISTIC_REFRESH_CLASSES = frozenset({
     "synthetic_fixture",
     "public_factual_metadata",
@@ -147,12 +148,12 @@ ALLOWED_CLASSES = frozenset({
 POLICY_DELTA_KIND = "policy-delta-authority"
 POLICY_DELTA_SCHEMA_VERSION = 1
 
-#: Deterministic admission is reserved for data/documentation/config material
+#: Deterministic handling is reserved for data/documentation/config material
 #: that a path rule alone can certify.  The surfaces below are executable,
 #: test, build, or security-sensitive tooling even when a filename/directory
-#: heuristic would label them configuration, fixtures, or documentation; a
-#: genuinely new path on one of these surfaces requires implementation-grade
-#: authority (an exact trusted detailed record), never a deterministic class.
+#: heuristic would label them configuration, fixtures, or documentation; adding
+#: or changing one of these surfaces requires implementation-grade authority
+#: (an exact trusted detailed record), never a deterministic class.
 #: ``is_implementation_path`` already covers
 #: ``src/``/``tools/`` and source/script suffixes; these rules close the
 #: remaining classifier escapes (executable scripts under ``docs/`` or
@@ -167,12 +168,12 @@ HARDENED_ADMISSION_SUFFIXES = frozenset({".cmd", ".bat", ".cmake", ".mk"})
 
 
 def _admission_requires_implementation(path: str) -> bool:
-    """True when a genuinely new path needs implementation-grade authority.
+    """True when adding or changing a path needs implementation-grade authority.
 
     Executable tests/tools, source/script files, CI workflows and actions,
     build and packaging fragments, and pre-commit hook/config surfaces must
-    never be admitted on a deterministic class merely because their path looks
-    like documentation, configuration, or a synthetic fixture.
+    never use a deterministic class merely because their path looks like
+    documentation, configuration, or a synthetic fixture.
     """
     if is_implementation_path(path):
         return True
@@ -1137,7 +1138,9 @@ def _validate_candidate_against_trusted(
     added = sorted(candidate_paths - trusted_paths)
     removed = sorted(trusted_paths - candidate_paths)
     if added:
-        implementation_added = [path for path in added if is_implementation_path(path)]
+        implementation_added = [
+            path for path in added if _admission_requires_implementation(path)
+        ]
         if implementation_added:
             raise RefreshError(
                 "NEW_PATH_REFUSED",
@@ -1204,7 +1207,16 @@ def _refresh_document(
             document = trusted_document
             for path in refreshed_paths:
                 classification, _ = _refresh_class_for(path, detailed_records.get(path))
-                if classification != baseline_entries[path].get("classification"):
+                upgrades_changed_executable = (
+                    trusted.blobs[path] != candidate.blobs[path]
+                    and _admission_requires_implementation(path)
+                    and path in detailed_records
+                    and classification in REFRESHABLE_CLASSES
+                )
+                if (
+                    classification != baseline_entries[path].get("classification")
+                    and not upgrades_changed_executable
+                ):
                     raise RefreshError("TRUSTED_PATH_UNQUALIFIED", f"detailed record class disagrees for {path}")
     else:
         document = trusted_document
@@ -1219,25 +1231,32 @@ def _refresh_document(
                 "TRUSTED_PATH_UNQUALIFIED",
                 f"{path} has non-implementation provenance class {entry.get('classification')!r}",
             )
-        # An implementation class in a public snapshot is only as good as the
-        # exact detailed record behind it.  Historical snapshots still carry
-        # entries minted by removed fail-open rules -- the ``tools/*`` wildcard
-        # expansion and the ``interface/`` configuration prefix -- so a snapshot
-        # alone must never re-attest *new* bytes on an implementation path.
-        # The detailed ledger is required for that, and wildcards stay inert in
-        # it, so a wildcard-derived entry cannot be carried onto new content.
-        if entry.get("classification") in REFRESHABLE_CLASSES:
+        content_changed = trusted.blobs[path] != candidate.blobs[path]
+        requires_exact_record = content_changed and _admission_requires_implementation(path)
+        refreshes_implementation = entry.get("classification") in REFRESHABLE_CLASSES
+        if refreshes_implementation or requires_exact_record:
             if detailed_records is None:
                 raise RefreshError(
                     "TRUSTED_RECORD_REQUIRED",
-                    f"implementation-class refresh requires the trusted detailed ledger: {path}",
+                    f"changed executable or implementation path requires the trusted detailed ledger: {path}",
                 )
             if path not in detailed_records:
                 raise RefreshError(
                     "TRUSTED_PATH_MISSING",
                     f"trusted detailed ledger has no exact record for {path}",
                 )
-        if detailed_records is not None and path not in detailed_records and _class_for(path, None)[0] == "unresolved":
+        if requires_exact_record:
+            classification, _ = _refresh_class_for(path, detailed_records[path])
+            if classification not in REFRESHABLE_CLASSES:
+                raise RefreshError(
+                    "TRUSTED_PATH_UNQUALIFIED",
+                    f"exact trusted record for {path} is not implementation-grade",
+                )
+        if (
+            detailed_records is not None
+            and path not in detailed_records
+            and _class_for(path, None)[0] == "unresolved"
+        ):
             raise RefreshError("TRUSTED_PATH_MISSING", f"trusted detailed ledger has no exact record for {path}")
 
     output = json.loads(json.dumps(document, ensure_ascii=False))

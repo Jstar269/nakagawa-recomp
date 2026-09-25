@@ -1063,7 +1063,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cb8c04614213f903fb8f4ca74795283f2a1b9be864b4f8f2f5a8f0d611ba8a3e"
+      "sha256": "2cc81db9683885124a9e5eb7aaeae3b57f5be5ed1d3209f00f022ea053833ba0"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -7672,7 +7672,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a54c793b171e97e994c7ec2540a0a197dfac10791381e942d7de76509169a4a5"
+      "sha256": "f0a755d7253da6f49c0d30f4c83c72579fcfb8aca2bff4aca4c0131a6f99ba88"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -7684,7 +7684,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "357de1758aa7e4a5231e09f94e8ee182052cfbf994047615abcc5164d565151b"
+      "sha256": "aa55a752017733aa5c94affb8ba9bd9ef3cf00588fe6971131d750c356a5217c"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -7696,7 +7696,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e0d55c3180b23bd35df7984bddb118e88196b36788c485b18f3f282b30393ede"
+      "sha256": "c40d7bdcb79fe951555e03b222a144a4aab65816a1b4c8b25901c3876b85f960"
     },
     {
       "path": "tools/prxload.py",
@@ -9132,12 +9132,15 @@
     },
     {
       "path": "tools/test_provenance_attest_verify.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-attest-verify-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "750f1f4ad5575b656dcf68ee55d6f43c30c7764a1ab2711e0dfda84f3f07d7f4"
+      "sha256": "2038484b2b3f28c54b82126245c9813b11a8e14d09b47b48861a26f01ed357f5"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -9158,7 +9161,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7fda35bb20e991e72386e881d2e31d7364ecf6782081a2b07ed1ce6627d65f1a"
+      "sha256": "3b39a4eec35a8f6403a5868e50c68a246bc95b3eed8e2d66c62fa257ccba5a3e"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
