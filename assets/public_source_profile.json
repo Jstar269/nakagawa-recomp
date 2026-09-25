@@ -717,6 +717,7 @@
     "tests/native/test_parsers_hostile.c",
     "tests/native/test_pgf_public.c",
     "tests/native/test_player_state.c",
+    "tests/native/test_player_ui.py",
     "tests/native/test_posix_process.c",
     "tests/native/test_win32_process.c",
     "tests/native/test_xb_parser.c",
