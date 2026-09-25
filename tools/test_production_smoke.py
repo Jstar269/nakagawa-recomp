@@ -1323,6 +1323,26 @@ class TestSanitizedBringup(unittest.TestCase):
             "MODIFIED_DUMP_CFW_LOADER",
             {check["code"] for check in report["preflight_checks"]},
         )
+        preflight = nk_cli.inspect_compatibility_preflight(
+            iso_path,
+            metadata=nk_cli.inspect_iso(iso_path),
+            runtime_root=work_root / "inspect-user-data",
+        )
+        self.assertEqual(preflight["selected_executable_source"], "EBOOT.OLD")
+        self.assertIsNone(preflight["selected_executable"])
+        cfw_check = next(
+            check for check in preflight["checks"]
+            if check["code"] == "MODIFIED_DUMP_CFW_LOADER"
+        )
+        self.assertIn("EBOOT.OLD is the game executable", cfw_check["message"])
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(nk_cli.cmd_inspect(argparse.Namespace(
+                iso=str(iso_path), root=str(work_root / "inspect-user-data"), json=False,
+            )), 2)
+        inspection_output = "\n".join(
+            str(call.args[0]) for call in printed.call_args_list
+        )
+        self.assertIn("Game executable: EBOOT.OLD", inspection_output)
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("custom-firmware patch", summary)
         self.assertIn("EBOOT.OLD (encrypted)", summary)
@@ -1365,6 +1385,19 @@ class TestSanitizedBringup(unittest.TestCase):
             "MODIFIED_DUMP_CFW_LOADER",
             {check["code"] for check in report["preflight_checks"]},
         )
+        preflight = nk_cli.inspect_compatibility_preflight(
+            iso_path,
+            metadata=nk_cli.inspect_iso(iso_path),
+            runtime_root=work_root / "work" / "user-data",
+        )
+        self.assertEqual(preflight["selected_executable_source"], "EBOOT.OLD")
+        self.assertEqual(preflight["selected_executable"], "EBOOT.elf")
+        cfw_check = next(
+            check for check in preflight["checks"]
+            if check["code"] == "MODIFIED_DUMP_CFW_LOADER"
+        )
+        self.assertIn("EBOOT.OLD is the game executable", cfw_check["message"])
+        self.assertIn("decrypted EBOOT.elf", cfw_check["message"])
         selected_elf = work_root / "work" / "selected.elf"
         self.assertEqual(selected_elf.read_bytes(), decrypted_eboot)
         profile = json.loads(
@@ -1468,7 +1501,9 @@ class TestSanitizedBringup(unittest.TestCase):
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("UNSUPPORTED_IMPORT (sceSynthetic, NID 0x12345678)", summary)
         self.assertIn("in the works (", summary)
-        self.assertIn("#71", summary)
+        self.assertIn(308, report["issue_numbers"])
+        self.assertIn("#308", summary)
+        self.assertNotIn("#71", summary)
         nk_cli.validate_bringup_report(report)
 
     def test_missing_runtime_entry_is_named_without_reporting_address(self):
