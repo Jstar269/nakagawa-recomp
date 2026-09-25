@@ -6697,7 +6697,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b98206bf70b82aec73ab22a30917e8aeaf574248b1a9d16369a7cc9ee0df5227"
+      "sha256": "58077252a93ff682f2ad5de6cac163bbfc72c013c18ac25a29ee653887c455f8"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -7700,7 +7700,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "55d9a31f1ddf08bd35949032bd6ba82f52161b31b6a7de9253322c8eab089769"
+      "sha256": "825c2a625e514b22ebee45b14ad6ac83df237c2b7cb706b614107f1624716430"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -8990,7 +8990,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "570d547a195637c3dd9bb15f0b6249a10a11ebcd09afd3bd1947f70baa4b10bf"
+      "sha256": "b626b0954f3e07f0b08a298e97054bc0997d217134a1775f6d776f2f398ebc20"
     },
     {
       "path": "tools/test_package_cache.py",
@@ -9032,7 +9032,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a2a6311b48ec7ba2084aa7006938f231e21b76a58c13393f748343db68f65278"
+      "sha256": "8ef73d834a8c705f61f716e98d4bd697ac9b016897eca60f3479417f3530ed80"
     },
     {
       "path": "tools/test_perf_summary_diff.py",
@@ -9170,7 +9170,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "03e7450f4edb517b5c3b1b850a236bdcae5a489ac94a553f2c207d9c07cd4b3e"
+      "sha256": "9810bc71c6b4bd713a71e93074d196bcceade47421c5bbe7337b92ce811688d3"
     },
     {
       "path": "tools/test_prxload_psp_header.py",
@@ -9912,7 +9912,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "88db5479282534d3ddd946c0484d19eab03fdf37ecd11cf01692e98f02a73f9b"
+      "sha256": "803a7a594b128fd7f5371d10e1bf0499d1877086e01d9d269ee7a233818ac1c4"
     },
     {
       "path": "tools/vfpu_fuzz_gen.py",
