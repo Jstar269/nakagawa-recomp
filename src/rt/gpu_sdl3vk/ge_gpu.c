@@ -359,11 +359,11 @@ static uint32_t find_mem(uint32_t bits, VkMemoryPropertyFlags want) {
 
 static int make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *buf,
                        VkDeviceMemory *mem, void **map) {
-    VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bci.size = size; bci.usage = usage;
     VKC(vkCreateBuffer(s_dev, &bci, NULL, buf));
     VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, *buf, &mr);
-    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     mai.allocationSize = mr.size;
     mai.memoryTypeIndex = find_mem(mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -375,7 +375,7 @@ static int make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *bu
 
 static int make_image(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage,
                       VkImage *img, VkDeviceMemory *mem) {
-    VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    VkImageCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     ici.imageType = VK_IMAGE_TYPE_2D; ici.format = fmt;
     ici.extent.width = w; ici.extent.height = h; ici.extent.depth = 1;
     ici.mipLevels = 1; ici.arrayLayers = 1;
@@ -383,7 +383,7 @@ static int make_image(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags us
     ici.usage = usage; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VKC(vkCreateImage(s_dev, &ici, NULL, img));
     VkMemoryRequirements mr; vkGetImageMemoryRequirements(s_dev, *img, &mr);
-    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     mai.allocationSize = mr.size;
     mai.memoryTypeIndex = find_mem(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VKC(vkAllocateMemory(s_dev, &mai, NULL, mem));
@@ -392,7 +392,7 @@ static int make_image(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags us
 }
 
 static int make_view(VkImage img, VkFormat fmt, VkImageAspectFlags aspect, VkImageView *view) {
-    VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    VkImageViewCreateInfo vci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
     vci.image = img; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = fmt;
     vci.subresourceRange.aspectMask = aspect;
     vci.subresourceRange.levelCount = 1; vci.subresourceRange.layerCount = 1;
@@ -405,7 +405,7 @@ static int make_view(VkImage img, VkFormat fmt, VkImageAspectFlags aspect, VkIma
 static void to_layout(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspect,
                       VkImageLayout *cur, VkImageLayout want) {
     if (*cur == want) return;
-    VkImageMemoryBarrier mb = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    VkImageMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     mb.oldLayout = *cur; mb.newLayout = want;
@@ -546,7 +546,7 @@ static int cmd_begin_fresh(void) {
     s_cmd_slot = slot;
     s_cmd = slot->cmd;
     vkResetCommandBuffer(s_cmd, 0);
-    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VKC(vkBeginCommandBuffer(s_cmd, &bi));
     return 1;
@@ -556,7 +556,7 @@ static int cmd_finish_submit(SrPerfGeReason reason, int defer) {
     SubmitSlot *slot = s_cmd_slot;
     if (!slot) return 0;
     VKC(vkEndCommandBuffer(s_cmd));
-    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &s_cmd;
     uint64_t submit_started = SDL_GetTicksNS();
     uint64_t perf_submit_started = sr_perf_now_ns();
@@ -864,8 +864,8 @@ static ReadbackSlot *readback_acquire(void) {
 static VkPipeline pipe_create(const PipeKey *k) {
     uint64_t profile_started = cpu_profile_now();
     VkPipelineShaderStageCreateInfo st[2] = {
-        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
-        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
     };
     st[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   st[0].module = s_vs; st[0].pName = "main";
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = s_fs; st[1].pName = "main";
@@ -877,17 +877,17 @@ static VkPipeline pipe_create(const PipeKey *k) {
         { 2, 0, VK_FORMAT_R32_SFLOAT,          24 },
         { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,      28 },
     };
-    VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     vi.vertexBindingDescriptionCount = 1;   vi.pVertexBindingDescriptions = &bind;
     vi.vertexAttributeDescriptionCount = 4; vi.pVertexAttributeDescriptions = at;
 
-    VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    VkPipelineViewportStateCreateInfo vp = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    VkPipelineViewportStateCreateInfo vp = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
     vp.viewportCount = 1; vp.scissorCount = 1;
 
-    VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode = k->cull;
     /* raster_tri keeps POSITIVE cross product in y-down screen coords; Vulkan's signed
@@ -895,10 +895,10 @@ static VkPipeline pipe_create(const PipeKey *k) {
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
-    VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkPipelineDepthStencilStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    VkPipelineDepthStencilStateCreateInfo ds = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
     ds.depthTestEnable = k->ztest;
     ds.depthWriteEnable = k->zwrite;
     ds.depthCompareOp = (VkCompareOp)k->zfunc;
@@ -912,15 +912,15 @@ static VkPipeline pipe_create(const PipeKey *k) {
     ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     ba.alphaBlendOp = VK_BLEND_OP_ADD;
     ba.colorWriteMask = k->cmask;
-    VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
     cb.attachmentCount = 1; cb.pAttachments = &ba;
 
     VkDynamicState dyn[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
                              VK_DYNAMIC_STATE_BLEND_CONSTANTS };
-    VkPipelineDynamicStateCreateInfo dn = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    VkPipelineDynamicStateCreateInfo dn = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
     dn.dynamicStateCount = 3; dn.pDynamicStates = dyn;
 
-    VkGraphicsPipelineCreateInfo pci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    VkGraphicsPipelineCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
     pci.stageCount = 2; pci.pStages = st;
     pci.pVertexInputState = &vi; pci.pInputAssemblyState = &ia;
     pci.pViewportState = &vp; pci.pRasterizationState = &rs;
@@ -968,7 +968,7 @@ static VkPipeline pipe_get(const PipeKey *k) {
  * destination-snapshot image (shader blending reads it; refreshed before such draws).
  * s_snap_view is created before the first make_descriptor call in gegpu_init. */
 static VkDescriptorSet make_descriptor(VkImageView view, VkSampler smp, VkDescriptorPool pool) {
-    VkDescriptorSetAllocateInfo dai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     dai.descriptorPool = pool; dai.descriptorSetCount = 1; dai.pSetLayouts = &s_dlayout;
     VkDescriptorSet set = VK_NULL_HANDLE;
     uint64_t alloc_started = cpu_profile_now();
@@ -981,8 +981,8 @@ static VkDescriptorSet make_descriptor(VkImageView view, VkSampler smp, VkDescri
     VkDescriptorImageInfo dii = { smp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkDescriptorImageInfo dds = { s_smp_n, s_snap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet wr[2] = {
-        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
-        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
     };
     wr[0].dstSet = set; wr[0].dstBinding = 0; wr[0].descriptorCount = 1;
     wr[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1034,7 +1034,7 @@ static int submit_pending(void) {
     to_layout(s_cmd, t->dep->img, VK_IMAGE_ASPECT_DEPTH_BIT, &t->dep->layout,
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-    VkRenderPassBeginInfo rbi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    VkRenderPassBeginInfo rbi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rbi.renderPass = s_rp; rbi.framebuffer = t->fb;
     rbi.renderArea.extent.width = SCL_W; rbi.renderArea.extent.height = SCL_H;
     vkCmdBeginRenderPass(s_cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
@@ -1222,7 +1222,7 @@ static int target_prepare_present(Target *t) {
 
     VkImageLayout old_layout = t->layout;
     if (vkResetCommandBuffer(r->cmd, 0) != VK_SUCCESS) return 0;
-    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(r->cmd, &bi) != VK_SUCCESS) return 0;
     to_layout(r->cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
@@ -1239,7 +1239,7 @@ static int target_prepare_present(Target *t) {
         t->layout = old_layout;
         return 0;
     }
-    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &r->cmd;
     uint64_t submit_started = SDL_GetTicksNS();
     uint64_t perf_submit_started = sr_perf_now_ns();
@@ -1689,7 +1689,7 @@ static Target *target_acquire(void) {
             vkDestroyFramebuffer(s_dev, t->fb, NULL);
         }
         VkImageView views[2] = { t->view, d->view };
-        VkFramebufferCreateInfo fbc = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+        VkFramebufferCreateInfo fbc = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
         fbc.renderPass = s_rp; fbc.attachmentCount = 2; fbc.pAttachments = views;
         fbc.width = SCL_W; fbc.height = SCL_H; fbc.layers = 1;
         if (vkCreateFramebuffer(s_dev, &fbc, NULL, &t->fb) != VK_SUCCESS) return NULL;
@@ -1919,7 +1919,7 @@ static int tex_make(const uint32_t *px, int w, int h, int linear, int clamp_u, i
         return 0;
     if (!tex_upload(*img, px, w, h)) return 0;
     if (!make_view(*img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, view)) return 0;
-    VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    VkSamplerCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     sci.magFilter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     sci.minFilter = sci.magFilter;
     sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -2846,7 +2846,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         { static int n = 0; if (n < 3 || getenv("SR_GPU_PRESENT_DBG"))
             fprintf(stderr, "GEGPU_PRESENT[%llu]: EARLY-EXIT t=%p gpu_valid=%d fmt=%d/%d\n",
                 (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, (void*)t, t ? t->gpu_valid : -1,
-                t ? t->fmt : -1, fmt & 3); n++; }
+                t ? (int)t->fmt : -1, fmt & 3); n++; }
         s_cnt_present_cpu++; return -1; }
     if (!target_prepare_present(t)) return -1;
     s_cnt_present_gpu++;
@@ -3845,13 +3845,13 @@ int gegpu_init(void) {
     s_xfer_align = props.limits.optimalBufferCopyOffsetAlignment;
     if (s_xfer_align < 4) s_xfer_align = 4;
 
-    VkCommandPoolCreateInfo cpi = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     cpi.queueFamilyIndex = vi.queue_family;
     VKC(vkCreateCommandPool(s_dev, &cpi, NULL, &s_pool));
-    VkCommandBufferAllocateInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    VkCommandBufferAllocateInfo cbi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     cbi.commandPool = s_pool; cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbi.commandBufferCount = 1;
-    VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     for (int i = 0; i < SUBMIT_FRAMES; i++) {
         SubmitSlot *slot = &s_submit[i];
         VKC(vkAllocateCommandBuffers(s_dev, &cbi, &slot->cmd));
@@ -3883,7 +3883,7 @@ int gegpu_init(void) {
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sub.colorAttachmentCount = 1; sub.pColorAttachments = &cref;
     sub.pDepthStencilAttachment = &zref;
-    VkRenderPassCreateInfo rpc = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+    VkRenderPassCreateInfo rpc = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
     rpc.attachmentCount = 2; rpc.pAttachments = at;
     rpc.subpassCount = 1; rpc.pSubpasses = &sub;
     VKC(vkCreateRenderPass(s_dev, &rpc, NULL, &s_rp));
@@ -3908,12 +3908,12 @@ int gegpu_init(void) {
     db[0].binding = 0; db[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     db[0].descriptorCount = 1; db[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     db[1] = db[0]; db[1].binding = 1;
-    VkDescriptorSetLayoutCreateInfo dlc = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    VkDescriptorSetLayoutCreateInfo dlc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     dlc.bindingCount = 2; dlc.pBindings = db;
     VKC(vkCreateDescriptorSetLayout(s_dev, &dlc, NULL, &s_dlayout));
 
     VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * MAX_TEX };
-    VkDescriptorPoolCreateInfo dpc = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorPoolCreateInfo dpc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     dpc.maxSets = MAX_TEX; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;   /* LRU eviction */
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_tex));
@@ -3923,12 +3923,12 @@ int gegpu_init(void) {
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_fix));
 
     VkPushConstantRange pcr = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushPC) };
-    VkPipelineLayoutCreateInfo plc = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkPipelineLayoutCreateInfo plc = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     plc.setLayoutCount = 1; plc.pSetLayouts = &s_dlayout;
     plc.pushConstantRangeCount = 1; plc.pPushConstantRanges = &pcr;
     VKC(vkCreatePipelineLayout(s_dev, &plc, NULL, &s_playout));
 
-    VkShaderModuleCreateInfo smc = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+    VkShaderModuleCreateInfo smc = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
     smc.codeSize = sizeof(k_vert_spv); smc.pCode = k_vert_spv;
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_vs));
     smc.codeSize = sizeof(k_frag_spv); smc.pCode = k_frag_spv;
@@ -3936,7 +3936,7 @@ int gegpu_init(void) {
 
     /* shared clamp samplers (render-target sampling + snapshot) */
     {
-        VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        VkSamplerCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sci.magFilter = VK_FILTER_NEAREST; sci.minFilter = VK_FILTER_NEAREST;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

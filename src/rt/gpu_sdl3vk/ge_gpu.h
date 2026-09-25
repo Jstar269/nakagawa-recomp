@@ -177,10 +177,11 @@ void gegpu_replay_stats_reset(void);
 void gegpu_replay_stats_get(GeGpuReplayStats *out);
 void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out);
 
-#if defined(SR_GPU_COHERENCE_SELFTEST) || defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
+/* Selftest entry points: defined only in selftest builds (see ge_gpu.c), but
+ * declared unconditionally so no translation unit ever sees an implicit
+ * declaration under any flag combination. */
 int gegpu_coherence_selftest(void);
 int gegpu_snapshot_sync_selftest(void);
-#endif
 
 void gegpu_shutdown(void);
 
