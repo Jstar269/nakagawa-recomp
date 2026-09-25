@@ -9123,10 +9123,13 @@
     },
     {
       "path": "tools/test_provenance_attest_verify.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-attest-verify-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6e3ddcb7a09a5ebf8a385abeee6244729eb53de1fa3db297d672661313e30be1"
     },
