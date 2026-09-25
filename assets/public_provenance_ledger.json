@@ -2281,7 +2281,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ebd71df2fd02048285760125bb6cf9defe0a2051713c0b92e68b56418c29522"
+      "sha256": "390e1e8bdcc0ad6e64a7db6fb42e55afb965cca7c12e7ede2677b1d7b76f4b79"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2317,7 +2317,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55db42aa336e4e35ae26952650eddda40d1ca9294ca297535808ca94633e288e"
+      "sha256": "938aea9c64e6abe424e4219104083c64baf1d85a537301899f02df3385e629e0"
     },
     {
       "path": "src/player/player_state.h",
@@ -2329,7 +2329,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "131d0a379666623b674d87f4e3f3f62a649643f9eec8023df7e7fa3ccf72888a"
+      "sha256": "b0de881a5ab7088b8e4b8b6a985c3a1a8f3b4f32caef7b5e8d748df8d18fa890"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -4799,7 +4799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "37ed1060d306c60a2746d0a3d2d0eed70e4fb45f36342f9d8ce5a2b87a4eac34"
+      "sha256": "85fb3cb093cb5de28f0c11bfb461add48b86574b9610944e313ae4763f03adfd"
     },
     {
       "path": "tests/native/test_posix_process.c",
