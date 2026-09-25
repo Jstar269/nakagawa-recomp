@@ -553,7 +553,9 @@ committed.
 
 There is no `SR_HLE_CONTINUE` switch. In a scheduled game run, an unimplemented NID is fatal;
 returning zero would turn an unknown operation into phantom success. Register the NID with real
-semantics, and use `SR_DISPATCH_FATAL=1` when locating silent non-PLT dispatch misses.
+semantics. Non-PLT dispatch misses are never silent and carry no switch: the miss is logged
+(`DISPATCH_MISS_NEW`), only analyzer-owned executable spans may execute, and any rejection
+terminates the run.
 
 ## Interpreting the audio-thread semaphore trace
 

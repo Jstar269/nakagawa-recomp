@@ -21,7 +21,6 @@ typedef struct {
     bool fullscreen;
     bool vsync;
     bool benchmark_mode;
-    bool diagnostic_mode; /* opt-in fail-closed dispatch validation (SR_DISPATCH_FATAL=1) */
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
 } NkRuntimeConfig;
 

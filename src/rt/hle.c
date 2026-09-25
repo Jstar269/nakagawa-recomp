@@ -10137,7 +10137,13 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
             if (mono) { int16_t v = (int16_t)MEM_R16(buf + i * 2); lr[i*2] = v; lr[i*2+1] = v; }
             else { lr[i*2] = (int16_t)MEM_R16(buf + i * 4); lr[i*2+1] = (int16_t)MEM_R16(buf + i * 4 + 2); }
         }
+        /* The output counters live here, on the guest-visible sceAudioOutput* hand-off,
+         * not inside a host audio backend. A backend that does not instrument itself made
+         * audio_output_calls/frames read zero for a run whose music was plainly audible,
+         * which is exactly the case the counters exist to describe. */
+        uint64_t out_started = sr_perf_now_ns();
         sr_audio_push((int)ch, lr, (int)n, voll, volr);
+        if (out_started) sr_perf_audio_output(out_started, n);
     }
     int q = sr_audio_queued((int)ch);
     if (q < 0 || n == 0) {                 /* no host audio: open-loop pacing as before */
@@ -12047,6 +12053,12 @@ void sr_vblank_tick(void) {
         s_framebuf = s_display_active.addr;
         s_last_flip_vcount = s_vcount;
         s_watchdog_bucket = 0;
+        /* Same arm as the sync=0 immediate flip: a NEXTFRAME (sync=1) flip is presented
+         * here, so the capture must be armed before this present or the recorded frame
+         * is not the presented one. Arming only in the sync=0 branch left every
+         * double-buffering title (which flips at VBLANK, not synchronously) with no
+         * present-truthful capture at all. */
+        fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
         display_present_active();
     }
     if (ge_log_on() && (s_vcount & 0x3f) == 0)
