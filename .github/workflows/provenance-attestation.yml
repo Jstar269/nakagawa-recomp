@@ -196,25 +196,29 @@ jobs:
             echo "candidate policy equals trusted base policy; no policy delta authority required"
           fi
 
-      # During the migration window the public ledger still exists in the
-      # trusted base tree.  Copy that exact blob outside the checkout so the
-      # verifier can bind it to BASE_SHA without reading the candidate's copy.
-      # Once the committed control paths are retired, this step is replaced by
-      # the external baseline service described in docs/PROVENANCE_MERGE_GATE.md.
-      - name: Materialize the trusted base public baseline
+      # The public baseline is generated from the trusted authority for the
+      # exact base commit, using the trusted checkout's verifier. The base
+      # branch's committed ledger is not an input, so a stale or edited copy
+      # on main cannot become the baseline. The envelope binds the base commit,
+      # tree and policy, and the verify step checks that binding again.
+      - name: Generate the trusted base public baseline from the authority
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/trusted"
+          mkdir -p "${RUNNER_TEMP}/trusted" "${RUNNER_TEMP}/baseline-scratch"
           baseline="${RUNNER_TEMP}/trusted/public-provenance-baseline.json"
-          if ! git cat-file blob "${BASE_SHA}:assets/public_provenance_ledger.json" > "${baseline}"; then
-            echo "trusted base public provenance baseline is unavailable" >&2
+          if ! python tools/provenance_attest_verify.py \
+            --repo "${GITHUB_WORKSPACE}" \
+            --base "${BASE_SHA}" \
+            --trusted-ledger "${RUNNER_TEMP}/trusted/IMPLEMENTATION_PROVENANCE.json" \
+            --workdir "${RUNNER_TEMP}/baseline-scratch" \
+            --emit-authority-baseline "${baseline}"; then
+            echo "trusted base public provenance baseline could not be generated" >&2
             echo "the integration-time gate cannot verify this pull request; failing closed" >&2
             exit 1
           fi
           test -s "${baseline}"
-          echo "trusted base public baseline materialized for ${BASE_SHA}"
 
       - name: Generate and verify ephemeral provenance controls
         env:

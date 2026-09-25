@@ -2,7 +2,8 @@
 
 The supported and tested core build is Windows 11 x64; the host-neutral object
 gate is a portability probe, not Linux support (see
-[`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)). The dashboard is a separate optional web project.
+[`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md), and
+[`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) for the current WSL dev commands). The dashboard is a separate optional web project.
 
 ## Supported development baseline
 

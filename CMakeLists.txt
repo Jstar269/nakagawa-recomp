@@ -109,7 +109,10 @@ target_include_directories(test_package_builder PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player
 )
 target_link_libraries(test_package_builder PRIVATE nakagawa_core)
+# The test resolves the CLI relative to the working directory, so it must run
+# from the repository root (where tools/nk_cli.py lives), not from the build dir.
 add_test(NAME package_builder_test COMMAND test_package_builder)
+set_tests_properties(package_builder_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(test_input_settings
     tests/native/test_input_settings.c

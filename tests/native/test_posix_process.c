@@ -30,6 +30,7 @@ int main(void) {
 #include "nk_platform.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -171,6 +172,67 @@ int main(void) {
     assert(nk_launch_wait(&session, 0) == 9);
     assert(session.exit_code == 9);
     nk_launch_stop(&session);
+
+    /* 7. Terminating a child process must terminate its process tree (grandchildren).
+     *
+     * Before the fix, nk_platform_terminate_process signaled only the direct
+     * child, leaving background children/grandchildren running until they
+     * finished on their own. */
+    printf("[POSIX_PROCESS_TEST] Subtest 7: process tree termination stops grandchildren\n");
+    fflush(stdout);
+
+    const char *posix_pid_file = "build/test_posix_grandchild.pid";
+    remove(posix_pid_file);
+
+    NkProcessHandle tree_proc;
+    memset(&tree_proc, 0, sizeof(tree_proc));
+    const char *tree_argv[] = {
+        "/bin/sh",
+        "-c",
+        "sleep 60 & echo $! > build/test_posix_grandchild.pid; wait",
+        NULL
+    };
+    assert(nk_platform_spawn_process("/bin/sh", tree_argv, NULL, NULL, &tree_proc));
+    assert(tree_proc.is_active);
+
+    pid_t grandchild_pid = 0;
+    for (int i = 0; i < 200; i++) {
+        FILE *pf = fopen(posix_pid_file, "r");
+        if (pf) {
+            int pid_val = 0;
+            if (fscanf(pf, "%d", &pid_val) == 1 && pid_val > 0) {
+                grandchild_pid = (pid_t)pid_val;
+                fclose(pf);
+                break;
+            }
+            fclose(pf);
+        }
+        struct timespec slice = { 0, 10L * 1000L * 1000L }; /* 10 ms */
+        nanosleep(&slice, NULL);
+    }
+    assert(grandchild_pid > 0);
+    assert(kill(grandchild_pid, 0) == 0);
+
+    nk_platform_terminate_process(&tree_proc);
+    nk_platform_close_process(&tree_proc);
+
+    bool grandchild_dead = false;
+    for (int i = 0; i < 200; i++) {
+        if (kill(grandchild_pid, 0) != 0 && errno == ESRCH) {
+            grandchild_dead = true;
+            break;
+        }
+        struct timespec slice = { 0, 10L * 1000L * 1000L }; /* 10 ms */
+        nanosleep(&slice, NULL);
+    }
+    if (!grandchild_dead) {
+        kill(grandchild_pid, SIGKILL);
+        remove(posix_pid_file);
+        fprintf(stderr, "[POSIX_PROCESS_TEST] Grandchild PID %d survived child termination!\n", (int)grandchild_pid);
+        assert(grandchild_dead);
+    }
+    remove(posix_pid_file);
+    printf("[POSIX_PROCESS_TEST] Grandchild PID %d terminated successfully.\n", (int)grandchild_pid);
 
     printf("[POSIX_PROCESS_TEST] ALL POSIX PROCESS TESTS PASSED!\n");
     return 0;
