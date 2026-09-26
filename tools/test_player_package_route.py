@@ -272,6 +272,24 @@ class TestPlayerPackageRoute(unittest.TestCase):
             timeout=LAUNCH_TIMEOUT_MS / 1000,  # subprocess.run takes seconds
         )
 
+    def test_release_package_layout_finds_public_cli(self):
+        self.skip_if_toolchain_unavailable()
+        package = self.root / "release-package"
+        install_root = package / "bin"
+        cli = package / "source" / "tools" / "nk_cli.py"
+        cli.parent.mkdir(parents=True)
+        install_root.mkdir()
+        cli.write_text("# source-owned test fixture\n", encoding="utf-8")
+
+        completed = subprocess.run(
+            [str(self.harness), "--find-cli", str(install_root)],
+            cwd=package, capture_output=True, text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("PACKAGE_BUILDER_CLI status=PASS", completed.stdout)
+        discovered = completed.stdout.partition("path=")[2].strip()
+        self.assertEqual(Path(discovered).resolve(), cli.resolve())
+
     def test_build_validates_and_launches_through_the_player(self):
         self.skip_if_toolchain_unavailable()
         before = tracked_status()
