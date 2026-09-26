@@ -215,6 +215,21 @@ endif
 LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS)
 
 BUILD_DIR  ?= build/$(GAME_NAME)
+# Refuse a BUILD_DIR GNU Make cannot represent, before any target name is derived
+# from it and before the parse-time mkdir below runs. Make splits a target or
+# prerequisite name on whitespace, so a BUILD_DIR containing a space silently
+# becomes several targets: `clean` then removes the FIRST fragment -- a directory
+# the caller never named -- and the parse-time mkdir creates directories named
+# after the remaining fragments in the repository root. Failing closed here names
+# the boundary instead of corrupting the tree.
+#
+# The repository ROOT may contain spaces freely: BUILD_DIR defaults to the
+# relative `build/$(GAME_NAME)`, which carries none. tools/title_codegen_plan.py
+# already picks a Make-safe build root (NK_BUILD_ROOT, then the 8.3 short name)
+# for every route that accepts an operator-chosen output directory (#296).
+ifneq ($(subst $(SPACE),,$(BUILD_DIR)),$(BUILD_DIR))
+$(error BUILD_DIR '$(BUILD_DIR)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a relative BUILD_DIR under the repository root (the default `build/<game>`), or set NK_BUILD_ROOT to a folder without spaces so tools/title_codegen_plan.py can pick a Make-safe build root (issue #296).)
+endif
 # The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
 # that produced them, not to a fixed title. Without this the runtime wrote them to a
 # literal build/hst/, so every non-HST build either scribbled into another title's

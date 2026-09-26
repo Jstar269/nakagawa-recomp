@@ -32,6 +32,15 @@ import codegen
 
 _MTIME_MARGIN_NS = 2_000_000_000
 
+#: Runs the repository's profile tool without ever spelling its path on a command
+#: line, so a checkout under a path containing spaces still works. The path rides
+#: in the environment, the only transport a command interpreter cannot split.
+PROFILE_TOOL_ENV = "NK_PROFILE_TOOL"
+PROFILE_TOOL_LAUNCH = (
+    "import os, runpy, sys; p = os.environ['" + PROFILE_TOOL_ENV + "']; "
+    "sys.argv[0] = p; runpy.run_path(p, run_name='__main__')"
+)
+
 
 def _set_mtime_after(path: Path, *references: Path) -> None:
     """Set ``path`` newer than the references without waiting for the clock."""
@@ -48,6 +57,21 @@ def _set_mtime_before(path: Path) -> None:
     os.utime(path, ns=(target, target))
 
 
+def _make_safe_fixture_dir(name: str) -> Path:
+    """A BUILD_DIR a lifecycle test may hand to Make.
+
+    Not derived from the repository root on purpose. GNU Make splits a target or
+    prerequisite name on whitespace, so a BUILD_DIR that inherits a space from the
+    checkout path (`C:/some path/repo/build/...`) never reaches the recipe intact:
+    Make binds the first fragment as the target and treats the rest as goals, so
+    `clean` deletes a directory the caller never named and the parse-time mkdir
+    creates a `spaces/...` tree in the repository root. The Makefile now refuses
+    such a BUILD_DIR outright; these tests must therefore pass a path Make can
+    represent, and a temporary directory is also the right place for a fixture.
+    """
+    return Path(tempfile.mkdtemp(prefix=f"nakagawa-lifecycle-{name}-")) / "build"
+
+
 class BuildTruthTests(unittest.TestCase):
     def setUp(self) -> None:
         self.make = shutil.which("mingw32-make") or shutil.which("make")
@@ -59,6 +83,14 @@ class BuildTruthTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-build-truth-")
         self.root = Path(self.temp.name)
         (self.root / "build").mkdir()
+        # The real shared make fragment, copied in so the fixture `include`s a
+        # relative name. GNU Make cannot name a file whose path contains a space
+        # -- not as a target, not as a prerequisite, and not even in an
+        # `include` (quotes are kept as literal filename bytes by Make 4.4) --
+        # so a checkout under `C:/some path/repo` cannot be referenced from a
+        # fixture at all. Copying the fragment keeps its DEPFLAGS authoritative
+        # while leaving the fixture's Make-visible names space-free.
+        shutil.copyfile(COMMON_MK, self.root / COMMON_MK.name)
         (self.root / "inner.h").write_text("#define INNER_TOKEN 1\n", encoding="ascii")
         (self.root / "outer.h").write_text('#include "inner.h"\n', encoding="ascii")
         (self.root / "dependent.c").write_text(
@@ -68,6 +100,21 @@ class BuildTruthTests(unittest.TestCase):
         (self.root / "unrelated.c").write_text(
             "int unrelated(void) { return 7; }\n", encoding="ascii"
         )
+        # The profile tool is addressed through the environment, never through a
+        # Make-visible name or a command-line argument. A checkout whose own path
+        # contains a space cannot be spelled on a command line at all: sh and
+        # cmd.exe both split it, so the tool would be handed a truncated path.
+        # The `-c` launcher is the same shape the repository Makefile already
+        # uses for its own inline Python, so it behaves identically under sh and
+        # under the cmd.exe fallback.
+        #
+        # The tool is therefore deliberately NOT a prerequisite here (Make cannot
+        # name it), so the stamp's staleness rests on the profile identity alone.
+        # The tool dependency edge this fixture used to model lives in the
+        # repository Makefile as `$(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)`,
+        # where the tool is a repository-relative name; that edge is asserted in
+        # test_repository_rules_keep_the_profile_tool_dependency.
+        profile_run = PROFILE_TOOL_LAUNCH
         (self.root / "Makefile").write_text(
             textwrap.dedent(
                 f"""
@@ -75,9 +122,9 @@ class BuildTruthTests(unittest.TestCase):
                 CC ?= gcc
                 PROFILE_FLAGS ?= -O0
                 BUILD := build
-                PROFILE_TOOL := {PROFILE_TOOL.as_posix()}
-                include {COMMON_MK.as_posix()}
-                PROFILE_HASH := $(shell $(PYTHON) $(PROFILE_TOOL) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
+                PROFILE_RUN := -c "{profile_run}"
+                include {COMMON_MK.name}
+                PROFILE_HASH := $(shell $(PYTHON) $(PROFILE_RUN) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
                 PROFILE_STAMP := $(BUILD)/.profile-$(PROFILE_HASH)
                 PROFILE_MANIFEST := $(BUILD)/profile.json
                 OBJS := $(BUILD)/dependent.o $(BUILD)/unrelated.o
@@ -85,27 +132,31 @@ class BuildTruthTests(unittest.TestCase):
                 .PHONY: all
                 all: $(OBJS)
 
-                $(PROFILE_STAMP): $(PROFILE_TOOL)
-                \t$(PYTHON) $(PROFILE_TOOL) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
+                $(PROFILE_STAMP):
+                \t$(PYTHON) $(PROFILE_RUN) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
 
                 $(BUILD)/%.o: %.c $(PROFILE_STAMP)
                 \t@echo COMPILE $<
-                \t$(CC) $(PROFILE_FLAGS) $(DEPFLAGS) -c $< -o $@
+                \t"$(CC)" $(PROFILE_FLAGS) $(DEPFLAGS) -c $< -o $@
 
                 -include $(PROFILE_STAMP)
                 -include $(OBJS:.o=.d)
                 """
             ).lstrip(),
             encoding="utf-8",
+            newline="\n",
         )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
     def run_make(self, flags: str) -> str:
+        env = dict(os.environ)
+        env[PROFILE_TOOL_ENV] = str(PROFILE_TOOL)
         proc = subprocess.run(
             [self.make, "--no-print-directory", f"CC={self.cc}", f"PROFILE_FLAGS={flags}"],
             cwd=self.root,
+            env=env,
             check=False,
             capture_output=True,
             text=True,
@@ -157,6 +208,24 @@ class BuildTruthTests(unittest.TestCase):
         self.assertIn("$(RECOMP_PROFILE_STAMP)", makefile)
         self.assertNotIn("$staleObjs", manager)
         self.assertNotIn("Skipping shader recompile", manager)
+
+    def test_repository_rules_keep_the_profile_tool_dependency(self) -> None:
+        """The profile stamps depend on the tool that writes them.
+
+        The build-truth fixture cannot model this edge: GNU Make cannot name a
+        file whose path contains a space, so a fixture rooted under a checkout
+        such as `C:/some path/repo` can never put the tool in a prerequisite
+        list. The repository Makefile has no such constraint -- it names the tool
+        relatively -- so the edge is pinned here, where it is real.
+        """
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("BUILD_PROFILE_TOOL := tools/build_profile.py", makefile)
+        for stamp in ("$(RUNTIME_PROFILE_STAMP)", "$(RECOMP_PROFILE_STAMP)",
+                      "$(CODEGEN_PROFILE_STAMP)", "$(TITLE_CONFIG_STAMP)"):
+            self.assertIn(
+                f"{stamp}: $(BUILD_PROFILE_TOOL)", makefile,
+                f"{stamp} must depend on the tool that writes it",
+            )
 
     def test_forced_same_profile_recipe_does_not_invalidate_objects(self) -> None:
         stamp = self.root / "build" / ".profile-same"
@@ -1378,7 +1447,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""
         if not self.make:
             self.skipTest("GNU Make is required")
-        target_dir = ROOT / "build" / "test_lifecycle_clean"
+        target_dir = _make_safe_fixture_dir("clean")
         target_dir.mkdir(parents=True, exist_ok=True)
         sentinel = target_dir / "sample_artifact.o"
         sentinel.write_text("dummy", encoding="utf-8")
@@ -1424,7 +1493,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         """distclean and tidy must preserve .exe and .pdb while removing .o, .d, and ephemeral logs."""
         if not self.make:
             self.skipTest("GNU Make is required")
-        test_dir = ROOT / "build" / "test_lifecycle_distclean"
+        test_dir = _make_safe_fixture_dir("distclean")
         test_dir.mkdir(parents=True, exist_ok=True)
         exe_file = test_dir / "mygame.exe"
         pdb_file = test_dir / "mygame.pdb"
@@ -1485,8 +1554,40 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         self.assertFalse(sub_b.exists(), f"Subdir {sub_b} was not cleaned by clean-all")
         self.assertFalse(recomp_log.exists(), f"Log {recomp_log} was not cleaned by clean-all")
 
+    def test_build_dir_with_a_space_fails_closed_before_any_recipe_runs(self) -> None:
+        """A BUILD_DIR Make cannot name must be refused, not silently fragmented.
+
+        Before the guard, Make split the whitespace-bearing target name derived
+        from BUILD_DIR into several targets: `clean` removed the FIRST fragment --
+        a directory the caller never named -- and the parse-time mkdir created
+        directories named after the remaining fragments in the repository root.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        victim = _make_safe_fixture_dir("guard-victim")
+        victim.mkdir(parents=True, exist_ok=True)
+        keep = victim / "keep.o"
+        keep.write_text("object", encoding="utf-8")
+        spaced = str(victim) + " extra"
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "clean", f"BUILD_DIR={spaced}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("contains a space", proc.stdout + proc.stderr)
+        self.assertIn("NK_BUILD_ROOT", proc.stdout + proc.stderr)
+        self.assertTrue(keep.is_file(), "clean removed a path outside the named BUILD_DIR")
+        # The refused run must not leave Make-fragment directories behind either.
+        self.assertFalse(
+            (ROOT / "spaces").exists(),
+            "a refused BUILD_DIR created a spaces/ tree in the repository root",
+        )
+        shutil.rmtree(victim.parent, ignore_errors=True)
+
     def test_clean_targets_never_delete_protected_paths(self) -> None:
-        """Verification that clean recipes do not touch protected paths or source directories."""
         protected_dirs = [
             ROOT / "assets",
             ROOT / "fixtures",
