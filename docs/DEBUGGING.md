@@ -392,7 +392,18 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
 | `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
+| `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
 | `END` | Route complete |
+
+A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
+or a hex literal of at most eight digits with an optional `0x` prefix. Anything else refuses
+the file at load, naming the line and the token, in `PRESS`, `PRESS_UNTIL`, `PRESS_WHILE` and
+the legacy `frame hexmask width` row alike — an unknown name, a name cut short, a stray
+character after a hex literal, a bare `0x`, or a value too wide for the mask, none of which may
+quietly become a *different* press. That refusal is the point: the parser used to coerce a
+token it could not read at all to **zero**, so a route asking for a button the format never
+defined pressed nothing while the run carried on — indistinguishable, from outside, from a game
+that had frozen. A press that is never delivered must be a load-time error, not a mystery.
 
 `#` starts a comment. A screen is "observed" by a coarse signature of the presented
 framebuffer: the frame is split into `cols x rows` cells and each cell contributes its mean
@@ -466,7 +477,17 @@ PRESS START+UP 30
 
 Names are case-insensitive and join with `+`; a hex mask (`PRESS 4000 20`) still means exactly
 what it always did, in the program and in the legacy `frame hexmask width` table. A name that is
-not a button is refused at load, which fails the route instead of pressing nothing.
+not a button is refused at load, which fails the route instead of pressing nothing. Every press
+step is narrated at load, so the log names the button rather than leaving a hex mask to be
+decoded:
+
+```text
+ROUTE: step 1 (PRESS_WHILE) presses CROSS
+```
+
+A press that reaches the guest and is ignored still cannot be told from a hang by the guest, so
+put an `EXPECT` or a `WAIT` after it: `PRESS_UNTIL` is that wait, and it is the honest form
+whenever the press has a consequence.
 
 Count the bits by hand only as a last resort, because a mask that is one bit out cannot fail
 visibly: the guest receives a button the screen ignores, the screen never changes, and the run
@@ -481,6 +502,37 @@ ROUTE: step 1 (PRESS_WHILE) presses CROSS
 — so a route that stalls says which button it offered. Note that the boot prefix wants `START`
 (warning screens, intro movie) and title screens usually want `CROSS`; one press is not
 automatically the right one for the next screen.
+
+### Waiting on what the guest does (`WAIT_NID`)
+
+Every other gated step watches the *screen*, and a screen signature can only be recorded from
+a run that is already on that screen. That is a chicken-and-egg problem for any route trying
+to reach a screen nobody has a signature for yet: the step that would get there is the one
+step that cannot be written. What the guest **calls** has no such problem — a module load, a
+savedata status poll, a display-mode change is observable from the first boot and means the
+same thing in every title, so the runtime can offer it and the route file names it:
+
+```text
+WAIT_NID sceIoOpen 600
+WAIT_NID 0x109f50bc 600      # the same import as raw hex
+```
+
+The name comes from the runtime's own table (`src/rt/nid_names.h`); the hex form exists so a
+route never depends on a name being in it, and a name that resolves to nothing is refused at
+load rather than becoming a wait that can never succeed. Three properties matter and are
+tested:
+
+- the wait completes on that import and **only** on that import — an unrelated call leaves the
+  route waiting;
+- it counts calls made **since the step began**, so an event that already happened cannot
+  satisfy a later step (two waits for the same import in a row is the shape that shows it);
+- a guest that never makes the call **fails the run**, naming the import, the vblank range and
+  how many imports it did make — the alternative, a route that waits forever, is
+  indistinguishable from a hang.
+
+It costs one store per import, and only while such a step is running, at the single point
+(`sr_syscall`) every guest import already passes through. The step needs no framebuffer
+observation, so it also does not pay the observer's sampling cost.
 
 ### Visual-oracle runs (`-Action VisualOracle`)
 
@@ -617,6 +669,66 @@ pacing was added to fix). A faster route is worthless if it is not the same rout
 `tools/nk_safety.ps1` holds the helpers whose failure modes are silent (bounded wait,
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
+
+#### Judging a long run
+
+One run of any length is only evidence if something states what "healthy" meant.
+`tools/soak_audit.py` takes the three artifacts a run already produces — `logs/perf.csv`
+(one row per wall second), `logs/stderr_run.log`, and a process-metrics CSV of
+`working_set_kb` / `private_bytes_kb` / `handles` sampled on a timer — and answers one
+question per assertion with a number:
+
+```powershell
+python tools/soak_audit.py --perf logs/perf.csv --proc proc.csv --stderr logs/stderr_run.log --audio
+```
+
+| Check | Fails on |
+| --- | --- |
+| `presenting` | fewer than `--min-presenting` of the seconds after the first presented one, or a gap longer than `--max-stall-s` |
+| `cadence` | vblank Hz below `--min-hz` at the 5th percentile of the last `--cadence-tail-s` presenting seconds |
+| `memory_working_set`, `memory_private`, `handles` | growth above `--max-growth-pct` after `--warmup-s` samples, **peak** included so a spike that shrinks back still fails |
+| `audio` | dropped frames or failed callback puts; the no-host-audio backend's underruns/overruns above `--max-underruns` |
+| `audio_drift` | un-consumed audio above `--max-drift-ms` at any point, the queue ending more than `--max-drift-net-ms` ahead of where it started, or a queue that rose at every single window |
+| `route` | a route program that ran without reporting `ROUTE_OK` |
+| `fatal` | `FATAL`, `ROUTE_FAIL`, `UNRESOLVED_DISPATCH`, watchdog or access-violation markers |
+
+Output is one `SOAK_CHECK:` line per assertion plus a `SOAK_AUDIT:` verdict line, and the exit
+status is non-zero if any assertion failed. Two rules keep it honest: an input it was not
+given reports `SKIP` with the reason rather than passing, and a quantity the runtime does not
+publish is reported as absent.
+
+**Audio drift** is the one that was unmeasurable until the telemetry published it. The runtime
+reads `sr_audio_queued()` — the queue depth the blocking output paces against — in
+`src/rt/hle.c`, in the same place it computes the delay from it, and prints one reading per
+300 delivered vblanks (about five seconds) behind `SR_AUDIOSTAT`:
+
+```text
+AUDIOSTAT_LEAD: vbl=9300 ch=8 outputs=268 queued=8820 lead_ms=200
+```
+
+Each host mixer prints the same pair in its own end-of-run or per-window line
+(`AUDIOSTAT_WIN` from the mixing backend, `AUDIOSTAT_HOST` from the per-channel one), so a
+build has whichever its mixer provides plus the runtime's own:
+
+```text
+AUDIOSTAT_WIN: vbl=927 frames=220500 nonzero=89565 duty=40% pushed_total=622848 queued=4410 lead_ms=12
+AUDIOSTAT_HOST: state=active driver=wasapi pushed=9841152 ... peak_q=22050 queued=4410 lead_ms=100
+```
+
+`lead_ms` is the number that matters over a long run: a queue that only grows is drift, which
+is audible as lag building over minutes even while nothing is dropped, and once it reaches the
+ring's capacity the push clamps and real guest audio is lost. `queued` is the deepest lead any
+channel carried, not the last reading, and `-1` in either field means the backend had no host
+queue to be ahead of — absence of a measurement, never a zero. Because a
+drift number nobody can parse is the same as no drift number,
+`tools/test_soak_audit.py` reads all three format strings out of their C sources and feeds
+them to the audit's own patterns, so renaming a field in C fails a test instead of a soak.
+`mingw32-make audio-selftest` checks the arithmetic the per-channel mixer publishes it from,
+and the HLE selftest's `test_audio_drift_window_reports_the_pacing_value` covers the window the
+runtime's own line prints.
+
+The seconds before the guest owns its first frame are the runtime's own index
+scan: they are excluded from `presenting` and never counted as a stall.
 
 ### Filesystem & I/O (→ SR_DBG_FS)
 

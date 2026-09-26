@@ -493,7 +493,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "20dec5d094a884a043097ae791682ecb90c0a28fd9ab4d6adb61a52eec2d011e"
+      "sha256": "c7e34a68ce839aa64b332c8f03ba39cc2eb36dfae17dbe3238ca4fcf38478ed7"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -922,7 +922,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "81c3eaa0015b21899c2df642e53106a3ea3896ce8b66121e20d8e815d6663191"
+      "sha256": "fc1b846c9d5378cb80ebad928a328f9a68d68f3f2bf24f6bf149c52f36f97873"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -3475,7 +3475,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f826100873027b7cfa14233c0ace9cb8a5a3f63ff73c2ff9e63e954bc3077005"
+      "sha256": "d8d64bb131f26fc12967a7c4b46cdda7dbbc2bd1af18e85bfc6cd999d503f9ce"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -4092,7 +4092,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "eb186532e645be1cbc84d8a8c50dd34d6beaafabf855a8d5f12460e603bfd2d7"
+      "sha256": "7b900ae026666ad2cbdb9e89da683ee72559a81105f34675c94eee1bc5ac6edb"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4130,7 +4130,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "54f3b944660a010b962db330cd42bc8aaa7e34eb5c4b823be2c29b3f291d16d8"
+      "sha256": "b5a6c8449bf6ee2ab4479b99f0df0833a432a2edbdd7e2d78d6f071e994ff4bc"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6535,6 +6535,18 @@
       "sha256": "722aff94572e84d9dc139d61176577c58fc5a6fda570e39943f68a7ba3eb24a7"
     },
     {
+      "path": "tools/soak_audit.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "soak-audit",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "48427901fe4dc58f1915fa3fd1056ae0dabb84130356522472edd24ba16c6738"
+    },
+    {
       "path": "tools/sync_drift_check.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8314,6 +8326,18 @@
       "sha256": "4a4f249076354721ba1e0416af369e79e7ea5ae9b7a2eba2f80f6ed64eccd1eb"
     },
     {
+      "path": "tools/test_soak_audit.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "soak-audit",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "7abd7541237757696ddceb7f66441bcaec29925b4e0adb001a4a8d083e3c892e"
+    },
+    {
       "path": "tools/test_stale_code_detect.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8683,7 +8707,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49b3e1ac020fca1007695bac10a5c06f7c33189acafcd9c1856ab7199b66e9dd"
+      "sha256": "7752e929b92609eff32f6ec255c01bcff65f2b04e48eb48bbbf7bef10eb70345"
     },
     {
       "path": "tools/test_vulkan_sdk.py",

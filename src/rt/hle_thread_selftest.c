@@ -64,6 +64,8 @@ int sr_route_test_sample(uint8_t *out);
  * state machine without a scheduler or GPU. */
 extern void sr_route_test_tick(uint32_t v);
 extern int sr_route_test_cadence_state(uint32_t *last_attempt);
+extern void sr_route_test_import(uint32_t nid);
+extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
@@ -163,6 +165,10 @@ extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *imm
                                         uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
 extern void sr_hle_test_audio_reset(void);
+extern void sr_hle_test_audio_lead_reset(void);
+extern void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued);
+extern unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                                   unsigned long *noqueue, long *last_ms);
 extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
@@ -2601,6 +2607,54 @@ static void test_audio_regular_contract_safety(void) {
            "a negative queue report ends the wait instead of looping");
     expect(s_audio_queue_calls == 1u,
            "the negative queue sentinel takes the open-loop path after one query");
+}
+
+/* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
+ *
+ * A push count cannot tell a guest that submits what it consumes from one that submits twice
+ * as much: both push frames, and only the queue depth separates them. So the runtime reads
+ * sr_audio_queued() where the blocking output paces against it and publishes the deepest lead
+ * any channel carried in each window. What is pinned here is the contract a reader of the
+ * telemetry depends on: the window's peak is the worst channel, not the last; a window in
+ * which every output had no host queue reports -1 rather than a drift of zero; and the
+ * accumulator resets when a window closes, so the next window starts from nothing. */
+static void test_audio_drift_window_reports_the_pacing_value(void) {
+    int peak = -1;
+    uint32_t peak_ch = 0xffffffffu;
+    unsigned long noqueue = 0, outputs = 0;
+    long last_ms = 0;
+
+    sr_hle_test_audio_lead_reset();
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "a fresh drift window has counted no outputs");
+    expect(last_ms == -1L, "and has published no milliseconds, not zero");
+
+    sr_hle_test_audio_lead_feed(10u, 0, 4410);
+    sr_hle_test_audio_lead_feed(20u, 3, 8820);
+    sr_hle_test_audio_lead_feed(30u, 8, 2205);
+    outputs = sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms);
+    expect(outputs == 3u, "every output in the window is counted");
+    expect(peak == 8820, "the window publishes the deepest lead, not the last reading");
+    expect(peak_ch == 3u, "and the channel that was carrying it");
+
+    /* One window is 300 delivered vblanks; crossing it prints what it saw and resets. */
+    sr_hle_test_audio_lead_feed(300u, 0, 4410);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the window that crosses the boundary starts the next one empty");
+    expect(last_ms == 200L, "the window printed its own peak, 8820 frames as 200 ms");
+    expect(peak == 0, "and the peak resets with it");
+    expect(noqueue == 0u, "as does the count of outputs with no queue");
+    (void)outputs;
+
+    /* No host queue anywhere in a window is absence of a measurement, never a zero drift. */
+    sr_hle_test_audio_lead_reset();
+    sr_hle_test_audio_lead_feed(10u, 0, -1);
+    sr_hle_test_audio_lead_feed(20u, 0, -1);
+    sr_hle_test_audio_lead_feed(300u, 0, -1);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the all-unmeasured window closed and reset like any other");
+    expect(last_ms == -1L, "a window with no host queue reports -1 ms, not 0");
+    sr_hle_test_audio_lead_reset();
 }
 
 static uint64_t selftest_guest_u64(uint32_t addr) {
@@ -15419,6 +15473,103 @@ static void test_route_malformed_files_are_refused(void) {
     remove(RT_PATH);
 }
 
+/* A mask the parser cannot read must refuse the route, not press nothing.
+ *
+ * The failure this pins down is invisible from outside a run: `strtoul` reports no error,
+ * so any token that is not a number became mask 0, the step held no buttons, and the guest
+ * sat on its screen rendering and polling the pad -- byte-identical to a frozen game. Four
+ * separate campaign runs read a frozen title screen that way, because the route asked for
+ * "CROSS" (a name the file format never defined) and pressed nothing at all. The whole
+ * point of a route is that a press arrives; a route that cannot name a button must say so
+ * at load, and one that names it wrongly must not run as though it had.
+ */
+/* A route may name the button it presses (test_route_names_the_buttons_it_presses), so the
+ * remaining failure mode is a token that means no button and no mask: a truncated name, a
+ * hex literal with a stray character, a bare prefix, or a value too wide for the pad mask.
+ * None of these may become a press, because a press that never arrives is indistinguishable
+ * from a game that has frozen. They are refused at load, naming the line and the token. */
+static void test_route_mask_refuses_what_it_cannot_mean(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* Every step that carries a mask refuses a token that is neither. */
+    static const char *const bad[] = {
+        "4000junk",     /* a hex literal with something after it */
+        "0x",           /* a prefix with no digits at all */
+        "1FFFFFFFFF",   /* wider than the 32-bit pad mask: refuse, never truncate */
+        "CROSS+",       /* a name with an empty one after it */
+        "+CROSS",       /* and an empty one before it */
+        "NOSUCHBUTTON", /* a name long enough that a fixed buffer would have cut it short */
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS %s 8\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS mask that means nothing is refused");
+        expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+        expect(sr_route_step(0, sigA) == 0u, "a refused route never reaches the guest as an empty press");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_UNTIL MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_UNTIL mask that means nothing is refused");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_WHILE MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_WHILE mask that means nothing is refused");
+
+        sr_route_reset();               /* a bare pad script gets the same answer */
+        snprintf(body, sizeof body, "8600 %s 16\n", bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a bare pad script line whose mask means nothing is refused");
+    }
+    remove(RT_PATH);
+
+    /* The forms that were always legal still load and still reach the guest unchanged. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS 4000 16\n"
+             "PRESS 0x0008 8\n"
+             "PRESS FFFFFFFF 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "hex masks with and without a 0x prefix load");
+    expect(sr_route_step(0, sigA) == 0x4000u, "a bare hex mask still reaches the guest");
+    for (uint32_t v = 1; v < 16; v++)
+        expect(sr_route_step(v, sigA) == 0x4000u, "the named-width press is held");
+    expect(sr_route_step(16, sigA) == 0x0008u, "the next press starts with its own mask");
+    for (uint32_t v = 17; v < 24; v++)
+        expect(sr_route_step(v, sigA) == 0x0008u, "the 0x-prefixed mask is held for its width");
+    expect(sr_route_step(24, sigA) == 0xFFFFFFFFu, "a full-width mask is every button, not a truncation");
+    for (uint32_t v = 25; v < 28; v++)
+        expect(sr_route_step(v, sigA) == 0xFFFFFFFFu, "the full-width press is held for its width");
+    expect(sr_route_step(28, sigA) == 0u, "and released after it");
+    expect(sr_route_status() == RT_DONE, "a legal mask route completes");
+    remove(RT_PATH);
+
+    sr_route_reset();
+    rt_write("1 0x0008 8\n240 0008 8\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script with hex masks still loads");
+    expect(sr_route_status() == RT_LEGACY, "and keeps its original absolute-frame behaviour");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
     rt_write("1 0x0008 8\n240 0x0008 8\n8600 0x4000 16\n");
@@ -15435,6 +15586,88 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     remove(RT_PATH);
     sr_route_reset();
 }
+
+/* WAIT_NID: the step that lets a route gate on what the guest DOES.
+ *
+ * Every other gated step needs a screen signature, and a signature can only be recorded from
+ * a run that is already on that screen -- so the step that would reach a new screen is the one
+ * step that cannot be written. What the guest calls is observable from the first boot and is
+ * the same for every title. Pinned here: the step completes on the import and only on that
+ * import, an import that happened BEFORE the step began does not satisfy it, a name and a raw
+ * NID are the same step, an unknown name is refused at load, and a guest that never calls it
+ * fails the run loudly instead of waiting forever. */
+static void test_route_gates_on_a_guest_event_not_a_signature(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+    expect(open_nid != 0u, "the runtime's own NID table resolves sceIoOpen");
+    expect(sr_route_test_nid("0x109f50bc") == open_nid,
+           "a route may write the same import as raw hex");
+    expect(sr_route_test_nid("sceNotAnImport") == 0u,
+           "a name that is not an import does not resolve");
+
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "PRESS CROSS 8\n"
+             "WAIT_NID sceIoOpen 600\n"
+             "DELAY 2\n"
+             "END\n", hexA);
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that waits on an import loads");
+    expect(sr_route_step(0, sigA) == 0x4000u, "the press before the wait is held");
+    for (uint32_t v = 1; v < 8; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_step(8, sigA) == 0u, "and released after its width");
+
+    /* Another import is not the one being waited for. */
+    sr_route_test_import(0x11111111u);
+    expect(sr_route_step(9, sigA) == 0u, "an unrelated import does not complete the step");
+    expect(sr_route_status() == RT_RUNNING, "and the route is still waiting");
+
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(10, sigA) == 0u, "the waited-for import completes the step");
+    expect(sr_route_step(11, sigA) == 0u, "the step after it begins on the next vblank");
+    expect(sr_route_step(14, sigA) == 0u, "its DELAY is honoured");
+    expect(sr_route_status() == RT_DONE, "and the route completes");
+    remove(RT_PATH);
+
+    /* An import that already happened cannot satisfy a later step. Two waits for the SAME
+     * import in a row is the shape that can tell them apart: the first completes on a feed,
+     * and the second must still be waiting because that feed predates it. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "WAIT_NID sceIoOpen 20\n"
+             "WAIT_NID sceIoOpen 50\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "two waits for one import load");
+    expect(sr_route_step(0, sigA) == 0u, "the WAIT is satisfied by the screen");
+    expect(sr_route_status() == RT_RUNNING, "and the first import wait has begun");
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(1, sigA) == 0u, "the feed completes the first import wait");
+    for (uint32_t v = 2; v < 55; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_status() == RT_FAILED,
+           "a guest that never makes the import again fails the run instead of waiting forever");
+    remove(RT_PATH);
+
+    /* An unknown name is a load-time refusal, not a wait that can never succeed. */
+    sr_route_reset();
+    rt_write("WAIT_NID sceNotAnImport 600\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "an unknown import name is refused at load");
+    expect(sr_route_status() == RT_FAILED, "and the route fails rather than waiting");
+    sr_route_reset();
+    rt_write("WAIT_NID sceIoOpen\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "a WAIT_NID without a timeout is refused at load");
+    sr_route_reset();
+    remove(RT_PATH);
+}
+
 
 /* A press mask that names the wrong button cannot fail: the guest receives a bit the
  * screen ignores and the run looks exactly like a game that has frozen, which is how a
@@ -15513,6 +15746,7 @@ static void test_route_names_the_buttons_it_presses(void) {
     expect(sr_route_step(1, sigA) == (NK_PSP_BTN_HOME_BIT | NK_PSP_BTN_HOLD_BIT),
            "HOME+HOLD reaches the guest as both system bits");
     remove(RT_PATH);
+
 
     /* The legacy absolute-frame table takes names too: strtoul used to read "CROSS" as 0,
      * which is the same silent-nothing press one syntax layer down. */
@@ -16092,6 +16326,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();
@@ -16194,8 +16429,11 @@ int main(int argc, char **argv) {
     test_route_press_until_timeout_fails_loudly();
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
+    test_route_mask_refuses_what_it_cannot_mean();
     test_route_legacy_pad_script_is_unchanged();
     test_route_names_the_buttons_it_presses();
+    test_route_gates_on_a_guest_event_not_a_signature();
+
     test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();
