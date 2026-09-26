@@ -507,6 +507,31 @@ The build system provides scoped and explicit cleanup targets:
 
 These targets strictly operate within `build/` and transient log paths, never deleting protected directories (`place_game_here/`, `memstick/`, `keys/`, `oracle/`, `assets/`, `fixtures/`, `docs/`, `src/`, `tools/`).
 
+### Checkout path and `BUILD_DIR`
+
+The repository may be cloned to any path, including one that contains spaces or other characters a
+command interpreter treats specially (`C:/path/with spaces/nakagawa`). A build, `mingw32-make
+native-core-tests`, `mingw32-make contrib-check` and the Python tooling suite all work from there;
+`tools/test_relocated_clone.py` runs a bounded contributor check from a spaced copy of the tracked
+tree so this stays true.
+
+`BUILD_DIR` is a narrower contract. GNU Make splits a target or prerequisite name on whitespace, so a
+`BUILD_DIR` containing a space cannot be named by Make at all: the name silently becomes several
+targets, which previously let `make clean BUILD_DIR=...` remove the first fragment — a directory the
+caller never named — and left a `spaces/` directory tree in the checkout root. The Makefile now
+refuses such a `BUILD_DIR` before any recipe runs and names the boundary:
+
+```text
+BUILD_DIR 'C:/path/with spaces/build' contains a space, which GNU Make cannot represent
+in a target or prerequisite name. Use a relative BUILD_DIR under the repository
+root (the default `build/<game>`), or set NK_BUILD_ROOT to a folder without spaces
+so tools/title_codegen_plan.py can pick a Make-safe build root (issue #296).
+```
+
+The default relative `BUILD_DIR` carries no space, so an ordinary checkout is unaffected. Every route
+that accepts an operator-chosen output directory already resolves a Make-safe root through
+`NK_BUILD_ROOT` or the 8.3 short name before it reaches Make, or stops with `PACKAGE_UNSUPPORTED_PATH`.
+
 ## 5. Optional developer quality tools
 
 The repository includes shared pre-commit/pre-push checks for text/structured-file hygiene,
