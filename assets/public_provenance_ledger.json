@@ -3679,7 +3679,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "eaecdac3b2d13243b88b99c275e2e785de7c9bbbcdb2278f8c74436021c87377"
+      "sha256": "4ee777d68fd4399233c8a2df03c57c26097110f8ccb09b2a2def48dc5b6bc1c7"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -4017,7 +4017,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d72c7cb4760143a1945efbf539a16a1b8d3b47745eea219331787643d8a06d64"
+      "sha256": "40f14cfc444331884a0659b90fa924c7d01261aa15fcdcd3c66bba4072c7aa05"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4055,7 +4055,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a400c4920f09b4ada03cc082e6b3ab6460ac1defb93aa1f3b8d5b39c88e339cb"
+      "sha256": "ff952582043ba21ea82f87abf235c2b7fa6763a8defa19c77e82e9b8c794af34"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4178,7 +4178,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bc5fb8c980751cd036312d760dc30c016f1b6d96adb0da784a061e011f33222d"
+      "sha256": "e3b07f3bfb665c99bdfb67139448a404281f457774d3f97b61d5e3e41b124622"
     },
     {
       "path": "src/rt/perf.h",
@@ -4190,7 +4190,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2202a8fc14b05fb48f42712989a30c948ff2cd7ea8b2d17504f8704e292a65e3"
+      "sha256": "eabbc23721f87eaeea9059898880d905d7616b2c70b8f4789a7bdd9cab87acf1"
     },
     {
       "path": "src/rt/pgd_api.h",
@@ -4374,7 +4374,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "13e85146f691f187b468aa5c1a906bcb2c071916c2f6ff60bec7acee405684d9"
+      "sha256": "06e6ec8d7fc8f297146142eb5413c56aa54859e355debf2b34ae63d04b900dd9"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4386,7 +4386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5fada32ae56e1d914e10f95a2a2a61b448744b893f214ece83121dbcbbe4ea23"
+      "sha256": "ae27ed9db8ba6893e446cfb1dfc4b8ca187032a628b5f8f53316afcfa65a3ed4"
     },
     {
       "path": "src/rt/sdkver.h",
