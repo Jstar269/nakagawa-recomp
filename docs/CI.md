@@ -330,6 +330,16 @@ precede the inherited Windows `PATH`, so `python` remains the UCRT64 CPython and
 only `pwsh` resolves from the runner image. No hosted step relies on undeclared
 PATH order.
 
+That same MSYS2 shell has no `git` on `PATH`, so the Makefile cannot resolve a
+revision there. `windows_runtime` therefore sets `SR_SOURCE_COMMIT` to
+`github.sha` for every step: the identity the binaries of that job record
+(flight recorder `build.build_id`, #532) is the revision `actions/checkout`
+actually checked out, and the build never depends on finding `git`. The Linux
+jobs run with `git` on `PATH` and resolve the same revision themselves, through
+one guarded resolution that yields an empty identity -- and no build-log noise --
+on a host that has none. A build with no identity is not a silent pass:
+`tools/flight_diff.py` refuses such a bundle fail closed.
+
 ## Public release-path gates (#294)
 
 The hosted matrix now exercises the same public, source-owned release path a

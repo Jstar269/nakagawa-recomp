@@ -23,11 +23,14 @@ extern "C" {
 
 /*
  * Decompress a KL4E/KL3E stream.  inBuf points PAST the 4-byte magic
- * ("KL4E"/"KL3E"); isKl4e selects the variant.  On success returns 0 and
- * sets *end to the end of the consumed input; returns non-zero on a
- * malformed stream (fail closed).
+ * ("KL4E"/"KL3E") and inSize is how many compressed bytes are readable
+ * from there; the decoder is fail-closed and never reads past inBuf +
+ * inSize, so a truncated or malformed stream cannot read out of bounds.
+ * isKl4e selects the variant.  On success returns 0 and sets *end to the
+ * end of the consumed input; returns non-zero on a malformed stream.
  */
-int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e);
+int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, int inSize,
+                   void **end, int isKl4e);
 
 #ifdef __cplusplus
 }
