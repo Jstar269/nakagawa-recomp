@@ -2323,7 +2323,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "797e390bf9f04502c084c03c2d8974a4c412886e0fb3371db3021b25ec7a5d01"
+      "sha256": "ec3b596cb1ab3258aaebf47cd1fc730ec5db5077aa68cb10789c97006e63f88d"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2419,7 +2419,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "54891ed314be6aa899f1816c429444e82f6939ebeea6aae149be6442ff2576c0"
+      "sha256": "f74eaf435c4a92add6d53cf4e3612e6791baf451cc745b658e36f9d79fc666bd"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -2431,7 +2431,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f76f93df2d21192826fcbdfcd83ce6edaec9e704c6450733e29208e4c9821a48"
+      "sha256": "a3f7c8e13ffc6ec36c1b7f3a16a28c24d67d4c3b6225787ca0f235053f1cc111"
     },
     {
       "path": "src/ref/cpu.h",
@@ -4865,7 +4865,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7319d47c8854c0ef504e87dff096f3c1aca00488203820c9fb8ae51c9882ec8d"
+      "sha256": "5094fcf478e6d0168ae5f6d361abaea2e277be34f9034ce6c84b3fd371e2df05"
     },
     {
       "path": "tests/native/test_posix_process.c",
