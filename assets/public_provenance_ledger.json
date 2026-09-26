@@ -4580,7 +4580,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "beefdfbde799fa813973a2fd9776ecd68d08c6d5bc1c2a8872f595e59f9c67d1"
+      "sha256": "a9cff68f7ef29694ed40d4a79bc8da2993e92d2eb3087517abae709e2b0ab87e"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -6630,7 +6630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aa40fb6e4c54e3c5532bd7223b3d13711c5124eef9a6a1bd8da0173b9580b68e"
+      "sha256": "d1c18de8d4917cf27a28bd2bcdf403b2b5f65f046bafac82fb74af07d6a92ca6"
     },
     {
       "path": "tools/test_codegen_no_shadow_stubs.py",
