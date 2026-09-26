@@ -744,6 +744,25 @@ static SrPerfPhaseAttrib s_phase_attrib[SR_RT_PHASE_COUNT];
 static uint64_t s_late_total;
 static uint64_t s_periods_masked;   /* display periods that elapsed with IE clear */
 
+/* Delivery accounting.  A late latch only says the guest was told late; an episode that
+ * was latched and then destroyed before delivery is a different failure with the same
+ * visible symptom (a low delivered rate), so owed, delivered, coalesced and dropped
+ * episodes are counted on their own terms and drops are attributed to the phase that
+ * destroyed them rather than to whichever phase noticed later.  The identity
+ *     owed + coalesced = delivered + dropped + in_flight
+ * closes at every report, which is what tells a period that was latched and never
+ * delivered (it is in the in_flight residual, or it was dropped) from one that was
+ * merely delivered late (late_owed - late_delivered, and no other late class). */
+static uint64_t s_owed_total;        /* episodes the source owed a service point */
+static uint64_t s_coalesced_total;   /* masked windows, one coalesced episode each */
+static uint64_t s_delivered_total;   /* episodes a service point actually delivered */
+static uint64_t s_dropped_total;     /* owed episodes destroyed before any service point */
+static uint64_t s_dropped_by_phase[SR_RT_PHASE_COUNT];
+static uint64_t s_collapsed_periods; /* source periods a saturated timeline cannot name */
+static uint64_t s_late_owed_total;   /* episodes that came due at a late latch */
+static uint64_t s_late_in_flight;    /* ... of those, still owed */
+static uint64_t s_late_delivered;    /* ... of those, a service point delivered */
+
 const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
     "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
 };
@@ -767,9 +786,26 @@ void sr_perf_phase_report(int force) {
         total_late += s_phase_attrib[i].late;
         total_lost += s_phase_attrib[i].lost_us;
     }
-    fprintf(stderr, "PERF_ATTRIB vblank_late total=%llu lost_ms=%llu masked_periods=%llu\n",
+    fprintf(stderr, "PERF_ATTRIB vblank_late total=%llu lost_ms=%llu masked_periods=%llu "
+                    "collapsed_periods=%llu\n",
             (unsigned long long)total_late, (unsigned long long)(total_lost / 1000u),
-            (unsigned long long)s_periods_masked);
+            (unsigned long long)s_periods_masked,
+            (unsigned long long)s_collapsed_periods);
+    /* in_flight is the identity residual, computed rather than counted: episodes owed
+     * and not yet delivered.  A bookkeeping bug shows up here as an absurd number
+     * instead of a plausible one. */
+    fprintf(stderr, "PERF_ATTRIB vblank_owed owed=%llu coalesced=%llu delivered=%llu "
+                    "dropped=%llu in_flight=%llu late_owed=%llu late_delivered=%llu\n",
+            (unsigned long long)s_owed_total, (unsigned long long)s_coalesced_total,
+            (unsigned long long)s_delivered_total, (unsigned long long)s_dropped_total,
+            (unsigned long long)(s_owed_total + s_coalesced_total
+                                 - s_delivered_total - s_dropped_total),
+            (unsigned long long)s_late_owed_total, (unsigned long long)s_late_delivered);
+    for (int i = 0; i < SR_RT_PHASE_COUNT; i++) {
+        if (!s_dropped_by_phase[i]) continue;
+        fprintf(stderr, "  PERF_ATTRIB_DROP phase=%s episodes=%llu\n",
+                sr_rt_phase_name[i], (unsigned long long)s_dropped_by_phase[i]);
+    }
     for (int i = 0; i < SR_RT_PHASE_COUNT; i++) {
         const SrPerfPhaseAttrib *a = &s_phase_attrib[i];
         if (!a->late) continue;
@@ -789,12 +825,46 @@ void sr_perf_phase_report(int force) {
     }
 }
 
+/* A source that cannot name the periods it crossed (a saturated deadline) collapses
+ * them into the one episode the overflow can deliver.  The queued episodes were already
+ * counted as owed when their latches happened, so they are dropped here, attributed to
+ * the phase that destroyed them; the collapsed remainder was never owed to anyone and is
+ * counted as periods. */
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    s_collapsed_periods += periods;
+    if (!owed) return;
+    unsigned phase = (unsigned)sr_rt_phase;
+    if (phase >= SR_RT_PHASE_COUNT) phase = SR_RT_PHASE_OTHER;
+    s_dropped_total += owed;
+    s_dropped_by_phase[phase] += owed;
+    s_late_in_flight = owed < s_late_in_flight ? 0u : s_late_in_flight - owed;
+}
+
+/* One masked window owes the guest its single coalesced episode, which the resume adds
+ * to the same owed queue as an ordinary source latch. */
+void sr_perf_vblank_coalesced(void) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    s_coalesced_total++;
+}
+
+void sr_perf_vblank_service(uint32_t delivered) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    s_delivered_total += delivered;
+    /* Late episodes are served from the same queue as the on-time ones, so a service
+     * point resolves as many of them as its batch can cover. */
+    uint64_t from_late = s_late_in_flight < delivered ? s_late_in_flight : delivered;
+    s_late_in_flight -= from_late;
+    s_late_delivered += from_late;
+}
+
 void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     if (masked) {                 /* the guest's own interrupt mask, not a lost edge */
         s_periods_masked += periods;
         return;
     }
+    s_owed_total += periods;
     unsigned phase = (unsigned)sr_rt_phase;
     if (phase >= SR_RT_PHASE_COUNT) phase = SR_RT_PHASE_OTHER;
     SrPerfPhaseAttrib *a = &s_phase_attrib[phase];
@@ -805,6 +875,8 @@ void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) {
     a->lost_us += lost;
     if (periods > 1u) a->periods_lost += periods - 1u;
     if (gap_us > a->max_gap_us) a->max_gap_us = gap_us;
+    s_late_owed_total += periods;
+    s_late_in_flight += periods;
     /* Guest PCs and NIDs are functional facts, not private bytes: keep a
      * power-of-two sample so a long run stays readable and bounded. */
     a->sample_mask++;

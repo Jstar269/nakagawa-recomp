@@ -120,6 +120,17 @@ void     sr_perf_vblank(void);
  * A gap over one display period is attributed here because the phase that owned
  * the CPU is unknowable afterwards. */
 void     sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked);
+/* A period can be latched and still never reach the guest: a saturated source
+ * timeline cannot name the periods it crossed, and the queued episodes that were
+ * already owed are destroyed with it.  Those losses are counted where they happen
+ * (sr_perf_vblank_collapse, attributed to the phase that destroyed them) while the
+ * collapsed remainder is counted as unnamed periods.  sr_perf_vblank_coalesced
+ * counts the one coalesced episode a masked window owes, and
+ * sr_perf_vblank_service counts what a service point actually handed to the guest,
+ * so the report can tell a latched-and-dropped period from a merely late one. */
+void     sr_perf_vblank_collapse(uint32_t owed, uint32_t periods);
+void     sr_perf_vblank_coalesced(void);
+void     sr_perf_vblank_service(uint32_t delivered);
 void     sr_perf_phase_report(int force);
 void     sr_perf_ge_submit(SrPerfGeReason reason);
 void     sr_perf_ge_wait(uint64_t started_ns, SrPerfGeReason reason);
