@@ -111,7 +111,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "894217e4fe9b2d5879116e19416d201961150a87f2d165ed5a6a2c57b18ca430"
+      "sha256": "a9b9a0cbaebbb2c5861a3807394d00a3ee8848f65e7423f8f58398c08da34f9e"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -180,7 +180,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "03c6fa0b638d242817ebf23833e69201568db74c2cdd53cb25708db3f9f3aefc"
+      "sha256": "6a86cc34726263240725ec231b91e026aaedef4cced86952a67623e494ebb29a"
     },
     {
       "path": ".gitignore",
@@ -258,7 +258,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b97493416c7b24ae10175482068f8c777fe293ef21c6e95b7e6bd1c7db54934c"
+      "sha256": "f08c8fdd87c3e22c10de5e745f050d11051cc664dcd02610be2349f8f62b4fb2"
     },
     {
       "path": "CREDITS.md",
@@ -298,7 +298,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3882f471a0a7642093fb503c3e69b8691ab9ae62feecda167f55cf86c1b87d19"
+      "sha256": "3adcba9cb5298942af4d7b9be139cd6523fe2559e5025bbc4ef21cdd8f3a6327"
     },
     {
       "path": "NOTICE.md",
@@ -475,7 +475,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f5f71863de3cb95bde3bada8a94d9b1d87bc48938a51f12bc03217476f96d50b"
+      "sha256": "38c5d2a502304ab960b79bd6cc5cc82ba470b4512754db789227fb2e3898c6db"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -5158,6 +5158,18 @@
       "sha256": "491e03fca4f95bf21fe2cb1b3bca66ff28094bf4d1634325061870b0d6be0a82"
     },
     {
+      "path": "tools/contrib_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "contrib-check",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "cdb13e8530b5baddc1da25f1d6957f4b5a67242d23b32db657b9a127de12061f"
+    },
+    {
       "path": "tools/decompme_export.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5901,7 +5913,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c341889660e6a93d41afb1c33dc2f248418cd373f276f24ab788e3c6b2204a5"
+      "sha256": "ea57c17ec80207b80193f7ef938c87ae807f3164de08d6118faeb3a5371050e4"
     },
     {
       "path": "tools/portability_inventory.py",
@@ -5963,7 +5975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f0a755d7253da6f49c0d30f4c83c72579fcfb8aca2bff4aca4c0131a6f99ba88"
+      "sha256": "080d5f83595a0972607afa856059be13976b8672e7801a73a8540358d891d13b"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -5975,7 +5987,19 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c223240ccad61723eb67a741d95c71f29b69cebc0bca498c8cc5f47cdd51831d"
+      "sha256": "a27c33d5a566dbdd86b7b48c83702b655f2d61912345ad59b484c0f1e789e9e5"
+    },
+    {
+      "path": "tools/provenance_record_gap.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-record-gap",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "94578ee251c0044089bee8f192a7053f2a94bc49ccdceb4208c49d3c6318f773"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -5987,7 +6011,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c40d7bdcb79fe951555e03b222a144a4aab65816a1b4c8b25901c3876b85f960"
+      "sha256": "ff9077d57da539083a4466784053941532617bc976b5fe8f4f4a68ebd6ef7d30"
     },
     {
       "path": "tools/prxload.py",
@@ -6324,7 +6348,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48f77164f3056661226a2c8291855e63a5f5479e06bcb3879aa5828381c91716"
+      "sha256": "79f0b18f61e86fd321e3c64f963d43f352f4f0432d16b71aa6df8cf27045a384"
     },
     {
       "path": "tools/publication_policy.py",
@@ -6348,7 +6372,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea934a52812d5ac813a5e3572421741a125f29837a3e456cfe145d66b6b32a91"
+      "sha256": "88b9991ddfddf833e997670e4f476798e3c78b3d0c4ab45549df27d61ace6bda"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -6643,6 +6667,18 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "1a07856ad981bb8fc0f038e303fc24fc59be6f3562ed9d1a5ca428108497a20f"
+    },
+    {
+      "path": "tools/test_contrib_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "contrib-check",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "7683f55b79db92f2b9df545868b755f034746b6c11e89af6a5ced0524457e7f7"
     },
     {
       "path": "tools/test_cosim_fixture.py",
@@ -7488,7 +7524,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2038484b2b3f28c54b82126245c9813b11a8e14d09b47b48861a26f01ed357f5"
+      "sha256": "b54b7822c881a83c7e9e862b6b525a62b9143388ea718ddd333ec47cedd86236"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -7503,6 +7539,18 @@
       "sha256": "b18e5f7f15bb8f953fac6a799cbe34ea392cc48116fc2b585b39585bdeeb71aa"
     },
     {
+      "path": "tools/test_provenance_control_merge.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-control-merge-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "069c5a164be3678f0d902e7645ae1a3852be39037301d8788e888b8bcacdfaa2"
+    },
+    {
       "path": "tools/test_provenance_ledger.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -7512,7 +7560,19 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a45b1c3feaa73e397c94159e36c8aa4abe29bfa9b7ce130d100ae009c9cc8c32"
+      "sha256": "2e8849bf459740188684475bdc5e49cb6afdeed03c3386c690b1302f480a03bb"
+    },
+    {
+      "path": "tools/test_provenance_record_gap.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-record-gap",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6960f7ff7a8e06b1104d76b7aefe718c08e1f99b6f8049f5ec35e3608abd0dc5"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
