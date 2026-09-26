@@ -1063,7 +1063,7 @@ int main(int argc, char **argv) {{
                     "cache": {"format": "nakagawa-aot-cache", "schema_version": 1, "key": {}, "codegen_options": {}, "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True}},
                     "backends": "public" if public else "private",
                     "limits": [
-                        "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                        "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
                         "PGD-protected data: unavailable (#295)",
                     ] if public else [],
                 }),
@@ -1090,13 +1090,13 @@ int main(int argc, char **argv) {{
             report = json.loads((user_root / "packages" / disc_id / "build-report.json").read_text(encoding="utf-8"))
             self.assertEqual(report.get("backends"), "public")
             self.assertEqual(report.get("limits"), [
-                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
                 "PGD-protected data: unavailable (#295)",
             ])
             completion = json.loads((user_root / "packages" / disc_id / "completion-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(completion.get("backends"), "public")
             self.assertEqual(completion.get("limits"), [
-                "fonts: import your own PSP fonts; public font reader in the works (#349)",
+                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
                 "PGD-protected data: unavailable (#295)",
             ])
 

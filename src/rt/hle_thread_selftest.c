@@ -9740,6 +9740,112 @@ static void test_ge_guest_sentinel(void) {
            "resumed list rendered purple rectangle to completion");
 }
 
+/* A display list the GE already ran to its END is consumed, and a stall address
+ * that arrives after that is a defined no-op on a known list -- not an unknown
+ * one. pspgu's GU ring buffer issues one sceGeListUpdateStallAddr per flushed
+ * chunk, so every chunk after the one carrying the END lands here; running the
+ * list again would redraw the same frame once per chunk.
+ *
+ * The contract this pins:
+ *   - the list runs once and its primitive work is observable;
+ *   - a late stall address returns 0 and executes no further GE work;
+ *   - the late address is accounted as a consumed list, so SR_GELOG and the
+ *     enqueue trace name the boundary instead of claiming an unknown list id.
+ * The display list is a source-owned synthetic list built below. */
+static void test_ge_consumed_list_ignores_late_stall_address(void) {
+    extern unsigned sr_hle_test_ge_late_stall_ignored(void);
+    extern uint32_t g_frame_prims;
+
+    const uint32_t fb_base = 0x04000000u;
+    const uint32_t fb_stride = 512u;
+    const uint32_t dl_base = 0x08950000u;   /* in guest RAM */
+    const uint32_t vtx_base = 0x08950800u;  /* in guest RAM */
+    const uint32_t list_color = 0xFF3399CCu;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(dl_base);
+    uint32_t p = 0;
+#define LATE_CMD(cmd, value) \
+    do { dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(value) & 0x00ffffffu); } while (0)
+#define LATE_VTX(addr, value) do { float _f = (value); uint32_t _u; memcpy(&_u, &_f, 4); MEM_W32((addr), _u); } while (0)
+
+    LATE_CMD(0x9C, fb_base & 0x00ffffffu);
+    LATE_CMD(0x9D, fb_stride | ((fb_base & 0xff000000u) >> 8));
+    LATE_CMD(0xD2, 3);
+    LATE_CMD(0x15, 0);                            /* REGION1 = (0,0) */
+    LATE_CMD(0x16, ((272u - 1u) << 10) | (480u - 1u)); /* REGION2 */
+    LATE_CMD(0xD4, 0);                            /* SCISSOR1 = (0,0) */
+    LATE_CMD(0xD5, ((272u - 1u) << 10) | (480u - 1u)); /* SCISSOR2 */
+    LATE_CMD(0x23, 0);                            /* ZTEST off */
+    LATE_CMD(0x22, 0);                            /* ALPHATEST off */
+    LATE_CMD(0x21, 0);                            /* ALPHABLEND off */
+    LATE_CMD(0x1E, 0);                            /* TEXTUREMAP off */
+    LATE_CMD(0xD3, 0x301);                        /* clear color + alpha from the sprite */
+    LATE_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23));  /* VERTEXTYPE: color, float pos, through */
+    LATE_CMD(0x01, vtx_base & 0x00ffffffu);
+    LATE_CMD(0x04, (6 << 16) | 2);                /* one sprite, two corner vertices */
+    LATE_CMD(0x0F, 0);
+    LATE_CMD(0x0C, 0);
+#undef LATE_CMD
+
+    MEM_W32(vtx_base + 0, list_color);
+    LATE_VTX(vtx_base + 4, 0.0f);   LATE_VTX(vtx_base + 8, 0.0f);   LATE_VTX(vtx_base + 12, 0.0f);
+    MEM_W32(vtx_base + 16, list_color);
+    LATE_VTX(vtx_base + 20, 480.0f); LATE_VTX(vtx_base + 24, 272.0f); LATE_VTX(vtx_base + 28, 0.0f);
+#undef LATE_VTX
+
+    memset(SR_HOST(fb_base), 0x5a, fb_stride * 272u * 4u);
+    uint32_t *fb = (uint32_t *)SR_HOST(fb_base);
+
+    /* stall == 0: the GE runs the list to its END inside the enqueue. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl_base;
+    cpu.r[5] = 0;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xff000000u) == 0x35000000u, "the late-stall fixture enqueues a list");
+    expect(fb[100 * fb_stride + 100] == list_color, "the list ran once and drew its primitive");
+
+    uint32_t prims_after_run = g_frame_prims;
+    unsigned ignored_before = sr_hle_test_ge_late_stall_ignored();
+
+    /* The next flushed chunk's stall address: the list is already consumed. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = dl_base + (p * 4u);
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+           "a stall address that arrives after the list ran is accepted");
+    expect(g_frame_prims == prims_after_run,
+           "a stall address that arrives after the list ran executes no further GE work");
+    expect(sr_hle_test_ge_late_stall_ignored() == ignored_before + 1u,
+           "a stall address that arrives after the list ran is accounted as a consumed list");
+
+    /* The list is still the GE's own completed list, not an unknown id. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "the consumed list stays complete for sceGeListSync after a late stall address");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "the consumed list leaves the GE drawing nothing after a late stall address");
+
+    /* Every further chunk of the same flushed frame behaves the same way. */
+    for (int chunk = 0; chunk < 3; chunk++) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = qid;
+        cpu.r[5] = dl_base + (p * 4u) + 0x40u * (uint32_t)(chunk + 1);
+        expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+               "each further flushed chunk's stall address is accepted");
+    }
+    expect(g_frame_prims == prims_after_run &&
+               sr_hle_test_ge_late_stall_ignored() == ignored_before + 4u,
+           "a fully flushed frame re-executes nothing and is counted once per late chunk");
+}
+
 static uint32_t ge_transfer_enqueue(uint32_t src, uint32_t src_stride,
                                     uint32_t src_x, uint32_t src_y,
                                     uint32_t dst, uint32_t dst_stride,
@@ -15763,7 +15869,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 2") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 3") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -15909,6 +16015,7 @@ int main(int argc, char **argv) {
     test_nested_frame_under_psp_callback_dispatch();
     test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
+    test_ge_consumed_list_ignores_late_stall_address();
     test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);

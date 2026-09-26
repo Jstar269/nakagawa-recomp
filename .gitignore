@@ -129,21 +129,6 @@ htmlcov/
 .venv/
 venv/
 
-# JavaScript/dashboard local state
-node_modules/
-interface/.env
-interface/.env.*
-!interface/.env.example
-interface/.next/
-interface/out/
-interface/coverage/
-interface/prisma/*.db*
-interface/db/
-interface/tool-results/
-interface/*.tsbuildinfo
-interface/next-env.d.ts
-interface/src/generated/prisma/
-.eslintcache
 
 # IDE/editor and OS metadata
 /.vs/

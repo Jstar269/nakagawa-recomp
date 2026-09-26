@@ -4,10 +4,10 @@
 // watchpoints_file.c — bounded parser for the derived `watchpoints.json`
 // runtime artifact (issue #188). See watchpoints_file.h for the contract.
 //
-// This is a deliberately small, strict JSON reader for exactly the shapes the
-// dashboard writer can produce — it is NOT a general JSON parser. It bounds
-// every input (file size, entry count, label bytes), decodes only the minimal
-// JSON string escapes the writer may emit, and rejects the whole file on any
+// This is a deliberately small, strict JSON reader for the canonical
+// watchpoint file shapes — it is NOT a general JSON parser. It bounds every
+// input (file size, entry count, label bytes), decodes only the minimal JSON
+// string escapes used by the format, and rejects the whole file on any
 // semantic violation (out-of-range, zero span, oversize span, bad label,
 // duplicates, unknown keys, wrong version/format).
 

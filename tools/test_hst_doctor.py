@@ -264,9 +264,8 @@ class PrivateInputTests(unittest.TestCase):
 
 
 class RepositoryContractTests(unittest.TestCase):
-    def make_docs(self, root: Path, *, package_license: str = "GPL-3.0-or-later") -> None:
+    def make_docs(self, root: Path, *, manifest_license: str = "GPL-3.0-or-later") -> None:
         (root / "docs").mkdir(parents=True)
-        (root / "interface").mkdir()
         (root / "assets").mkdir()
         (root / "LICENSE").write_text("GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n", encoding="utf-8")
         notice = """GPL-3.0-or-later
@@ -282,20 +281,19 @@ This remains subject to legal review.
         (root / "SECURITY.md").write_text("security\n", encoding="utf-8")
         (root / "CODE_OF_CONDUCT.md").write_text("conduct\n", encoding="utf-8")
         (root / "docs" / "PUBLICATION_READINESS.md").write_text("publication\n", encoding="utf-8")
-        (root / "interface" / "package.json").write_text(json.dumps({"license": package_license}), encoding="utf-8")
         (root / "assets" / "release_manifest.json").write_text(
-            json.dumps({"license": "GPL-3.0-or-later"}), encoding="utf-8"
+            json.dumps({"license": manifest_license}), encoding="utf-8"
         )
 
     def test_license_metadata_mismatch_is_a_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.make_docs(root, package_license="GPL-2.0-or-later")
+            self.make_docs(root, manifest_license="GPL-2.0-or-later")
             report = nk_doctor.Report(root, "repo")
             nk_doctor.check_repository_contract(report)
             warnings = [result for result in report.results if result.code == "LICENSE_METADATA" and result.status == "WARN"]
             self.assertEqual(len(warnings), 1)
-            self.assertIn("package.json", warnings[0].path or "")
+            self.assertIn("release_manifest.json", warnings[0].path or "")
 
     def test_consistent_contract_has_no_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -19,15 +19,14 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 | Event/change | Jobs that run | Jobs intentionally skipped |
 | --- | --- | --- |
-| Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and `CI required` | only jobs irrelevant to the changed paths |
-| Ready pull request, docs-only | classification, hygiene/security, Markdown, `CI required` | Python/native, Windows, dashboard |
-| Ready pull request, `interface/**` | classification, hygiene/security, dashboard, `CI required` | Python/native, Windows |
-| Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, `CI required` | dashboard |
-| Ready pull request, ordinary `tools/*.py` | classification, hygiene/security, Python tooling, `CI required` | native/translation, Windows, dashboard |
-| Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, dashboard, `CI required` | none of the substantive public gates |
-| Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, `CI required` | Python/native, Windows, dashboard |
-| Mixed dashboard/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, dashboard, `CI required` | none of the applicable product gates |
-| Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, `CI required` | expensive platform matrix; the merged PR carried it |
+| Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
+| Ready pull request, docs-only | classification, hygiene/security, Markdown, CI required | Python/native, Windows |
+| Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
+| Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
+| Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
+| Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
+| Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
+| Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, CI required | expensive platform matrix; the merged PR carried it |
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
 
@@ -49,12 +48,8 @@ failure does not spend additional runner time on dependent expensive gates.
 
 The full-tree pre-commit run retains the publication audit and the separate
 Betterleaks current-tree scan. Hygiene then runs an explicit Betterleaks
-reachable-history scan and the synthetic canary gate. Markdown linting is
-separate so documentation changes do not pay for a dashboard install. Dashboard
-dependency changes run the clean `npm ci`,
-test, lint, type-check, build, and standalone-output leakage checks. Native and
-Windows jobs remain synthetic/public-input gates; no private game input is put in
-Actions.
+reachable-history scan and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
 SDL3, and Vulkan environment. That target generates its PSP-shaped input from committed source,
@@ -293,7 +288,7 @@ belongs to a new subsystem.
 GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
 workflow therefore gates the Windows runner behind the cheaper Linux hygiene and
 native gates, cancels superseded PR runs, and avoids repeating the full matrix on
-ordinary main pushes. The workflow uses dependency/tool caches only (pip and npm);
+ordinary main pushes. The workflow uses dependency/tool caches only (pip);
 compiled runtime objects and generated shader/code output are not cached, so the
 repository's content-addressed invalidation and freshness checks remain the
 source of truth. No volatile dollar figure is part of the repository contract.
@@ -301,7 +296,7 @@ source of truth. No volatile dollar figure is part of the repository contract.
 Hosted GitHub Actions execution is active. The `main` ruleset requires `CI required`,
 `OSV Vulnerability Scan`, `dependency-review`, `Hygiene and security`, and
 `CodeQL` on exact pull-request heads. Path-gated workflows also run the applicable
-classifier, Markdown, native/translation, dashboard, main-smoke, Python, and
+classifier, Markdown, native/translation, main-smoke, Python, and
 Windows gates. A green public-safe run proves only the paths it executes; it is
 not a complete private-title gameplay route, and local verification remains
 local-only.
@@ -324,7 +319,7 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `dashboard`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
+| Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
 | `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
 | Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
 
@@ -356,7 +351,7 @@ developer runs locally, without private inputs:
 
 ## Dependabot policy
 
-`.github/dependabot.yml` checks GitHub Actions, dashboard npm, root pip, and
+`.github/dependabot.yml` checks GitHub Actions and root pip and
 pre-commit ecosystems monthly. Minor and patch updates are grouped per ecosystem;
 major updates remain standalone because they can change APIs, runners, or build
 semantics. Security updates remain enabled and are not suppressed by the routine

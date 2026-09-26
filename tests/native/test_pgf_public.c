@@ -1354,6 +1354,91 @@ static void test_fallback_and_guest_boundaries(void) {
     pgf_close(pgf);
 }
 
+static int test_write_file(const char *path, const uint8_t *bytes, size_t size) {
+    FILE *stream = fopen(path, "wb");
+    size_t written;
+    if (!stream) return 0;
+    written = fwrite(bytes, 1u, size, stream);
+    if (fclose(stream) != 0) return 0;
+    return written == size;
+}
+
+/* One deterministic source-owned synthetic PGF stands in for the converter
+   output the project does not ship yet (#313): identical config bytes on every
+   run, no firmware font and no retail bytes. It is staged as a host file so
+   the production pgf_open() file path -- not only pgf_open_memory() -- is
+   exercised for metrics, drawing, and fail-closed rejection. */
+static void test_production_file_path_metrics_and_render(void) {
+    static const uint8_t rle_bytes[6] = {0x11u, 0x21u, 0x30u, 0x02u, 0xf2u, 0x50u};
+    static const uint8_t expected_row_major[12] = {1u, 1u, 2u, 2u, 3u, 0u,
+                                                  0u, 0u, 15u, 15u, 15u, 5u};
+    static const char *const good_path = "synthetic-converter-output.pgf";
+    static const char *const bad_magic_path = "synthetic-converter-output-badmagic.pgf";
+    static const char *const short_path = "synthetic-converter-output-short.pgf";
+    TestConfig config;
+    TestFont font;
+    TestFont repeat;
+    TestFont bad_magic;
+    PGF *pgf;
+    uint8_t *buffer;
+
+    test_default_config(&config);
+    config.glyph_count = 1u;
+    config.char_map_count = 1u;
+    config.map_values[0] = 0u;
+    config.glyphs[0].width = 4u;
+    config.glyphs[0].height = 3u;
+    config.glyphs[0].bitmap_size = sizeof(rle_bytes);
+    memcpy(config.glyphs[0].bitmap, rle_bytes, sizeof(rle_bytes));
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_build_font(&repeat, &config));
+    CHECK(font.size == repeat.size);
+    CHECK(memcmp(font.bytes, repeat.bytes, font.size) == 0);
+    CHECK(test_write_file(good_path, font.bytes, font.size));
+
+    pgf = pgf_open(good_path);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        CHECK(pgf_has_char(pgf, 65));
+        CHECK(!pgf_has_char(pgf, 66));
+        CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
+        CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x00u) == 4u);
+        CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x04u) == 3u);
+        CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x10u) == 64u);
+        CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x14u) == 128u);
+        CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x18u) == 256);
+        CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x1cu) == 128);
+        CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x20u) == -64);
+        CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x28u) == 64);
+        CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x2cu) == 128);
+        CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x30u) == 384);
+        CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x34u) == 512);
+        buffer = test_guest(TEST_BUFFER_ADDR);
+        memset(buffer, 0xee, sizeof(expected_row_major));
+        test_reset_dirty();
+        test_set_image(2u, 0, 0, 4u, 3u, 4u, TEST_BUFFER_ADDR);
+        CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+        CHECK(memcmp(buffer, expected_row_major, sizeof(expected_row_major)) == 0);
+        CHECK(dirty_count == 3u);
+        pgf_close(pgf);
+    }
+
+    /* Malformed input: a clobbered PGF0 signature and a payload shorter than
+       one header must both fail closed through the same host file path. */
+    bad_magic = font;
+    bad_magic.bytes[4u] = 'X';
+    CHECK(test_write_file(bad_magic_path, bad_magic.bytes, bad_magic.size));
+    CHECK(pgf_open(bad_magic_path) == NULL);
+    CHECK(test_write_file(short_path, font.bytes, 64u));
+    CHECK(pgf_open(short_path) == NULL);
+    pgf = pgf_open(good_path);
+    CHECK(pgf != NULL);
+    pgf_close(pgf);
+    (void)remove(good_path);
+    (void)remove(bad_magic_path);
+    (void)remove(short_path);
+}
+
 static void test_deterministic_mutations(void) {
     TestConfig config;
     TestFont font;
@@ -1418,6 +1503,7 @@ int main(int argc, char **argv) {
     test_draw_rle_formats_and_placement();
     test_draw_rejections_and_dirty_spans();
     test_fallback_and_guest_boundaries();
+    test_production_file_path_metrics_and_render();
     test_deterministic_mutations();
     free(g_mem);
     if (failures != 0) {

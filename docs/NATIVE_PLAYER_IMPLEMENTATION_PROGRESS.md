@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-Nakagawa Recomp has successfully developed and integrated a native desktop player application (`build/nakagawa_player.exe`) designed to replace browser-based frontend friction with a standalone, cross-platform SDL3 experience.
+Nakagawa Recomp has integrated a native SDL3 player; it is the only UI in the public repository.
 
 The core product design target remains:
 $$\text{NAKAGAWA PROGRAM} + \text{USER'S GAME ISO} \longrightarrow \text{AUTHENTIC RECOMPILED PLAY}$$
@@ -12,7 +12,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 
 ### Key Accomplishments
 
-1. **Visual & Functional Baseline Captured**: All 8 developer studio panels and player mode landing screens archived in `docs/ui-baseline/`.
+1. **Historical UI Baseline Retained**: `docs/ui-baseline/` marks the retired browser screens as historical and records the native player baseline.
 2. **Standalone Native Player Implemented (`src/player/`)**:
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
@@ -22,7 +22,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
    - `nk_xb.c` / `nk_xb.h`: Project-authored bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
    - `nk_iso_extract_game`: ISO directory-record walk that stages `EBOOT.BIN` and `USRDIR/xbdata` without shelling out or requiring Python.
-3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling cleanly alongside runtime objects without MSVC or Node.js dependencies.
+3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling alongside runtime objects without MSVC dependencies.
 4. **Portable Core Expansion (`tools/nk_core/`)**: Added persistent `GameLibrary`, moved-ISO detection, fallback resolution, space-tolerant paths, and full Unicode/CJK path support.
 5. **Continuous Working-State Preservation**: Existing playable HST route, test suites (`test_nk_core.py`, `test_build_truth.py`, and full tools test suite) remain 100% green.
 
@@ -145,6 +145,21 @@ the driver then asserts the generated `--gui` argument and the child runtime's
 `window_ready`/`first_frame` boot events. This is a display-dependent developer
 gate, not a retail-title claim.
 
+The same player-owned launch runs headlessly with
+`--launch-index=N --headless-launch`. The child is spawned without `--gui`, and
+the player waits for it under a bounded timeout, reporting the child's own exit
+status and a distinct failure status if the bound expires; the headless child
+still emits the same `SR_BOOT_EVENT_FILE` startup milestones and consumes
+vblanks, so the guest-visible frame checkpoint is readable without a display.
+`tools/test_player_package_route.py` drives the whole consumer route on the
+source-owned display guest: the BUILD PACKAGE action
+(`package_builder_start` → `tools/nk_cli.py build-package`, real analysis,
+codegen and compilation), the player's own package validator, the headless
+launch, two named missing-prerequisite boundaries ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)
+decrypted inputs, [#296](https://github.com/Jstar269/nakagawa-recomp/issues/296)
+`--psp-header`), and a before/after check that the route changed no
+repository-tracked file.
+
 What it does not establish: any commercial-title compatibility, PSP timing or
 rendering correctness, GE/graphics-pipeline behaviour (this guest writes the
 framebuffer directly and submits no display list), audio, or that any other
@@ -165,7 +180,6 @@ plain executable plus a built package.
 2. **Separation of Concerns**:
    - `src/player/`: Native SDL3 player application.
    - `tools/nk_core/`: Portable Python core orchestration library.
-   - `interface/`: Preserved as developer diagnostic tooling (Nakagawa Studio).
 3. **Fail-Closed Dispatch**:
    - Unsupported titles are clearly identified and prevented from running to avoid undefined crashes.
    - Missing or moved ISO files trigger structured error dialogs rather than silent halts.

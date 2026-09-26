@@ -830,9 +830,9 @@ void player_app_populate_sample_games(PlayerApp *app) {
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
-    /* A launch initiated by the player always requests a GUI child, even if
+    /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
 
     char package_error[2048] = "";
     player_app_validate_runtime_package(
@@ -840,7 +840,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!player_app_game_has_runtime(app, game)) {
         player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
                              package_error[0] ? package_error :
-                                 "Runtime package is missing or incompatible (#297).",
+                                 "Runtime package is missing or incompatible; build it from the library (#297).",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
@@ -850,7 +850,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     NkResult res = nk_launch_prepare_session(&app->launch_session, game,
                                               player_package_root(app, game));
     /* nk_launch defaults gui_mode to false for headless harnesses. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
     if (res != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
@@ -934,6 +934,47 @@ void player_app_stop_game(PlayerApp *app) {
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+}
+
+bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
+    if (!app || !app->is_game_running) return false;
+    if (app->launch_time_ms == 0) {
+        app->launch_time_ms = now_ms;
+    }
+    if (nk_launch_is_running(&app->launch_session)) {
+        return false;
+    }
+    uint64_t elapsed_ms = now_ms >= app->launch_time_ms
+        ? (now_ms - app->launch_time_ms) : 0;
+    int code = nk_launch_wait(&app->launch_session, 0);
+    app->is_game_running = false;
+    /* The child has exited and been reaped: release its process and job
+       handles before the session is reused. The natural-exit path used to
+       drop them on the floor; the next launch's nk_launch_prepare_session
+       memset silently discarded the stale handle, leaking one process and
+       one job handle per finished game in the long-lived player (#511). */
+    nk_launch_stop(&app->launch_session);
+    printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
+           (unsigned long long)elapsed_ms);
+
+    if (elapsed_ms < 500) {
+        char err_msg[512];
+        snprintf(err_msg, sizeof(err_msg),
+                 "Child runtime exited prematurely after %llu ms (exit code %d).\n"
+                 "Process terminated before initialization or scheduler loop could start.",
+                 (unsigned long long)elapsed_ms, code);
+        player_app_set_error(app, "RUNTIME_PREMATURE_EXIT", "Child Process Terminated Early",
+                             err_msg, "Return to Library", VIEW_LIBRARY);
+    } else if (code != 0) {
+        char err_msg[512];
+        snprintf(err_msg, sizeof(err_msg),
+                 "Child runtime process exited abnormally with code %d.\n"
+                 "Check runtime log files for crash traceback or missing symbol details.",
+                 code);
+        player_app_set_error(app, "RUNTIME_ERROR_EXIT", "Child Process Error Exit",
+                             err_msg, "Return to Library", VIEW_LIBRARY);
+    }
+    return true;
 }
 
 bool player_app_start_package_build(PlayerApp *app, int game_index) {
