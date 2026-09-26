@@ -74,7 +74,7 @@ with explicit target and unbuilt boundaries.
 - [`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md) — the
   functional checklist a native player slice is measured against.
 - [`NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md`](NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md)
-  — per-capability web-to-native parity, with the gaps named.
+  — per-capability native implementation status, with the gaps named.
 - [`NATIVE_PLAYER_ARCHITECTURE.md`](NATIVE_PLAYER_ARCHITECTURE.md),
   [`AOT_PRODUCTIZATION_ARCHITECTURE.md`](AOT_PRODUCTIZATION_ARCHITECTURE.md),
   [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md),
@@ -82,10 +82,6 @@ with explicit target and unbuilt boundaries.
   productization target and the routes evaluated for it. All four are CURRENT
   maintained records; each marks unbuilt behavior inline, so CURRENT does not mean
   the target pipeline exists.
-- [`WEB_UI_MIGRATION.md`](WEB_UI_MIGRATION.md) — CURRENT inventory and migration
-  record for the `interface/` prototype and the native migration derived from it.
-- [`WEB_UI_RETIREMENT.md`](WEB_UI_RETIREMENT.md) — retirement plan and parity
-  audit for the `interface/` localhost web dashboard in favor of the native player and CLI.
 - [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md),
   [`PREVIEW_RELEASE_NOTES.md`](PREVIEW_RELEASE_NOTES.md) — proposed scope and
   copy for an early preview. Both are proposals: creating a tag or release is a
@@ -163,7 +159,7 @@ in this slice; classification comes first, directory moves separately.
 | `TITLE_PROFILE_ARCHITECTURE.md` | CURRENT | No-hardcoded-title rule, enforced by `tools/test_generic_title_planning_proof.py` |
 | `TITLE_MANAGER_DECOUPLING.md` | CURRENT | Orchestrator decoupling and nk_manager transition plan |
 | `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Native slice functional checklist |
-| `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Web-to-native parity per capability; PARTIAL rows name what is absent |
+| `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation per capability; PARTIAL rows name what is absent |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
 | `PREVIEW_RELEASE_NOTES.md` | CURRENT | Proposed preview copy, same proposal-only scope |
 | `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build |
@@ -171,8 +167,6 @@ in this slice; classification comes first, directory moves separately.
 | `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; the zero-toolchain recommended routes remain unimplemented |
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and one-click end-user preparation remain unbuilt |
 | `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and the remaining retail-preparation stages are distinguished inline |
-| `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; the wizard staging slice landed (PR #202), while web retirement and full parity remain unbuilt |
-| `WEB_UI_RETIREMENT.md` | DRAFT | Web dashboard retirement plan and native parity audit |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
 | `INDEPENDENCE_CAMPAIGN.md` | DRAFT | Independence route plan; read for intent, never cite as built state |

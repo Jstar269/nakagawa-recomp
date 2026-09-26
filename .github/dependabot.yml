@@ -44,26 +44,6 @@ updates:
     # change runner/runtime semantics -- for example checkout v7's pull-request
     # safety behavior -- and must not hide inside a routine group.
 
-  - package-ecosystem: npm
-    directory: /interface
-    schedule:
-      interval: monthly
-      time: "04:30"
-      timezone: America/New_York
-    open-pull-requests-limit: 8
-    labels:
-      - dependencies
-      - javascript
-    groups:
-      dashboard-minor-patch:
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-    # Major dashboard migrations (ESLint, TypeScript, Next, React, Prisma) are
-    # deliberately standalone.
-
   - package-ecosystem: pip
     directory: /
     schedule:

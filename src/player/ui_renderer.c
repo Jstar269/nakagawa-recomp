@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "ui_renderer.h"
+#include "ui_clip.h"
 #include "iso_reader.h"
 #include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
@@ -1248,15 +1249,14 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     if (hero_tex_entry) {
         ui_load_pic1_if_needed(ren, hero_tex_entry, game->iso_path);
         if (hero_tex_entry->pic1_tex) {
-            SDL_Rect prev_clip;
-            bool had_clip = SDL_GetRenderClipRect(ren, &prev_clip);
+            UiClipState saved_clip = ui_clip_save(ren);
             SDL_Rect hero_clip = { (int)hero_x + 1, (int)hero_y + 1, (int)hero_w - 2, (int)hero_h - 2 };
             SDL_SetRenderClipRect(ren, &hero_clip);
             SDL_SetTextureAlphaMod(hero_tex_entry->pic1_tex, 40);
             SDL_FRect dst = { hero_x, hero_y, hero_w, hero_h };
             SDL_RenderTexture(ren, hero_tex_entry->pic1_tex, NULL, &dst);
             draw_filled_rect(ren, hero_x, hero_y, hero_w, hero_h, (SDL_Color){ 12, 15, 18, 120 });
-            SDL_SetRenderClipRect(ren, had_clip ? &prev_clip : NULL);
+            ui_clip_restore(ren, &saved_clip);
         }
     }
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);

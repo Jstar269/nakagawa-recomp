@@ -190,11 +190,10 @@ void sr_debug_init_watches(void) {
     }
 
     // 1. Try reading from watchpoints.json — the derived runtime artifact
-    // (issue #188). The bounded parser accepts the versioned envelope written
-    // by the dashboard (interface/src/lib/recompiler/watchpoint-file.mjs) and
+    // (issue #188). The bounded parser accepts the versioned envelope and
     // the legacy bare-array form, and fails closed on anything else.
-    // SR_WATCHPOINTS_FILE overrides the path (same env the dashboard's own
-    // file seam honors), defaulting to the CWD-relative watchpoints.json.
+    // SR_WATCHPOINTS_FILE overrides the path, defaulting to the CWD-relative
+    // watchpoints.json.
     {
         SrWatchpointEntry entries[SR_MAX_MEM_WATCHES];
         char wp_err[160];

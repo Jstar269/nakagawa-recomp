@@ -16,7 +16,6 @@ Closes/Tracks #
 - [ ] `python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency`
 - [ ] `pre-commit run --all-files` (when available in the environment)
 - [ ] Relevant native/runtime test or build gate for the changed area
-- [ ] Dashboard test/lint/typecheck/build when `interface/` changes
 
 ### Results
 

@@ -48,9 +48,7 @@ PROTECTED_COMPONENTS: frozenset[str] = frozenset(
         "place_game_here",
         "src",
         "tools",
-        "interface",
         "third_party",
-        "node_modules",
     }
 )
 

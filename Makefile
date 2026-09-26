@@ -619,6 +619,7 @@ PUBLIC_TARGETS := \
 	check \
 	test \
 	native-core-tests \
+	player-ui-tests \
 	fuzz-parsers \
 	readiness \
 	provenance-refresh \
@@ -731,6 +732,7 @@ HELP_DESCRIPTION_runtime-objects := build runtime and decoder objects
 HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
 HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
 HELP_DESCRIPTION_player := build the native player
+HELP_DESCRIPTION_player-ui-tests := build and run native player UI tests (needs SDL3)
 HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objects
 HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
 HELP_DESCRIPTION_production-smoke-staged := run the production smoke from a staging directory outside the build tree
@@ -1543,7 +1545,7 @@ vfpu-tables-selftest:
 	$(BUILD_DIR)/vfpu_tables_selftest.exe
 
 # watchpoints-file-selftest — bounded parser regression for the derived
-# watchpoints.json runtime artifact (issue #188): the exact dashboard-writer
+# watchpoints.json runtime artifact (issue #188): the canonical JSON
 # fixture round-trips into the expected native watchpoint set, plus fail-closed
 # cases (wrong version/format, malformed JSON, out-of-range/reversed/oversized
 # strbuf-selftest — unit and adversarial tests for sr_buf_append / strbuf.h.
@@ -2065,6 +2067,14 @@ package-builder-test-bin:
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
 		tests/native/test_package_builder.c -o build/test_package_builder$(EXE_EXT)
+
+# Player UI tests link SDL3 (software renderer, no window), so they run where the
+# player itself builds rather than in the SDL-free native-core-tests set.
+player-ui-tests:
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
+		-o build/test_ui_clip$(EXE_EXT)
+	./build/test_ui_clip$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt src/rt/pgf_public.c \
