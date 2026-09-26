@@ -736,6 +736,7 @@ static struct {
     unsigned long fog0, fogfull, texa0;         /* full-fog pixels, no-fog pixels, alpha==0 texels */
     unsigned long skin, bonew;                  /* skinned (weighted) 3D prims, bone matrix writes */
     unsigned long deg3d;                        /* zero-area 3D triangles (zeroed/missing vertex data) */
+    unsigned long nonfinite;                    /* triangles dropped for a non-finite clip/screen position */
     unsigned long line3d;                       /* 3D line segments submitted (wireframe map etc.) */
 } s_stat;
 
@@ -972,8 +973,8 @@ void ge_set_frame(uint32_t frame) {
         s_wall_last = now;
         s_ge_ms_acc = 0;
         fprintf(stderr,
-            "GESTAT+ f=%u blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu zrange=%lu zr=[%u,%u] fmt=%u zbp=0x%08x fb=[0x%08x:%lu 0x%08x:%lu 0x%08x:%lu 0x%08x:%lu]\n",
-            frame, s_stat.blk3d, s_stat.skin, s_stat.bonew, s_stat.deg3d, s_stat.line3d,
+            "GESTAT+ f=%u blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu nonfinite=%lu zrange=%lu zr=[%u,%u] fmt=%u zbp=0x%08x fb=[0x%08x:%lu 0x%08x:%lu 0x%08x:%lu 0x%08x:%lu]\n",
+            frame, s_stat.blk3d, s_stat.skin, s_stat.bonew, s_stat.deg3d, s_stat.line3d, s_stat.nonfinite,
             s_stat.zrange, ge.minz, ge.maxz, ge.fbfmt, ge.zbp,
             s_stat.fbs[0], s_stat.fbn[0], s_stat.fbs[1], s_stat.fbn[1],
             s_stat.fbs[2], s_stat.fbn[2], s_stat.fbs[3], s_stat.fbn[3]);
@@ -1944,8 +1945,11 @@ static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0x
 /* Per-vertex lighting in world space: emissive + scene ambient, plus per-light
  * ambient/diffuse/specular for up to 4 directional/point lights (spot treated as point).
  * Material colours come from the registers or the vertex colour per MATERIALUPDATE bits. */
-static void light_vertex(float wx, float wy, float wz, float nx, float ny, float nz,
-                         int vr, int vg, int vb, int va, int *lr, int *lg, int *lb, int *la) {
+/* Returns 0 when a lit channel is not finite. A NaN or infinite channel makes the
+ * (int) conversion below host UB and the written pixel meaningless, so the caller fails the
+ * primitive closed instead (CVtx::nf). Only a finite result is a defined pixel. */
+static int light_vertex(float wx, float wy, float wz, float nx, float ny, float nz,
+                        int vr, int vg, int vb, int va, int *lr, int *lg, int *lb, int *la) {
     float vrf = vr*(1.0f/255.0f), vgf = vg*(1.0f/255.0f), vbf = vb*(1.0f/255.0f);
     /* Lit alpha = material-ambient alpha * scene-ambient alpha; diffuse/specular/emissive never
      * contribute to alpha (PPSSPP Software/Lighting.cpp). With MATERIALUPDATE bit 0 the vertex
@@ -2003,9 +2007,11 @@ static void light_vertex(float wx, float wy, float wz, float nx, float ny, float
             }
         }
     }
+    int lit = isfinite(r) && isfinite(g) && isfinite(b);
     *lr = clamp8((int)(r*255.0f + 0.5f));
     *lg = clamp8((int)(g*255.0f + 0.5f));
     *lb = clamp8((int)(b*255.0f + 0.5f));
+    return lit;
 }
 
 typedef struct {
@@ -2049,12 +2055,25 @@ typedef struct {
     /* PSP primitive-acceptance flags (PPSSPP Clipper::ProcessTriangle / ClipToScreenInternal):
      * oor = projected screen coords outside the GE's 4096-grid; ozp/ozn = z/w beyond +-1. */
     int oor, ozp, ozn;
+    /* Set when a clip position, a projected screen position or a lit colour channel is not
+     * finite. Such a vertex has no defined rasterized result: every comparison in the
+     * acceptance test below is false against NaN, so it would slip through as "inside" and
+     * reach the rasterizer with NaN edge functions or a NaN pixel value (and the (int)
+     * conversion of a NaN channel is host UB). The PSP's answer here is NOT_MEASURED
+     * (docs/HARDWARE_ORACLE.md), so the GE fails closed and counts the primitive instead of
+     * inventing screen coverage. Texcoords are deliberately NOT covered: a game may leave an
+     * infinite texgen matrix in place to force a constant s/t, exactly as it may leave
+     * infinite fog coefficients (see the fog guard above). */
+    int nf;
     /* Projected screen-grid coords (pre-offset) kept for SR_RTRACE decision logging; only
      * meaningful when cw != 0. */
     float sx, sy, sz;
 } CVtx;
 
 static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
+    /* Every non-finite verdict below ORs into nf; the lighting pass runs first, so start
+     * from a clean verdict. */
+    o->nf = 0;
     int profile_phase = s_primitive_profile_current_phase;
     uint64_t transform_started = profile_phase == GE_PRIM_PROFILE_TRANSFORM
         ? SDL_GetTicksNS() : 0;
@@ -2164,7 +2183,9 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
         mat33_mul(ge.world, nx, ny, nz, &wnx, &wny, &wnz);
         float nl = sqrtf(wnx*wnx + wny*wny + wnz*wnz);
         if (nl > 0.0f) { wnx/=nl; wny/=nl; wnz/=nl; }
-        light_vertex(wx, wy, wz, wnx, wny, wnz, o->r, o->g, o->b, o->a, &o->r, &o->g, &o->b, &o->a);
+        if (!light_vertex(wx, wy, wz, wnx, wny, wnz, o->r, o->g, o->b, o->a,
+                          &o->r, &o->g, &o->b, &o->a))
+            o->nf = 1;
         if (lighting_started)
             primitive_profile_end(GE_PRIM_PROFILE_LIGHTING, lighting_started);
     }
@@ -2173,6 +2194,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
      * NOT rasterise primitives whose vertices leave the valid screen grid or the z range —
      * games count on this to hide effect passes and behind-camera geometry. */
     o->oor = o->ozp = o->ozn = 0;
+    if (!(isfinite(o->cx) && isfinite(o->cy) && isfinite(o->cz) && isfinite(o->cw))) o->nf = 1;
     {
         const float zoutside = 1.000030517578125f;
         float zw = o->cz / o->cw;
@@ -2182,6 +2204,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
         float sy = o->cy * decode_float24(ge.viewport_raw[1]) / o->cw + decode_float24(ge.viewport_raw[4]);
         float sz = o->cz * decode_float24(ge.viewport_raw[2]) / o->cw + decode_float24(ge.viewport_raw[5]);
         o->sx = sx; o->sy = sy; o->sz = sz;
+        if (!(isfinite(sx) && isfinite(sy) && isfinite(sz))) o->nf = 1;
         const float SB = 4095.0f + 15.5f / 16.0f;
         if (ge.depth_clip) {
             if (o->cz > -o->cw && (sx >= SB || sy >= SB || sx < 0.0f || sy < 0.0f)) o->oor = 1;
@@ -2242,6 +2265,12 @@ static void project_cvtx(const CVtx *c, Vtx *o) {
 static int transform_vtx_3d(uint32_t addr, const VFmt *vf, Vtx *o) {
     CVtx c;
     transform_vtx_clip(addr, vf, &c);
+    /* Fail closed on a non-finite position (see CVtx::nf): the tests below all compare false
+     * against NaN, so a NaN point or sprite corner would project to a NaN rect. */
+    if (c.nf) {
+        if (s_primitive_profile_counting) s_cpu_profile_stats.primitive_profile_vertex_rejects++;
+        s_stat.nonfinite++; s_stat.nearclip++; return 0;
+    }
     if (c.cw <= NEAR_W) {
         if (s_primitive_profile_counting) s_cpu_profile_stats.primitive_profile_vertex_rejects++;
         s_stat.nearclip++; return 0;
@@ -2275,6 +2304,9 @@ static void clip_lerp_cvtx(const CVtx *a, const CVtx *b, float t, CVtx *o) {
     /* oor=2 marks a vertex CREATED by the near clip: PPSSPP's clip_interpolate re-projects
      * such vertices and re-checks the screen-grid range (clip_vtx_out_of_range below). */
     o->oor = 2; o->ozp = o->ozn = 0;
+    /* A clip-created vertex inherits finiteness from two finite endpoints unless the
+     * interpolation itself overflowed; keep the fail-closed verdict honest either way. */
+    o->nf = !(isfinite(o->cx) && isfinite(o->cy) && isfinite(o->cz) && isfinite(o->cw));
     o->sx = o->sy = o->sz = 0.0f;
 }
 
@@ -3039,6 +3071,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             if (da < 0.0f)       { CVtx t; clip_lerp_cvtx(&ca,&cb, da/(da-db2), &t); ca=t; }
             else if (db2 < 0.0f) { CVtx t; clip_lerp_cvtx(&cb,&ca, db2/(db2-da), &t); cb=t; }
             if (ca.cw <= NEAR_W || cb.cw <= NEAR_W) { s_stat.nearclip++; continue; }
+            if (ca.nf || cb.nf) { s_stat.nonfinite++; s_stat.nearclip++; continue; }
             /* PPSSPP ProcessLine: clip-created endpoints outside the screen grid kill the line. */
             if (clip_vtx_out_of_range(&ca) || clip_vtx_out_of_range(&cb)) { s_stat.nearclip++; continue; }
             Vtx a, b;
@@ -3048,10 +3081,11 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
     } else if (type == 3 || type == 4 || type == 5) {
         /* SR_RTRACE per-draw bookkeeping: per-reason triangle counters plus a snapshot of the
          * pixel-level stat counters so the TRIDRW+ line can report this draw's pixel outcome. */
-        enum { D_DRAW, D_OOR, D_WNEG, D_ZOUT, D_ZSAME, D_NEARALL, D_CWLOW, D_CLIP };
-        static const char *dec_name[8] =
-            { "DRAW", "drop-oor", "drop-wneg", "drop-zout", "drop-zsame", "drop-nearall", "drop-cwlow", "CLIP" };
-        unsigned long dcnt[8] = {0,0,0,0,0,0,0,0};
+        enum { D_DRAW, D_OOR, D_WNEG, D_ZOUT, D_ZSAME, D_NEARALL, D_CWLOW, D_CLIP, D_NONFINITE };
+        static const char *dec_name[9] =
+            { "DRAW", "drop-oor", "drop-wneg", "drop-zout", "drop-zsame", "drop-nearall", "drop-cwlow", "CLIP",
+              "drop-nonfinite" };
+        unsigned long dcnt[9] = {0,0,0,0,0,0,0,0,0};
         struct { unsigned long tri3d, cull, zfail, afail, px3d, zrange, deg3d, blk3d; } st0;
         st0.tri3d = s_stat.tri3d; st0.cull = s_stat.cull; st0.zfail = s_stat.zfail;
         st0.afail = s_stat.afail; st0.px3d = s_stat.px3d; st0.zrange = s_stat.zrange;
@@ -3119,7 +3153,13 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
              * z range; games rely on it (effect passes, behind-camera geometry). Drawing them
              * (the old behaviour) scattered runaway triangles across the scene. */
             int dec = D_DRAW;
-            if (cv[0].oor || cv[1].oor || cv[2].oor) dec = D_OOR;
+            /* Fail closed on a non-finite clip/screen position FIRST: the out-of-range and
+             * z tests below all compare false against NaN, so a NaN vertex would otherwise be
+             * accepted and rasterized with NaN edge functions (unbounded, garbage coverage).
+             * The PSP's own answer for such a vertex is NOT_MEASURED, so the primitive is
+             * dropped and counted rather than given an invented screen result. */
+            if (cv[0].nf || cv[1].nf || cv[2].nf) dec = D_NONFINITE;
+            else if (cv[0].oor || cv[1].oor || cv[2].oor) dec = D_OOR;
             else if (cv[0].cw < 0.0f && cv[1].cw < 0.0f && cv[2].cw < 0.0f) dec = D_WNEG;
             else {
                 int zp = cv[0].ozp + cv[1].ozp + cv[2].ozp;
@@ -3143,6 +3183,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                 else s_cpu_profile_stats.primitive_profile_transform_triangles_rejected++;
             }
             if (dec != D_DRAW) s_stat.nearclip++;
+            if (dec == D_NONFINITE) s_stat.nonfinite++;
             int clip_m = -1;
             if (dec == D_CLIP)
                 clip_m = clip_poly_near(cv, 3, cl);
@@ -3234,12 +3275,12 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         }
         if (rt) {
             fprintf(stderr, "TRIDRW+ f=%u d=%u tris=%lu draw=%lu clip=%lu drop[oor=%lu wneg=%lu zout=%lu "
-                    "zsame=%lu nearall=%lu cwlow=%lu] rast=%lu cull=%lu deg=%lu px=%lu zfail=%lu afail=%lu "
-                    "zrange=%lu blk=%lu\n",
+                    "zsame=%lu nearall=%lu cwlow=%lu nonfinite=%lu] rast=%lu cull=%lu deg=%lu px=%lu "
+                    "zfail=%lu afail=%lu zrange=%lu blk=%lu\n",
                     s_ge_frame, s_rt_draw,
-                    dcnt[0]+dcnt[1]+dcnt[2]+dcnt[3]+dcnt[4]+dcnt[5]+dcnt[6]+dcnt[7],
+                    dcnt[0]+dcnt[1]+dcnt[2]+dcnt[3]+dcnt[4]+dcnt[5]+dcnt[6]+dcnt[7]+dcnt[8],
                     dcnt[D_DRAW], dcnt[D_CLIP], dcnt[D_OOR], dcnt[D_WNEG], dcnt[D_ZOUT],
-                    dcnt[D_ZSAME], dcnt[D_NEARALL], dcnt[D_CWLOW],
+                    dcnt[D_ZSAME], dcnt[D_NEARALL], dcnt[D_CWLOW], dcnt[D_NONFINITE],
                     s_stat.tri3d - st0.tri3d, s_stat.cull - st0.cull, s_stat.deg3d - st0.deg3d,
                     s_stat.px3d - st0.px3d, s_stat.zfail - st0.zfail, s_stat.afail - st0.afail,
                     s_stat.zrange - st0.zrange, s_stat.blk3d - st0.blk3d);

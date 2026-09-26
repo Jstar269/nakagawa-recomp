@@ -739,6 +739,7 @@
     "tools/test_funcdiff_cmp.py",
     "tools/test_gate_exit_resolution.py",
     "tools/test_ge_capture.py",
+    "tools/test_ge_nonfinite_vertex.py",
     "tools/test_ge_transition_trace.py",
     "tools/test_gen_nidnames.py",
     "tools/test_generate_benchmarks.py",

@@ -53,6 +53,22 @@ proposals. Each claim covers only the exact fixture named:
     destination register is unchanged.
   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
     undefined for non-coprocessor-unusable exceptions.
+- **Non-finite vertex position and lit colour in the GE** (issue #69; no run
+  yet): what the PSP GE rasterizes for a vertex whose clip position, projected
+  screen position or lit colour channel is NaN or infinite is **NOT_MEASURED**.
+  No public PSP documentation states a result, and PPSSPP's software GE was not
+  usable as an oracle for the cell either (its screen acceptance and its
+  bounding-box minimum/maximum both compare false against NaN, so no culling
+  verdict is implied by its source either). `src/rt/ge.c` therefore fails
+  closed: the primitive is dropped and counted (`GESTAT+ ... nonfinite=`, and
+  `drop-nonfinite` in the per-draw `TRIDRW+` line) instead of being rasterized
+  from a host `(int)NaN` conversion. A hardware capture through the existing
+  Loop B probe — one triangle with a NaN bone matrix and one with a NaN vertex
+  normal, read back through `sceGuGetMemoryStick`/`sceGuFinish` into a host
+  framebuffer hash — would settle whether the hardware culls, clamps or
+  rasterizes such a vertex, and is the measurement this cell is waiting for.
+  The related producer is a separate cell: the out-of-domain arc-sine argument
+  that makes a bone matrix non-finite in the first place.
 - **Misaligned data access** (runs PSP-A3-02 and PSP-A3-03; same route,
   campaign and console; fixtures `exception-a3-mload` and `exception-a3-mstore`,
   which are `probe_exception_a3.c` built with `-DA3_CASE=2` and `=3`):
