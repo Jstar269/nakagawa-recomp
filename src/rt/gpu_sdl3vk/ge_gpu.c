@@ -2512,6 +2512,9 @@ static int software_fallback_begin(int force) {
  * disagree and a future caller that reaches the seam unchecked still fails closed.
  * The drop is counted like ge.c's GESTAT nonfinite= and the primitive is reported as
  * TAKEN (return 1), so the software rasterizer does not then draw what we just rejected. */
+/* Two different 1s: hook_finite() returns 1 when every vertex is finite (accept); a
+ * hook returns 1 when it TOOK the primitive, which includes rejecting a non-finite one
+ * so the software rasterizer does not draw it either. */
 static int hook_finite(const GeVtx *const *v, int n) {
     for (int i = 0; i < n; i++)
         if (!ge_vtx_finite(v[i])) { s_cnt_nonfinite++; return 0; }

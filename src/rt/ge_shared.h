@@ -120,6 +120,7 @@ typedef struct GeVtx { float x, y, z, rw; float u, v; float fog; int r, g, b, a;
  * Texcoords are deliberately NOT part of the rule: a game may leave an infinite texgen
  * matrix in place to force a constant s/t, exactly as it may leave infinite fog
  * coefficients, so covering them would reject legal guest state. */
+/* 1 when the screen position (x, y, z) and the reciprocal clip-w (rw = 1/w) are all finite. */
 static inline int ge_vtx_finite(const GeVtx *v) {
     return isfinite(v->x) && isfinite(v->y) && isfinite(v->z) && isfinite(v->rw);
 }

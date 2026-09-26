@@ -1714,8 +1714,7 @@ static void who_init(void) {
 static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
     if ((!a || ge_vtx_finite(a)) && (!b || ge_vtx_finite(b)) && (!c || ge_vtx_finite(c)))
         return 0;
-    s_stat.nonfinite++;
-    s_stat.nearclip++;
+    s_stat.nonfinite++;   /* counted apart from nearclip: a separate rejection reason */
     return 1;
 }
 
@@ -2313,7 +2312,7 @@ static int transform_vtx_3d(uint32_t addr, const VFmt *vf, Vtx *o) {
      * against NaN, so a NaN point or sprite corner would project to a NaN rect. */
     if (c.nf) {
         if (s_primitive_profile_counting) s_cpu_profile_stats.primitive_profile_vertex_rejects++;
-        s_stat.nonfinite++; s_stat.nearclip++; return 0;
+        s_stat.nonfinite++; return 0;
     }
     if (c.cw <= NEAR_W) {
         if (s_primitive_profile_counting) s_cpu_profile_stats.primitive_profile_vertex_rejects++;
@@ -2638,7 +2637,7 @@ static void patch_eval(const ModelVtx *cp,int row_stride,const PatchWeight *wu,
  * unbounded primitive. */
 static int model_to_through(const ModelVtx *m,Vtx *v){
     if(!(isfinite(m->x)&&isfinite(m->y)&&isfinite(m->z))){
-        s_stat.nonfinite++;s_stat.nearclip++;return 0;
+        s_stat.nonfinite++;return 0;
     }
     v->x=m->x;v->y=m->y;v->z=m->z;v->rw=1;v->u=m->u;v->v=m->v;v->fog=1;
     v->r=m->r;v->g=m->g;v->b=m->b;v->a=m->a;
@@ -2651,7 +2650,7 @@ static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const Mode
     if(ge.cull_enable&&!ge.clear&&(ge.cull&1)==0){CVtx t=cv[0];cv[0]=cv[1];cv[1]=t;}
     /* Non-finite first, exactly as the triangle path above: a NaN clip position, screen
      * position or lit colour passes every test below. */
-    if(cv[0].nf||cv[1].nf||cv[2].nf){s_stat.nonfinite++;s_stat.nearclip++;return;}
+    if(cv[0].nf||cv[1].nf||cv[2].nf){s_stat.nonfinite++;return;}
     if(cv[0].oor||cv[1].oor||cv[2].oor||(cv[0].cw<0&&cv[1].cw<0&&cv[2].cw<0))return;
     int zp=cv[0].ozp+cv[1].ozp+cv[2].ozp,zn=cv[0].ozn+cv[1].ozn+cv[2].ozn;
     if((!ge.depth_clip&&zp+zn>0)||zp>=3||zn>=3)return;
@@ -2668,7 +2667,7 @@ static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const Mode
 static void submit_model_line(const ModelVtx *a,const ModelVtx *b,int through){
     if(through){Vtx x,y;if(!model_to_through(a,&x)||!model_to_through(b,&y))return;draw_line_vtx(&x,&y,0);return;}
     CVtx x,y;transform_model_vtx_clip(a,&x);transform_model_vtx_clip(b,&y);
-    if(x.nf||y.nf){s_stat.nonfinite++;s_stat.nearclip++;return;}
+    if(x.nf||y.nf){s_stat.nonfinite++;return;}
     if(x.oor||y.oor||(x.cw<0&&y.cw<0))return;
     float dx=clip_d_nearz(&x),dy=clip_d_nearz(&y);
     if(dx<0&&dy<0)return;
@@ -2681,7 +2680,7 @@ static void submit_model_line(const ModelVtx *a,const ModelVtx *b,int through){
 static void submit_model_point(const ModelVtx *a,int through){
     if(through){Vtx v;if(!model_to_through(a,&v))return;draw_point_vtx(&v,0);return;}
     CVtx c;transform_model_vtx_clip(a,&c);
-    if(c.nf){s_stat.nonfinite++;s_stat.nearclip++;return;}
+    if(c.nf){s_stat.nonfinite++;return;}
     if(c.cw<=NEAR_W||c.oor||(!ge.depth_clip&&(c.ozp||c.ozn)))return;
     Vtx v;project_cvtx(&c,&v);draw_point_vtx(&v,1);
 }
@@ -3133,7 +3132,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             if (da < 0.0f)       { CVtx t; clip_lerp_cvtx(&ca,&cb, da/(da-db2), &t); ca=t; }
             else if (db2 < 0.0f) { CVtx t; clip_lerp_cvtx(&cb,&ca, db2/(db2-da), &t); cb=t; }
             if (ca.cw <= NEAR_W || cb.cw <= NEAR_W) { s_stat.nearclip++; continue; }
-            if (ca.nf || cb.nf) { s_stat.nonfinite++; s_stat.nearclip++; continue; }
+            if (ca.nf || cb.nf) { s_stat.nonfinite++; continue; }
             /* PPSSPP ProcessLine: clip-created endpoints outside the screen grid kill the line. */
             if (clip_vtx_out_of_range(&ca) || clip_vtx_out_of_range(&cb)) { s_stat.nearclip++; continue; }
             Vtx a, b;
@@ -3244,7 +3243,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                 else if (dec == D_CLIP) s_cpu_profile_stats.primitive_profile_transform_triangles_clipped++;
                 else s_cpu_profile_stats.primitive_profile_transform_triangles_rejected++;
             }
-            if (dec != D_DRAW) s_stat.nearclip++;
+            if (dec != D_DRAW && dec != D_NONFINITE) s_stat.nearclip++;
             if (dec == D_NONFINITE) s_stat.nonfinite++;
             int clip_m = -1;
             if (dec == D_CLIP)
