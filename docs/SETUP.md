@@ -465,11 +465,32 @@ it needs all of the following:
 - `python`, `gcc`, and `mingw32-make` on `PATH` — the UCRT64 toolchain installed in
   section 1. The spawned build inherits the player's `PATH`, so a tool your shell
   cannot see is a tool the build cannot see either.
+- SDL3 headers/import library and Vulkan headers/loader import library from the
+  UCRT64 package set. The Makefile can use the MSYS2 `libvulkan-1.dll.a` import
+  archive; a separate Vulkan SDK is not needed for this consumer build.
+- `powershell.exe`, which ships with Windows 11. The asset-copy step uses the
+  built-in Windows PowerShell 5.1; PowerShell 7 remains the development baseline
+  for the other repository scripts.
 
 Missing pieces are named on the error card instead of failing deep inside the build:
 `CLI_NOT_FOUND` lists every searched location and the `NK_INSTALL_ROOT` fix,
 `BUILD_TOOLCHAIN_MISSING` names the missing tool (`python`, `gcc`, or
 `mingw32-make`), and `PYTHON_NOT_FOUND` names the interpreter.
+
+The pinned candidate download set is recorded in
+[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
+and 25 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3, Vulkan headers/loader,
+and their runtime dependencies), totaling 89,547,599 bytes. Package hashes and
+sizes come from the signed MSYS2 repository database; the Python hash is from
+python.org's release page. `tools/requirements-lock.txt` contains developer and
+build-generation tools; the consumer `build-package` path needs no third-party
+Python packages, and `glslc` is only used by opt-in shader regeneration.
+
+The player does not yet bootstrap the Python runtime or show the prerequisite
+consent/progress flow. If a build prerequisite is missing, the card names that
+boundary and points to automatic build-prerequisite installation, in the works
+([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)); it does not
+download anything automatically today.
 
 The player's UI typography loads `SDL3_ttf.dll` from beside the executable first,
 then from `PATH`; without it the built-in readable debug font is used. Placing

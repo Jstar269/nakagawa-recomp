@@ -71,6 +71,17 @@ class VulkanSdkDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(VulkanSdkError, "No usable Vulkan SDK"):
                 discover_vulkan_sdk(environment="", install_root=root)
 
+    def test_msys2_ucrt64_vulkan_import_archive_is_usable(self) -> None:
+        """The pinned UCRT64 loader package provides a GCC import archive, not .lib."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ucrt64"
+            (root / "include" / "vulkan").mkdir(parents=True)
+            (root / "include" / "vulkan" / "vulkan.h").write_text("// fixture\n", encoding="ascii")
+            (root / "lib").mkdir()
+            (root / "lib" / "libvulkan-1.dll.a").write_bytes(b"synthetic import archive")
+            self.assertTrue(is_usable_vulkan_sdk(root))
+            self.assertEqual(discover_vulkan_sdk(root), root.resolve())
+
     def test_invalid_environment_fails_with_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(VulkanSdkError, "VULKAN_SDK points to an unusable"):
