@@ -478,6 +478,9 @@ have_image:;
         fprintf(stderr, "cannot open out trace %s\n", out);
         return 2;
     }
+    /* A guest can spin before its first VBLANK, so arm an opted-in trace window
+     * once the trace sink exists and before any guest instruction can run. */
+    if (strcmp(out, "none") != 0) sr_trace_window_configure();
     RecompFn fn = sr_lookup(entry);
     if (!fn) {
         /* Entry point not compiled — the codegen likely skipped it (e.g. a module-start

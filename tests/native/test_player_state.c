@@ -19,6 +19,7 @@
  * save, which is the whole point of the assertion.
  */
 
+/* Feature-test macro first: POSIX tests use setenv, fchmod, and fileno. */
 #if !defined(_WIN32) && !defined(_WIN64)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -38,11 +39,41 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #define test_rmdir _rmdir
+#define nk_ps_chdir _chdir
+#define nk_ps_getcwd _getcwd
 #else
 #include <sys/stat.h>
 #include <unistd.h>
 #define test_rmdir rmdir
+#define nk_ps_chdir chdir
+#define nk_ps_getcwd getcwd
 #endif
+
+/* Set (value non-NULL) or clear (value NULL) a process environment variable
+ * for the duration of a probe, restored by the caller. */
+static void nk_ps_set_env(const char *key, const char *value) {
+    size_t len = strlen(key) + (value ? strlen(value) : 0) + 2;
+    char *pair = (char *)malloc(len);
+    assert(pair != NULL);
+    if (value) snprintf(pair, len, "%s=%s", key, value);
+    else snprintf(pair, len, "%s=", key);
+#if defined(_WIN32) || defined(_WIN64)
+    /* _putenv may retain the pointer, so the string outlives this call. */
+    _putenv(pair);
+#else
+    if (value) setenv(key, value, 1); /* setenv copies */
+    else unsetenv(key);
+    free(pair);
+#endif
+}
+
+/* Copy an environment value out before any mutation invalidates getenv's pointer. */
+static void nk_ps_copy_env(const char *key, char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    const char *live = getenv(key);
+    if (live && live[0]) snprintf(out, out_size, "%s", live);
+}
 
 static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name) {
     memset(entry, 0, sizeof(*entry));
@@ -1139,7 +1170,18 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 13); /* 8x preset not offered */
+        assert(player_app_focus_count(stops) == 15); /* 8x preset not offered */
+        stops->active_view = VIEW_PREREQ_CONSENT;
+        assert(player_app_focus_count(stops) == 2);
+        stops->active_view = VIEW_PREREQ_PROGRESS;
+        assert(player_app_focus_count(stops) == 1);
+        stops->active_view = VIEW_PREREQ_ABOUT;
+        stops->prerequisites.item_count = 0;
+        assert(player_app_focus_count(stops) == 1);
+        stops->prerequisites.item_count = 1;
+        assert(player_app_focus_count(stops) == 2);
+        stops->active_view = VIEW_CONFIRM_REMOVE_TOOLS;
+        assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
         assert(player_app_focus_count(stops) == 22);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
@@ -2227,6 +2269,195 @@ int main(int argc, char **argv) {
         test_rmdir(packages_dir);
         test_rmdir(user_root);
         test_rmdir(scratch);
+    }
+    /* 20b. A crafted disc controls module directory names; only plain names
+       may be written under the private per-title folder. */
+    {
+        assert(player_module_name_is_safe("MODULE.PRX"));
+        assert(player_module_name_is_safe("libfont_hv.prx"));
+        assert(player_module_name_is_safe("a-b.1.elf"));
+        assert(!player_module_name_is_safe(""));
+        assert(!player_module_name_is_safe("..\\..\\evil.prx"));
+        assert(!player_module_name_is_safe("../evil.prx"));
+        assert(!player_module_name_is_safe("a/b.prx"));
+        assert(!player_module_name_is_safe("C:evil.prx"));
+        assert(!player_module_name_is_safe(".hidden.prx"));
+        assert(!player_module_name_is_safe("CON.prx"));
+        assert(!player_module_name_is_safe("lpt1.prx"));
+        assert(!player_module_name_is_safe("trailing."));
+        assert(!player_module_name_is_safe("space name.prx"));
+        assert(player_module_name_is_safe("CONSOLE.prx"));
+    }
+    /* 21. Host discovery: build preflight cards and the SDL3_ttf search order. */
+    printf("[PLAYER_STATE_TEST] Subtest 21: build preflight cards and SDL3_ttf search order\n");
+    fflush(stdout);
+    {
+        /* 21a: SDL3_ttf candidates put the executable folder first, then the
+           platform loader's bare names (PATH on Windows). */
+        char with_dir[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        char without_dir[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        char trailing[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        int n_with = player_app_ttf_library_candidates("C:/rel/bin", with_dir,
+                                                       PLAYER_APP_TTF_MAX_CANDIDATES);
+        int n_without = player_app_ttf_library_candidates(NULL, without_dir,
+                                                          PLAYER_APP_TTF_MAX_CANDIDATES);
+        int n_trailing = player_app_ttf_library_candidates("C:/rel/bin/", trailing,
+                                                           PLAYER_APP_TTF_MAX_CANDIDATES);
+        assert(n_with == n_without + 1);
+        assert(n_with >= 2);
+        assert(strstr(with_dir[0], "C:/rel/bin") != NULL);
+        assert(strstr(with_dir[0], "SDL3_ttf") != NULL);
+        assert(strcmp(with_dir[1], without_dir[0]) == 0);
+        assert(strchr(with_dir[n_with - 1], '/') == NULL);
+        assert(strchr(with_dir[n_with - 1], '\\') == NULL);
+        assert(n_trailing == n_with);
+        assert(strcmp(trailing[0], with_dir[0]) == 0);
+
+        /* 21b/21c: the two discovery cards a release user can hit. */
+        PlayerApp *capp = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(capp != NULL);
+        nk_library_init(&capp->library);
+        player_app_populate_sample_games(capp);
+        assert(capp->game_count > 0);
+
+        char saved_cwd[NK_MAX_PATH];
+        assert(nk_ps_getcwd(saved_cwd, sizeof(saved_cwd)) != NULL);
+        char probe[NK_MAX_PATH + 64];
+        assert(nk_platform_get_path(NK_PATH_CACHE, probe, sizeof(probe)));
+        size_t probe_len = strlen(probe);
+        snprintf(probe + probe_len, sizeof(probe) - probe_len, "%ccli_card_probe",
+                 nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(probe));
+
+        char prior_override[1024];
+        nk_ps_copy_env("NK_INSTALL_ROOT", prior_override, sizeof(prior_override));
+        nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+        assert(nk_ps_chdir(probe) == 0);
+        snprintf(capp->install_root, sizeof(capp->install_root), "%.*s",
+                 (int)sizeof(capp->install_root) - 1, probe);
+
+        /* CLI_NOT_FOUND: the card must name NK_INSTALL_ROOT and the checkout fix. */
+        assert(!player_app_start_package_build(capp, 0));
+        assert(capp->active_view == VIEW_ERROR);
+        assert(strcmp(capp->last_error.error_code, "CLI_NOT_FOUND") == 0);
+        assert(strstr(capp->last_error.message, "NK_INSTALL_ROOT") != NULL);
+        assert(strstr(capp->last_error.message, "source checkout") != NULL);
+        assert(strstr(capp->last_error.message, "nk_cli.py") != NULL);
+
+        /* 21c: back in the checkout, an empty PATH requests consent before
+           any prerequisite download or child process starts. */
+        assert(nk_ps_chdir(saved_cwd) == 0);
+        snprintf(capp->install_root, sizeof(capp->install_root), "%s", saved_cwd);
+        char prior_path[32768];
+        char prior_python[1024];
+        nk_ps_copy_env("PATH", prior_path, sizeof(prior_path));
+        nk_ps_copy_env("PYTHON", prior_python, sizeof(prior_python));
+#if defined(_WIN32) || defined(_WIN64)
+        nk_ps_set_env("PYTHON", "C:/Windows/notepad.exe");
+#else
+        nk_ps_set_env("PYTHON", "/bin/sh");
+#endif
+        nk_ps_set_env("PATH", "");
+
+#if defined(_WIN32) || defined(_WIN64)
+        assert(player_app_start_package_build(capp, 0));
+        assert(capp->active_view == VIEW_PREREQ_CONSENT);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
+        assert(capp->prerequisites.item_count == 26);
+        assert(capp->prerequisites.total_bytes == UINT64_C(89547599));
+        assert(capp->build_session.is_building == false);
+        /* Consent cancellation has no side effects. */
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+#else
+        /* Automatic installation is Windows x64 only for now: other hosts are
+           refused with the tracking issue, and nothing is downloaded. */
+        assert(!player_app_start_package_build(capp, 0));
+        assert(strstr(capp->last_error.message, "#306") != NULL);
+        assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
+#endif
+        assert(capp->build_session.is_building == false);
+
+        /* The next attempt records consent for this build only and reaches
+           the progress card. */
+        assert(player_app_prereq_begin(capp, 0, true, true));
+        player_app_prereq_accept(capp, true);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_update_progress(capp, "cpython-embed-amd64", 64, 128,
+                                          64, UINT64_C(89547599));
+        assert(strcmp(capp->prerequisites.current_item, "cpython-embed-amd64") == 0);
+        assert(capp->prerequisites.item_received_bytes == 64);
+        assert(capp->prerequisites.total_received_bytes == 64);
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.cancel_requested);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_finish_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+
+        assert(player_app_prereq_begin(capp, 0, false, true));
+        player_app_prereq_accept(capp, false);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.cancel_requested);
+        player_app_prereq_finish_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+
+        assert(player_app_prereq_begin(capp, 0, true, true));
+        player_app_prereq_accept(capp, true);
+        player_app_prereq_fail(capp, "PYTHON_ARCHIVE_EXTRACT_FAILED",
+                               "The verified runtime could not be extracted.");
+        assert(capp->active_view == VIEW_ERROR);
+        assert(strcmp(capp->last_error.error_code, "PYTHON_ARCHIVE_EXTRACT_FAILED") == 0);
+        player_app_prereq_retry(capp);
+        assert(capp->active_view == VIEW_PREREQ_CONSENT);
+        assert(capp->prerequisites.bootstrap_python);
+        player_app_prereq_accept(capp, true);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
+        player_app_prereq_cancel(capp);
+        player_app_prereq_finish_cancel(capp);
+
+        assert(player_app_prereq_begin(capp, 0, false, true));
+        player_app_prereq_accept(capp, false);
+        {
+            static const char *const errors[] = {
+                "OFFLINE_OR_NETWORK_ERROR", "HASH_MISMATCH", "SIZE_MISMATCH",
+                "REDIRECT_REJECTED", "TRUNCATED_BODY", "DISK_FULL",
+                "DESTINATION_WRITE_FAILED", "MANIFEST_INVALID"
+            };
+            for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+                player_app_prereq_fail(capp, errors[i], "Check the connection or free disk space, then retry.");
+                assert(capp->active_view == VIEW_ERROR);
+                assert(capp->prerequisites.phase == PLAYER_PREREQ_FAILED);
+                assert(strcmp(capp->last_error.error_code, errors[i]) == 0);
+                assert(strcmp(capp->last_error.recovery_action_label, "Retry Download") == 0);
+                assert(capp->last_error.return_view == VIEW_PREREQ_CONSENT);
+                player_app_prereq_retry(capp);
+                assert(capp->active_view == VIEW_PREREQ_CONSENT);
+                assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
+                player_app_prereq_accept(capp, false);
+                assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+            }
+        }
+        player_app_prereq_complete(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_INSTALLED);
+        assert(capp->prerequisites.resume_build_pending);
+        assert(player_app_prereq_take_resume(capp));
+        assert(!player_app_prereq_take_resume(capp));
+
+        /* Restore the process environment before any later probe. */
+        if (prior_path[0]) nk_ps_set_env("PATH", prior_path);
+        else nk_ps_set_env("PATH", "");
+        if (prior_python[0]) nk_ps_set_env("PYTHON", prior_python);
+        else nk_ps_set_env("PYTHON", NULL);
+        if (prior_override[0]) nk_ps_set_env("NK_INSTALL_ROOT", prior_override);
+        else nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+
+        free(capp);
     }
 
     free(app);

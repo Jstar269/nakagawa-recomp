@@ -1,7 +1,8 @@
 # Release Smoke Test: Native Player
 
 Status: CURRENT. This document defines the canonical 12-step pass/fail release
-smoke test for the Nakagawa Recomp native desktop player (`build/nakagawa_player.exe`).
+smoke test for the Nakagawa Recomp native desktop player (`build/nakagawa_player.exe`
+from a source checkout or `bin/nakagawa_player.exe` from the v0.0.1 package).
 Every release candidate must pass this test on a clean Windows 11 system before
 qualification.
 
@@ -10,7 +11,7 @@ Results may be submitted using the [Smoke Test Report issue template](https://gi
 ## Prerequisites
 
 - Windows 11 x64 with current Vulkan graphics drivers.
-- The compiled native player binary (`mingw32-make player` -> `build/nakagawa_player.exe`).
+- The compiled native player binary (`mingw32-make player` -> `build/nakagawa_player.exe`), or the packaged `bin/nakagawa_player.exe` with its adjacent `SDL3.dll`.
 - A synthetic fixture disc image or a showcase demo image when available ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309)).
 - For Step 10, the compiled display smoke fixture (`mingw32-make display-smoke`).
 
@@ -31,7 +32,7 @@ Results may be submitted using the [Smoke Test Report issue template](https://gi
 
 ### Step 2: Start the player
 
-1. Launch `build/nakagawa_player.exe` from PowerShell or File Explorer.
+1. Launch `build/nakagawa_player.exe` from a source checkout, or `bin/nakagawa_player.exe` from the extracted release package, using PowerShell or File Explorer.
 2. Observe window creation and initialization.
 
 **Expected result:** Pass if the player window opens smoothly at 1280x720, titled "Nakagawa Recomp", with the dark background (`#0c0f12`), without crashing or emitting console assertions.
@@ -94,7 +95,7 @@ The path must resolve to `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypte
 
 ### Step 10: F1 overlay in a running package
 
-1. Launch a running package (such as the source-owned display smoke fixture via `mingw32-make display-smoke-player`, or a showcase demo when available ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309))).
+1. Launch a running package (such as the source-owned display smoke fixture via `mingw32-make display-smoke-player` from a source checkout, or a showcase demo when available ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309))). The release archive does not contain generated fixture packages.
 2. In the running game window, press the `F1` key.
 3. Observe the performance HUD overlay.
 4. Press `F1` again.

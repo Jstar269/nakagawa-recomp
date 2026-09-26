@@ -36,7 +36,11 @@ typedef enum {
        setup transaction from an ordinary library visit. */
     PLAYER_VIEW_READY_LIBRARY,
     VIEW_CONTROLLER_SETTINGS,
-    VIEW_BUILDING_PACKAGE
+    VIEW_BUILDING_PACKAGE,
+    VIEW_PREREQ_CONSENT,
+    VIEW_PREREQ_PROGRESS,
+    VIEW_PREREQ_ABOUT,
+    VIEW_CONFIRM_REMOVE_TOOLS
 } PlayerView;
 
 typedef enum {
@@ -89,6 +93,33 @@ typedef struct {
        screen shows that real root instead of a configurable dead field. */
 } PlayerSettings;
 
+typedef enum {
+    PLAYER_PREREQ_IDLE = 0,
+    PLAYER_PREREQ_CONSENT,
+    PLAYER_PREREQ_BOOTSTRAP,
+    PLAYER_PREREQ_DOWNLOAD,
+    PLAYER_PREREQ_INSTALLED,
+    PLAYER_PREREQ_FAILED,
+    PLAYER_PREREQ_CANCELLED
+} PlayerPrerequisitePhase;
+
+typedef struct {
+    PlayerPrerequisitePhase phase;
+    PackagePrerequisiteList items;
+    int game_index;
+    int item_count;
+    uint64_t total_bytes;
+    uint64_t total_received_bytes;
+    uint64_t item_received_bytes;
+    uint64_t item_total_bytes;
+    char current_item[96];
+    char error_code[48];
+    char error_message[512];
+    bool cancel_requested;
+    bool bootstrap_python;
+    bool resume_build_pending;
+} PlayerPrerequisiteState;
+
 typedef struct {
     char error_code[32];
     char title[128];
@@ -126,8 +157,13 @@ typedef struct {
     size_t issue_count;
 } PlayerPreflightCheck;
 
+/* One slot per code the player's builder can emit (DISC_SFO, EXECUTABLE,
+ * EXPERIMENTAL, GUEST_MODULES, RUNTIME_PACKAGE, SYSTEM_FONTS, AUDIO_OUTPUT: 7)
+ * plus headroom, so adding a check never silently displaces another. */
+#define PLAYER_PREFLIGHT_MAX_CHECKS 10
+
 typedef struct {
-    PlayerPreflightCheck checks[6];
+    PlayerPreflightCheck checks[PLAYER_PREFLIGHT_MAX_CHECKS];
     size_t count;
 } PlayerCompatibilityPreflight;
 
@@ -162,6 +198,14 @@ typedef struct {
     ErrorState last_error;
     SetupWizardState wizard;
     PackageBuildSession build_session;
+    PlayerPrerequisiteState prerequisites;
+    PackageBootstrapSession bootstrap_session;
+    bool prerequisite_job_started;
+    bool prerequisite_fetcher_started;
+    bool prerequisite_bootstrap_ready;
+    bool prerequisite_cancel_sent;
+    bool request_open_license_folder;
+    char requested_open_path[NK_MAX_PATH];
 
     /* Native core state */
     NkLibrary library;
@@ -232,6 +276,18 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory);
+
+/* Maximum SDL3_ttf load candidates from player_app_ttf_library_candidates. */
+#define PLAYER_APP_TTF_MAX_CANDIDATES 4
+
+/* Ordered SDL3_ttf library candidates for a player running from exe_dir: the
+ * library beside the executable first, then the platform loader's default
+ * bare-name search (PATH on Windows). Pure: no filesystem or loader calls. */
+int player_app_ttf_library_candidates(const char *exe_dir,
+                                      char out[][MAX_PATH_LEN], int max_out);
+/* True when a disc directory entry name is safe to write under the private
+ * per-title folder (the tooling's FILENAME_RE and WINDOWS_RESERVED rules). */
+bool player_module_name_is_safe(const char *name);
 bool player_game_is_showcase(const GameRecord *game);
 void player_app_set_runtime_root(PlayerApp *app, const char *root);
 NkRuntimePackageStatus player_app_validate_runtime_package(
@@ -331,6 +387,24 @@ void player_app_build_compatibility_preflight(
 /* Package build actions */
 bool player_app_start_package_build(PlayerApp *app, int game_index);
 void player_app_cancel_package_build(PlayerApp *app);
+/* Per-build consent and progress state. Consent is never persisted. */
+bool player_app_prereq_begin(PlayerApp *app, int game_index,
+                             bool python_missing, bool toolchain_missing);
+void player_app_prereq_accept(PlayerApp *app, bool bootstrap_python);
+void player_app_prereq_update_progress(PlayerApp *app, const char *item,
+                                       uint64_t item_received,
+                                       uint64_t item_total,
+                                       uint64_t total_received,
+                                       uint64_t total_bytes);
+void player_app_prereq_complete(PlayerApp *app);
+void player_app_prereq_fail(PlayerApp *app, const char *code,
+                            const char *message);
+void player_app_prereq_retry(PlayerApp *app);
+void player_app_prereq_cancel(PlayerApp *app);
+void player_app_prereq_finish_cancel(PlayerApp *app);
+bool player_app_prereq_take_resume(PlayerApp *app);
+bool player_app_open_prerequisite_about(PlayerApp *app);
+void player_app_remove_prerequisites(PlayerApp *app);
 void player_app_set_build_error(
     PlayerApp *app,
     const char *failed_stage,

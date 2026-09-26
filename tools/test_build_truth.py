@@ -1645,6 +1645,14 @@ class MachinePortabilityTests(unittest.TestCase):
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("-Sdl3DllPath \"$(SDL3_DLL)\"", makefile_text)
 
+    def test_windows_package_build_uses_builtin_windows_powershell(self) -> None:
+        """A consumer build must not need a separately installed PowerShell 7."""
+        makefile_text = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        script_text = (Path(__file__).resolve().parents[1] / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        self.assertIn("POWERSHELL ?= powershell.exe", makefile_text)
+        self.assertIn("$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1", makefile_text)
+        self.assertIn("#requires -Version 5.1", script_text)
+
     def test_runtime_profile_records_sdl3_identity(self) -> None:
         """runtime_profile.json must record SDL3_PROVIDER, SDL3_VERSION, and SDL3_DIR."""
         if not self.make:

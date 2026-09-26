@@ -1679,6 +1679,7 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
     NkIsoDirectoryEntry usrdir = { 0 };
     NkIsoDirectoryEntry xbdata = { 0 };
     NkIsoDirectoryEntry eboot = { 0 };
+    bool has_xbdata = false;
     NkResult result = nk_iso_stage_find_child(iso, file_size, root_lba,
                                               root_size, "PSP_GAME", &psp_game);
     if (result == NK_OK && (!psp_game.is_directory || psp_game.size == 0)) result = NK_ERROR_INVALID_ISO;
@@ -1688,12 +1689,30 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
     if (result == NK_OK) result = nk_iso_stage_find_child(iso, file_size, sysdir.lba,
                                                            sysdir.size, "EBOOT.BIN", &eboot);
     if (result == NK_OK && (eboot.is_directory || eboot.size == 0)) result = NK_ERROR_INVALID_ISO;
-    if (result == NK_OK) result = nk_iso_stage_find_child(iso, file_size, psp_game.lba,
-                                                           psp_game.size, "USRDIR", &usrdir);
-    if (result == NK_OK && (!usrdir.is_directory || usrdir.size == 0)) result = NK_ERROR_INVALID_ISO;
-    if (result == NK_OK) result = nk_iso_stage_find_child(iso, file_size, usrdir.lba,
-                                                           usrdir.size, "xbdata", &xbdata);
-    if (result == NK_OK && (!xbdata.is_directory || xbdata.size == 0)) result = NK_ERROR_INVALID_ISO;
+    if (result == NK_OK) {
+        result = nk_iso_stage_find_child(iso, file_size, psp_game.lba,
+                                         psp_game.size, "USRDIR", &usrdir);
+        if (result == NK_ERROR_FILE_NOT_FOUND) {
+            /* Self-contained PSP applications may have no companion assets. */
+            result = NK_OK;
+        } else if (result == NK_OK) {
+            if (!usrdir.is_directory || usrdir.size == 0) {
+                result = NK_ERROR_INVALID_ISO;
+            } else {
+                result = nk_iso_stage_find_child(iso, file_size, usrdir.lba,
+                                                 usrdir.size, "xbdata", &xbdata);
+                if (result == NK_ERROR_FILE_NOT_FOUND) {
+                    result = NK_OK;
+                } else if (result == NK_OK) {
+                    if (!xbdata.is_directory || xbdata.size == 0) {
+                        result = NK_ERROR_INVALID_ISO;
+                    } else {
+                        has_xbdata = true;
+                    }
+                }
+            }
+        }
+    }
     if (result != NK_OK) {
         fclose(iso);
         return result;
@@ -1720,13 +1739,23 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
     count_walk.count_only = true;
     count_walk.depth = 1;
     snprintf(count_walk.relative_prefix, sizeof(count_walk.relative_prefix), "xbdata");
-    result = nk_iso_stage_walk_directory(&count_walk, xbdata.lba, xbdata.size, 1);
-    if (result != NK_OK || stage.total_files == 1) {
+    if (has_xbdata) {
+        result = nk_iso_stage_walk_directory(&count_walk, xbdata.lba, xbdata.size, 1);
+    }
+    if (result != NK_OK) {
         fclose(iso);
-        return result == NK_OK ? NK_ERROR_FILE_NOT_FOUND : result;
+        return result;
     }
 
     if (!nk_platform_mkdir_p_private(host_root)) {
+        fclose(iso);
+        return NK_ERROR_IO;
+    }
+    char xbdata_root[NK_ISO_STAGE_MAX_PATH];
+    int xbdata_root_written = snprintf(xbdata_root, sizeof(xbdata_root), "%s%cxbdata",
+                                       host_root, nk_platform_path_separator());
+    if (xbdata_root_written < 0 || (size_t)xbdata_root_written >= sizeof(xbdata_root) ||
+        !nk_platform_mkdir_p_private(xbdata_root)) {
         fclose(iso);
         return NK_ERROR_IO;
     }
@@ -1787,7 +1816,9 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
     extract_walk.count_only = false;
     extract_walk.depth = 1;
     snprintf(extract_walk.relative_prefix, sizeof(extract_walk.relative_prefix), "xbdata");
-    result = nk_iso_stage_walk_directory(&extract_walk, xbdata.lba, xbdata.size, 1);
+    if (has_xbdata) {
+        result = nk_iso_stage_walk_directory(&extract_walk, xbdata.lba, xbdata.size, 1);
+    }
     fclose(iso);
     return result;
 }

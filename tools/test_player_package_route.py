@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,10 +49,16 @@ TOOLS = ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+import nk_cli  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_psp_container,
     create_test_iso_with_executables,
 )
+
+SHOWCASE_FIXTURE_DIR = ROOT / "fixtures" / "showcase"
+if str(SHOWCASE_FIXTURE_DIR) not in sys.path:
+    sys.path.insert(0, str(SHOWCASE_FIXTURE_DIR))
+from showcase import DEMOS as SHOWCASE_DEMOS, make_icon_png, write_iso  # noqa: E402
 
 # Short enough to keep the hosted run quick, long enough that the guest really
 # presents frames. The guest loops this many times, one vblank wait each.
@@ -62,6 +69,185 @@ FRAMES = 8
 DISC_ID = "ULUS99998"
 TITLE_ID = "experimental-ulus99998"
 LAUNCH_TIMEOUT_MS = 180000
+
+
+def synthetic_manifest() -> dict:
+    """The hand-written title manifest this route binds the imported disc to.
+
+    The build half consumes this from the library's experimental profile, so it is
+    the consumer-facing spelling of a title the analyzer never derived for us.
+    tools/test_player_package_determinism.py contrasts it with the same manifest
+    whose guest addresses come from the fixture recipe's generated metadata.
+    """
+    return {
+        "schema_version": 1,
+        "id": TITLE_ID,
+        "display_name": "Synthetic player package route",
+        "kind": "retail",
+        "disc": {"id": DISC_ID, "region": "NA", "revision_policy": "exact-disc-id"},
+        "game_name": "display_smoke",
+        "executable": {
+            "base": 0x08810000,
+            "entry": 0x08810000,
+            "bss_metadata_source": "elf",
+            "extra_executable_spans": [],
+        },
+        "modules": [],
+        "filesystem": {
+            "data_root": "fixtures/display_smoke",
+            "memory_stick_root": "build/display-smoke-v1/memstick",
+            "device_prefixes": ["host0:", "ms0:"],
+        },
+        "hle_profile": "synthetic-minimal",
+        "codegen_profile": "none",
+        "feature_requirements": ["allegrex-core", "psp-hle"],
+        "verification_profile": "synthetic-public",
+    }
+
+
+class TestPackageRuntimeDependencies(unittest.TestCase):
+    def test_embeddable_cli_restores_tools_directory_to_import_path(self):
+        tools_directory = str(Path(nk_cli.__file__).resolve().parent)
+        with patch.object(nk_cli.sys, "path", []):
+            nk_cli._ensure_cli_module_path()
+            self.assertEqual(nk_cli.sys.path, [tools_directory])
+
+    def test_codegen_plan_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "title_codegen_plan.py"
+        code = (
+            "import runpy, sys\n"
+            f"script = {str(script)!r}\n"
+            "sys.argv = [script, '--help']\n"
+            "runpy.run_path(script, run_name='__main__')\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("usage:", completed.stdout.lower())
+
+    def test_title_runtime_config_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "title_runtime_config.py"
+        code = (
+            "import runpy, sys\n"
+            f"script = {str(script)!r}\n"
+            "sys.argv = [script, '--help']\n"
+            "runpy.run_path(script, run_name='__main__')\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("usage:", completed.stdout.lower())
+
+    def test_codegen_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "codegen.py"
+        code = (
+            "import importlib.util, sys\n"
+            f"script = {str(script)!r}\n"
+            "spec = importlib.util.spec_from_file_location('embedded_codegen', script)\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "sys.modules[spec.name] = module\n"
+            "spec.loader.exec_module(module)\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+
+    def test_prxload_and_imports_restore_tools_directory_for_embedded_python(self):
+        for name in ("prxload.py", "imports.py"):
+            with self.subTest(script=name):
+                script = TOOLS / name
+                code = (
+                    "import importlib.util, sys\n"
+                    f"script = {str(script)!r}\n"
+                    "spec = importlib.util.spec_from_file_location('embedded_tool', script)\n"
+                    "module = importlib.util.module_from_spec(spec)\n"
+                    "sys.modules[spec.name] = module\n"
+                    "spec.loader.exec_module(module)\n"
+                )
+                completed = subprocess.run(
+                    [sys.executable, "-I", "-c", code], cwd=ROOT,
+                    capture_output=True, text=True, timeout=20,
+                )
+                self.assertEqual(completed.returncode, 0,
+                                 completed.stdout + completed.stderr)
+
+    def test_runtime_package_uses_the_configured_sdl3_provider(self):
+        with tempfile.TemporaryDirectory(prefix="nk-sdl3-package-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            runtime = provider / "bin" / "SDL3.dll"
+            iconv = provider / "bin" / "libiconv-2.dll"
+            vulkan = provider / "bin" / "vulkan-1.dll"
+            runtime.parent.mkdir(parents=True)
+            runtime.write_bytes(b"source-owned synthetic SDL3 test payload")
+            iconv.write_bytes(b"source-owned synthetic iconv test payload")
+            vulkan.write_bytes(b"source-owned synthetic Vulkan test payload")
+            package = root / "package"
+            package.mkdir()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "",
+                "VULKAN_SDK": str(provider),
+            }):
+                with patch("nk_cli._windows_host", return_value=True):
+                    nk_cli._stage_runtime_assets(package)
+            self.assertEqual((package / "SDL3.dll").read_bytes(), runtime.read_bytes())
+            self.assertEqual((package / "libiconv-2.dll").read_bytes(), iconv.read_bytes())
+            self.assertEqual((package / "vulkan-1.dll").read_bytes(), vulkan.read_bytes())
+
+    def test_runtime_package_fails_closed_without_vulkan_loader(self):
+        with tempfile.TemporaryDirectory(prefix="nk-vulkan-package-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            sdl = provider / "bin" / "SDL3.dll"
+            sdl.parent.mkdir(parents=True)
+            sdl.write_bytes(b"source-owned synthetic SDL3 test payload")
+            (provider / "bin" / "libiconv-2.dll").write_bytes(
+                b"source-owned synthetic iconv test payload"
+            )
+            package = root / "package"
+            package.mkdir()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "",
+                "VULKAN_SDK": str(root / "missing-sdk"),
+            }):
+                with patch("nk_cli._windows_host", return_value=True), patch("nk_cli.shutil.which", return_value=None):
+                    with self.assertRaisesRegex(nk_cli.PackageBuildError, "vulkan-1.dll"):
+                        nk_cli._stage_runtime_assets(package)
+
+    @unittest.skipUnless(os.name == "nt", "Windows UCRT path precedence")
+    def test_runtime_build_keeps_an_available_downloaded_toolchain_first(self):
+        with tempfile.TemporaryDirectory(prefix="nk-ucrt-path-") as temporary:
+            toolchain_bin = Path(temporary) / "ucrt64" / "bin"
+            toolchain_bin.mkdir(parents=True)
+            (toolchain_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            with patch.dict(os.environ, {"PATH": str(toolchain_bin)}):
+                env = nk_cli._runtime_build_environment()
+            self.assertEqual(env["PATH"].split(os.pathsep, 1)[0], str(toolchain_bin))
+
+    @unittest.skipUnless(os.name == "nt", "Windows embedded Python path")
+    def test_runtime_build_exposes_its_interpreter_after_the_downloaded_toolchain(self):
+        with tempfile.TemporaryDirectory(prefix="nk-package-python-path-") as temporary:
+            root = Path(temporary)
+            toolchain_bin = root / "ucrt64" / "bin"
+            python_bin = root / "python"
+            toolchain_bin.mkdir(parents=True)
+            python_bin.mkdir()
+            (toolchain_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            interpreter = python_bin / "python.exe"
+            interpreter.write_bytes(b"synthetic executable path marker")
+            with patch.dict(os.environ, {"PATH": str(toolchain_bin) + os.pathsep + r"C:\Windows"}):
+                with patch("nk_cli.sys.executable", str(interpreter)):
+                    path = nk_cli._runtime_build_environment()["PATH"].split(os.pathsep)
+            self.assertEqual(path[:2], [str(toolchain_bin), str(python_bin)])
 
 
 def tracked_status() -> str:
@@ -137,30 +323,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         digest = hashlib.sha256(executable_bytes).hexdigest()
         self.executable_sha256 = digest
 
-        manifest = {
-            "schema_version": 1,
-            "id": TITLE_ID,
-            "display_name": "Synthetic player package route",
-            "kind": "retail",
-            "disc": {"id": DISC_ID, "region": "NA", "revision_policy": "exact-disc-id"},
-            "game_name": "display_smoke",
-            "executable": {
-                "base": 0x08810000,
-                "entry": 0x08810000,
-                "bss_metadata_source": "elf",
-                "extra_executable_spans": [],
-            },
-            "modules": [],
-            "filesystem": {
-                "data_root": "fixtures/display_smoke",
-                "memory_stick_root": "build/display-smoke-v1/memstick",
-                "device_prefixes": ["host0:", "ms0:"],
-            },
-            "hle_profile": "synthetic-minimal",
-            "codegen_profile": "none",
-            "feature_requirements": ["allegrex-core", "psp-hle"],
-            "verification_profile": "synthetic-public",
-        }
+        manifest = synthetic_manifest()
         self.stage_library(self.user_root, manifest, iso_path, executable_bytes)
         return manifest
 
@@ -271,6 +434,50 @@ class TestPlayerPackageRoute(unittest.TestCase):
             cwd=ROOT, env=environment, capture_output=True, text=True,
             timeout=LAUNCH_TIMEOUT_MS / 1000,  # subprocess.run takes seconds
         )
+
+    def test_release_package_layout_finds_public_cli(self):
+        self.skip_if_toolchain_unavailable()
+        package = self.root / "release-package"
+        install_root = package / "bin"
+        cli = package / "source" / "tools" / "nk_cli.py"
+        cli.parent.mkdir(parents=True)
+        install_root.mkdir()
+        cli.write_text("# source-owned test fixture\n", encoding="utf-8")
+
+        completed = subprocess.run(
+            [str(self.harness), "--find-cli", str(install_root)],
+            cwd=package, capture_output=True, text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("PACKAGE_BUILDER_CLI status=PASS", completed.stdout)
+        discovered = completed.stdout.partition("path=")[2].strip()
+        self.assertEqual(Path(discovered).resolve(), cli.resolve())
+
+    def test_source_owned_showcase_iso_without_companion_assets_stages(self):
+        self.skip_if_toolchain_unavailable()
+        demo = next(item for item in SHOWCASE_DEMOS if item["disc_id"] == "TEST00007")
+        executable = align_executable((self.fixture_dir / "guest.prx").read_bytes())
+        iso_path = self.root / "showcase-without-xbdata.iso"
+        write_iso(
+            iso_path,
+            "TEST00007",
+            "Nakagawa 3D Showcase",
+            make_icon_png(demo["palette"]),
+            executable,
+            b"Source-owned synthetic notice\n",
+        )
+
+        environment = os.environ.copy()
+        environment["LOCALAPPDATA"] = str(self.local_appdata)
+        environment["APPDATA"] = str(self.root / "appdata")
+        environment["USERPROFILE"] = str(self.root / "userprofile")
+        completed = subprocess.run(
+            [str(self.player), f"--iso={iso_path}", "--stage-only"],
+            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("STAGING_RESULT status=PASS", completed.stdout)
 
     def test_build_validates_and_launches_through_the_player(self):
         self.skip_if_toolchain_unavailable()

@@ -463,6 +463,16 @@ jobs:
       matrix:
         part: [main, fuzz]
     timeout-minutes: 25
+    # This job's MSYS2 shell has no git on PATH, so the Makefile cannot resolve a
+    # revision here; it used to log a raw `process_begin: CreateProcess(NULL, git
+    # rev-parse HEAD, ...) failed` and then build every binary of this job with an
+    # EMPTY identity (flight recorder build_id, #532). Forward the revision the
+    # checkout actually contains -- actions/checkout resolves the triggering ref,
+    # whose sha is github.sha -- so a Windows-built binary records its real
+    # identity and the Makefile never has to reach for git. The Linux jobs run
+    # with git on PATH and resolve the same revision themselves.
+    env:
+      SR_SOURCE_COMMIT: ${{ github.sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

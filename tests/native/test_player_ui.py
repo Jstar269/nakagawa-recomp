@@ -10,6 +10,7 @@ import re
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -222,6 +223,27 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["focus"], "1")
         self.assertEqual(frames[2]["view"], "library")
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
+
+    def test_script_can_wait_for_a_view_and_a_minimum_duration(self) -> None:
+        started = time.monotonic()
+        run = self.run_player(
+            "settings",
+            (
+                "KEY_ESCAPE",
+                "WAIT_VIEW=library|settings,1000",
+                "WAIT_MS=100",
+                "ASSERT_VIEW=library",
+                "KEY_S",
+            ),
+        )
+        elapsed = time.monotonic() - started
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertGreaterEqual(elapsed, 0.08)
+        self.assertIn("[PLAYER_UI_TEST] wait_view actual=library result=PASS", run["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] wait_ms result=PASS", run["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] assert_view result=PASS actual=library", run["stdout"])
+        self.assertEqual(frames[-1]["view"], "settings")
 
     def test_mouse_click_adds_disc_through_sdl_event_loop(self) -> None:
         run = self.run_player(

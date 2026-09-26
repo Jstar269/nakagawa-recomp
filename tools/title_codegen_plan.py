@@ -47,6 +47,13 @@ import tempfile
 import time
 from typing import Any
 
+# The Windows embeddable Python runtime uses a fixed ``._pth`` search path and
+# may omit the directory containing this script. Keep sibling tool imports
+# available when the package builder launches this script from that runtime.
+_TOOLS_DIRECTORY = str(Path(__file__).resolve().parent)
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
+
 import title_manifest
 
 GAME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -727,7 +734,7 @@ def _make_input_images(
                         "name": row["name"],
                         "classification": row["classification"],
                         "status": "in the works",
-                        "tracking_issue": 71,
+                        "tracking_issue": 308,
                     })
         unsupported_imports.sort(
             key=lambda row: (row["module"], row["library"], row["nid"])
@@ -973,6 +980,9 @@ def _cache_key_for_build(
         plan,
         selected_optional=selected_optional,
         funcs_per_chunk=funcs_per_chunk,
+    )
+    options["planner_sha256"] = package_cache.sha256_file(
+        ROOT / "tools" / "title_codegen_plan.py"
     )
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
@@ -1300,14 +1310,15 @@ def build_package(
             "unsupported_instruction_count": len(unsupported_instructions),
             "unsupported_region_count": len(unsupported_regions),
         }
-        cache = package_cache.cache_metadata(
-            cache_key,
-            _cache_codegen_options(
-                plan,
-                selected_optional=selected_optional,
-                funcs_per_chunk=funcs_per_chunk,
-            ),
+        cache_options = _cache_codegen_options(
+            plan,
+            selected_optional=selected_optional,
+            funcs_per_chunk=funcs_per_chunk,
         )
+        cache_options["planner_sha256"] = package_cache.sha256_file(
+            ROOT / "tools" / "title_codegen_plan.py"
+        )
+        cache = package_cache.cache_metadata(cache_key, cache_options)
         backends_mode = "public" if public_safe else "private"
         backend_limits = (
             [
