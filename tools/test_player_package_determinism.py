@@ -32,10 +32,6 @@ build ran, and the toolchain copies them into its own output:
 ``build-profile-hash``
     The content hash ``tools/build_profile.py`` derives from ``CFLAGS`` -- which
     contains that path -- and the ``.runtime-profile-<hash>`` stamp named from it.
-``compile-clock``
-    The ``__DATE__``/``__TIME__`` expansion ``src/rt/flight_recorder.c`` compiles
-    into the evidence bundle's ``build`` block, in exactly the two shapes
-    ``assets/flight_recorder_schema.json`` documents.
 ``input-stamp-mtime``
     The guest input's modification time in the ``.game-inputs`` freshness stamp.
     That mtime *is* the freshness mechanism, so it is normalized, not removed.
@@ -105,7 +101,6 @@ RULE_NAMES = (
     "workspace-path",
     "scratch-name",
     "build-profile-hash",
-    "compile-clock",
     "input-stamp-mtime",
     "pe-image-checksum",
     "transitive-digest",
@@ -120,8 +115,6 @@ _PROFILE_HASH_RE = re.compile(rb'"profile_hash": "[0-9a-f]{16,}"')
 # output as a whole path component, so requiring a component terminator keeps this
 # from matching an unrelated identifier.
 _SCRATCH_RE = re.compile(rb"\.build-[A-Za-z0-9._-]+-[A-Za-z0-9_]{8}(?=[/\\\x00])")
-_DATE_RE = re.compile(rb"[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4}")
-_TIME_RE = re.compile(rb"[0-9]{2}:[0-9]{2}:[0-9]{2}")
 _MTIME_RE = re.compile(rb"(?<= )[0-9]{16,20}(?= )")
 
 # PE signature + COFF header, then the CheckSum field of the PE32+ optional header.
@@ -264,8 +257,6 @@ class PackageNormalizer:
             (_SCRATCH_RE, "scratch-name", rb".build-<SCRATCH>"),
             (_STAMP_RE, "build-profile-hash", rb".\1-<HASH>"),
             (_PROFILE_HASH_RE, "build-profile-hash", b'"profile_hash": "<HASH>"'),
-            (_DATE_RE, "compile-clock", b"<DATE>"),
-            (_TIME_RE, "compile-clock", b"<TIME>"),
         ):
             rewritten = pattern.sub(replacement, data)
             if rewritten != data:
@@ -772,9 +763,9 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                              "analyzer-generated manifest build")
 
         # The compiled result differs only where the compiler's own echoes are: the
-        # runtime carries the build directory it was compiled with, and the flight
-        # recorder carries the compile clock. Those are the same documented rules two
-        # builds of *identical* inputs needed, and nothing else may explain them.
+        # runtime carries the build directory it was compiled with (the flight recorder
+        # no longer stamps the compile clock, #532). Those are the same documented rules
+        # two builds of *identical* inputs needed, and nothing else may explain them.
         self.assertIn(EXECUTABLE, pair.differing,
                       f"{EXECUTABLE} is byte-identical between the two manifest routes, "
                       "so this comparison says nothing about what the compiler produced")
