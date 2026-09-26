@@ -182,7 +182,95 @@ should ignore the trailing uid/vblank columns.
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |
 | `SR_TEXDUMP_AFTER=N` | Defer texture dumping until GE frame `N`, preserving the fixed distinct-texture budget for a late deterministic scene |
-| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD` |
+| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, `non_finite` (non-finite values among the four effective matrices, so the record names what the GE drops), decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` |
+| `SR_NAN_TRAP_LIMIT=N` | Report limit for the `SR_NAN_TRAP` build option below (default 20; `0` silences it). Only has an effect in a package built with `make NAN_TRAP=1` |
+
+### Locating the instruction that produced a NaN (issue #69)
+
+The `SR_GE_TRANSITION_TRACE` above tells you **that** a draw's bone matrices went NaN. It cannot
+tell you **which guest instruction** made them NaN, because it records state, not arithmetic.
+`SR_NAN_TRAP` answers that: it is a build-time option that follows every FPU and VFPU result
+write — in the generated code and in the AOT-gap interpreter alike — with a check that reports the
+first few instructions whose result went non-finite **from operands that were all finite**:
+
+```text
+NAN_TRAP pc=0x00001234 op=div.s dst=f7 vbl=1180 in=[0,0] out=[nan]
+NAN_TRAP pc=0x088a1f2c op=vdiv.s dst=v13 vbl=1180 in=[0,4.5,0,4.5] out=[nan,1,0,1]
+```
+
+It is a diagnostic, never a semantic gate: no result changes on any path, and a NaN that is only
+*propagated* (every later instruction in a long chain) is not reported, so the report names the
+origin rather than the last echo.
+
+`vbl=` is the guest VBLANK count, the same counter the `SR_GE_TRANSITION_TRACE` records stamp as
+their `frame`, so a trap line and the draw that showed its effect sit in one frame without
+inference. It is read from the mirror the runtime hands to the GE each vblank, so a report produced
+inside a vblank handler carries the frame it is about to be drawn in.
+
+`in=` lists **every operand the instruction consumed**, in operand order, which is what makes a
+report readable lane by lane:
+
+| Form | `in=` order |
+| --- | --- |
+| scalar FPU (`add.s`, `div.s`, …) | its source registers |
+| lane forms (`vadd`, `vdot`, `vmin`, `vocp`, …) | first source vector, then second |
+| `vmmul` | S rows (`side`×`side`), then T rows (`side`×`side`) |
+| `vtfm`/`vhtfm` | matrix lanes (`side`×`side`, row-major), then the vector lanes it multiplies by |
+
+A form that reported only part of its operands would classify a propagation as an origin: a `vtfm`
+whose vector lane already carried a NaN used to be reported as the instruction that made it, and
+the vector was not in the record at all. With every operand listed, that `vtfm` is silent and the
+real origin (the instruction that made the vector lane NaN) is the one that reports.
+
+One run with both diagnostics therefore carries both ends of the corruption: the `NAN_TRAP` line
+names the instruction, and the trace record with the same `frame`/`vbl` and a non-zero `non_finite`
+names the draw it reached.
+
+Rebuild the package with the trap, play to the corruption, and read the first `NAN_TRAP` lines:
+
+```powershell
+# 1. Build with both halves of the option (codegen --nan-trap and -DSR_NAN_TRAP).
+#    The Make variable is inherited by the manager's make invocation, and it is
+#    carried into the codegen and recompiler profile hashes, so this regenerates
+#    instead of reusing untrapped objects.
+$env:NAN_TRAP = "1"
+.\nk_manager.ps1 -Action BuildFull
+
+# 2. Play by hand to the corrupted model, capturing stderr. From another shell:
+Get-Content -Wait logs\nan_trap.txt | Select-String '^NAN_TRAP '
+
+# 3. Raise or lower the report budget if the first 20 are not the interesting ones.
+$env:SR_NAN_TRAP_LIMIT = "200"
+
+# 4. Back to an ordinary build afterwards.
+Remove-Item Env:NAN_TRAP -ErrorAction SilentlyContinue
+.\nk_manager.ps1 -Action BuildFull
+```
+
+Driving the player directly works the same way — `NAN_TRAP` is an ordinary Make input:
+
+```powershell
+mingw32-make all NAN_TRAP=1          # adds --nan-trap and -DSR_NAN_TRAP together
+```
+
+> [!IMPORTANT]
+> **`make NAN_TRAP=1` turns on both halves at once, and both are needed.** `--nan-trap` makes
+> `tools/codegen.py` emit the checks; `-DSR_NAN_TRAP` makes those checks live. Setting only one
+> produces a build that looks correct and reports nothing. With the option off, codegen emits no
+> check statement at all, so the generated C is byte-identical to a pre-trap build, and every
+> `SR_NAN_TRAP_*` macro expands to `((void)0)` — an untrapped object is byte-identical with and
+> without `-DSR_NAN_TRAP` (proved by `tools/test_codegen_nan_trap.py`).
+
+Coverage boundary: every FPU result write and every VFPU *value-producing* lane form is checked —
+`add.s`/`sub.s`/`mul.s`/`div.s`/`sqrt.s`/`abs.s`/`mov.s`/`neg.s`, `vadd/vsub/vmul/vdiv`, `vdot`,
+`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
+the transcendental set (`vrcp`/`vrsqrt`/`vsin`/`vcos`/`vexp2`/`vlog2`/`vsqrt`/`vasin`), `vmmul`,
+`vtfm`, `vmscl`, `vcrsp`/`vqmul`, and `vrot`. Not checked, by construction: constant broadcasts
+(`viim`/`vfim`/`vcst`/`vzero`/`vone`/`vidt`/`vmidt`/`vmzero`/`vmone`, which have no operand to be
+non-finite relative to), the integer reinterpretations (`vs2i`/`vi2uc`/`vi2c`/`vi2us`/`vi2s`/
+`vf2i*`, which write integer words), `vi2f` (a signed 32-bit integer always widens to a finite
+float32), the `lv`/`sv` memory forms (guest data, not a computed result), and the raw per-element
+`v[]` row copies of `VFPUMatrix1` (`vmmov`/`vmscl` rows, which move an existing lane).
 
 > [!IMPORTANT]
 > **`SR_RTRACE` re-arms only when `SR_GESTAT` is also set.** Its per-window frame budget is reset
@@ -300,11 +388,22 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to record it again (see below) |
 | `WAIT <NAME> <timeout>` | Block until `NAME` is observed; fail the run on timeout |
 | `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
-| `PRESS <hexmask> <width>` | Hold `hexmask` for `width` vblanks |
-| `PRESS_UNTIL <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
-| `PRESS_WHILE <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
+| `PRESS <hexmask\|buttons> <width>` | Hold `hexmask` (or the named buttons) for `width` vblanks |
+| `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
+| `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
+| `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
 | `END` | Route complete |
+
+A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
+or a hex literal of at most eight digits with an optional `0x` prefix. Anything else refuses
+the file at load, naming the line and the token, in `PRESS`, `PRESS_UNTIL`, `PRESS_WHILE` and
+the legacy `frame hexmask width` row alike — an unknown name, a name cut short, a stray
+character after a hex literal, a bare `0x`, or a value too wide for the mask, none of which may
+quietly become a *different* press. That refusal is the point: the parser used to coerce a
+token it could not read at all to **zero**, so a route asking for a button the format never
+defined pressed nothing while the run carried on — indistinguishable, from outside, from a game
+that had frozen. A press that is never delivered must be a load-time error, not a mystery.
 
 `#` starts a comment. A screen is "observed" by a coarse signature of the presented
 framebuffer: the frame is split into `cols x rows` cells and each cell contributes its mean
@@ -326,7 +425,7 @@ at load: they are not one screen, and a route built on them could not fail.
 their own START and there is no way to know in advance how many. As a fixed table, every
 extra press is one that lands on whatever comes next when the run is faster than the
 recording — which is precisely how a `CROSS` meant for the title screen ended up opening a
-menu. `PRESS_UNTIL TITLE_SCREEN 0008 8 240 15000` stops the moment the title appears.
+menu. `PRESS_UNTIL TITLE_SCREEN START 8 240 15000` stops the moment the title appears.
 
 **Failure is loud and terminal.** A failed `WAIT` or `EXPECT` prints `ROUTE_FAIL:` naming the
 step, the vblank and the screen that was actually there, then exits **86**. The manager reads
@@ -354,6 +453,86 @@ Two habits keep a program honest. Gate every screen *transition* with `WAIT`, an
 only for input cadence inside one screen — a `DELAY` standing in for a transition is the
 fixed-vblank bet again. And put an `EXPECT` after a press whose effect you care about: `WAIT`
 proves you arrived, `EXPECT` proves the press did what the route claims.
+
+### Naming the buttons a route presses
+
+A press mask is a bit in the `SceCtrlData.Buttons` field the guest reads — the same field a
+player's keyboard or controller produces. Name the button and the mask is filled in from one
+table (`NK_PSP_BTN_*_BIT` in `src/core/nk_input_profile.h`, which both host front-ends also
+publish from):
+
+| Name | Bit | Name | Bit | Name | Bit |
+| ---- | --- | ---- | --- | ---- | --- |
+| `SELECT` | `0x0001` | `L` | `0x0100` | `CIRCLE` | `0x2000` |
+| `START` | `0x0008` | `R` | `0x0200` | `CROSS` | `0x4000` |
+| `UP` | `0x0010` | `TRIANGLE` | `0x1000` | `SQUARE` | `0x8000` |
+| `RIGHT` | `0x0020` | `HOME` | `0x10000` | | |
+| `DOWN` | `0x0040` | `HOLD` | `0x20000` | | |
+| `LEFT` | `0x0080` | | | | |
+
+```text
+PRESS_WHILE TITLE CROSS 20 90 6000
+PRESS START+UP 30
+```
+
+Names are case-insensitive and join with `+`; a hex mask (`PRESS 4000 20`) still means exactly
+what it always did, in the program and in the legacy `frame hexmask width` table. A name that is
+not a button is refused at load, which fails the route instead of pressing nothing. Every press
+step is narrated at load, so the log names the button rather than leaving a hex mask to be
+decoded:
+
+```text
+ROUTE: step 1 (PRESS_WHILE) presses CROSS
+```
+
+A press that reaches the guest and is ignored still cannot be told from a hang by the guest, so
+put an `EXPECT` or a `WAIT` after it: `PRESS_UNTIL` is that wait, and it is the honest form
+whenever the press has a consequence.
+
+Count the bits by hand only as a last resort, because a mask that is one bit out cannot fail
+visibly: the guest receives a button the screen ignores, the screen never changes, and the run
+looks exactly like a game that has frozen. `START` on a title that waits for `CROSS` is that
+mistake, and it cost a whole investigation before the log said which button was being pressed.
+Every run now narrates it at load —
+
+```text
+ROUTE: step 1 (PRESS_WHILE) presses CROSS
+```
+
+— so a route that stalls says which button it offered. Note that the boot prefix wants `START`
+(warning screens, intro movie) and title screens usually want `CROSS`; one press is not
+automatically the right one for the next screen.
+
+### Waiting on what the guest does (`WAIT_NID`)
+
+Every other gated step watches the *screen*, and a screen signature can only be recorded from
+a run that is already on that screen. That is a chicken-and-egg problem for any route trying
+to reach a screen nobody has a signature for yet: the step that would get there is the one
+step that cannot be written. What the guest **calls** has no such problem — a module load, a
+savedata status poll, a display-mode change is observable from the first boot and means the
+same thing in every title, so the runtime can offer it and the route file names it:
+
+```text
+WAIT_NID sceIoOpen 600
+WAIT_NID 0x109f50bc 600      # the same import as raw hex
+```
+
+The name comes from the runtime's own table (`src/rt/nid_names.h`); the hex form exists so a
+route never depends on a name being in it, and a name that resolves to nothing is refused at
+load rather than becoming a wait that can never succeed. Three properties matter and are
+tested:
+
+- the wait completes on that import and **only** on that import — an unrelated call leaves the
+  route waiting;
+- it counts calls made **since the step began**, so an event that already happened cannot
+  satisfy a later step (two waits for the same import in a row is the shape that shows it);
+- a guest that never makes the call **fails the run**, naming the import, the vblank range and
+  how many imports it did make — the alternative, a route that waits forever, is
+  indistinguishable from a hang.
+
+It costs one store per import, and only while such a step is running, at the single point
+(`sr_syscall`) every guest import already passes through. The step needs no framebuffer
+observation, so it also does not pay the observer's sampling cost.
 
 ### Visual-oracle runs (`-Action VisualOracle`)
 
@@ -490,6 +669,66 @@ pacing was added to fix). A faster route is worthless if it is not the same rout
 `tools/nk_safety.ps1` holds the helpers whose failure modes are silent (bounded wait,
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
+
+#### Judging a long run
+
+One run of any length is only evidence if something states what "healthy" meant.
+`tools/soak_audit.py` takes the three artifacts a run already produces — `logs/perf.csv`
+(one row per wall second), `logs/stderr_run.log`, and a process-metrics CSV of
+`working_set_kb` / `private_bytes_kb` / `handles` sampled on a timer — and answers one
+question per assertion with a number:
+
+```powershell
+python tools/soak_audit.py --perf logs/perf.csv --proc proc.csv --stderr logs/stderr_run.log --audio
+```
+
+| Check | Fails on |
+| --- | --- |
+| `presenting` | fewer than `--min-presenting` of the seconds after the first presented one, or a gap longer than `--max-stall-s` |
+| `cadence` | vblank Hz below `--min-hz` at the 5th percentile of the last `--cadence-tail-s` presenting seconds |
+| `memory_working_set`, `memory_private`, `handles` | growth above `--max-growth-pct` after `--warmup-s` samples, **peak** included so a spike that shrinks back still fails |
+| `audio` | dropped frames or failed callback puts; the no-host-audio backend's underruns/overruns above `--max-underruns` |
+| `audio_drift` | un-consumed audio above `--max-drift-ms` at any point, the queue ending more than `--max-drift-net-ms` ahead of where it started, or a queue that rose at every single window |
+| `route` | a route program that ran without reporting `ROUTE_OK` |
+| `fatal` | `FATAL`, `ROUTE_FAIL`, `UNRESOLVED_DISPATCH`, watchdog or access-violation markers |
+
+Output is one `SOAK_CHECK:` line per assertion plus a `SOAK_AUDIT:` verdict line, and the exit
+status is non-zero if any assertion failed. Two rules keep it honest: an input it was not
+given reports `SKIP` with the reason rather than passing, and a quantity the runtime does not
+publish is reported as absent.
+
+**Audio drift** is the one that was unmeasurable until the telemetry published it. The runtime
+reads `sr_audio_queued()` — the queue depth the blocking output paces against — in
+`src/rt/hle.c`, in the same place it computes the delay from it, and prints one reading per
+300 delivered vblanks (about five seconds) behind `SR_AUDIOSTAT`:
+
+```text
+AUDIOSTAT_LEAD: vbl=9300 ch=8 outputs=268 queued=8820 lead_ms=200
+```
+
+Each host mixer prints the same pair in its own end-of-run or per-window line
+(`AUDIOSTAT_WIN` from the mixing backend, `AUDIOSTAT_HOST` from the per-channel one), so a
+build has whichever its mixer provides plus the runtime's own:
+
+```text
+AUDIOSTAT_WIN: vbl=927 frames=220500 nonzero=89565 duty=40% pushed_total=622848 queued=4410 lead_ms=12
+AUDIOSTAT_HOST: state=active driver=wasapi pushed=9841152 ... peak_q=22050 queued=4410 lead_ms=100
+```
+
+`lead_ms` is the number that matters over a long run: a queue that only grows is drift, which
+is audible as lag building over minutes even while nothing is dropped, and once it reaches the
+ring's capacity the push clamps and real guest audio is lost. `queued` is the deepest lead any
+channel carried, not the last reading, and `-1` in either field means the backend had no host
+queue to be ahead of — absence of a measurement, never a zero. Because a
+drift number nobody can parse is the same as no drift number,
+`tools/test_soak_audit.py` reads all three format strings out of their C sources and feeds
+them to the audit's own patterns, so renaming a field in C fails a test instead of a soak.
+`mingw32-make audio-selftest` checks the arithmetic the per-channel mixer publishes it from,
+and the HLE selftest's `test_audio_drift_window_reports_the_pacing_value` covers the window the
+runtime's own line prints.
+
+The seconds before the guest owns its first frame are the runtime's own index
+scan: they are excluded from `presenting` and never counted as a stall.
 
 ### Filesystem & I/O (→ SR_DBG_FS)
 

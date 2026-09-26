@@ -19,10 +19,126 @@
 #define SR_FLIGHT_COMPILER "other"
 #endif
 
+/* Reproducible build identity. The bundle's build block used to stamp __DATE__
+ * and __TIME__, which made two compiles of identical inputs differ in the
+ * compile clock -- the one project-owned source of variation between two builds
+ * of the same package. The build now forwards a stable identity instead (the
+ * Makefile passes these alongside -DSR_BUILD_DIR): SR_SOURCE_DATE_EPOCH, the
+ * reproducible-builds.org epoch, and SR_BUILD_ID, the source commit. Neither is
+ * a clock reading, so binaries stay byte-for-byte reproducible. A compile that
+ * forwards neither records nulls, and tools/flight_diff.py refuses such a
+ * bundle fail closed rather than accepting a clock stamp.
+ */
+#define SR_FLIGHT_STRINGIFY_RAW(text) #text
+#define SR_FLIGHT_STRINGIFY(text) SR_FLIGHT_STRINGIFY_RAW(text)
+
+#if defined(SR_SOURCE_DATE_EPOCH)
+static const char s_flight_source_date_epoch[] = SR_FLIGHT_STRINGIFY(SR_SOURCE_DATE_EPOCH);
+#else
+static const char s_flight_source_date_epoch[] = "";
+#endif
+#if defined(SR_BUILD_ID)
+static const char s_flight_build_id[] = SR_BUILD_ID;
+#else
+static const char s_flight_build_id[] = "";
+#endif
+
 typedef struct {
     uint32_t mask;
     const char *name;
 } SrFlightClassName;
+
+/* ---- SR_TRACE_PC: the address window over the instruction trace ----
+ * The contract is documented in flight_recorder.h. The stream is opened here so
+ * this diagnostic does not depend on the trace writer being linked, which every
+ * host of the runtime links instead. */
+static FILE *s_tw_fp;
+static int s_tw_configured;
+static int s_tw_armed;
+static int s_tw_skip;
+static uint32_t s_tw_lo, s_tw_hi;
+static SrTraceWindowIndices s_tw_indices;
+static unsigned long s_tw_limit, s_tw_count;
+
+static void sr_trace_window_list(const char *text, uint8_t *out, unsigned *count) {
+    *count = 0;
+    if (!text || !text[0]) return;
+    while (*text && *count < SR_TRACE_WINDOW_MAX_INDEX) {
+        char *end = NULL;
+        const unsigned long value = strtoul(text, &end, 0);
+        if (end == text) return;
+        if (value < 128u) out[(*count)++] = (uint8_t)value;
+        text = end;
+        while (*text == ',' || *text == ' ') text++;
+    }
+}
+
+void sr_trace_window_configure(void) {
+    if (s_tw_configured) return;
+    s_tw_configured = 1;
+    const char *window = getenv("SR_TRACE_PC");
+    if (!window || !window[0]) return;
+    const char *path = getenv("SR_TRACE");
+    if (!path || !path[0]) path = "logs/trace_window.txt";
+    const char *sep = strchr(window, ':');
+    if (!sep) sep = strchr(window, '-');
+    if (!sep) {
+        fprintf(stderr, "TRACE_WINDOW: SR_TRACE_PC needs LO:HI, got '%s'\n", window);
+        return;
+    }
+    const uint32_t lo = (uint32_t)strtoul(window, NULL, 0);
+    const uint32_t hi = (uint32_t)strtoul(sep + 1, NULL, 0);
+    if (hi < lo) {
+        fprintf(stderr, "TRACE_WINDOW: empty window %s\n", window);
+        return;
+    }
+    sr_trace_window_list(getenv("SR_TRACE_V"), s_tw_indices.v, &s_tw_indices.vn);
+    sr_trace_window_list(getenv("SR_TRACE_F"), s_tw_indices.f, &s_tw_indices.fn);
+    const char *limit = getenv("SR_TRACE_LIMIT");
+    s_tw_limit = limit && limit[0] ? strtoul(limit, NULL, 0) : 0ul;
+    s_tw_fp = fopen(path, "wb");
+    if (!s_tw_fp) {
+        fprintf(stderr, "TRACE_WINDOW: cannot open '%s'\n", path);
+        return;
+    }
+    fprintf(s_tw_fp, "# trace-window v1 lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u\n",
+            lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn);
+    s_tw_lo = lo;
+    s_tw_hi = hi;
+    s_tw_armed = 1;
+    fprintf(stderr, "TRACE_WINDOW: armed lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u path=%s\n",
+            lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn, path);
+}
+
+void sr_trace_note_frame(uint32_t frame) {
+    if (!s_tw_armed || !s_tw_fp) return;
+    fprintf(s_tw_fp, "frame %u\n", frame);
+}
+
+int sr_trace_window_armed(void) { return s_tw_armed; }
+
+int sr_trace_window_begin_instruction(uint32_t pc) {
+    s_tw_skip = pc < s_tw_lo || pc > s_tw_hi;
+    return !s_tw_skip;
+}
+
+const SrTraceWindowIndices *sr_trace_window_indices(void) {
+    return s_tw_armed ? &s_tw_indices : 0;
+}
+
+void sr_trace_window_record(uint32_t pc, const char *text) {
+    (void)pc;
+    if (!s_tw_armed || s_tw_skip || !s_tw_fp) return;
+    fprintf(s_tw_fp, "%s\n", text);
+    if (s_tw_limit && ++s_tw_count >= s_tw_limit) {
+        fprintf(s_tw_fp, "# window complete records=%lu\n", s_tw_count);
+        fflush(s_tw_fp);
+        /* Disarm rather than close: the trace writer's own stream is untouched,
+         * and the gate stops admitting in-window instructions, so the rest of
+         * the run executes uninstrumented. */
+        s_tw_armed = 0;
+    }
+}
 
 static SrFlightEvent s_flight_events[SR_FLIGHT_MAX_EVENTS];
 static uint32_t s_flight_classes;
@@ -321,6 +437,45 @@ int sr_flight_event_at(uint32_t index, SrFlightEvent *out) {
     return 1;
 }
 
+/* A build identity is emitted only in a shape the schema can express: a decimal
+ * Unix timestamp for source_date_epoch and hex digits for build_id. Anything
+ * else (a hand-compile with a malformed -D) is recorded as null with a visible
+ * diagnostic, never as a value that would corrupt the evidence bundle.
+ */
+/* Upper bound of the schema's source_date_epoch: 9999-12-31T23:59:59Z. */
+#define SR_FLIGHT_EPOCH_MAX 253402300799ULL
+
+static int decimal_epoch_text(const char *text) {
+    size_t length;
+    unsigned long long value = 0u;
+    if (!text || !*text) return 0;
+    length = strlen(text);
+    if (length > 12u) return 0;
+    for (const char *p = text; *p; ++p) {
+        if (*p < '0' || *p > '9') return 0;
+        value = value * 10u + (unsigned long long)(*p - '0');
+    }
+    return value <= SR_FLIGHT_EPOCH_MAX;
+}
+
+/* Accepts hex digits in either case and writes the lowercase form the schema
+ * requires into out (at least 65 bytes). */
+static int hex_identity_text(const char *text, char *out) {
+    size_t length;
+    size_t i;
+    if (!text) return 0;
+    length = strlen(text);
+    if (length < 7u || length > 64u) return 0;
+    for (i = 0; i < length; ++i) {
+        char c = text[i];
+        if (c >= 'A' && c <= 'F') c = (char)(c - 'A' + 'a');
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return 0;
+        out[i] = c;
+    }
+    out[length] = '\0';
+    return 1;
+}
+
 static int write_enabled_classes(FILE *file, uint32_t classes) {
     int wrote = 0;
     if (fputc('[', file) == EOF) return 0;
@@ -350,12 +505,37 @@ static int write_bundle(int reason) {
         return 0;
     }
     int ok = 1;
+    const char *epoch_json = "null";
+    const char *build_id_json = "null";
+    char build_id_buffer[80];
+    char build_id_hex[65];
+    if (s_flight_source_date_epoch[0]) {
+        if (decimal_epoch_text(s_flight_source_date_epoch)) {
+            epoch_json = s_flight_source_date_epoch;
+        } else {
+            fprintf(stderr, "SR_FLIGHT: SR_SOURCE_DATE_EPOCH is not a decimal Unix timestamp; "
+                            "recording source_date_epoch null\n");
+        }
+    }
+    if (s_flight_build_id[0]) {
+        if (hex_identity_text(s_flight_build_id, build_id_hex)) {
+            int length = snprintf(build_id_buffer, sizeof(build_id_buffer), "\"%s\"",
+                                  build_id_hex);
+            if (length >= 0 && (size_t)length < sizeof(build_id_buffer)) {
+                build_id_json = build_id_buffer;
+            }
+        } else {
+            fprintf(stderr, "SR_FLIGHT: SR_BUILD_ID is not a hex build identity; "
+                            "recording build_id null\n");
+        }
+    }
     ok = ok && fprintf(file, "{\n  \"schema_version\": %u,\n", SR_FLIGHT_SCHEMA_VERSION) >= 0;
     ok = ok && fprintf(file, "  \"runtime\": {\"name\": \"nakagawa-recomp\", \"cpu_state_abi\": 2},\n") >= 0;
     ok = ok && fprintf(file,
-                       "  \"build\": {\"compiler\": \"%s\", \"compiled_date\": \"%s\", "
-                       "\"compiled_time\": \"%s\", \"pointer_bits\": %u},\n",
-                       SR_FLIGHT_COMPILER, __DATE__, __TIME__, (unsigned)(sizeof(void *) * 8u)) >= 0;
+                       "  \"build\": {\"compiler\": \"%s\", \"source_date_epoch\": %s, "
+                       "\"build_id\": %s, \"pointer_bits\": %u},\n",
+                       SR_FLIGHT_COMPILER, epoch_json, build_id_json,
+                       (unsigned)(sizeof(void *) * 8u)) >= 0;
     ok = ok && fputs("  \"recorder\": {\"enabled_classes\": ", file) != EOF;
     ok = ok && write_enabled_classes(file, s_flight_classes);
     ok = ok && fprintf(file,

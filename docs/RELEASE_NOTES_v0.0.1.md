@@ -21,10 +21,36 @@ Nakagawa Recomp is an experimental static recompiler that translates user-suppli
 ## What v0.0.1 is not
 
 - **No bundled games**: This repository does not include game binaries, proprietary game assets, firmware modules, decryption keys, or private oracle traces. Nakagawa Recomp never downloads games and contains no game data. Users must supply their own lawfully obtained PSP game disc image in uncompressed standard `.iso` format ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
-- **No decryption (users supply unencrypted files)**: Nakagawa Recomp is an experimental static recompiler, not a finished consumer emulator. No commercial PSP game is currently claimed to be playable out of the box from an ISO image alone. Nakagawa recompiles the game's own program code into a native program, so it has to be able to read that code. Most retail PSP executables (`EBOOT.BIN` and `.prx` modules) are encrypted. The project ships no decryption tools or keys, and contains no decryption keys and needs none. Users supply their own unencrypted files (`EBOOT.elf` and PRXs) in `<user data>/titles/<DISC_ID>/decrypted/`. Automatic decryption is in the works ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+- **Decryption needs your own key file**: Nakagawa Recomp is an experimental static recompiler, not a finished consumer emulator. No commercial PSP game is currently claimed to be playable out of the box from an ISO image alone. Nakagawa recompiles the game's own program code into a native program, so it has to be able to read that code. Most retail PSP executables (`EBOOT.BIN` and `.prx` modules) are encrypted. The player and `nk_cli` include a built-in decryption boundary that unwraps the disc's `EBOOT.BIN` when the user supplies their own local key file; the project ships no keys. Without a key file, and for encrypted PRX modules, users supply their own unencrypted files (`EBOOT.elf` and PRXs) in `<user data>/titles/<DISC_ID>/decrypted/` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 - **Experimental titles**: A valid PSP disc that has no profile yet is imported as **Experimental**. The card notes that compatibility is unknown, checklist items indicate what is missing, and Play stays unavailable until a matching runtime package exists. Non-PSP images are refused. Second-title verification is in the works ([#285](https://github.com/Jstar269/nakagawa-recomp/issues/285)) and generic title intake is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Fonts need the user's own firmware fonts**: Authentic in-game typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped from a real PSP console (`flash0:/font/`). These proprietary files cannot legally be bundled and must be user-provided; import them into the validated local cache via `python tools/nk_cli.py fonts import <folder>` ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)). Public builds read these fonts with the clean-room public PGF reader ([#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)); a clean-room open-font converter is in the works ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 - **Windows is the supported player platform and Linux is development-only**: Only Windows 11 x64 is supported today for the desktop player runtime. Linux host runtime/player support is in progress after backend seams are portable ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)), followed by macOS (Apple Silicon) ([#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)) and Android ARM64 ([#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)). Linux/WSL currently serves as a development platform for building the player and portable core and running native tests ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#471](https://github.com/Jstar269/nakagawa-recomp/pull/471)).
+
+## Requirements when running the packaged player
+
+The v0.0.1 package layout (defined in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md)) is
+`bin/nakagawa_player.exe` beside the public source export under `source/`, which
+includes `tools/nk_cli.py`. The package ships no DLLs, so two responsibilities stay
+with the runner:
+
+- **Running the player:** place a compatible `SDL3.dll` beside `nakagawa_player.exe`
+  or on `PATH` (plus a Vulkan-capable GPU driver for game presentation). The player
+  itself runs without a source checkout; browsing the library and settings works.
+- **Typography (optional):** the UI loads `SDL3_ttf.dll` from beside the executable
+  first, then from `PATH`. Without it, every screen still renders with the built-in
+  readable debug font — nothing is hidden or broken, the interface is just plainer.
+  Dropping `SDL3_ttf.dll` next to `nakagawa_player.exe` is enough.
+- **BUILD PACKAGE:** recompiling a title needs the full developer toolchain. The
+  player looks for `tools/nk_cli.py` in this order: the `NK_INSTALL_ROOT` environment
+  variable (a folder containing `tools/`), beside the executable,
+  `<exe dir>/../tools`, `<exe dir>/../source/tools` (this release's layout), the
+  working directory, and its parent. It also needs `python`, `gcc`, and
+  `mingw32-make` on `PATH`; the supported install is the MSYS2 UCRT64 toolchain in
+  [`SETUP.md`](SETUP.md). Missing pieces are named, never silent: `CLI_NOT_FOUND`
+  lists every searched location and the `NK_INSTALL_ROOT` fix,
+  `BUILD_TOOLCHAIN_MISSING` names the missing tool, and `PYTHON_NOT_FOUND` names the
+  interpreter. In an unpackaged run, set `NK_INSTALL_ROOT` to the unzipped
+  `source/` folder so the player uses this package's CLI.
 
 ## Known issues
 

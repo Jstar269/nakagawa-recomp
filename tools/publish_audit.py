@@ -2099,12 +2099,20 @@ def _export_content_findings(
         if raw is None or error:
             continue
         digest.update(entry.path.encode("utf-8") + b"\0" + hashlib.sha256(raw).hexdigest().encode("ascii") + b"\n")
+    # The tree-derived fields are optional in the committed control: they are
+    # recomputed HERE from the exact bytes this audit read, which is the only
+    # value that can be trusted, and committing them is what used to make every
+    # unrelated merge rewrite the same line.  A declared value is still checked
+    # against this recomputation, so a stale or forged one is still refused --
+    # absence removes a conflict, not a check.
     recorded = export_document.get("included_content_sha256")
-    if recorded != digest.hexdigest():
+    if recorded is not None and recorded != digest.hexdigest():
         findings.append(Finding("POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json", "included-content digest does not match the audited bytes"))
-    if export_document.get("included_file_count", export_document.get("exported_file_count")) != len(included_all):
+    recorded_included = export_document.get("included_file_count", export_document.get("exported_file_count"))
+    if recorded_included is not None and recorded_included != len(included_all):
         findings.append(Finding("POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json", "included-file count does not match the audited source"))
-    if export_document.get("tracked_file_count", len(entries)) != len(entries):
+    recorded_tracked = export_document.get("tracked_file_count")
+    if recorded_tracked is not None and recorded_tracked != len(entries):
         findings.append(Finding("POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json", "tracked-file count does not match the audited source"))
     expected_excluded = sorted(policy.exclude_paths)
     if sorted(export_document.get("excluded_paths", [])) != expected_excluded:

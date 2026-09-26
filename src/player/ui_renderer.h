@@ -40,4 +40,9 @@ void ui_font_set_density(float density);
 /* Helper to capture current render target to BMP file */
 bool ui_capture_screenshot(SDL_Renderer *renderer, const char *output_bmp_path);
 
+/* Where the last rendered frame drew the selected game's status badge, so
+   tests can sample the badge without knowing the layout. Returns false when
+   the last frame drew no status badge. */
+bool ui_last_status_badge_rect(SDL_FRect *out_rect);
+
 #endif /* NAKAGAWA_UI_RENDERER_H */

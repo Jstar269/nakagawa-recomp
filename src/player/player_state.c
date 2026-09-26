@@ -176,6 +176,36 @@ bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming)
     return merged;
 }
 
+int player_app_ttf_library_candidates(const char *exe_dir,
+                                      char out[][MAX_PATH_LEN], int max_out) {
+    if (!out || max_out <= 0) return 0;
+
+#if defined(_WIN32) || defined(_WIN64)
+    static const char *kLibs[] = { "SDL3_ttf.dll", NULL };
+#elif defined(__APPLE__)
+    static const char *kLibs[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
+#else
+    static const char *kLibs[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
+#endif
+
+    int count = 0;
+    /* 1. Beside the executable: a user can drop the library next to the player
+     *    (the release does not ship it), and that beats any PATH hit. */
+    if (exe_dir && exe_dir[0] && count < max_out) {
+        size_t len = strlen(exe_dir);
+        bool has_sep = exe_dir[len - 1] == '/' || exe_dir[len - 1] == '\\';
+        snprintf(out[count], MAX_PATH_LEN, "%s%s%s", exe_dir, has_sep ? "" : "/", kLibs[0]);
+        count++;
+    }
+    /* 2. Bare names: the platform loader's default search (PATH on Windows,
+     *    the loader path elsewhere). */
+    for (int i = 0; kLibs[i] && count < max_out; i++) {
+        snprintf(out[count], MAX_PATH_LEN, "%s", kLibs[i]);
+        count++;
+    }
+    return count;
+}
+
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
     if (!app || !executable_directory || !executable_directory[0]) return false;
     int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
@@ -306,10 +336,10 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREPARING:
             return 1;
         case VIEW_SETTINGS:
-            /* Resolution (4) + frame cap (3) + display toggles (3: vsync,
+            /* Resolution (3) + frame cap (3) + display toggles (3: vsync,
              * fullscreen, reduce-motion) + volume stepper (2) + controller settings (1) + close (1),
-             * in draw order. */
-            return 14;
+             * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
+            return 13;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -372,7 +402,7 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count) {
 
 void player_app_settings_init_default(PlayerSettings *settings) {
     if (!settings) return;
-    settings->resolution_scale = 4; /* 1080p modern default */
+    settings->resolution_scale = 1; /* native 480x272: the verified path; upscaling is opt-in */
     settings->fullscreen = false;
     settings->vsync = true;
     settings->fps_cap = 60;
@@ -380,11 +410,13 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->reduce_motion = false;
     settings->controller_name[0] = '\0';
     settings->controller_connected = false;
-    snprintf(settings->save_directory, sizeof(settings->save_directory), "savedata");
 }
 
 static bool resolution_scale_valid(int scale) {
-    return scale == 1 || scale == 2 || scale == 3 || scale == 4 || scale == 8;
+    /* The GPU rasterizer supports at most 4x (ge_gpu MAX_SCALE); 8x was never
+       honoured by any consumer, so a persisted 8 falls back to the default
+       instead of pretending. */
+    return scale == 1 || scale == 2 || scale == 3 || scale == 4;
 }
 
 /* Settings paths come from the per-user config directory, which is UTF-8 and
@@ -650,12 +682,13 @@ void player_app_set_resolution_scale(PlayerApp *app, int scale) {
 
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
     if (!app) return;
-    /* UI offers 1/2/4/8. Scale 3 stays accepted for forward compatibility
+    /* UI offers 1/2/4: the GPU rasterizer caps at 4x (ge_gpu MAX_SCALE), so
+     * scale 8 is not selectable. Scale 3 stays accepted for forward compatibility
      * (resolution_label knows it) but is skipped by the stepper. */
-    static const int kOrder[] = { 1, 2, 4, 8 };
+    static const int kOrder[] = { 1, 2, 4 };
     int current = app->settings.resolution_scale;
     int at = 0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         if (kOrder[i] == current) {
             at = i;
             break;
@@ -663,9 +696,9 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
         if (kOrder[i] < current) at = i;
     }
     if (direction < 0) {
-        at = (at + 3) % 4;
+        at = (at + 2) % 3;
     } else {
-        at = (at + 1) % 4;
+        at = (at + 1) % 3;
     }
     app->settings.resolution_scale = kOrder[at];
     maybe_persist_settings(app);
@@ -878,10 +911,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     }
 
     /* Apply user settings via typed runtime configuration */
-    app->launch_session.config.resolution_scale = app->settings.resolution_scale;
-    app->launch_session.config.fps_cap = app->settings.fps_cap;
-    app->launch_session.config.vsync = app->settings.vsync;
-    app->launch_session.config.fullscreen = app->settings.fullscreen;
+    player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
 
     printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", app->launch_session.executable_path, app->launch_session.iso_path);
 
@@ -937,6 +967,16 @@ void player_app_stop_game(PlayerApp *app) {
     app->is_game_running = false;
 }
 
+void player_app_apply_settings_to_session(const PlayerSettings *settings,
+                                          NkRuntimeConfig *config) {
+    if (!settings || !config) return;
+    config->resolution_scale = settings->resolution_scale;
+    config->fps_cap = settings->fps_cap;
+    config->vsync = settings->vsync;
+    config->fullscreen = settings->fullscreen;
+    config->master_volume = settings->master_volume;
+}
+
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     if (!app || !app->is_game_running) return false;
     if (app->launch_time_ms == 0) {
@@ -985,18 +1025,40 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
 
     char python_path[NK_MAX_PATH];
-    if (!package_builder_find_python(python_path, sizeof(python_path))) {
+    bool have_python = package_builder_find_python(python_path, sizeof(python_path));
+    if (!have_python) {
         player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
                              "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
-                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.",
+                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.\n"
+                             "Automatic build-prerequisite installation is in the works (#324).",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
 
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        char cli_guidance[512];
+        package_builder_describe_cli_not_found(app->install_root,
+                                               cli_guidance, sizeof(cli_guidance));
         player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
-                             "tools/nk_cli.py could not be located in the current workspace or install root.",
+                             cli_guidance,
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    /* Toolchain preflight: fail here with the missing tool named instead of
+     * deep inside the build when gcc or mingw32-make is not on PATH. */
+    char gcc_path[NK_MAX_PATH];
+    char make_path[NK_MAX_PATH];
+    bool have_gcc = package_builder_find_tool("gcc", gcc_path, sizeof(gcc_path));
+    bool have_make = package_builder_find_tool("mingw32-make", make_path, sizeof(make_path));
+    char missing_tool[32];
+    char missing_message[512];
+    if (package_builder_toolchain_missing(have_python, have_gcc, have_make,
+                                          missing_tool, sizeof(missing_tool),
+                                          missing_message, sizeof(missing_message))) {
+        player_app_set_error(app, "BUILD_TOOLCHAIN_MISSING", "Build Toolchain Missing",
+                             missing_message,
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }

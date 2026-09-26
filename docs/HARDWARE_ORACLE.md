@@ -32,6 +32,20 @@ proposals. Each claim covers only the exact fixture named:
   overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
   route and date. Bulk random differential fuzz (Loop A) remains unbuilt, and
   the PPSSPP-derived-table warning stands for every unmeasured encoding.
+- **Out-of-domain transcendental arguments** (issue #69): NOT_MEASURED, and the
+  runtime therefore fails closed rather than inventing a result. The
+  `vasin` unit reduces its argument to a fixed 9.23 index and a 128-entry
+  segment table, so every `|x| > 1` encoding is outside the reconstructed
+  domain; the runtime returns the PSP invalid NaN `0x7F800001` with the input
+  sign. Upstream describes that branch as a guess (its own accuracy sweeps stop
+  at `|x| = 1`) and `pspdev` `vfpu-docs` states no edge case for it, so the
+  real silicon result is unknown here. A qualified private-title route reaches
+  it: the `NAN_TRAP` diagnostic on the main-menu transition shows every
+  arc-sine argument of the guest's rotation solve leaving the domain
+  (`|x|` in `[1.026, 2.0]`), which propagates to the bone matrices the title
+  uploads. Closing this needs a Loop B microtest over the existing oracle
+  vector, which already carries `+2.0` and `-10.0`; the answer must be
+  measured before any value is baked in.
 - **Display/vblank masking** (detail: `ARCHITECTURE.md` display-mask section
   and the shipped `PSP-DISPLAY-001` oracle results): masked-window behavior is
   HARDWARE_MEASURED (+0 when no period crossed, +1 when one or two crossed,
@@ -53,6 +67,27 @@ proposals. Each claim covers only the exact fixture named:
     destination register is unchanged.
   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
     undefined for non-coprocessor-unusable exceptions.
+- **Non-finite vertex position and lit colour in the GE** (issue #69; no run
+  yet): what the PSP GE rasterizes for a vertex whose clip position, projected
+  screen position or lit colour channel is NaN or infinite is **NOT_MEASURED**.
+  No public PSP documentation states a result, and PPSSPP's software GE was not
+  usable as an oracle for the cell either (its screen acceptance and its
+  bounding-box minimum/maximum both compare false against NaN, so no culling
+  verdict is implied by its source either). Both rasterizer paths therefore
+  fail closed: `src/rt/ge.c` drops the primitive and counts it (`GESTAT+ ...
+  nonfinite=`, and `drop-nonfinite` in the per-draw `TRIDRW+` line) instead of
+  rasterizing it from a host `(int)NaN` conversion, and the Vulkan rasterizer
+  (`src/rt/gpu_sdl3vk/ge_gpu.c`) applies the same rule at its capture seam
+  (`GEGPU stats: ... nonfinite=`) instead of handing a NaN `gl_Position` to the
+  fixed-function clipper, whose verdict for NaN is undefined. The two share one
+  predicate (`ge_vtx_finite` in `src/rt/ge_shared.h`) so they cannot disagree.
+  A hardware capture through the existing
+  Loop B probe — one triangle with a NaN bone matrix and one with a NaN vertex
+  normal, read back through `sceGuGetMemoryStick`/`sceGuFinish` into a host
+  framebuffer hash — would settle whether the hardware culls, clamps or
+  rasterizes such a vertex, and is the measurement this cell is waiting for.
+  The related producer is a separate cell: the out-of-domain arc-sine argument
+  that makes a bone matrix non-finite in the first place.
 - **Misaligned data access** (runs PSP-A3-02 and PSP-A3-03; same route,
   campaign and console; fixtures `exception-a3-mload` and `exception-a3-mstore`,
   which are `probe_exception_a3.c` built with `-DA3_CASE=2` and `=3`):

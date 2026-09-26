@@ -42,6 +42,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "flight_recorder.h"
 #include "iso.h"
 #include "title_config.h"
+#include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -63,6 +64,8 @@ int sr_route_test_sample(uint8_t *out);
  * state machine without a scheduler or GPU. */
 extern void sr_route_test_tick(uint32_t v);
 extern int sr_route_test_cadence_state(uint32_t *last_attempt);
+extern void sr_route_test_import(uint32_t nid);
+extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
@@ -162,6 +165,10 @@ extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *imm
                                         uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
 extern void sr_hle_test_audio_reset(void);
+extern void sr_hle_test_audio_lead_reset(void);
+extern void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued);
+extern unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                                   unsigned long *noqueue, long *last_ms);
 extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
@@ -420,6 +427,20 @@ void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+/* Display-source service-cadence attribution (perf.c owns the real counters; the
+ * selftest needs only the symbols to link, and reads the phase tag directly). */
+void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (void)periods; }
+void sr_perf_vblank_coalesced(void) {}
+void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
+void sr_perf_phase_report(int force) { (void)force; }
+int sr_rt_phase;
+uint32_t sr_rt_nid;
+uint32_t (*sr_rt_pc_fn)(void);
+uint32_t (*sr_rt_uid_fn)(void);
+const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
+    "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
+};
 int sr_perf_aot_active;
 void sr_perf_aot_begin(uint32_t pc) { (void)pc; }
 void sr_perf_aot_end(void) {}
@@ -2297,6 +2318,8 @@ static void reset_fixture(void) {
     s_dispatch_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_pending_vblanks = 0;          /* owed VBLANK episodes */
+    s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_count = 0;
@@ -2584,6 +2607,54 @@ static void test_audio_regular_contract_safety(void) {
            "a negative queue report ends the wait instead of looping");
     expect(s_audio_queue_calls == 1u,
            "the negative queue sentinel takes the open-loop path after one query");
+}
+
+/* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
+ *
+ * A push count cannot tell a guest that submits what it consumes from one that submits twice
+ * as much: both push frames, and only the queue depth separates them. So the runtime reads
+ * sr_audio_queued() where the blocking output paces against it and publishes the deepest lead
+ * any channel carried in each window. What is pinned here is the contract a reader of the
+ * telemetry depends on: the window's peak is the worst channel, not the last; a window in
+ * which every output had no host queue reports -1 rather than a drift of zero; and the
+ * accumulator resets when a window closes, so the next window starts from nothing. */
+static void test_audio_drift_window_reports_the_pacing_value(void) {
+    int peak = -1;
+    uint32_t peak_ch = 0xffffffffu;
+    unsigned long noqueue = 0, outputs = 0;
+    long last_ms = 0;
+
+    sr_hle_test_audio_lead_reset();
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "a fresh drift window has counted no outputs");
+    expect(last_ms == -1L, "and has published no milliseconds, not zero");
+
+    sr_hle_test_audio_lead_feed(10u, 0, 4410);
+    sr_hle_test_audio_lead_feed(20u, 3, 8820);
+    sr_hle_test_audio_lead_feed(30u, 8, 2205);
+    outputs = sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms);
+    expect(outputs == 3u, "every output in the window is counted");
+    expect(peak == 8820, "the window publishes the deepest lead, not the last reading");
+    expect(peak_ch == 3u, "and the channel that was carrying it");
+
+    /* One window is 300 delivered vblanks; crossing it prints what it saw and resets. */
+    sr_hle_test_audio_lead_feed(300u, 0, 4410);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the window that crosses the boundary starts the next one empty");
+    expect(last_ms == 200L, "the window printed its own peak, 8820 frames as 200 ms");
+    expect(peak == 0, "and the peak resets with it");
+    expect(noqueue == 0u, "as does the count of outputs with no queue");
+    (void)outputs;
+
+    /* No host queue anywhere in a window is absence of a measurement, never a zero drift. */
+    sr_hle_test_audio_lead_reset();
+    sr_hle_test_audio_lead_feed(10u, 0, -1);
+    sr_hle_test_audio_lead_feed(20u, 0, -1);
+    sr_hle_test_audio_lead_feed(300u, 0, -1);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the all-unmeasured window closed and reset like any other");
+    expect(last_ms == -1L, "a window with no host queue reports -1 ms, not 0");
+    sr_hle_test_audio_lead_reset();
 }
 
 static uint64_t selftest_guest_u64(uint32_t addr) {
@@ -3157,17 +3228,19 @@ static void test_display_queries_do_not_progress_display(void) {
 }
 
 /* Guest-visible VCOUNT advances by elapsed display periods at scheduler
- * source-latch boundaries, decoupled from VBLANK service -- it is not a count
- * of delivered/serviced VBLANK episodes and is not described as strictly
- * free-running.  A provisional PSP observation corroborates the service-
- * independence direction, but it does not establish the runtime's exact rate;
- * this checked-in regression is HOST_TESTED source-contract evidence.
+ * source-latch boundaries, and the serviced VBLANK event is a COUNT of those
+ * periods rather than one coalesced bit.
  *
- * This is the public failing-before regression for that boundary, exercised
- * through the production scheduler_latch_due_events / scheduler_service_pending
- * path (not HST, not the hardware probe).  For each N the source deadline is
- * advanced across exactly N periods before service; VCOUNT must reflect V+N,
- * while delivered episodes stay at most one. */
+ * The two used to be deliberately split: VCOUNT advanced by the elapsed period
+ * count while delivery collapsed to a single pending bit.  That split is what
+ * made a vblank-paced title observe fewer VBLANK episodes than display periods
+ * (measured 55.0 Hz against a 59.94 Hz source) with an exactly-correct VCOUNT.
+ * The hardware does not split them: the PSP's IF/IE pair is a level that is
+ * re-asserted for every edge that arrives while the CPU is still in the previous
+ * handler, so a guest that spends N periods inside one stretch with no service
+ * point is owed N handler episodes.  These are the production
+ * scheduler_latch_due_events / scheduler_service_pending path (not HST, not the
+ * hardware probe); HOST_TESTED source-contract evidence. */
 static void test_vcount_tracks_elapsed_source_periods(void) {
     enum {
         NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
@@ -3182,6 +3255,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
 
@@ -3201,21 +3275,24 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         snprintf(msg, sizeof msg, "N=%u: no delivery before the eligible service phase", N);
         expect(s_vbl_count == 0u, msg);
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "a burst of periods coalesces into one pending source bit");
+               "a burst of periods still raises the source bit");
+        expect(s_pending_vblanks == N,
+               "a burst of periods is owed one serviced episode each");
 
-        /* Service once: one delivered episode, VCOUNT unchanged. */
+        /* Service once: the whole burst is delivered, VCOUNT unchanged. */
         scheduler_service_pending();
-        snprintf(msg, sizeof msg, "N=%u: one serviced episode regardless of the burst", N);
-        expect(s_vbl_count == 1u, msg);
+        snprintf(msg, sizeof msg, "N=%u: one serviced episode per elapsed period", N);
+        expect(s_vbl_count == N, msg);
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + N,
                "service does not re-advance guest VCOUNT");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) == 0u,
-               "service clears the coalesced source bit");
+               "service clears the source bit");
+        expect(s_pending_vblanks == 0u, "service clears the owed episode count");
     }
 
-    /* Pending bit already set before the latch: the latch must not manufacture
-     * a second episode; VCOUNT still advances by the crossed periods. */
+    /* Pending bit already set before the latch: the burst still adds its own
+     * episodes; VCOUNT advances by the crossed periods. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3224,6 +3301,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3237,11 +3315,12 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "a pre-set pending bit still lets VCOUNT track the crossed periods");
         expect(s_vbl_count == 0u, "a pre-set pending bit adds no delivery before service");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "a pre-set pending bit still coalesces to one episode");
+        expect(s_vbl_count == 3u,
+               "a pre-set pending bit adds no episode beyond the three crossed periods");
     }
 
     /* Multiple deadline-latch calls before service: each latch contributes its
-     * own period burst to VCOUNT and the delivery stays one episode. */
+     * own period burst and every period is still owed an episode. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3250,6 +3329,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3264,9 +3344,11 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "multiple latches accumulate VCOUNT (2 + 3 periods)");
         expect(s_vbl_count == 0u, "no delivery yet across multiple latches");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "multiple latches still coalesce into one pending source");
+               "multiple latches still raise the source bit");
+        expect(s_pending_vblanks == 5u,
+               "multiple latches accumulate one owed episode per elapsed period");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "one delivery after multiple latches");
+        expect(s_vbl_count == 5u, "every accumulated period is delivered after multiple latches");
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 5u,
                "service leaves the accumulated VCOUNT alone");
@@ -15391,6 +15473,103 @@ static void test_route_malformed_files_are_refused(void) {
     remove(RT_PATH);
 }
 
+/* A mask the parser cannot read must refuse the route, not press nothing.
+ *
+ * The failure this pins down is invisible from outside a run: `strtoul` reports no error,
+ * so any token that is not a number became mask 0, the step held no buttons, and the guest
+ * sat on its screen rendering and polling the pad -- byte-identical to a frozen game. Four
+ * separate campaign runs read a frozen title screen that way, because the route asked for
+ * "CROSS" (a name the file format never defined) and pressed nothing at all. The whole
+ * point of a route is that a press arrives; a route that cannot name a button must say so
+ * at load, and one that names it wrongly must not run as though it had.
+ */
+/* A route may name the button it presses (test_route_names_the_buttons_it_presses), so the
+ * remaining failure mode is a token that means no button and no mask: a truncated name, a
+ * hex literal with a stray character, a bare prefix, or a value too wide for the pad mask.
+ * None of these may become a press, because a press that never arrives is indistinguishable
+ * from a game that has frozen. They are refused at load, naming the line and the token. */
+static void test_route_mask_refuses_what_it_cannot_mean(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* Every step that carries a mask refuses a token that is neither. */
+    static const char *const bad[] = {
+        "4000junk",     /* a hex literal with something after it */
+        "0x",           /* a prefix with no digits at all */
+        "1FFFFFFFFF",   /* wider than the 32-bit pad mask: refuse, never truncate */
+        "CROSS+",       /* a name with an empty one after it */
+        "+CROSS",       /* and an empty one before it */
+        "NOSUCHBUTTON", /* a name long enough that a fixed buffer would have cut it short */
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS %s 8\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS mask that means nothing is refused");
+        expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+        expect(sr_route_step(0, sigA) == 0u, "a refused route never reaches the guest as an empty press");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_UNTIL MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_UNTIL mask that means nothing is refused");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_WHILE MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_WHILE mask that means nothing is refused");
+
+        sr_route_reset();               /* a bare pad script gets the same answer */
+        snprintf(body, sizeof body, "8600 %s 16\n", bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a bare pad script line whose mask means nothing is refused");
+    }
+    remove(RT_PATH);
+
+    /* The forms that were always legal still load and still reach the guest unchanged. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS 4000 16\n"
+             "PRESS 0x0008 8\n"
+             "PRESS FFFFFFFF 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "hex masks with and without a 0x prefix load");
+    expect(sr_route_step(0, sigA) == 0x4000u, "a bare hex mask still reaches the guest");
+    for (uint32_t v = 1; v < 16; v++)
+        expect(sr_route_step(v, sigA) == 0x4000u, "the named-width press is held");
+    expect(sr_route_step(16, sigA) == 0x0008u, "the next press starts with its own mask");
+    for (uint32_t v = 17; v < 24; v++)
+        expect(sr_route_step(v, sigA) == 0x0008u, "the 0x-prefixed mask is held for its width");
+    expect(sr_route_step(24, sigA) == 0xFFFFFFFFu, "a full-width mask is every button, not a truncation");
+    for (uint32_t v = 25; v < 28; v++)
+        expect(sr_route_step(v, sigA) == 0xFFFFFFFFu, "the full-width press is held for its width");
+    expect(sr_route_step(28, sigA) == 0u, "and released after it");
+    expect(sr_route_status() == RT_DONE, "a legal mask route completes");
+    remove(RT_PATH);
+
+    sr_route_reset();
+    rt_write("1 0x0008 8\n240 0008 8\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script with hex masks still loads");
+    expect(sr_route_status() == RT_LEGACY, "and keeps its original absolute-frame behaviour");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
     rt_write("1 0x0008 8\n240 0x0008 8\n8600 0x4000 16\n");
@@ -15404,6 +15583,178 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     rt_write("# comment only\n\n");
     expect(sr_route_load(RT_PATH) == 0, "an empty route file loads nothing");
     expect(sr_route_status() == RT_OFF, "an empty route file leaves the pad unscripted");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
+/* WAIT_NID: the step that lets a route gate on what the guest DOES.
+ *
+ * Every other gated step needs a screen signature, and a signature can only be recorded from
+ * a run that is already on that screen -- so the step that would reach a new screen is the one
+ * step that cannot be written. What the guest calls is observable from the first boot and is
+ * the same for every title. Pinned here: the step completes on the import and only on that
+ * import, an import that happened BEFORE the step began does not satisfy it, a name and a raw
+ * NID are the same step, an unknown name is refused at load, and a guest that never calls it
+ * fails the run loudly instead of waiting forever. */
+static void test_route_gates_on_a_guest_event_not_a_signature(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+    expect(open_nid != 0u, "the runtime's own NID table resolves sceIoOpen");
+    expect(sr_route_test_nid("0x109f50bc") == open_nid,
+           "a route may write the same import as raw hex");
+    expect(sr_route_test_nid("sceNotAnImport") == 0u,
+           "a name that is not an import does not resolve");
+
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "PRESS CROSS 8\n"
+             "WAIT_NID sceIoOpen 600\n"
+             "DELAY 2\n"
+             "END\n", hexA);
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that waits on an import loads");
+    expect(sr_route_step(0, sigA) == 0x4000u, "the press before the wait is held");
+    for (uint32_t v = 1; v < 8; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_step(8, sigA) == 0u, "and released after its width");
+
+    /* Another import is not the one being waited for. */
+    sr_route_test_import(0x11111111u);
+    expect(sr_route_step(9, sigA) == 0u, "an unrelated import does not complete the step");
+    expect(sr_route_status() == RT_RUNNING, "and the route is still waiting");
+
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(10, sigA) == 0u, "the waited-for import completes the step");
+    expect(sr_route_step(11, sigA) == 0u, "the step after it begins on the next vblank");
+    expect(sr_route_step(14, sigA) == 0u, "its DELAY is honoured");
+    expect(sr_route_status() == RT_DONE, "and the route completes");
+    remove(RT_PATH);
+
+    /* An import that already happened cannot satisfy a later step. Two waits for the SAME
+     * import in a row is the shape that can tell them apart: the first completes on a feed,
+     * and the second must still be waiting because that feed predates it. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "WAIT_NID sceIoOpen 20\n"
+             "WAIT_NID sceIoOpen 50\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "two waits for one import load");
+    expect(sr_route_step(0, sigA) == 0u, "the WAIT is satisfied by the screen");
+    expect(sr_route_status() == RT_RUNNING, "and the first import wait has begun");
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(1, sigA) == 0u, "the feed completes the first import wait");
+    for (uint32_t v = 2; v < 55; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_status() == RT_FAILED,
+           "a guest that never makes the import again fails the run instead of waiting forever");
+    remove(RT_PATH);
+
+    /* An unknown name is a load-time refusal, not a wait that can never succeed. */
+    sr_route_reset();
+    rt_write("WAIT_NID sceNotAnImport 600\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "an unknown import name is refused at load");
+    expect(sr_route_status() == RT_FAILED, "and the route fails rather than waiting");
+    sr_route_reset();
+    rt_write("WAIT_NID sceIoOpen\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "a WAIT_NID without a timeout is refused at load");
+    sr_route_reset();
+    remove(RT_PATH);
+}
+
+
+/* A press mask that names the wrong button cannot fail: the guest receives a bit the
+ * screen ignores and the run looks exactly like a game that has frozen, which is how a
+ * whole investigation once went looking for a scheduler deadlock that was not there. So a
+ * route may name the button instead of counting bits, the name must mean the same bit the
+ * host front-ends publish (NK_PSP_BTN_*_BIT, so a live press and a scripted press cannot
+ * disagree), and a name that is not a button is refused instead of read as a mask. */
+static void test_route_names_the_buttons_it_presses(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* CROSS by name, then the same mask as hex: the two forms must be the same press. */
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 16\n"
+             "DELAY 4\n"
+             "PRESS 4000 16\n"
+             "DELAY 4\n"
+             "PRESS_WHILE MAIN_MENU START+UP 4 30 100000\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that names buttons loads");
+    expect(sr_route_step(0, NULL) == 0u, "an unobserved screen check presses nothing");
+    expect(sr_route_step(1, sigA) == NK_PSP_BTN_CROSS_BIT,
+           "the press begins on the vblank the screen is reached");
+    for (uint32_t v = 2; v < 17; v++)
+        expect(sr_route_step(v, NULL) == NK_PSP_BTN_CROSS_BIT, "CROSS stays held for its width");
+    expect(sr_route_step(17, NULL) == 0u, "CROSS is released after its width");
+    expect(sr_route_step(21, NULL) == NK_PSP_BTN_CROSS_BIT,
+           "a hex mask means the same button as its name");
+    expect(sr_route_step(38, NULL) == 0u, "the release between presses is honoured");
+
+    /* The repeating step, checked as a pattern rather than against a vblank arithmetic the
+     * reader would have to redo: 120 vblanks is exactly four of its 30-vblank periods, so a
+     * 4-vblank press inside each must be held for 16 of them and released for the rest. */
+    const uint32_t pulse = NK_PSP_BTN_START_BIT | NK_PSP_BTN_UP_BIT;
+    uint32_t first = 0;
+    for (uint32_t v = 30; v < 120 && first == 0; v++)
+        if (sr_route_step(v, NULL) & pulse) first = v;
+    expect(first != 0, "names joined with '+' reach the guest as every button named");
+    int held = 0, loose = 0;
+    for (uint32_t v = first; v < first + 120; v++) {
+        if (sr_route_step(v, NULL) & pulse) held++; else loose++;
+    }
+    expect(held == 16, "the repeating step holds the named buttons 4 of every 30 vblanks");
+    expect(loose == 104, "the repeating step releases the pad between its pulses");
+    expect(sr_route_status() == RT_RUNNING, "the scripted press is still inside its step");
+    remove(RT_PATH);
+
+    /* Case does not matter, and an unknown name is a refusal rather than a silent 0. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS cross 4\n"
+             "PRESS OK 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a button name that is not a button is refused");
+    expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+    remove(RT_PATH);
+
+    /* Every button the host front-ends publish can be named, HOME and HOLD included. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS home+HOLD 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "HOME and HOLD are route button names");
+    expect(sr_route_step(1, sigA) == (NK_PSP_BTN_HOME_BIT | NK_PSP_BTN_HOLD_BIT),
+           "HOME+HOLD reaches the guest as both system bits");
+    remove(RT_PATH);
+
+
+    /* The legacy absolute-frame table takes names too: strtoul used to read "CROSS" as 0,
+     * which is the same silent-nothing press one syntax layer down. */
+    sr_route_reset();
+    rt_write("1 0x0008 8\n8600 CROSS 16\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script accepts a button name");
+    expect(sr_route_status() == RT_LEGACY, "the named bare row keeps legacy behaviour");
+    expect(sr_route_step(8600, NULL) == 0u, "the program stepper stays inert for a legacy script");
     remove(RT_PATH);
     sr_route_reset();
 }
@@ -15842,7 +16193,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 2") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 3") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -15975,6 +16326,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();
@@ -16077,7 +16429,11 @@ int main(int argc, char **argv) {
     test_route_press_until_timeout_fails_loudly();
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
+    test_route_mask_refuses_what_it_cannot_mean();
     test_route_legacy_pad_script_is_unchanged();
+    test_route_names_the_buttons_it_presses();
+    test_route_gates_on_a_guest_event_not_a_signature();
+
     test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();

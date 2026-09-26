@@ -82,35 +82,27 @@ tree when a user-profile path or a workspace root appears in a first-party file.
 
 ### Runtime DLLs (SDL3.dll & vulkan-1.dll)
 
-Since `hst.exe` is a native 64-bit Windows application, it relies on two dynamic libraries at runtime: `SDL3.dll` and `vulkan-1.dll`. Because binary DLLs are ignored by this repository's `.gitignore` to keep the Git history clean, you must locate or acquire them manually.
+The native player (`nakagawa_player.exe`) requires `SDL3.dll` and the host Vulkan loader (`vulkan-1.dll`). In a release archive, the matching `SDL3.dll` is already beside `bin/nakagawa_player.exe`; leave both files in `bin/`. In a source checkout, `copy_build_assets.ps1` copies SDL3 and any imported MinGW runtime DLLs beside the built executable and generates their third-party notices.
 
 #### 1. SDL3.dll
 
-To ensure that your runtime binary matches the compiled headers and libraries exactly:
-
-- **The Recommended Way (from MSYS2):** Since you installed `mingw-w64-ucrt-x86_64-sdl3` in Step 1, the matching 64-bit DLL is already on your system under your MSYS2 directory. Copy it from:
-  `C:\msys64\ucrt64\bin\SDL3.dll` (assuming default MSYS2 install path)
-  and place it at the **root of the repository**. The build script (`copy_build_assets.ps1`) will automatically detect it and copy it to the build output folder (`build/hst/`) alongside `hst.exe` when linking.
-- **Alternative (Official Releases):** You can download official precompiled Windows binaries from the [SDL3 GitHub Releases page](https://github.com/libsdl-org/SDL/releases). Make sure to choose the `SDL3-3.x.x-win32-x64.zip` release (or the equivalent 64-bit developer archive) and copy the `SDL3.dll` out of it.
+For a source build, install the MSYS2 UCRT64 SDL3 package described above. Do not copy the DLL into the repository root; the build asset script resolves the toolchain copy and stages it beside the player. For a release package, use the SDL3 DLL already present in `bin/`.
 
 #### 2. vulkan-1.dll
 
-This is the Vulkan loader library:
+This is the host Vulkan loader, normally installed by the graphics driver. The release package records it as host-resolved and does not redistribute it by default.
 
-- **System Loader:** This file is usually installed system-wide in `C:\Windows\System32\vulkan-1.dll` by your graphics card driver (NVIDIA/AMD/Intel). In most cases, Windows resolves it automatically from your system directory, so you do not need a copy in the repository root.
-- **SDK Copy:** If Windows fails to resolve the system loader, or if you want a fully self-contained build folder, copy the loader from your Vulkan SDK directory:
-  `C:\VulkanSDK\<version>\Bin\vulkan-1.dll`
-  and place it at the **root of the repository**.
+Windows normally resolves it from the installed NVIDIA, AMD, or Intel graphics driver. The Vulkan SDK's loader is useful for development diagnosis, but it is not copied into the release package; install or repair a Vulkan-capable graphics driver if the loader is missing.
 
 #### 3. Verifying Correctness & Compatibility
 
 To ensure your runtime DLLs are compatible and up to date:
 
-- **64-bit (x64) Architecture Check:** Both DLLs must be **64-bit**. If you copy a 32-bit (x86) version of either DLL by mistake, the application will crash immediately on startup with the error code `0xc000007b`.
+- **64-bit (x64) Architecture Check:** The player and bundled SDL3 DLL are 64-bit. A mismatched DLL can prevent Windows from starting the player.
 - **Version/Metadata Verification:**
   To check details, right-click the DLL file in Windows Explorer, select **Properties**, and navigate to the **Details** tab:
-  - For `SDL3.dll`: Verify that **Product version** is `3.0.0` or newer.
-  - For `vulkan-1.dll`: Verify that the **Copyright** mentions `Khronos Group` and the version matches or exceeds your Vulkan SDK version (e.g. `1.4.x`).
+  - For `SDL3.dll`: The package generator records the version in the SBOM and notices.
+  - For `vulkan-1.dll`: The driver supplies the loader; match it to the installed graphics driver rather than copying a different SDK build beside the player.
 
 Confirm the commands visible to PowerShell 7:
 
@@ -477,6 +469,50 @@ even while a frame is slow.
 
 The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
 
+### Player BUILD PACKAGE prerequisites
+
+**BUILD PACKAGE** in the native player re-runs this toolchain from inside the app, so
+it needs all of the following:
+
+- `tools/nk_cli.py` reachable. The player searches, in order: the `NK_INSTALL_ROOT`
+  environment variable (a folder containing `tools/`), `<player exe>/tools`,
+  `<player exe>/../tools`, `<player exe>/../source/tools` (the v0.0.1 release
+  layout), the working directory, and its parent. Running the player from the
+  repository root or from `build/` finds it automatically.
+- `python`, `gcc`, and `mingw32-make` on `PATH` — the UCRT64 toolchain installed in
+  section 1. The spawned build inherits the player's `PATH`, so a tool your shell
+  cannot see is a tool the build cannot see either.
+- SDL3 headers/import library and Vulkan headers/loader import library from the
+  UCRT64 package set. The Makefile can use the MSYS2 `libvulkan-1.dll.a` import
+  archive; a separate Vulkan SDK is not needed for this consumer build.
+- `powershell.exe`, which ships with Windows 11. The asset-copy step uses the
+  built-in Windows PowerShell 5.1; PowerShell 7 remains the development baseline
+  for the other repository scripts.
+
+Missing pieces are named on the error card instead of failing deep inside the build:
+`CLI_NOT_FOUND` lists every searched location and the `NK_INSTALL_ROOT` fix,
+`BUILD_TOOLCHAIN_MISSING` names the missing tool (`python`, `gcc`, or
+`mingw32-make`), and `PYTHON_NOT_FOUND` names the interpreter.
+
+The pinned candidate download set is recorded in
+[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
+and 25 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3, Vulkan headers/loader,
+and their runtime dependencies), totaling 89,547,599 bytes. Package hashes and
+sizes come from the signed MSYS2 repository database; the Python hash is from
+python.org's release page. `tools/requirements-lock.txt` contains developer and
+build-generation tools; the consumer `build-package` path needs no third-party
+Python packages, and `glslc` is only used by opt-in shader regeneration.
+
+The player does not yet bootstrap the Python runtime or show the prerequisite
+consent/progress flow. If a build prerequisite is missing, the card names that
+boundary and points to automatic build-prerequisite installation, in the works
+([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)); it does not
+download anything automatically today.
+
+The player's UI typography loads `SDL3_ttf.dll` from beside the executable first,
+then from `PATH`; without it the built-in readable debug font is used. Placing
+`SDL3_ttf.dll` next to `nakagawa_player.exe` is enough — no rebuild required.
+
 ### Build lifecycle and cleanup targets
 
 The build system provides scoped and explicit cleanup targets:
@@ -531,7 +567,7 @@ its redistributable host dependencies, and user-supplied game input.
 
 - **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest C:\path\to\manifest.json -GameName game` (or `python tools/nk_doctor.py --title-manifest C:\path\to\manifest.json --game-name game`) to validate the toolchain, build dependencies, and the selected title's local inputs. Without a title selection, Doctor uses the public synthetic manifest.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
-- **`SDL3.dll` missing:** ensure the UCRT64 SDL3 `bin` directory is on `PATH`, or place a compatible `SDL3.dll` at the repository root so the manager copies it beside `hst.exe`.
+- **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime still refuses encrypted `~PSP` executables because decryption happens earlier, in the player/CLI boundary that requires your own key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
