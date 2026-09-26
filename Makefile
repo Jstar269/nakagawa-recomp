@@ -655,6 +655,7 @@ endif
 PUBLIC_TARGETS := \
 	help \
 	check \
+	contrib-check \
 	test \
 	native-core-tests \
 	player-ui-tests \
@@ -758,6 +759,7 @@ INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settin
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
 HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
+HELP_DESCRIPTION_contrib-check := run only the local gates that apply to your changed files
 HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
 HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
@@ -945,6 +947,45 @@ ifndef NK_TRUSTED_LEDGER
 else
 	$(PYTHON) tools/provenance_refresh.py --trusted-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
 endif
+
+# The contributor fast path: one command, only the gates that apply to the
+# files this branch changed against origin/main, finished in minutes.
+#
+# It is a subset of `check`, never a substitute: `check` and `readiness` remain
+# the authoritative gates, and CI still runs the hosted matrix. What it removes
+# is the reason a contributor gives up -- being told to run the whole native and
+# tooling suite to find out whether a one-line documentation change is well
+# formed.
+#
+# Path routing is tools/ci_paths.py, the same classifier the hosted workflow
+# uses, so the local selection cannot drift from the hosted one. The gates it
+# runs are the ones a contributor can actually clear: Ruff, the Python test
+# modules matching the changed tools/, a strict C compile of the changed C, and
+# markdownlint plus the documentation-freshness lint for changed Markdown.
+#
+# The publication audit's provenance self-consistency leg compares the working
+# tree with the checked-in ledger, which only a maintainer holding the private
+# trusted ledger can regenerate. Those findings are printed as MAINTAINER-SIDE
+# and do not fail this target; every other publication finding does. Nothing is
+# suppressed -- both lists are always shown.
+#
+#   mingw32-make contrib-check              # Windows
+#   make contrib-check                      # Linux
+#   CONTRIB_BASE=origin/main contrib-check  # explicit base
+#
+# Reports PASS, FAIL, SKIP (tool not installed) or NOT_RUN (surface untouched)
+# per gate. A skipped gate is never reported as a pass.
+CONTRIB_BASE ?= origin/main
+
+# The sub-gates run in the same interpreter as this script by default. Set
+# CONTRIB_PYTHON in the environment when the repository's default python is not
+# the one holding ruff and the project dependencies -- which is the normal case
+# on Windows, where MSYS2's python precedes the CPython the project uses. It is
+# an environment variable rather than a make variable because an interpreter
+# path usually contains a space, and the rest of this Makefile expands
+# $(PYTHON) unquoted.
+contrib-check:
+	CONTRIB_PYTHON="$${CONTRIB_PYTHON:-$(PYTHON)}" $(PYTHON) tools/contrib_check.py --base "$(CONTRIB_BASE)"
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
