@@ -295,6 +295,26 @@ PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804028
 # hash so changing it regenerates instead of reusing stale output.
 CODEGEN_USER_ARGS ?=
 
+# SR_NAN_TRAP: build-time NaN/Inf origin diagnostic (issue #69). Off by default
+# and zero cost when off. `make NAN_TRAP=1` turns on BOTH halves at once:
+#   --nan-trap makes tools/codegen.py follow every generated FPU/VFPU result
+#                 write with an SR_NAN_TRAP_* check, and
+#   -DSR_NAN_TRAP  makes those checks live in the generated chunks and in the
+#                 runtime/interpreter (src/rt/recomp.h, src/rt/debug.c,
+#                 src/rt/guest_interp.c, src/rt/vfpu_interp.c).
+# Splitting them is possible but is a footgun: codegen alone emits calls to a
+# macro that then expands to ((void)0), so the build looks correct and reports
+# nothing. Both halves are carried into the codegen and recompiler profile
+# hashes, so flipping the option regenerates rather than reusing stale objects.
+# At run time SR_NAN_TRAP_LIMIT (default 20) bounds how many reports print.
+NAN_TRAP ?= 0
+NAN_TRAP_CFLAG :=
+ifeq ($(NAN_TRAP),1)
+NAN_TRAP_CFLAG := -DSR_NAN_TRAP
+CODEGEN_USER_ARGS += --nan-trap
+override CFLAGS += -DSR_NAN_TRAP
+endif
+
 # A filtered public candidate uses the project-authored PGF reader and the
 # fail-closed PGD/amctrl backend. Full private checkouts default to their local
 # backends; candidate trees use only sources admitted to the public profile.
@@ -1323,7 +1343,7 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 # -fno-var-tracking: Saves significant memory on huge functions.
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
 RECOMP_OPT ?= -O0
-RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0
+RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
 TRACE ?= 0
 ifeq ($(TRACE),1)
 RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
