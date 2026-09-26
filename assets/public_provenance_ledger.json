@@ -2056,7 +2056,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c282c2b219154fead08312aefbdcba1c01f4a12cf234a25077a8560d10bdfd3c"
+      "sha256": "07de86d08090d88d0de06d3b6c3f30010267db33e316c2de1481bd42631f74fc"
     },
     {
       "path": "pyproject.toml",
@@ -8611,7 +8611,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "865b200ee34b20efa38e403d841232ad354e000c92bd782ea2cf61136871b354"
+      "sha256": "49b3e1ac020fca1007695bac10a5c06f7c33189acafcd9c1856ab7199b66e9dd"
     },
     {
       "path": "tools/test_vulkan_sdk.py",
