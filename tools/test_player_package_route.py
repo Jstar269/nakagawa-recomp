@@ -269,7 +269,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
             [str(self.player), "--empty", "--launch-index=0", "--headless-launch",
              f"--runtime-root={self.user_root}"],
             cwd=ROOT, env=environment, capture_output=True, text=True,
-            timeout=LAUNCH_TIMEOUT_MS,
+            timeout=LAUNCH_TIMEOUT_MS / 1000,  # subprocess.run takes seconds
         )
 
     def test_build_validates_and_launches_through_the_player(self):
