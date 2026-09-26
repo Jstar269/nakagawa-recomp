@@ -585,6 +585,9 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
     if instruction_trace:
         env["TRACE"] = "1"
+        runtime_opt = env.get("RUNTIME_OPT", "-O0")
+        if "-DSR_INSTRUCTION_TRACE" not in runtime_opt.split():
+            env["RUNTIME_OPT"] = f"{runtime_opt} -DSR_INSTRUCTION_TRACE".strip()
     return env
 
 
@@ -648,6 +651,7 @@ def _current_package_cache_key(
     psp_header: Path | None,
     *,
     public_safe: bool | None = None,
+    instruction_trace: bool = False,
 ) -> dict:
     if public_safe is None:
         public_safe = not _has_private_backends()
@@ -676,7 +680,7 @@ def _current_package_cache_key(
             if psp_header is not None else None
         ),
     }
-    environment = _runtime_build_environment()
+    environment = _runtime_build_environment(instruction_trace=instruction_trace)
     options = _package_codegen_options(manifest, environment)
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
@@ -949,6 +953,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             module_dir,
             cached_header,
             public_safe=public_safe,
+            instruction_trace=bool(getattr(args, "instruction_trace", False)),
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
         decision = package_cache.compare_cache_keys(previous_key, cache_key)

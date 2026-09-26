@@ -1358,6 +1358,11 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# A trace build compiles the runtime with the trace writer too. This must precede the
+# runtime profile hash so switching TRACE rebuilds the runtime objects.
+ifeq ($(TRACE),1)
+override CFLAGS += -DSR_INSTRUCTION_TRACE
+endif
 RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
@@ -1375,12 +1380,13 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
 RECOMP_OPT ?= -O0
 RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 TRACE ?= 0
 ifeq ($(TRACE),1)
-RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
+override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
 endif
 ifeq ($(PERF_AOT_INSTRUCTIONS),1)
-RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
+override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
 endif
 
 # Make the object flavour explicit. Switching TRACE forces only the generated
@@ -2005,6 +2011,12 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 		src/rt/dispatch_isolation_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c \
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
+
+# memory-watch-selftest — exercise the opt-in shared AOT/interpreter store hook
+# against the source-owned synthetic guest in dispatch_isolation_selftest.c.
+memory-watch-selftest: export SR_WATCH = 0x00601000:4
+memory-watch-selftest: DISPATCH_ISO_CONFIG = generic
+memory-watch-selftest: dispatch-isolation-selftest-one
 
 # asset-index-selftest — host-neutral dynamic extracted-data index regression (issue #223).
 # The production Windows HLE supplies the path enumeration and wide I/O; this target proves the

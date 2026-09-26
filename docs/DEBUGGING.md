@@ -841,6 +841,30 @@ evidence, but `<< 4` itself is not one.
 
 The debug framework supports watching specific memory address ranges. When `SR_DBG_MEM` is enabled, any read/write to a watched address is logged.
 
+### Startup Instruction Trace Window
+
+`SR_TRACE_PC=<low>:<high>` limits the instruction trace to the inclusive guest-PC range. The runtime
+arms this window during initialization, so it can capture startup code before the first vblank; later
+vblank markers place records on the frame timeline. Use a trace-enabled build or the manager's
+instruction-trace option to open the underlying instruction trace. Set `SR_TRACE=<path>` to choose
+the window output file and `SR_TRACE_LIMIT=<count>` to stop recording after a bounded number of
+records.
+
+### Range Watch Without Code Changes
+
+For a temporary range watch without editing the runtime's watch table, set
+`SR_WATCH=<address>:<length>`. The range is half-open and may be written in decimal or with a
+`0x` prefix. Each AOT or interpreter store that overlaps it is reported to stderr with its guest
+PC, starting address, value, width in bytes, and most recently delivered vblank:
+
+```powershell
+$env:SR_WATCH = '0x08800000:4'
+```
+
+Output uses `SR_WATCH: pc=... addr=... val=... width=... vblank=...`. A vblank value of zero
+means no vblank has been delivered yet. The watch is inert when unset; the shared store helpers
+take only a predicted-false flag check in that case.
+
 ### Adding Watches in Code
 
 ```c

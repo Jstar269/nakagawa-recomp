@@ -971,11 +971,12 @@ static int thru_ztest(void) {
 void ge_set_frame(uint32_t frame) {
     ge_capture_configure();
     ge_transition_trace_configure();
-    /* Arm the opt-in address-windowed instruction trace (SR_TRACE_PC) and mark every
-     * delivered vblank in it, so a windowed trace carries the frame each record belongs
-     * to. A cached env probe once per vblank; both calls are no-ops when it is unset. */
+    /* Arm the opt-in instruction trace and store watch, then carry the delivered vblank
+     * into both diagnostics. Their environment probes are cached and inert when unset. */
     sr_trace_window_configure();
     sr_trace_note_frame(frame);
+    sr_watch_configure();
+    sr_watch_note_vblank(frame);
     if (ge_capture_active() && frame != s_ge_frame) {
         int boundary_ok = !s_gpu || !s_gpu->capture_boundary || s_gpu->capture_boundary();
         if (!boundary_ok) {
