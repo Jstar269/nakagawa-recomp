@@ -1448,6 +1448,12 @@
     "name": "sceKernelCancelSema",
     "status": "unreviewed"
   },
+  "0x91de343c": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion500_505",
+    "status": "complete"
+  },
   "0x91e4f6a7": {
     "classification": "dedicated",
     "handler": "h_LibcClock",

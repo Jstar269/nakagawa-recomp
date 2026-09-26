@@ -60,6 +60,7 @@ static uint32_t consumer_reads_sdk_version(void) {
 static const struct { uint32_t nid; uint32_t version; } k_variants[] = {
     { 0x7591C7DBu, 0x06060010u },  /* sceKernelSetCompiledSdkVersion */
     { 0x35669D4Cu, 0x06020010u },  /* sceKernelSetCompiledSdkVersion600_602 */
+    { 0x91DE343Cu, 0x05050010u },  /* sceKernelSetCompiledSdkVersion500_505 */
     { 0x1B4217BCu, 0x06050010u },  /* sceKernelSetCompiledSdkVersion603_605 */
 };
 

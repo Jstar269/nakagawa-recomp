@@ -16342,6 +16342,7 @@ void sr_hle_init(void) {
      * mixup sprayed two wild words per asset load and zeroed the model-slot counter). */
     sr_hle_register(0x7591c7db, "sceKernelSetCompiledSdkVersion", h_SetCompiledSdkVersion);
     sr_hle_register(0x35669d4c, "sceKernelSetCompiledSdkVersion600_602", h_SetCompiledSdkVersion);
+    sr_hle_register(0x91de343c, "sceKernelSetCompiledSdkVersion500_505", h_SetCompiledSdkVersion);
     sr_hle_register(0xf77d77cb, "sceKernelSetCompilerVersion", h_SetCompiledSdkVersion);
     /* sceKernelAllocPartitionMemory, sceKernelGetBlockHeadAddr, sceKernelFreePartitionMemory,
      * sceKernelTotalFreeMemSize, sceKernelMaxFreeMemSize registered via
