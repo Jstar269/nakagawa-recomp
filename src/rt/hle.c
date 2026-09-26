@@ -61,13 +61,64 @@
 #include <string.h>
 #include <wchar.h>
 #include <setjmp.h>
-#include <process.h>     /* _exit() */
-#include <windows.h>     /* Sleep() */
 #include <stdatomic.h>
 #include <errno.h>
 #include <limits.h>
+#ifdef _WIN32
+#include <process.h>     /* _exit() */
+#include <windows.h>     /* Sleep() */
 #include <io.h>          /* _open_osfhandle/_fdopen for contained FILE* opens */
 #include <fcntl.h>       /* _O_BINARY/_O_RDWR/_O_APPEND */
+#else
+#include <unistd.h>      /* _exit(), getcwd(), readlink() */
+#include <time.h>        /* clock_gettime()/nanosleep() for the host seams below */
+#include <dirent.h>      /* opendir()/readdir() for the host data census */
+#include <sys/stat.h>    /* mkdir()/stat()/lstat() for the host path helpers */
+#include <sys/statvfs.h> /* statvfs() for the memstick volume report */
+#endif
+
+/* ---- host primitive seam -------------------------------------------------------
+ * The Windows spellings below are the ORIGINAL Win32 calls, unchanged, so a
+ * Windows build is byte-for-byte the build it was. Each non-Windows arm is the
+ * same operation expressed with the primitive the host actually publishes --
+ * not a stub, and not a fabricated result. A feature with no equivalent on a
+ * host is refused at the one place that would use it (see ms0_fopen_utf8 and the
+ * host data walk), so the guest observes the ordinary PSP error instead of a
+ * crash or a made-up success. */
+#ifdef _WIN32
+static void sr_host_sleep_ms(uint32_t ms) { Sleep(ms); }
+static uint64_t sr_host_monotonic_ms(void) { return GetTickCount64(); }
+/* 100 ns ticks since 1601-01-01, the same unit FILETIME carries, so the RTC
+ * epoch arithmetic below is unchanged. */
+static uint64_t sr_host_filetime_ticks(void) {
+    FILETIME ft;
+    ULARGE_INTEGER value;
+    GetSystemTimeAsFileTime(&ft);
+    value.LowPart = ft.dwLowDateTime;
+    value.HighPart = ft.dwHighDateTime;
+    return value.QuadPart;
+}
+#else
+static void sr_host_sleep_ms(uint32_t ms) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000u);
+    ts.tv_nsec = (long)(ms % 1000u) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
+}
+static uint64_t sr_host_monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0u;
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+/* CLOCK_REALTIME is seconds since 1970-01-01; scaled here into the same
+ * 100 ns-since-1601 unit FILETIME carries so RTC_FILETIME_EPOCH_TICK stays the
+ * one epoch constant and the guest-visible tick arithmetic is unchanged. */
+static uint64_t sr_host_filetime_ticks(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0u;
+    return (uint64_t)ts.tv_sec * 10000000ull + (uint64_t)ts.tv_nsec / 100ull;
+}
+#endif
 
 uint32_t sr_last_nid = 0;
 
@@ -2164,6 +2215,15 @@ static uint32_t elf_vaddr_to_file(const SrElfPhdr *ph, unsigned n, uint32_t va, 
     return UINT32_MAX;
 }
 
+/* A 32-bit byte offset must be representable as this host's long for fseek.
+ * The limit travels as a parameter rather than being written inline so that a
+ * host whose long is wider than 32 bits (LP64) still takes the comparison
+ * instead of a tautology the compiler rejects. On Windows, where long is
+ * 32-bit, this is exactly `(uint64_t)off <= (uint64_t)LONG_MAX`. */
+static int sr_off_fits_long(uint32_t off, long limit) {
+    return (uint64_t)off <= (uint64_t)limit;
+}
+
 static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned phnum, size_t file_len) {
     uint32_t gp, ent_top, ent_end, stub_top, stub_end;
     uint16_t attributes; uint8_t major, minor;
@@ -2210,7 +2270,7 @@ static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum, s
             uint32_t end = (uint32_t)end64;
             if (pass == 0 && !begin) continue;
             for (uint32_t off = begin; off <= end && end - off >= 52u; ) {
-                if ((uint64_t)off > (uint64_t)LONG_MAX || fseek(f, (long)off, SEEK_SET) || fread(mi, 1, 52, f) != 52) break;
+                if (!sr_off_fits_long(off, LONG_MAX) || fseek(f, (long)off, SEEK_SET) || fread(mi, 1, 52, f) != 52) break;
                 if (valid_module_info(mi, ph, phnum, file_len)) return off;
                 if (UINT32_MAX - off < 4u) break;
                 off += 4u;
@@ -3283,11 +3343,11 @@ static uint32_t h_ExitGame(CpuState *s) {
         fflush(stderr);
         /* Give the host a chance to drain. Without this, stdio buffers get truncated by
          * _exit; the operator sees ~16 KB of trailing context instead of 1 MB. */
-        Sleep(50);
+        sr_host_sleep_ms(50);
         fflush(NULL);
         _exit(code);
     }
-    sr_trace_close(); fflush(NULL); Sleep(50); _exit(code);
+    sr_trace_close(); fflush(NULL); sr_host_sleep_ms(50); _exit(code);
     return code; /* unreachable, keeps the handler signature honest */
 }
 
@@ -3710,6 +3770,7 @@ static uint32_t h_Memcpy(CpuState *s) {
     return dst;
 }
 
+#ifdef _WIN32
 /* ---- checked UTF-8/UTF-16 host-path helpers (issue #223) --------------------------
  *
  * Guest paths and environment variables are UTF-8.  Keep them as UTF-8 in the
@@ -4149,6 +4210,538 @@ static int sr_ensure_directory_utf8(const char *path) {
                     (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
 }
 
+/* Contained FILE* open under the unified Memory Stick root: OPEN -> HANDLE ->
+ * FINAL PATH VERIFY, then hand the verified handle to the CRT. Maps the wide
+ * fopen mode onto CreateFileW access/disposition (r/w/a/+ and binary). */
+static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+    if (!host_path || !mode || !mode[0]) return NULL;
+    wchar_t canonical[MAX_PATH * 2];
+    if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
+                               sizeof(canonical) / sizeof(wchar_t)))
+        return NULL;
+    int has_w = 0, has_a = 0, has_plus = 0;
+    for (const wchar_t *p = mode; *p; p++) {
+        if (*p == L'r') { /* read implied by access default */ }
+        else if (*p == L'w') has_w = 1;
+        else if (*p == L'a') has_a = 1;
+        else if (*p == L'+') has_plus = 1;
+    }
+    DWORD access = GENERIC_READ;
+    if (has_w || has_a || has_plus) access |= GENERIC_WRITE;
+    DWORD disposition = OPEN_EXISTING;
+    if (has_w) disposition = CREATE_ALWAYS;
+    else if (has_a) disposition = OPEN_ALWAYS;
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (!sr_vfs_open_contained_utf8(host_path, access, 0, disposition, canonical, &h))
+        return NULL;
+    int oflag = _O_BINARY | ((access & GENERIC_WRITE) ? _O_RDWR : _O_RDONLY);
+    if (has_a) oflag |= _O_APPEND;
+    int fd = _open_osfhandle((intptr_t)h, oflag);
+    if (fd < 0) {
+        CloseHandle(h);
+        return NULL;
+    }
+    char narrow[16];
+    size_t i = 0;
+    for (; mode[i] && i + 1 < sizeof(narrow); i++) narrow[i] = (char)mode[i];
+    narrow[i] = '\0';
+    FILE *fp = _fdopen(fd, narrow);
+    if (!fp) {
+        _close(fd);
+        return NULL;
+    }
+    return fp;
+}
+
+#else /* !_WIN32: the same host-path layer expressed with POSIX primitives ----- */
+/* The Windows layer above exists for two reasons that have no POSIX form: the
+ * UTF-16 Win32 call surface, and handle-based containment verified through
+ * \\?\-prefixed final paths. The conversions, joins, environment reads, module
+ * directory and stream sizing below are ordinary host operations and are
+ * re-expressed here with the POSIX primitive that performs them. Two Win32-only
+ * concepts are NOT simulated:
+ *
+ *   - the \\?\ extended-length prefix: POSIX paths are bounded by the host, not
+ *     by MAX_PATH, so sr_wide_extended_absolute_alloc is the identity copy and
+ *     the 'is this already extended/absolute' predicates report what this host
+ *     actually has;
+ *   - ms0_fopen_utf8, the CONTAINED memstick open. Its Windows guarantee comes
+ *     from opening a HANDLE and verifying its final path under a canonical root
+ *     before the CRT ever sees it. The repo's POSIX answer to that contract is
+ *     the descriptor-relative contained seam (vfs_contained.h, SR_CD_BACKEND_
+ *     POSIX_AT) that src/rt/savedata.c already uses for every save file. Until
+ *     the guest file route is bound to that seam it is UNAVAILABLE here, so an
+ *     sceIoOpen answers the ordinary PSP error and says so once on stderr --
+ *     never a fabricated handle and never a write outside the root. */
+
+static int sr_utf8_to_wide_alloc(const char *src, wchar_t **out) {
+    if (!src || !out || !sr_asset_index_valid_utf8(src)) return 0;
+    *out = NULL;
+    size_t n = strlen(src);
+    if (n > (size_t)INT_MAX) return 0;
+    wchar_t *base = (wchar_t *)calloc(n + 1u, sizeof(wchar_t));
+    if (!base) return 0;
+    size_t at = 0;
+    const unsigned char *p = (const unsigned char *)src;
+    while (*p) {
+        wchar_t unit;
+        if (*p < 0x80u) {
+            unit = (wchar_t)*p++;
+        } else if ((*p & 0xE0u) == 0xC0u && p[1] && (p[1] & 0xC0u) == 0x80u) {
+            unit = (wchar_t)(((uint32_t)(*p & 0x1Fu) << 6) | (uint32_t)(p[1] & 0x3Fu));
+            if ((uint32_t)unit < 0x80u) { free(base); return 0; }   /* overlong */
+            p += 2;
+        } else if ((*p & 0xF0u) == 0xE0u && p[1] && p[2] &&
+                   (p[1] & 0xC0u) == 0x80u && (p[2] & 0xC0u) == 0x80u) {
+            unit = (wchar_t)(((uint32_t)(*p & 0x0Fu) << 12) |
+                             ((uint32_t)(p[1] & 0x3Fu) << 6) | (uint32_t)(p[2] & 0x3Fu));
+            if ((uint32_t)unit < 0x800u) { free(base); return 0; }   /* overlong */
+            p += 3;
+        } else if ((*p & 0xF8u) == 0xF0u && p[1] && p[2] && p[3] &&
+                   (p[1] & 0xC0u) == 0x80u && (p[2] & 0xC0u) == 0x80u &&
+                   (p[3] & 0xC0u) == 0x80u) {
+            uint32_t cp = ((uint32_t)(*p & 0x07u) << 18) |
+                          ((uint32_t)(p[1] & 0x3Fu) << 12) |
+                          ((uint32_t)(p[2] & 0x3Fu) << 6) | (uint32_t)(p[3] & 0x3Fu);
+            if (cp < 0x10000u || cp > 0x10FFFFu) { free(base); return 0; }
+            if (cp >= 0xD800u && cp <= 0xDFFFu) { free(base); return 0; } /* surrogate */
+            unit = (wchar_t)cp;
+            p += 4;
+        } else {
+            free(base);
+            return 0;
+        }
+        if (sizeof(wchar_t) < 4u && unit > 0xFFFFu) { free(base); return 0; }
+        base[at++] = unit;
+    }
+    *out = base;
+    return 1;
+}
+
+static int sr_wide_to_utf8_alloc(const wchar_t *src, char **out) {
+    if (!src || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(src);
+    if (n > (size_t)INT_MAX) return 0;
+    char *utf8 = (char *)malloc(n * 4u + 1u);
+    if (!utf8) return 0;
+    size_t at = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t cp = (uint32_t)src[i];
+        if (cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) { free(utf8); return 0; }
+        if (cp < 0x80u) {
+            utf8[at++] = (char)cp;
+        } else if (cp < 0x800u) {
+            utf8[at++] = (char)(0xC0u | (cp >> 6));
+            utf8[at++] = (char)(0x80u | (cp & 0x3Fu));
+        } else if (cp < 0x10000u) {
+            utf8[at++] = (char)(0xE0u | (cp >> 12));
+            utf8[at++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            utf8[at++] = (char)(0x80u | (cp & 0x3Fu));
+        } else {
+            utf8[at++] = (char)(0xF0u | (cp >> 18));
+            utf8[at++] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+            utf8[at++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            utf8[at++] = (char)(0x80u | (cp & 0x3Fu));
+        }
+    }
+    utf8[at] = '\0';
+    *out = utf8;
+    return 1;
+}
+
+/* POSIX environment names are byte strings, so the name literal crosses from
+ * this translation unit's wchar_t to the host's char exactly as it crosses to
+ * the wide Win32 environment there. */
+static int sr_wide_env_alloc(const wchar_t *name, wchar_t **value_out,
+                             int *present_out) {
+    if (!name || !value_out || !present_out) return 0;
+    *value_out = NULL;
+    *present_out = 0;
+    char *narrow_name = NULL;
+    if (!sr_wide_to_utf8_alloc(name, &narrow_name)) return 0;
+    const char *value = getenv(narrow_name);
+    free(narrow_name);
+    if (!value) return 1;
+    wchar_t *wide = NULL;
+    if (!sr_utf8_to_wide_alloc(value, &wide)) return 0;
+    *value_out = wide;
+    *present_out = 1;
+    return 1;
+}
+
+static int sr_utf8_env_alloc(const wchar_t *name, char **value_out,
+                             int *present_out) {
+    if (!name || !value_out || !present_out) return 0;
+    *value_out = NULL;
+    *present_out = 0;
+    char *narrow_name = NULL;
+    if (!sr_wide_to_utf8_alloc(name, &narrow_name)) return 0;
+    const char *value = getenv(narrow_name);
+    free(narrow_name);
+    if (!value) return 1;
+    size_t n = strlen(value);
+    if (n > (size_t)INT_MAX) return 0;
+    char *copy = (char *)malloc(n + 1u);
+    if (!copy) return 0;
+    memcpy(copy, value, n + 1u);
+    *value_out = copy;
+    *present_out = 1;
+    return 1;
+}
+
+/* '/' is this host's separator. A backslash is an ordinary filename byte here,
+ * so the join inserts one separator and rewrites nothing. */
+static int sr_wide_join_alloc(const wchar_t *left, const wchar_t *right,
+                              wchar_t **out) {
+    if (!left || !right || !out) return 0;
+    *out = NULL;
+    size_t a = wcslen(left), b = wcslen(right);
+    int separator = a > 0 && b > 0 && left[a - 1] != L'/';
+    size_t extra = b;
+    if (extra > SIZE_MAX - (size_t)separator - 1u) return 0;
+    extra += (size_t)separator + 1u;
+    if (a > SIZE_MAX - extra) return 0;
+    size_t total = a + extra;
+    if (total > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *joined = (wchar_t *)malloc(total * sizeof(*joined));
+    if (!joined) return 0;
+    memcpy(joined, left, a * sizeof(*joined));
+    size_t at = a;
+    if (separator) joined[at++] = L'/';
+    memcpy(joined + at, right, b * sizeof(*joined));
+    joined[at + b] = L'\0';
+    *out = joined;
+    return 1;
+}
+
+static int sr_wide_get_current_directory(wchar_t **out) {
+    if (!out) return 0;
+    *out = NULL;
+    size_t capacity = 256u;
+    for (;;) {
+        char *buf = (char *)malloc(capacity);
+        if (!buf) return 0;
+        if (getcwd(buf, capacity)) {
+            int ok = sr_utf8_to_wide_alloc(buf, out);
+            free(buf);
+            return ok;
+        }
+        int grow = errno == ERANGE && capacity <= (size_t)INT_MAX / 2u;
+        free(buf);
+        if (!grow) return 0;
+        capacity *= 2u;
+    }
+}
+
+/* Only this host's own absolute-path form exists here: a leading '/'. The
+ * \\?\ extended form and the drive-letter form of the Windows layer have no
+ * counterpart on this host, so they are not defined at all -- no predicate
+ * that can only ever answer "no" is compiled here. */
+static int sr_wide_is_absolute(const wchar_t *path) {
+    return path && path[0] == L'/';
+}
+
+/* Same rule as the Windows layer: a '.' or '..' component is refused here
+ * rather than handed to the host to resolve. */
+static int sr_wide_has_dot_component(const wchar_t *path) {
+    if (!path) return 1;
+    const wchar_t *p = path;
+    while (*p) {
+        while (*p == L'/') p++;
+        const wchar_t *start = p;
+        while (*p && *p != L'/') p++;
+        size_t n = (size_t)(p - start);
+        if ((n == 1u && start[0] == L'.') ||
+            (n == 2u && start[0] == L'.' && start[1] == L'.')) return 1;
+    }
+    return 0;
+}
+
+/* POSIX resolves '.' and '..' inside the kernel, so this only anchors a
+ * relative input to the working directory and leaves the components intact. */
+static int sr_wide_full_path_alloc(const wchar_t *input, wchar_t **out) {
+    if (!input || !out) return 0;
+    *out = NULL;
+    if (sr_wide_is_absolute(input)) {
+        size_t n = wcslen(input);
+        if (n > SIZE_MAX - 1u || n + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+        wchar_t *copy = (wchar_t *)malloc((n + 1u) * sizeof(*copy));
+        if (!copy) return 0;
+        memcpy(copy, input, (n + 1u) * sizeof(*copy));
+        *out = copy;
+        return 1;
+    }
+    wchar_t *cwd = NULL;
+    if (!sr_wide_get_current_directory(&cwd)) return 0;
+    wchar_t *joined = NULL;
+    int ok = sr_wide_join_alloc(cwd, input, &joined);
+    free(cwd);
+    if (!ok) return 0;
+    *out = joined;
+    return 1;
+}
+
+static int sr_wide_extended_absolute_alloc(const wchar_t *absolute, wchar_t **out) {
+    if (!absolute || !out || !sr_wide_is_absolute(absolute) ||
+        sr_wide_has_dot_component(absolute)) return 0;
+    size_t n = wcslen(absolute);
+    if (n > SIZE_MAX - 1u || n + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *copy = (wchar_t *)malloc((n + 1u) * sizeof(*copy));
+    if (!copy) return 0;
+    memcpy(copy, absolute, (n + 1u) * sizeof(*copy));
+    *out = copy;
+    return 1;
+}
+
+static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **out) {
+    if (!value || !out || !value[0]) return 0;
+    *out = NULL;
+    size_t n = wcslen(value);
+    if (n > SIZE_MAX - 1u || n + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *wide = (wchar_t *)malloc((n + 1u) * sizeof(*wide));
+    if (!wide) return 0;
+    memcpy(wide, value, (n + 1u) * sizeof(*wide));
+    if (!sr_wide_is_absolute(wide)) {
+        wchar_t *canonical = NULL;
+        if (!sr_wide_full_path_alloc(wide, &canonical)) {
+            free(wide);
+            return 0;
+        }
+        free(wide);
+        wide = canonical;
+    }
+    int ok = sr_wide_extended_absolute_alloc(wide, out);
+    free(wide);
+    return ok;
+}
+
+/* Resolve a UTF-8 path to an absolute host path. */
+static int sr_wide_path_alloc(const char *utf8_path, wchar_t **out) {
+    if (!utf8_path || !out || !utf8_path[0]) return 0;
+    *out = NULL;
+    wchar_t *raw = NULL;
+    if (!sr_utf8_to_wide_alloc(utf8_path, &raw)) return 0;
+    wchar_t *absolute = NULL;
+    if (sr_wide_is_absolute(raw)) {
+        size_t n = wcslen(raw);
+        if (n != SIZE_MAX && n + 1u <= SIZE_MAX / sizeof(wchar_t)) {
+            absolute = (wchar_t *)malloc((n + 1u) * sizeof(*absolute));
+            if (absolute) memcpy(absolute, raw, (n + 1u) * sizeof(*absolute));
+        }
+    } else {
+        wchar_t *cwd = NULL;
+        if (sr_wide_get_current_directory(&cwd)) {
+            sr_wide_join_alloc(cwd, raw, &absolute);
+            free(cwd);
+        }
+    }
+    free(raw);
+    if (!absolute) return 0;
+    if (sr_wide_has_dot_component(absolute)) {
+        wchar_t *canonical = NULL;
+        if (!sr_wide_full_path_alloc(absolute, &canonical)) {
+            free(absolute);
+            return 0;
+        }
+        free(absolute);
+        absolute = canonical;
+    }
+    int ok = sr_wide_extended_absolute_alloc(absolute, out);
+    free(absolute);
+    return ok;
+}
+
+/* Split rules agree with the Windows layer: a path's parent and name are
+ * taken at the last separator, and a trailing separator is not part of a name. */
+static int sr_wide_parent_alloc(const wchar_t *path, wchar_t **out) {
+    if (!path || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(path);
+    while (n > 0u && path[n - 1u] == L'/') n--;      /* ignore trailing separators */
+    if (n == 0u) return 0;
+    size_t at = n;
+    while (at > 0u && path[at - 1u] != L'/') at--;
+    if (at == 0u) return 0;
+    while (at > 1u && path[at - 1u] == L'/') at--;    /* drop the separator itself */
+    wchar_t *parent = (wchar_t *)malloc((at + 1u) * sizeof(*parent));
+    if (!parent) return 0;
+    memcpy(parent, path, at * sizeof(*parent));
+    parent[at] = L'\0';
+    *out = parent;
+    return 1;
+}
+
+/* Case-insensitive wide compare: the Windows layer uses _wcsicmp here, and a
+ * host directory name is just as case-folded on this host. ASCII fold only --
+ * the names compared are the project's own ASCII tree names. */
+static int sr_wide_stricmp(const wchar_t *left, const wchar_t *right) {
+    if (!left || !right) return left == right ? 0 : 1;
+    while (*left && *right) {
+        wchar_t a = *left, b = *right;
+        if (a >= L'A' && a <= L'Z') a = (wchar_t)(a - L'A' + L'a');
+        if (b >= L'A' && b <= L'Z') b = (wchar_t)(b - L'A' + L'a');
+        if (a != b) return (int)a - (int)b;
+        left++;
+        right++;
+    }
+    return (int)*left - (int)*right;
+}
+
+static int sr_wide_basename_alloc(const wchar_t *path, wchar_t **out) {
+    if (!path || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(path);
+    while (n > 0u && path[n - 1u] == L'/') n--;
+    if (n == 0u) return 0;
+    size_t at = n;
+    while (at > 0u && path[at - 1u] != L'/') at--;
+    wchar_t *name = (wchar_t *)malloc((n - at + 1u) * sizeof(*name));
+    if (!name) return 0;
+    memcpy(name, path + at, (n - at + 1u) * sizeof(*name));
+    *out = name;
+    return 1;
+}
+
+/* The directory this executable was loaded from: /proc/self/exe here, with the
+ * configured SR_EXE_DIR override honoured first, exactly as the Windows layer
+ * honours SR_EXE_DIR ahead of the module handle. */
+static int sr_wide_module_dir_alloc(wchar_t **out) {
+    if (!out) return 0;
+    *out = NULL;
+    wchar_t *configured = NULL;
+    int present = 0;
+    if (sr_wide_env_alloc(L"SR_EXE_DIR", &configured, &present) && present) {
+        if (configured[0]) {
+            wchar_t *full = NULL;
+            int ok = sr_wide_configured_root_wide_alloc(configured, &full);
+            free(configured);
+            *out = full;
+            return ok;
+        }
+        free(configured);
+    }
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1u);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+    wchar_t *full = NULL;
+    if (!sr_utf8_to_wide_alloc(buf, &full)) return 0;
+    wchar_t *dir = NULL;
+    int ok = sr_wide_parent_alloc(full, &dir);
+    free(full);
+    *out = dir;
+    return ok;
+}
+
+static int sr_wide_module_font_root(wchar_t **out) {
+    if (!out) return 0;
+    wchar_t *configured = NULL;
+    int present = 0;
+    if (sr_wide_env_alloc(L"SR_FONTDIR", &configured, &present) && present &&
+        configured[0]) {
+        int ok = sr_wide_configured_root_wide_alloc(configured, out);
+        free(configured);
+        return ok;
+    }
+    free(configured);
+    wchar_t *module_dir = NULL, *repo_dir = NULL, *candidate = NULL;
+    int ok = sr_wide_module_dir_alloc(&module_dir) &&
+             sr_wide_parent_alloc(module_dir, &repo_dir) &&
+             sr_wide_join_alloc(repo_dir, L"font", &candidate) &&
+             sr_wide_extended_absolute_alloc(candidate, out);
+    free(module_dir);
+    free(repo_dir);
+    free(candidate);
+    return ok;
+}
+
+static int sr_wide_module_data_root(wchar_t **out) {
+    if (!out) return 0;
+    wchar_t *module_dir = NULL, *build_dir = NULL, *repo_dir = NULL;
+    wchar_t *candidate = NULL, *next = NULL;
+    int ok = sr_wide_module_dir_alloc(&module_dir) &&
+             sr_wide_parent_alloc(module_dir, &build_dir) &&
+             sr_wide_parent_alloc(build_dir, &repo_dir) &&
+             sr_wide_join_alloc(repo_dir, L"place_game_here", &candidate) &&
+             sr_wide_join_alloc(candidate,
+                                L"EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted", &next) &&
+             sr_wide_extended_absolute_alloc(next, out);
+    free(module_dir);
+    free(build_dir);
+    free(repo_dir);
+    free(candidate);
+    free(next);
+    return ok;
+}
+
+/* This host takes a byte path, so the mode crosses from the caller's wchar_t
+ * literal (always one of the ASCII r/w/a/+ letters) and fopen does the work. */
+static int sr_narrow_mode_alloc(const wchar_t *mode, char **out) {
+    if (!mode || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(mode);
+    if (n == 0u || n > 15u) return 0;
+    char *narrow = (char *)malloc(n + 1u);
+    if (!narrow) return 0;
+    for (size_t i = 0; i < n; i++) {
+        if ((uint32_t)mode[i] > 0x7Fu) { free(narrow); return 0; }
+        narrow[i] = (char)mode[i];
+    }
+    narrow[n] = '\0';
+    *out = narrow;
+    return 1;
+}
+
+static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode) {
+    char *narrow = NULL;
+    FILE *f = NULL;
+    if (!path || !mode || !sr_narrow_mode_alloc(mode, &narrow)) return NULL;
+    f = fopen(path, narrow);
+    free(narrow);
+    return f;
+}
+
+static int sr_stream_size_u32(FILE *stream, uint32_t *size_out) {
+    if (!stream || !size_out) return 0;
+    if (fseeko(stream, 0, SEEK_END) != 0) return 0;
+    off_t end = ftello(stream);
+    int ok = end >= 0 && (uint64_t)end <= UINT32_MAX;
+    if (fseeko(stream, 0, SEEK_SET) != 0) ok = 0;
+    if (ok) *size_out = (uint32_t)end;
+    return ok;
+}
+
+static int sr_ensure_directory_utf8(const char *path) {
+    if (!path || !path[0]) return 0;
+    if (mkdir(path, 0777) == 0) return 1;
+    if (errno != EEXIST) return 0;
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* CONTAINED memstick open: unavailable on this host. See the note above. The
+ * one-time diagnostic names the gap so an operator sees a real refusal rather
+ * than a silent empty directory listing. */
+static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+    static int reported = 0;
+    (void)host_path;
+    (void)mode;
+    if (!reported) {
+        reported = 1;
+        fprintf(stderr,
+                "hle: contained Memory Stick file open is unavailable on this host "
+                "(Windows uses a verified HANDLE route); guest file I/O answers the "
+                "ordinary PSP error\n");
+        fflush(stderr);
+    }
+    return NULL;
+}
+#endif /* _WIN32 */
+
+/* The three helpers below name no host primitive: the unified Memory Stick
+ * root resolution, the byte-path join and the directory-root resolution are
+ * the same work on every host, so they are compiled once and shared. */
 static char *sr_utf8_join_alloc(const char *left, const char *right, char separator) {
     if (!left || !right) return NULL;
     size_t a = strlen(left), b = strlen(right);
@@ -4200,49 +4793,6 @@ static char *host_dir_path_alloc(const char *guest) {
         return NULL;
     }
     return out;
-}
-
-/* Contained FILE* open under the unified Memory Stick root: OPEN -> HANDLE ->
- * FINAL PATH VERIFY, then hand the verified handle to the CRT. Maps the wide
- * fopen mode onto CreateFileW access/disposition (r/w/a/+ and binary). */
-static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
-    if (!host_path || !mode || !mode[0]) return NULL;
-    wchar_t canonical[MAX_PATH * 2];
-    if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
-                               sizeof(canonical) / sizeof(wchar_t)))
-        return NULL;
-    int has_w = 0, has_a = 0, has_plus = 0;
-    for (const wchar_t *p = mode; *p; p++) {
-        if (*p == L'r') { /* read implied by access default */ }
-        else if (*p == L'w') has_w = 1;
-        else if (*p == L'a') has_a = 1;
-        else if (*p == L'+') has_plus = 1;
-    }
-    DWORD access = GENERIC_READ;
-    if (has_w || has_a || has_plus) access |= GENERIC_WRITE;
-    DWORD disposition = OPEN_EXISTING;
-    if (has_w) disposition = CREATE_ALWAYS;
-    else if (has_a) disposition = OPEN_ALWAYS;
-    HANDLE h = INVALID_HANDLE_VALUE;
-    if (!sr_vfs_open_contained_utf8(host_path, access, 0, disposition, canonical, &h))
-        return NULL;
-    int oflag = _O_BINARY | ((access & GENERIC_WRITE) ? _O_RDWR : _O_RDONLY);
-    if (has_a) oflag |= _O_APPEND;
-    int fd = _open_osfhandle((intptr_t)h, oflag);
-    if (fd < 0) {
-        CloseHandle(h);
-        return NULL;
-    }
-    char narrow[16];
-    size_t i = 0;
-    for (; mode[i] && i + 1 < sizeof(narrow); i++) narrow[i] = (char)mode[i];
-    narrow[i] = '\0';
-    FILE *fp = _fdopen(fd, narrow);
-    if (!fp) {
-        _close(fd);
-        return NULL;
-    }
-    return fp;
 }
 
 /* Atomic count of successful legacy flat fs/ -> unified-ms-root imports so
@@ -4318,9 +4868,26 @@ static PGF *font_open_from_root(const wchar_t *root, const wchar_t *name,
         fprintf(stderr, "font_load: %s path construction failed\n", source);
         return NULL;
     }
+#ifdef _WIN32
     PGF *font = pgf_open_w(path);
     if (!font)
         fprintf(stderr, "font_load: %s font could not be opened (%ls)\n", source, path);
+#else
+    /* This host has no wide fopen. The PGF reader derives the same internal font
+     * name from the path's basename, and a UTF-8 conversion of that basename is
+     * byte-identical to what pgf_open_w encodes, so the narrow entry point
+     * parses exactly the same font. */
+    PGF *font = NULL;
+    char *utf8 = NULL;
+    if (sr_wide_to_utf8_alloc(path, &utf8)) {
+        font = pgf_open(utf8);
+        if (!font)
+            fprintf(stderr, "font_load: %s font could not be opened (%s)\n", source, utf8);
+        free(utf8);
+    } else {
+        fprintf(stderr, "font_load: %s font path is not convertible\n", source);
+    }
+#endif
     free(path);
     return font;
 }
@@ -6979,12 +7546,7 @@ static uint64_t rtc_now_tick(void) {
          * establish the calendar offset.  Anchor it at guest time zero so a
          * first RTC query made after boot-time work does not double-count the
          * elapsed scheduler time.  Subsequent reads are guest-time only. */
-        FILETIME ft;
-        ULARGE_INTEGER value;
-        GetSystemTimeAsFileTime(&ft);
-        value.LowPart = ft.dwLowDateTime;
-        value.HighPart = ft.dwHighDateTime;
-        uint64_t host_tick = RTC_FILETIME_EPOCH_TICK + value.QuadPart / 10u;
+        uint64_t host_tick = RTC_FILETIME_EPOCH_TICK + sr_host_filetime_ticks() / 10u;
         uint64_t elapsed = now_usec();
         s_rtc_epoch_tick = host_tick >= elapsed ? host_tick - elapsed : 0u;
         s_rtc_last_tick = host_tick;
@@ -7634,12 +8196,12 @@ enum {
     SR_DATA_TEST_PHASE_PUBLISH,
     SR_DATA_TEST_PHASE_COUNT
 };
-static ULONGLONG s_data_test_phase_ms[SR_DATA_TEST_PHASE_COUNT];
-#define SR_DATA_TEST_PHASE_START(name) ((name) = GetTickCount64())
+static uint64_t s_data_test_phase_ms[SR_DATA_TEST_PHASE_COUNT];
+#define SR_DATA_TEST_PHASE_START(name) ((name) = sr_host_monotonic_ms())
 #define SR_DATA_TEST_PHASE_STOP(phase, name) \
-    (s_data_test_phase_ms[(phase)] += GetTickCount64() - (name))
+    (s_data_test_phase_ms[(phase)] += sr_host_monotonic_ms() - (name))
 static void data_report_phases(void) {
-    const ULONGLONG *ms = s_data_test_phase_ms;
+    const uint64_t *ms = s_data_test_phase_ms;
     fprintf(stderr, "host_data: phase_ms archive_discover=%llu walk=%llu loose_walk=%llu "
                     "finalize=%llu validate=%llu publish=%llu\n",
             (unsigned long long)ms[SR_DATA_TEST_PHASE_ARCHIVE_DISCOVER],
@@ -7687,6 +8249,7 @@ static int data_walk_push(DataWalkDir **stack, size_t *count, size_t *capacity,
  * walk does not descend into, by case-insensitive comparison.  It exists for the
  * route that adds a second root beside the first: that root is a parent of the
  * first, so the first root's own subtree would otherwise be enumerated twice. */
+#ifdef _WIN32
 static int data_walk(const wchar_t *root, const char *relprefix,
                      const wchar_t *skip_top_name, SrAssetIndex *index) {
     if (!root || !relprefix || !index) return 0;
@@ -7716,7 +8279,7 @@ static int data_walk(const wchar_t *root, const char *relprefix,
         /* Test-only pacing: proves the census COMPLETES before the guest-start
          * boundary when the hook placement is correct (a placement proof, not a
          * speed proof). Production builds never pace. */
-        if (s_data_test_pace_ms > 0) Sleep((DWORD)s_data_test_pace_ms);
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
         s_data_test_walk_calls++;
 #endif
         wchar_t *pattern = NULL;
@@ -7832,6 +8395,149 @@ static int data_walk(const wchar_t *root, const char *relprefix,
     free(stack);
     return ok;
 }
+#else /* !_WIN32: the same index census over the POSIX directory primitives ---
+ * The walk below is the identical algorithm -- iterative heap stack, same
+ * relative-key construction, same refusals -- reading each directory with
+ * opendir/readdir and classifying an entry with lstat. A symbolic link is this
+ * host's redirect, so it is refused exactly where the Windows walk refuses a
+ * reparse point, and a regular file is still read-open probed so a race cannot
+ * publish an entry the guest cannot later open. */
+static int data_walk(const wchar_t *root, const char *relprefix,
+                     const wchar_t *skip_top_name, SrAssetIndex *index) {
+    if (!root || !relprefix || !index) return 0;
+    DataWalkDir *stack = NULL;
+    size_t stack_count = 0, stack_capacity = 0;
+    size_t root_len = wcslen(root);
+    if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *initial_host = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial_host));
+    char *initial_rel = sr_asset_index_strdup(relprefix);
+    if (!initial_host || !initial_rel) {
+        free(initial_host);
+        free(initial_rel);
+        return 0;
+    }
+    memcpy(initial_host, root, (root_len + 1u) * sizeof(*initial_host));
+    if (!data_walk_push(&stack, &stack_count, &stack_capacity, initial_host, initial_rel)) {
+        free(initial_host);
+        free(initial_rel);
+        free(stack);
+        return 0;
+    }
+
+    int ok = 1;
+    while (ok && stack_count != 0u) {
+        DataWalkDir current = stack[--stack_count];
+        char *host_utf8 = NULL;
+        if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
+            fprintf(stderr, "host_data: host-path conversion failed during enumeration\n");
+            free(current.host);
+            free(current.rel);
+            ok = 0;
+            break;
+        }
+        DIR *dir = opendir(host_utf8);
+        if (!dir) {
+            fprintf(stderr, "host_data: enumeration failed (errno=%d)\n", errno);
+            free(host_utf8);
+            free(current.host);
+            free(current.rel);
+            ok = 0;
+            break;
+        }
+        for (;;) {
+            errno = 0;
+            struct dirent *entry = readdir(dir);
+            if (!entry) {
+                if (errno != 0) {
+                    fprintf(stderr, "host_data: enumeration terminated with errno=%d\n", errno);
+                    ok = 0;
+                }
+                break;
+            }
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            wchar_t *name = NULL;
+            wchar_t *child_host = NULL;
+            char *child_rel = NULL;
+            char *child_utf8 = NULL;
+            char *key = NULL;
+            if (!sr_utf8_to_wide_alloc(entry->d_name, &name) ||
+                !sr_wide_join_alloc(current.host, name, &child_host) ||
+                !(child_rel = data_rel_join(current.rel, entry->d_name)) ||
+                !sr_wide_to_utf8_alloc(child_host, &child_utf8)) {
+                fprintf(stderr, "host_data: path conversion/join failed during enumeration\n");
+                ok = 0;
+            } else {
+                struct stat st;
+                if (lstat(child_utf8, &st) != 0) {
+                    fprintf(stderr, "host_data: entry could not be classified (errno=%d)\n", errno);
+                    ok = 0;
+                } else if (S_ISLNK(st.st_mode)) {
+                    /* This host's reparse point: a link can redirect the walk
+                     * outside the root, so it is refused, not followed. */
+                    fprintf(stderr, "host_data: refusing symbolic link %s\n", child_utf8);
+                    ok = 0;
+                } else if (S_ISDIR(st.st_mode)) {
+                    if (skip_top_name && current.rel[0] == '\0' &&
+                        sr_wide_stricmp(name, skip_top_name) == 0) {
+                        /* Already enumerated from its own root; do not pay for
+                         * it twice. */
+                    } else if (!data_walk_push(&stack, &stack_count, &stack_capacity,
+                                               child_host, child_rel)) {
+                        fprintf(stderr, "host_data: directory-stack allocation failed\n");
+                        ok = 0;
+                    } else {
+                        child_host = NULL;
+                        child_rel = NULL;
+                    }
+                } else if (!S_ISREG(st.st_mode)) {
+                    fprintf(stderr, "host_data: refusing non-regular entry %s\n", child_utf8);
+                    ok = 0;
+                } else {
+                    FILE *probe = fopen(child_utf8, "rb");
+                    if (!probe) {
+                        fprintf(stderr, "host_data: indexed file readability check failed "
+                                        "(entry=%zu errno=%d)\n", index->count, errno);
+                        ok = 0;
+                    } else {
+                        fclose(probe);
+                        int variant = -1;
+                        if ((uint64_t)st.st_size > UINT32_MAX) {
+                            fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
+                            ok = 0;
+                        } else if (!sr_asset_index_key_from_rel(child_rel, &key, &variant)) {
+                            fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
+                                    index->count);
+                            ok = 0;
+                        } else if (!sr_asset_index_add_sized(index, key, child_utf8, variant,
+                                                             (uint64_t)st.st_size)) {
+                            fprintf(stderr, "host_data: index allocation failed after %zu files\n",
+                                    index->count);
+                            ok = 0;
+                        }
+                    }
+                }
+            }
+            free(name);
+            free(child_rel);
+            free(child_host);
+            free(child_utf8);
+            free(key);
+            if (!ok) break;
+        }
+        closedir(dir);
+        free(host_utf8);
+        free(current.host);
+        free(current.rel);
+    }
+    while (stack_count != 0u) {
+        DataWalkDir pending = stack[--stack_count];
+        free(pending.host);
+        free(pending.rel);
+    }
+    free(stack);
+    return ok;
+}
+#endif /* _WIN32 */
 
 typedef struct {
     char *path;
@@ -7873,6 +8579,7 @@ static void archive_candidates_destroy(ArchiveCandidate *items, size_t count) {
     free(items);
 }
 
+#ifdef _WIN32
 static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                                  size_t *archive_count_out) {
     if (!root || !vfs || !archive_count_out) return -1;
@@ -7896,7 +8603,7 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
 #ifdef SR_HLE_THREAD_SELFTEST
-        if (s_data_test_pace_ms > 0) Sleep((DWORD)s_data_test_pace_ms);
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
         s_data_test_walk_calls++;
 #endif
         wchar_t *pattern = NULL;
@@ -8015,6 +8722,154 @@ static int data_root_validate(const wchar_t *root, int configured) {
     }
     return 1;
 }
+#else /* !_WIN32: archive discovery and root validation over POSIX stat ----- */
+static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
+                                 size_t *archive_count_out) {
+    if (!root || !vfs || !archive_count_out) return -1;
+    *archive_count_out = 0;
+    DataWalkDir *stack = NULL;
+    size_t stack_count = 0, stack_capacity = 0;
+    size_t root_len = wcslen(root);
+    if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return -1;
+    wchar_t *initial = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial));
+    char *initial_utf8 = NULL;
+    if (!initial || !sr_wide_to_utf8_alloc(root, &initial_utf8)) {
+        free(initial);
+        return -1;
+    }
+    memcpy(initial, root, (root_len + 1u) * sizeof(*initial));
+    if (!data_walk_push(&stack, &stack_count, &stack_capacity, initial, NULL)) {
+        free(initial);
+        free(initial_utf8);
+        return -1;
+    }
+    free(initial_utf8);
+
+    ArchiveCandidate *candidates = NULL;
+    size_t candidate_count = 0, candidate_capacity = 0;
+    int ok = 1;
+    int found = 0;
+    while (ok && stack_count != 0u) {
+        DataWalkDir current = stack[--stack_count];
+        char *host_utf8 = NULL;
+        if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
+            ok = 0;
+            free(current.host);
+            break;
+        }
+        DIR *dir = opendir(host_utf8);
+        if (!dir) {
+            if (errno == ENOENT) { free(current.host); break; }
+            ok = 0;
+            free(host_utf8);
+            free(current.host);
+            break;
+        }
+        for (;;) {
+            errno = 0;
+            struct dirent *entry = readdir(dir);
+            if (!entry) {
+                if (errno != 0) ok = 0;
+                break;
+            }
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            wchar_t *name = NULL;
+            wchar_t *child = NULL;
+            char *child_utf8 = NULL;
+            if (!sr_utf8_to_wide_alloc(entry->d_name, &name) ||
+                !sr_wide_join_alloc(current.host, name, &child) ||
+                !sr_wide_to_utf8_alloc(child, &child_utf8)) {
+                ok = 0;
+            } else {
+                struct stat st;
+                if (lstat(child_utf8, &st) != 0) {
+                    ok = 0;
+                } else if (S_ISLNK(st.st_mode)) {
+                    ok = 0;
+                } else if (S_ISDIR(st.st_mode)) {
+                    if (!data_walk_push(&stack, &stack_count, &stack_capacity, child, NULL)) {
+                        ok = 0;
+                    } else {
+                        child = NULL;
+                    }
+                } else if (!S_ISREG(st.st_mode)) {
+                    ok = 0;
+                } else {
+                    int variant = -1;
+                    if (sr_archive_variant_from_name(child_utf8, &variant)) {
+                        if (!archive_candidate_push(&candidates, &candidate_count,
+                                                    &candidate_capacity, child_utf8, variant)) {
+                            ok = 0;
+                        } else {
+                            child_utf8 = NULL;
+                            found = 1;
+                        }
+                    }
+                }
+            }
+            free(name);
+            free(child);
+            free(child_utf8);
+            if (!ok) break;
+        }
+        closedir(dir);
+        free(host_utf8);
+        free(current.host);
+    }
+    while (stack_count != 0u) {
+        DataWalkDir pending = stack[--stack_count];
+        free(pending.host);
+    }
+    free(stack);
+    if (ok && found && candidate_count != 0u) {
+        qsort(candidates, candidate_count, sizeof(*candidates), archive_candidate_cmp);
+        for (size_t i = 0; i < candidate_count; i++) {
+            NkResult result = sr_archive_vfs_mount_file(
+                vfs, candidates[i].path, false, candidates[i].variant, NULL);
+            if (result != NK_OK) {
+                fprintf(stderr, "host_data: archive mount failed for %s (%d); refusing archive route\n",
+                        candidates[i].path, (int)result);
+                ok = 0;
+                break;
+            }
+        }
+        if (ok && !sr_archive_vfs_finalize(vfs)) ok = 0;
+    }
+    archive_candidates_destroy(candidates, candidate_count);
+    if (!ok) return -1;
+    *archive_count_out = candidate_count;
+    return candidate_count != 0u;
+}
+
+static int data_root_validate(const wchar_t *root, int configured) {
+    if (!root) return 0;
+    char *utf8 = NULL;
+    if (!sr_wide_to_utf8_alloc(root, &utf8)) return 0;
+    struct stat st;
+    int present = stat(utf8, &st) == 0;
+    if (!present) {
+        fprintf(stderr, "host_data: root attributes failed (errno=%d)\n", errno);
+        free(utf8);
+        return 0;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "host_data: data root is not a directory\n");
+        free(utf8);
+        return 0;
+    }
+    /* An explicitly supplied root is an operator-owned path and may be a
+     * lawful link used to stage a long-path fixture. The executable-anchored
+     * default must not silently follow a link outside the repo. */
+    struct stat link;
+    int is_link = lstat(utf8, &link) == 0 && S_ISLNK(link.st_mode);
+    free(utf8);
+    if (is_link && !configured) {
+        fprintf(stderr, "host_data: executable-relative root is a symbolic link\n");
+        return 0;
+    }
+    return 1;
+}
+#endif /* _WIN32 */
 
 /* Enumeration is the transactional completeness boundary.  WIN32_FIND_DATAW
  * supplies each regular file's checked size, while the walk's read-open probe
@@ -8088,6 +8943,7 @@ static int data_validate_archive_index(size_t primary_count) {
  * Returns 1 when the route is not applicable or the walk completed, and only 0
  * when the walk applied and failed, because a partially enumerated extra root
  * must refuse the index rather than publish it. */
+#ifdef _WIN32
 static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
     wchar_t *parent = NULL;
     wchar_t *primary_name = NULL;
@@ -8118,6 +8974,41 @@ static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *in
     free(parent_name);
     return ok;
 }
+#else /* !_WIN32: the same loose-content rules over POSIX stat ------------------ */
+static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
+    wchar_t *parent = NULL;
+    wchar_t *primary_name = NULL;
+    wchar_t *parent_name = NULL;
+    int applied = 0;
+    int ok = 1;
+    if (sr_wide_parent_alloc(primary_root, &parent) &&
+        sr_wide_basename_alloc(primary_root, &primary_name) &&
+        sr_wide_basename_alloc(parent, &parent_name) &&
+        (sr_wide_stricmp(primary_name, L"xbdata_extracted") == 0 ||
+         sr_wide_stricmp(primary_name, L"xbdata") == 0) &&
+        sr_wide_stricmp(parent_name, L"USRDIR") == 0) {
+        char *parent_utf8 = NULL;
+        if (parent && sr_wide_to_utf8_alloc(parent, &parent_utf8)) {
+            struct stat st, link;
+            int is_link = lstat(parent_utf8, &link) == 0 && S_ISLNK(link.st_mode);
+            if (stat(parent_utf8, &st) == 0 && S_ISDIR(st.st_mode) && !is_link) {
+                applied = 1;
+                fprintf(stderr, "host_data: also indexing the loose content beside the "
+                                "extracted-archive root\n");
+                ok = data_walk(parent, "", primary_name, index);
+            }
+            free(parent_utf8);
+        }
+    }
+    if (applied && !ok) {
+        fprintf(stderr, "host_data: loose-content enumeration failed; refusing partial index\n");
+    }
+    free(parent);
+    free(primary_name);
+    free(parent_name);
+    return ok;
+}
+#endif /* _WIN32 */
 
 static char *data_loose_path_alloc(const char *key) {
     if (!s_data_root_utf8 || !key) return NULL;
@@ -8135,6 +9026,7 @@ static char *data_loose_path_alloc(const char *key) {
     return path;
 }
 
+#ifdef _WIN32
 static int data_loose_file_open(const char *key, FILE **file_out,
                                 uint32_t *size_out) {
     if (file_out) *file_out = NULL;
@@ -8173,7 +9065,39 @@ static int data_loose_file_open(const char *key, FILE **file_out,
     if (size_out) *size_out = size;
     return 1;
 }
+#else /* !_WIN32: the same open, refusing directories and symlinks ------------- */
+static int data_loose_file_open(const char *key, FILE **file_out,
+                                uint32_t *size_out) {
+    if (file_out) *file_out = NULL;
+    if (size_out) *size_out = 0;
+    if (!s_data_root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(key);
+    if (!path) return -1;
+    struct stat st, link;
+    int is_link = lstat(path, &link) == 0 && S_ISLNK(link.st_mode);
+    if (stat(path, &st) != 0) {
+        free(path);
+        return 0;
+    }
+    if (S_ISDIR(st.st_mode) || is_link || !S_ISREG(st.st_mode)) {
+        free(path);
+        return -1;
+    }
+    FILE *file = fopen(path, "rb");
+    free(path);
+    if (!file) return -1;
+    if (!sr_stream_size_u32(file, size_out)) {
+        fclose(file);
+        if (size_out) *size_out = 0;
+        return -1;
+    }
+    if (file_out) *file_out = file;
+    else fclose(file);
+    return 1;
+}
+#endif /* _WIN32 */
 
+#ifdef _WIN32
 static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
     if (found_out) *found_out = 0;
     if (!s_data_root_utf8 || !list) return -1;
@@ -8247,6 +9171,66 @@ static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_
     FindClose(handle);
     return result;
 }
+#else /* !_WIN32: the same merge over opendir/readdir -------------------------- */
+static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
+    if (found_out) *found_out = 0;
+    if (!s_data_root_utf8 || !list) return -1;
+    char *path = data_loose_path_alloc(key ? key : "");
+    if (!path) return -1;
+    struct stat st, link;
+    int is_link = lstat(path, &link) == 0 && S_ISLNK(link.st_mode);
+    if (stat(path, &st) != 0) {
+        free(path);
+        return 0;
+    }
+    if (!S_ISDIR(st.st_mode) || is_link) {
+        free(path);
+        return -1;
+    }
+    if (found_out) *found_out = 1;
+    DIR *dir = opendir(path);
+    if (!dir) {
+        int missing = errno == ENOENT;
+        free(path);
+        return missing ? 0 : -1;
+    }
+    int result = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) result = -1;
+            break;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        int variant = -1;
+        if (!sr_archive_variant_from_name(entry->d_name, &variant)) {
+            char *child = sr_utf8_join_alloc(path, entry->d_name, '/');
+            if (!child) {
+                result = -1;
+            } else {
+                struct stat cst;
+                if (lstat(child, &cst) != 0 || S_ISLNK(cst.st_mode) ||
+                    !(S_ISDIR(cst.st_mode) || S_ISREG(cst.st_mode))) {
+                    result = -1;
+                } else if (S_ISDIR(cst.st_mode)) {
+                    if (!sr_vfs_dirlist_merge(list, entry->d_name, 1, 0u)) result = -1;
+                } else if ((uint64_t)cst.st_size > UINT32_MAX) {
+                    list->skipped++;
+                } else if (!sr_vfs_dirlist_merge(list, entry->d_name, 0,
+                                                 (uint64_t)cst.st_size)) {
+                    result = -1;
+                }
+                free(child);
+            }
+        }
+        if (result != 0) break;
+    }
+    closedir(dir);
+    free(path);
+    return result;
+}
+#endif /* _WIN32 */
 
 /* Build the extracted-data index ONCE, before guest execution starts.
  *
@@ -8312,7 +9296,7 @@ int sr_host_data_prepare(void) {
     size_t primary_count = 0;
     size_t archive_count = 0;
     int archive_mode = 0;
-    ULONGLONG phase_started = 0;
+    uint64_t phase_started = 0;
     if (root_ok) {
         SR_DATA_TEST_PHASE_START(phase_started);
         archive_mode = archive_data_discover(root_wide, &s_archive_vfs, &archive_count);
@@ -8496,15 +9480,15 @@ static char *data_normalize_guest_key(const char *guest_path, int *wanted_varian
      * `disc0:/PSP_GAME/USRDIR/<rel>` lookup therefore missed the index and fell
      * through to the ISO route. This was an implementation off-by-one, not a
      * property of the PSP path grammar. */
-    if (_strnicmp(p, "PSP_GAME/", 9) == 0 || _strnicmp(p, "PSP_GAME\\", 9) == 0) p += 9;
-    if (_strnicmp(p, "USRDIR/", 7) == 0 || _strnicmp(p, "USRDIR\\", 7) == 0) p += 7;
+    if (sr_vfs_strnicmp(p, "PSP_GAME/", 9) == 0 || sr_vfs_strnicmp(p, "PSP_GAME\\", 9) == 0) p += 9;
+    if (sr_vfs_strnicmp(p, "USRDIR/", 7) == 0 || sr_vfs_strnicmp(p, "USRDIR\\", 7) == 0) p += 7;
     /* Localized roots are selected by the game itself.  For this build the table is
      * data_00_USE, data_02_FRE, data_03_SPA, ... and the matching archives are .xb0,
      * .xb2, .xb3, ... with internal paths rooted at plain data/. */
     *wanted_variant = -2;          /* -2 = unqualified path */
     const char *localized_tail = NULL;
     size_t guest_key_length = strlen(p);
-    if (guest_key_length >= 8u && _strnicmp(p, "data_", 5) == 0 &&
+    if (guest_key_length >= 8u && sr_vfs_strnicmp(p, "data_", 5) == 0 &&
         p[5] >= '0' && p[5] <= '9' && p[6] >= '0' && p[6] <= '9' &&
         p[7] == '_') {
         const char *slash = strpbrk(p + 8, "/\\");
@@ -8586,9 +9570,9 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
 static int data_archive_guest_path_allowed(const char *guest_path) {
     if (!guest_path || !guest_path[0]) return 0;
     if (!strchr(guest_path, ':')) return 1;
-    return _strnicmp(guest_path, "disc0:", 6) == 0 ||
-           _strnicmp(guest_path, "umd:", 4) == 0 ||
-           (_strnicmp(guest_path, "host", 4) == 0 &&
+    return sr_vfs_strnicmp(guest_path, "disc0:", 6) == 0 ||
+           sr_vfs_strnicmp(guest_path, "umd:", 4) == 0 ||
+           (sr_vfs_strnicmp(guest_path, "host", 4) == 0 &&
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
 
@@ -9116,6 +10100,7 @@ static uint32_t h_IoClose(CpuState *s) {
  * directory.  An empty directory reports ERROR_FILE_NOT_FOUND for the `*`
  * pattern and is still an existing directory; every other initial failure is
  * an incomplete listing and must stay fail-closed. */
+#ifdef _WIN32
 static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) {
     if (found) *found = 0;
     if (error == ERROR_FILE_NOT_FOUND) {
@@ -9124,6 +10109,7 @@ static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) 
     }
     return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
 }
+#endif
 
 /* Merge the writable host overlay's children for `guest_path` into `list`.
  *
@@ -9290,8 +10276,8 @@ static uint32_t h_IoDopen(CpuState *s) {
             d->used = 1; d->index = 0;
             d->path = sr_asset_index_strdup(path);
             if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
-            int device_path = _strnicmp(path, "disc0:", 6) == 0 ||
-                               _strnicmp(path, "umd:", 4) == 0;
+            int device_path = sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
+                               sr_vfs_strnicmp(path, "umd:", 4) == 0;
             int iso_first_result = -1;
             IsoDirEntry iso_first = {0};
             if (device_path) {
@@ -9462,6 +10448,7 @@ static uint32_t h_IoDclose(CpuState *s) {
  * (0x02425818); its five words are maxClusters, freeClusters, maxSectors,
  * sectorSize, and sectorCount. The host root is the unified Memory Stick
  * root (issue #334) shared with ordinary sceIo* ms0: operations and savedata. */
+#ifdef _WIN32
 static int io_memstick_capacity(uint32_t info[5]) {
     char *host_root = host_dir_path_alloc("");
     wchar_t *host_root_wide = NULL;
@@ -9501,6 +10488,35 @@ static int io_memstick_capacity(uint32_t info[5]) {
     info[4] = sectors_per_cluster;
     return 1;
 }
+#else /* !_WIN32: the same PSP-visible volume numbers from statvfs() ----------- */
+static int io_memstick_capacity(uint32_t info[5]) {
+    char *host_root = host_dir_path_alloc("");
+    struct statvfs vfs;
+    int queried = host_root && statvfs(host_root, &vfs) == 0;
+    free(host_root);
+    if (!queried) return 0;
+    /* statvfs reports fragment size; POSIX.1-2008 exposes no sector size, so
+     * the PSP per-sector field carries the host fragment and the cluster
+     * count is expressed in those same fragments. The PSP-visible clamp
+     * below is the one that matters: a 32-bit consumer must not wrap. */
+    uint32_t bytes_per_sector = vfs.f_frsize ? (uint32_t)vfs.f_frsize : (uint32_t)vfs.f_bsize;
+    uint32_t sectors_per_cluster = 1u;
+    if (!bytes_per_sector) return 0;
+    uint64_t max_clusters = vfs.f_blocks;
+    uint64_t max_psp_clusters = UINT32_MAX / (uint64_t)bytes_per_sector;
+    if (max_clusters > max_psp_clusters) max_clusters = max_psp_clusters;
+    uint64_t available_clusters = vfs.f_bavail < vfs.f_bfree ? vfs.f_bavail : vfs.f_bfree;
+    if (available_clusters > max_clusters) available_clusters = max_clusters;
+    uint64_t max_sectors = max_clusters * sectors_per_cluster;
+    if (max_sectors > UINT32_MAX) return 0;
+    info[0] = (uint32_t)max_clusters;
+    info[1] = (uint32_t)available_clusters;
+    info[2] = (uint32_t)max_sectors;
+    info[3] = bytes_per_sector;
+    info[4] = sectors_per_cluster;
+    return 1;
+}
+#endif /* _WIN32 */
 
 static atomic_uint s_memstick_insert_eject_callback_uid;
 
@@ -9622,6 +10638,7 @@ static uint32_t h_IoCloseAsync(CpuState *s) {
     return 0;
 }
 /* Parent directory of a host path (last separator). Returns 0 if no parent. */
+#ifdef _WIN32
 static int ms0_parent_path(const char *host_path, char *out, size_t cap) {
     if (!host_path || !out || cap == 0) return 0;
     const char *slash = strrchr(host_path, '\\');
@@ -9634,11 +10651,13 @@ static int ms0_parent_path(const char *host_path, char *out, size_t cap) {
     out[n] = '\0';
     return 1;
 }
+#endif /* _WIN32 */
 
 /* Parent must exist, be a directory, and stay inside the canonical ms root.
  * Missing parent -> not-found; non-directory parent -> is-a-directory;
  * outside root -> illegal path. Residual TOCTOU: containment is a by-path
  * check immediately before the subsequent Create/Move/Delete. */
+#ifdef _WIN32
 static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canonical) {
     char parent[512];
     if (!ms0_parent_path(hp, parent, sizeof(parent))) return 0x80010005u;
@@ -9651,6 +10670,30 @@ static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canoni
     if (!sr_vfs_dir_is_contained(parent, canonical)) return 0x80010016u;
     return 0;
 }
+#endif /* _WIN32 */
+
+#ifndef _WIN32
+/* The destructive memstick operations (rename, mkdir, remove) are the
+ * containment-critical half of the guest file route: on Windows each one opens
+ * or moves a HANDLE whose final path was verified under a canonical root. The
+ * repo's POSIX answer to that same contract is the descriptor-relative
+ * contained seam in vfs_contained.h (SR_CD_BACKEND_POSIX_AT), which
+ * src/rt/savedata.c already uses for every save file. Until the guest file
+ * route is bound to that seam, these three refuse: one loud diagnostic, then
+ * the same EIO the Windows route returns when its containment prerequisite
+ * cannot be established. No guest byte is ever resolved by name here. */
+static void ms0_write_route_unavailable(const char *operation) {
+    static int reported = 0;
+    if (reported) return;
+    reported = 1;
+    fprintf(stderr,
+            "hle: contained Memory Stick %s is unavailable on this host "
+            "(Windows verifies a HANDLE's final path under a canonical root; the POSIX "
+            "route is not bound to the contained-delete seam yet); the guest gets EIO\n",
+            operation);
+    fflush(stderr);
+}
+#endif /* !_WIN32 */
 
 /* sceIoRename(oldname, newname). Both names resolve beneath the unified
  * Memory Stick root (host_path_alloc), never the disc. Foreign devices and
@@ -9659,6 +10702,7 @@ static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canoni
  * WITHOUT MOVEFILE_REPLACE_EXISTING (directories refuse with EISDIR). Parent
  * directories are pre-verified for existence and containment; residual TOCTOU
  * on those by-path checks is documented here rather than hidden. */
+#ifdef _WIN32
 static uint32_t h_IoRename(CpuState *s) {
     char oldpath[256], newpath[256];
     if (!guest_cstr(A0, oldpath, sizeof(oldpath)) || !guest_cstr(A1, newpath, sizeof(newpath)))
@@ -9726,11 +10770,13 @@ static uint32_t h_IoRename(CpuState *s) {
     }
     return 0;
 }
+#endif /* _WIN32 */
 
 /* sceIoMkdir(path): create the final component under the unified Memory Stick
  * root. Foreign/traversal -> EINVAL; missing parent -> ENOENT; already exists
  * -> EEXIST; CreateDirectoryW failure -> EIO. Intermediate components are not
  * created (PSP mkdir does not create parents). */
+#ifdef _WIN32
 static uint32_t h_IoMkdir(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
@@ -9767,10 +10813,26 @@ static uint32_t h_IoMkdir(CpuState *s) {
     if (err == ERROR_ALREADY_EXISTS) return 0x80010011u;
     return 0x80010005u;
 }
+#endif /* _WIN32 */
+
+#ifndef _WIN32
+static uint32_t h_IoRename(CpuState *s) {
+    (void)s;
+    ms0_write_route_unavailable("rename");
+    return 0x80010005u;
+}
+
+static uint32_t h_IoMkdir(CpuState *s) {
+    (void)s;
+    ms0_write_route_unavailable("mkdir");
+    return 0x80010005u;
+}
+#endif /* !_WIN32 */
 
 /* sceIoRemove(path): delete one regular file under the unified Memory Stick
  * root through the contained-delete seam. Foreign/traversal -> EINVAL;
  * missing -> ENOENT; directory -> EISDIR; delete failure -> EIO. */
+#ifdef _WIN32
 static uint32_t h_IoRemove(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
@@ -9803,6 +10865,15 @@ static uint32_t h_IoRemove(CpuState *s) {
     free(hp);
     return ok ? 0 : 0x80010005u;
 }
+#endif /* _WIN32 */
+
+#ifndef _WIN32
+static uint32_t h_IoRemove(CpuState *s) {
+    (void)s;
+    ms0_write_route_unavailable("remove");
+    return 0x80010005u;
+}
+#endif /* !_WIN32 */
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* The focused native HLE harness exposes the small IoFileMgr slice under its
@@ -9866,6 +10937,7 @@ static uint32_t h_IoGetstat(CpuState *s) {
          * sceIoGetstat). Foreign devices fail closed here and fall through. */
         char *hp = host_path_alloc(path);
         if (hp) {
+#ifdef _WIN32
             wchar_t *wh = NULL;
             if (sr_wide_path_alloc(hp, &wh)) {
                 WIN32_FILE_ATTRIBUTE_DATA fad;
@@ -9890,6 +10962,29 @@ static uint32_t h_IoGetstat(CpuState *s) {
                 }
                 free(wh);
             }
+#else
+            /* lstat, not stat: a symlink is this host's redirect and must be
+             * reported as the link itself, exactly as the Windows leg reports
+             * a reparse point rather than its target. */
+            struct stat fad;
+            if (lstat(hp, &fad) == 0) {
+                free(hp);
+                int is_dir = S_ISDIR(fad.st_mode);
+                uint64_t fsize = (uint64_t)S_ISREG(fad.st_mode) ? (uint64_t)fad.st_size : 0u;
+                if (getenv("SR_STATLOG"))
+                    fprintf(stderr, "Getstat(%s) -> ms0 host size=0x%llx dir=%d\n",
+                            path, (unsigned long long)fsize, is_dir);
+                for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
+                MEM_W32(st + 0, is_dir ? (0x1000u | 0x0124u) : (0x2000u | 0x0124u));
+                MEM_W32(st + 4, is_dir ? 0x0010u : (0x0004u | 0x0001u));
+                if (!is_dir) {
+                    MEM_W32(st + 8, (uint32_t)fsize);
+                    MEM_W32(st + 12, (uint32_t)(fsize >> 32));
+                }
+                MEM_W32(st + 0x40, 0); /* st_private[0]: no LBN (host-backed) */
+                return 0;
+            }
+#endif
             free(hp);
         }
         if (s_data_archive_mode && data_archive_guest_path_allowed(path)) {

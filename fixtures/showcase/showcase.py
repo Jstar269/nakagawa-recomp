@@ -2,7 +2,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Build source-owned PSP showcase images and validated runtime packages."""
+"""Build source-owned PSP showcase images and validated runtime packages.
+
+The same route runs on every host. The PSPDEV toolchain is a POSIX toolchain, so
+a Windows host reaches it through WSL (`wsl -e bash -lc ...`) and a Linux host
+runs it directly; nothing else about the route changes. The package build and
+the headless smoke therefore exercise the same code on both, which is what makes
+the Linux result comparable with the Windows one.
+"""
 
 from __future__ import annotations
 
@@ -22,8 +29,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from prxload import Prx
 
-BUILD_ROOT = ROOT / "build" / "showcase"
-DEMO_ROOT = ROOT / "build" / "demos"
+# Where the staged demos live. The defaults are inside the repository's ignored
+# build tree, which is what a developer or a CI checkout wants. The two
+# overrides exist for a source tree that is not a Git checkout (a `git archive`
+# export, for instance), where the package route cannot prove its output
+# directory is ignored and an out-of-tree output is the only honest option.
+BUILD_ROOT = Path(os.environ.get("NK_SHOWCASE_BUILD_ROOT") or ROOT / "build" / "showcase")
+DEMO_ROOT = Path(os.environ.get("NK_SHOWCASE_DEMO_ROOT") or ROOT / "build" / "demos")
 SCREENSHOT_ROOT = BUILD_ROOT / "screenshots"
 SECTOR = 2048
 PSP_PRX_ELF_TYPE = 0xFFA0
@@ -190,38 +202,52 @@ def write_iso(path: Path, disc_id: str, title: str, icon: bytes,
     path.write_bytes(image)
 
 
-def _wsl_path(path: Path) -> str:
-    result = subprocess.run(["wsl", "-e", "wslpath", "-u", str(path)],
-                            capture_output=True, text=True, check=False)
-    if result.returncode:
-        raise ShowcaseError("WSL path conversion failed: " + result.stderr.strip())
-    return result.stdout.strip()
+def _host_path(path: Path) -> str:
+    """Spell `path` for the shell that owns the PSP toolchain.
+
+    A Windows host runs the toolchain inside WSL, so a native Windows path has
+    to be converted first. A POSIX host already speaks the toolchain's language.
+    """
+    if os.name == "nt":
+        result = subprocess.run(["wsl", "-e", "wslpath", "-u", str(path)],
+                                capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise ShowcaseError("WSL path conversion failed: " + result.stderr.strip())
+        return result.stdout.strip()
+    return str(path)
+
+
+def _toolchain_shell(command: str) -> list[str]:
+    """Argv that runs `command` in a POSIX shell next to the PSP toolchain."""
+    if os.name == "nt":
+        return ["wsl", "-e", "bash", "-lc", command]
+    return ["bash", "-lc", command]
 
 
 def _check_pspdev() -> None:
     command = "test -x /usr/local/pspdev/bin/psp-gcc && test -d /usr/local/pspdev/psp/sdk"
-    result = subprocess.run(["wsl", "-e", "bash", "-lc", command],
+    result = subprocess.run(_toolchain_shell(command),
                             capture_output=True, text=True, check=False)
     if result.returncode:
+        where = "WSL" if os.name == "nt" else "this host"
         raise ShowcaseError(
-            "PSPDEV/PSPSDK was not found in WSL at /usr/local/pspdev. "
-            "Install PSPDEV locally, then rerun `mingw32-make showcase`."
+            f"PSPDEV/PSPSDK was not found in {where} at /usr/local/pspdev. "
+            "Install PSPDEV locally, then rerun the showcase target."
         )
 
 
 def _build_prx(demo: dict[str, object], out_dir: Path) -> Path:
     source_dir = ROOT / "fixtures" / "showcase" / str(demo["folder"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    makefile = _wsl_path(ROOT / "fixtures" / "showcase" / "Makefile")
-    wsl_out = _wsl_path(out_dir)
-    wsl_source = _wsl_path(source_dir)
+    makefile = _host_path((ROOT / "fixtures" / "showcase" / "Makefile").resolve())
+    host_out = _host_path(out_dir.resolve())
+    host_source = _host_path(source_dir.resolve())
     command = (
         "export PSPDEV=/usr/local/pspdev; export PATH=\"$PSPDEV/bin:$PATH\"; "
-        f"make -B -f '{makefile}' -C '{wsl_out}' VPATH='{wsl_source}' "
+        f"make -B -f '{makefile}' -C '{host_out}' VPATH='{host_source}' "
         f"TARGET='{demo['target']}'"
     )
-    result = subprocess.run(["wsl", "-e", "bash", "-lc", command],
-                            cwd=ROOT, text=True, check=False)
+    result = subprocess.run(_toolchain_shell(command), cwd=ROOT, text=True, check=False)
     if result.returncode:
         raise ShowcaseError(f"PSPDEV build failed for {demo['id']} (exit {result.returncode})")
     prx = out_dir / f"{demo['target']}.prx"
@@ -266,7 +292,7 @@ def _pspsdk_license() -> bytes:
         "export PSPDEV=/usr/local/pspdev; "
         "cat \"$PSPDEV/psp/share/licenses/pspsdk/LICENSE\""
     )
-    result = subprocess.run(["wsl", "-e", "bash", "-lc", command],
+    result = subprocess.run(_toolchain_shell(command),
                             capture_output=True, check=False)
     if result.returncode or not result.stdout:
         raise ShowcaseError("Could not read the installed PSPSDK license notice.")

@@ -11,17 +11,22 @@
  * forwards that state to the runtime. When SR_VIDEO=gdi selects the legacy Win32/GDI window
  * (a top-level window + a 32-bit DIB the PSP framebuffer is converted into each frame), input
  * falls back to a keyboard-only GetAsyncKeyState mapping; controllers on that debug path are not
- * supported (no XInput/DirectInput dependency). This whole file is Windows-only (#ifdef _WIN32);
- * on other platforms the SDL3 layer provides the window and input directly. */
+ * supported (no XInput/DirectInput dependency).
+ *
+ * The SDL3/Vulkan presenter is host-neutral and is the only presenter on a host without
+ * Win32/GDI: everything GDI-shaped (the window class, the DIB, GetAsyncKeyState, the message
+ * pump) is behind _WIN32, and a host without it gets the SDL3 path or, if that cannot
+ * initialise, a reported refusal (no window, s_on == 0) rather than a fabricated one. */
 
-#ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/sdl3vk.h"
 #include "gpu_sdl3vk/ge_gpu.h"
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <SDL3/SDL_timer.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -34,9 +39,11 @@
 
 static int      s_on = 0;
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
+#ifdef _WIN32
 static HWND     s_hwnd;
-static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for StretchDIBits */
 static BITMAPINFO s_bmi;
+#endif
+static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for the presenters */
 static uint32_t s_buttons = 0;
 static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
 static int      s_pad_present = 0;         /* a controller is currently connected */
@@ -112,6 +119,7 @@ static void sync_sdl_input(void) {
 
 /* PSP button bits (sceCtrl): SELECT 0x1, START 0x8, UP 0x10, RIGHT 0x20, DOWN 0x40, LEFT 0x80,
  * LTRIG 0x100, RTRIG 0x200, TRIANGLE 0x1000, CIRCLE 0x2000, CROSS 0x4000, SQUARE 0x8000. */
+#ifdef _WIN32
 static uint32_t read_keys(void) {
     uint32_t b = 0;
     #define K(vk,bit) do { if (GetAsyncKeyState(vk) & 0x8000) b |= (bit); } while (0)
@@ -133,6 +141,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_KEYDOWN && w == VK_ESCAPE) { PostQuitMessage(0); return 0; }
     return DefWindowProc(h, m, w, l);
 }
+#endif /* _WIN32: the keyboard fallback and the window class are Win32-only */
 
 void gui_init(const char *title) {
 #ifdef SR_SDL3VK
@@ -165,10 +174,15 @@ void gui_init(const char *title) {
                 sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=vulkan");
                 return;
             }
+#ifdef _WIN32
             fprintf(stderr, "gui_init: SDL3/Vulkan init failed; falling back to GDI\n");
+#else
+            fprintf(stderr, "gui_init: SDL3/Vulkan init failed\n");
+#endif
         }
     }
 #endif
+#ifdef _WIN32
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandleA(0);
@@ -190,6 +204,17 @@ void gui_init(const char *title) {
     s_last_ns = SDL_GetTicksNS();
     s_on = 1;
     sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=gdi");
+#else /* !_WIN32: no GDI presenter on this host */
+    /* No Win32/GDI window exists here, so there is no fallback to take. The
+     * refusal is reported and s_on stays 0: the runtime keeps executing the
+     * guest and the framebuffer capture/diagnostics keep working, but nothing
+     * claims a window that was never created. */
+    fprintf(stderr,
+            "gui_init: SDL3/Vulkan init failed and no Win32/GDI presenter exists on "
+            "this host; running without a window (framebuffer capture still works)\n");
+    s_on = 0;
+    sr_gui_boot_event("BOOT_EVENT phase=window_unavailable backend=none");
+#endif /* _WIN32 */
 }
 
 int gui_on(void) { return s_on; }
@@ -275,12 +300,14 @@ void gui_pump(void) {
         return;
     }
 #endif
+#ifdef _WIN32
     MSG msg;
     while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) { _Exit(0); }
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
+#endif
 }
 
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
@@ -331,9 +358,10 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     }
 #endif
 
+#ifdef _WIN32
+    /* GDI fallback is keyboard-only; controllers are handled by the SDL3 gamepad
+     * subsystem (src/rt/gpu_sdl3vk) on the default Vulkan path. */
     gui_pump();
-    /* GDI fallback is keyboard-only; controllers are handled by the SDL3 gamepad subsystem
-     * (src/rt/gpu_sdl3vk) on the default Vulkan path. */
     s_buttons = read_keys();
     s_lx = 128; s_ly = 128;
     s_pad_present = 0;
@@ -344,6 +372,11 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     StretchDIBits(dc, 0, 0, cr.right, cr.bottom, 0, 0, PSP_W, PSP_H,
                   s_px, &s_bmi, DIB_RGB_COLORS, SRCCOPY);
     ReleaseDC(s_hwnd, dc);
+#else
+    /* No GDI presenter on this host and the SDL3 presenter is not active: gui_init
+     * reported that, so there is nothing to present and nothing to claim. */
+    return;
+#endif
 
 #ifdef SR_SDL3VK
 pace:
@@ -361,4 +394,3 @@ pace:
         SDL_DelayPrecise(period_ns - (now_ns - s_last_ns));
     s_last_ns = SDL_GetTicksNS();
 }
-#endif

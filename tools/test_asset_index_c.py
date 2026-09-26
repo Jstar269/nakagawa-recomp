@@ -164,10 +164,16 @@ class TestAssetIndexSelftestC(unittest.TestCase):
 
         ``guest_cstr`` initializes only through the terminator; indexing the
         remainder of a short path would inspect uninitialized stack bytes.
+
+        The compare itself is spelled ``sr_vfs_strnicmp``, the project's own
+        per-host case-insensitive compare (vfs_path.h maps it to ``_strnicmp``
+        on Windows and ``strncasecmp`` elsewhere), so the same line compiles on
+        every host. The pin is the bounds guard in front of the fixed-width
+        compare, not one host's CRT spelling.
         """
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn(
-            "if (guest_key_length >= 8u && _strnicmp(p, \"data_\", 5) == 0",
+            "if (guest_key_length >= 8u && sr_vfs_strnicmp(p, \"data_\", 5) == 0",
             hle,
         )
 
