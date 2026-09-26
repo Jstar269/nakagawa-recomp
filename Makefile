@@ -238,10 +238,34 @@ CHUNK_BYTES_ARG := --target-chunk-bytes=$(CHUNK_TARGET_BYTES)
 CHUNK_TARGET_ENTRY := --entry "CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)"
 endif
 
+# ---------------------------------------------------------------------------
+# BUILD IDENTITY: the source revision every commit-stamped artifact records --
+# the flight recorder's build.build_id (#532) and both PSP oracle records.
+#
+# `GIT` names the git executable, for a host that keeps it off PATH, and the
+# revision is resolved ONCE here. Every default below reads that one value, and
+# a caller that supplies the identity itself (a hosted job passing
+# SR_SOURCE_COMMIT=${{ github.sha }}) never reaches for git at all.
+#
+# The resolution runs through the interpreter this build already requires at
+# parse time (see the VULKAN_SDK discovery above) and never through a bare
+# `$(shell git ...)`: make spawns a missing program itself, so on a host without
+# git the old default logged `process_begin: CreateProcess(NULL, git
+# rev-parse HEAD, ...) failed` and then quietly built a binary with NO recorded
+# identity. The Windows runtime compile gate runs in an MSYS2 shell with no git
+# on PATH and hit exactly that. A host with no git now resolves an empty
+# identity and a clean log, which is the documented state for a source drop:
+# tools/flight_diff.py refuses an identity-less bundle fail closed, and it never
+# falls back to a clock.
+GIT ?= git
+ifndef NK_INFO_ONLY
+NK_GIT_REV_HEAD := $(strip $(shell $(PYTHON) -c "import shutil, subprocess, sys; exe = shutil.which(sys.argv[1]); print(subprocess.run([exe, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip() if exe else '')" "$(GIT)"))
+endif
+
 # Production-HLE PSP oracle stream. The target reuses hle_thread_selftest.exe, so the
 # binary_sha256 in its record is the hash of the executable that actually emits stdout.
 PSP_ORACLE_CASE          ?= callback-notify-check
-PSP_ORACLE_SOURCE_COMMIT ?= $(shell git rev-parse HEAD)
+PSP_ORACLE_SOURCE_COMMIT ?= $(NK_GIT_REV_HEAD)
 PSP_ORACLE_MODEL         ?= unknown
 PSP_ORACLE_FIRMWARE      ?= unknown
 PSP_ORACLE_OUTPUT        ?= $(BUILD_DIR)/psp_oracle_nakagawa.txt
@@ -645,7 +669,8 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 #   * SOURCE_DATE_EPOCH, when the build sets it, is honoured as-is (the
 #     reproducible-builds.org convention) and recorded as build.source_date_epoch.
 #   * The source commit is recorded as build.build_id, resolved exactly like
-#     PSP_ORACLE_SOURCE_COMMIT below (git rev-parse HEAD). A source drop without
+#     PSP_ORACLE_SOURCE_COMMIT below (one guarded $(GIT) rev-parse HEAD, or the
+#     identity the caller supplied). A source drop without
 #     git and without SOURCE_DATE_EPOCH records no identity and tools/flight_diff.py
 #     refuses such a bundle fail closed; it never falls back to a clock.
 # The runtime profile hash is deliberately NOT the identity here: it hashes
@@ -656,7 +681,7 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 # rebuilds that one object instead of every runtime object (see
 # FLIGHT_IDENTITY_STAMP below).
 ifndef NK_INFO_ONLY
-SR_SOURCE_COMMIT ?= $(shell git rev-parse HEAD)
+SR_SOURCE_COMMIT ?= $(NK_GIT_REV_HEAD)
 SR_SOURCE_COMMIT := $(strip $(SR_SOURCE_COMMIT))
 ifneq ($(strip $(SR_SOURCE_COMMIT)),)
 FLIGHT_IDENTITY_DEFS += -DSR_BUILD_ID=\"$(SR_SOURCE_COMMIT)\"
@@ -943,11 +968,12 @@ ifndef NK_TRUSTED_LEDGER
 	@exit 1
 endif
 	@echo "== readiness: base $(READINESS_BASE)"
+	@test -n "$(NK_GIT_REV_HEAD)" || { echo "readiness: FAIL -- no source revision: $(GIT) is unavailable or this is not a git checkout, and the provenance attestation compares a candidate revision. Readiness needs a git checkout; set GIT to a git executable if it is not on PATH."; exit 1; }
 	$(PYTHON) tools/policy_sync.py
 	$(PYTHON) tools/lint_docs.py
 	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate $(shell git rev-parse HEAD) --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
+	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate "$(NK_GIT_REV_HEAD)" --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
 	git diff --check $(READINESS_BASE)..HEAD
 	@echo "== readiness: control-file completeness"
 	$(PYTHON) tools/policy_sync.py --regen-export
@@ -2115,7 +2141,7 @@ psp-oracle-vfpu-build: $(PSP_VFPU_ORACLE_EXE)
 PSP_VFPU_ORACLE_OUT ?= $(BUILD_DIR)/vfpu_oracle/nakagawa.stdout.txt
 PSP_VFPU_ORACLE_MODEL ?= unknown
 PSP_VFPU_ORACLE_FIRMWARE ?= unknown
-PSP_VFPU_ORACLE_COMMIT ?= $(shell git rev-parse HEAD)
+PSP_VFPU_ORACLE_COMMIT ?= $(NK_GIT_REV_HEAD)
 
 psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 	$(PYTHON) -c "from pathlib import Path; Path(r'$(BUILD_DIR)/vfpu_oracle').mkdir(parents=True, exist_ok=True)"

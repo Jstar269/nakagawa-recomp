@@ -7619,6 +7619,14 @@ static atomic_int s_data_state;
 static unsigned long s_data_test_walk_calls;         /* directories enumerated */
 static unsigned long s_data_test_build_attempts;     /* census attempts total */
 static unsigned long s_data_test_builds_after_guest; /* attempts after guest start */
+/* Enumeration WORK, counted rather than timed. `names` is every directory entry
+ * the census retrieved (".", ".." and real children alike); `probes` is the
+ * per-file readability open that precedes publication. With the walk count these
+ * are the deterministic O(n) evidence for the census: a wall clock measures the
+ * host filesystem and the machine's load, so a load-sensitive scaling bound is a
+ * flaky correctness gate rather than a scaling proof. */
+static unsigned long long s_data_test_scan_names;    /* directory entries read */
+static unsigned long long s_data_test_scan_probes;   /* per-file metadata opens */
 static int s_data_test_guest_started;
 static int s_data_test_pace_ms;                      /* per-directory pacing hook */
 #endif
@@ -7741,6 +7749,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
         }
 
         for (;;) {
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!(fd.cFileName[0] == L'.' && (fd.cFileName[1] == L'\0' ||
                                               (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0')))) {
                 char *name = NULL;
@@ -7773,6 +7784,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                     fprintf(stderr, "host_data: refusing reparse-point file\n");
                     ok = 0;
                 } else {
+#ifdef SR_HLE_THREAD_SELFTEST
+                    s_data_test_scan_probes++;
+#endif
                     HANDLE probe = CreateFileW(child_host, GENERIC_READ,
                                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                                 NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -7920,6 +7934,9 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
             break;
         }
         for (;;) {
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!(fd.cFileName[0] == L'.' &&
                   (fd.cFileName[1] == L'\0' ||
                    (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0')))) {
@@ -8437,6 +8454,11 @@ unsigned long long sr_hle_test_data_phase_ms(unsigned int phase) {
     return phase < SR_DATA_TEST_PHASE_COUNT ?
         (unsigned long long)s_data_test_phase_ms[phase] : 0u;
 }
+/* Enumeration work counters: how many directory entries the census read and how
+ * many per-file metadata opens it made. Deterministic, so a scaling assertion
+ * can be proved by them instead of by the wall clock. */
+unsigned long long sr_hle_test_data_scan_names(void) { return s_data_test_scan_names; }
+unsigned long long sr_hle_test_data_scan_probes(void) { return s_data_test_scan_probes; }
 int sr_hle_test_data_state(void) {
     return atomic_load_explicit(&s_data_state, memory_order_acquire);
 }
@@ -8472,6 +8494,8 @@ void sr_hle_test_data_reset(int pace_ms) {
     s_data_test_walk_calls = 0;
     s_data_test_build_attempts = 0;
     s_data_test_builds_after_guest = 0;
+    s_data_test_scan_names = 0;
+    s_data_test_scan_probes = 0;
     s_data_test_guest_started = 0;
     s_data_test_pace_ms = pace_ms;
     memset(s_data_test_phase_ms, 0, sizeof(s_data_test_phase_ms));

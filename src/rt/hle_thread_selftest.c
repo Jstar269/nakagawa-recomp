@@ -142,6 +142,8 @@ extern int sr_host_data_prepare(void);
 extern size_t sr_host_data_entry_count(void);
 extern void sr_hle_test_data_mark_guest_start(void);
 extern unsigned long sr_hle_test_data_walk_calls(void);
+extern unsigned long long sr_hle_test_data_scan_names(void);
+extern unsigned long long sr_hle_test_data_scan_probes(void);
 extern unsigned long sr_hle_test_data_build_attempts(void);
 extern unsigned long sr_hle_test_data_builds_after_guest(void);
 extern int sr_hle_test_data_state(void);
@@ -4089,8 +4091,12 @@ enum {
     HOST_DATA_PHASE_PUBLISH
 };
 
-static int host_data_bench_dir(const char *base, size_t bucket,
-                               char *path, size_t capacity, int create) {
+/* `dirs_created` accumulates the fixture's directory skeleton, so the scaling
+ * assertion can bound directory enumeration against the tree the benchmark
+ * actually built instead of against a hard-coded constant. */
+static int host_data_bench_dir(const char *base, size_t bucket, char *path,
+                               size_t capacity, int create,
+                               size_t *dirs_created) {
     if (!base || !path || capacity == 0u) return 0;
     size_t used = (size_t)snprintf(path, capacity, "%s", base);
     if (used >= capacity) return 0;
@@ -4099,7 +4105,10 @@ static int host_data_bench_dir(const char *base, size_t bucket,
                            bucket, (unsigned)(bucket % 3u));
     if (written < 0 || (size_t)written >= capacity - used) return 0;
     used += (size_t)written;
-    if (create && !hle_make_directory(path)) return 0;
+    if (create) {
+        if (!hle_make_directory(path)) return 0;
+        if (dirs_created) (*dirs_created)++;
+    }
     unsigned components[] = {
         (unsigned)bucket,
         (unsigned)((bucket / 4u) % 20u),
@@ -4111,22 +4120,25 @@ static int host_data_bench_dir(const char *base, size_t bucket,
                            names[level - 1u], components[level - 1u]);
         if (written < 0 || (size_t)written >= capacity - used) return 0;
         used += (size_t)written;
-        if (create && !hle_make_directory(path)) return 0;
+        if (create) {
+            if (!hle_make_directory(path)) return 0;
+            if (dirs_created) (*dirs_created)++;
+        }
     }
     return 1;
 }
 
 static int host_data_bench_write_files(const char *base, size_t count,
-                                       char prefix) {
+                                       char prefix, size_t *dirs_created) {
     char directory[MAX_PATH];
     char path[MAX_PATH];
     for (size_t bucket = 0; bucket < 80u; bucket++) {
         if (!host_data_bench_dir(base, bucket, directory,
-                                 sizeof(directory), 1)) return 0;
+                                 sizeof(directory), 1, dirs_created)) return 0;
     }
     for (size_t i = 0; i < count; i++) {
         if (!host_data_bench_dir(base, i % 80u, directory,
-                                 sizeof(directory), 0)) return 0;
+                                 sizeof(directory), 0, dirs_created)) return 0;
         int written = snprintf(path, sizeof(path), "%s\\%c%05zu.DaTa",
                               directory, prefix, i);
         if (written < 0 || (size_t)written >= sizeof(path)) return 0;
@@ -4166,7 +4178,8 @@ static void host_data_bench_remove_tree(const char *root) {
 }
 
 static int host_data_bench_make_tree(const char *root, size_t total_files,
-                                     char *dataroot, size_t dataroot_capacity) {
+                                     char *dataroot, size_t dataroot_capacity,
+                                     size_t *dirs_created) {
     char usrdir[MAX_PATH];
     char loose[MAX_PATH];
     int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\xbdata_extracted", root);
@@ -4177,15 +4190,40 @@ static int host_data_bench_make_tree(const char *root, size_t total_files,
     if (n < 0 || (size_t)n >= sizeof(loose) ||
         !hle_make_directory(root) || !hle_make_directory(usrdir) ||
         !hle_make_directory(dataroot) || !hle_make_directory(loose)) return 0;
+    /* The four directories above plus every prepared bucket directory are part
+     * of the skeleton a walk has to enumerate. */
+    if (dirs_created) *dirs_created += 4u;
     size_t primary_count = total_files * 4u / 5u;
     size_t loose_count = total_files - primary_count;
-    return host_data_bench_write_files(dataroot, primary_count, 'P') &&
-           host_data_bench_write_files(loose, loose_count, 'L');
+    return host_data_bench_write_files(dataroot, primary_count, 'P', dirs_created) &&
+           host_data_bench_write_files(loose, loose_count, 'L', dirs_created);
 }
 
+/* The census cost is proved by WORK COUNTS, never by the wall clock.
+ *
+ * This used to bound the wall clock of the synthetic 15k/30k/60k preparations,
+ * and a clock is not a correctness input: on a loaded host the same unmodified
+ * source failed this bound in one run out of three (issue #520) while every
+ * count below stayed exactly where it is now.  The three trees have ONE shape
+ * and 1x/2x/4x the files, so the work the census reports must grow 1x/2x/4x as
+ * well; a census that re-enumerated or re-probed per file (O(n^2)) reports
+ * 1x/4x/16x instead, which is what these bounds reject:
+ *
+ *   probes -- the per-file readability open, exactly one per indexed file;
+ *   names  -- every directory entry the census retrieved, "." and ".." included,
+ *             across both the archive-discovery and the primary walk;
+ *   dirs   -- directories enumerated, bounded by the fixture's own skeleton
+ *             (host_data_bench_make_tree counts it) instead of by the file count.
+ *
+ * Wall clock and the per-phase split stay an informational print: they are the
+ * developer evidence about this host's filesystem, and a human reads them. */
 static void test_host_data_scan_scaling(void) {
     static const size_t counts[] = { 15000u, 30000u, 60000u };
     unsigned long long elapsed_ms[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long long names[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long long probes[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long dirs[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long skeleton[sizeof(counts) / sizeof(counts[0])] = { 0 };
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) {
         expect(0, "the synthetic host-data benchmark has a working directory");
@@ -4198,13 +4236,15 @@ static void test_host_data_scan_scaling(void) {
     for (size_t sample = 0; sample < sizeof(counts) / sizeof(counts[0]); sample++) {
         char root[MAX_PATH];
         char dataroot[MAX_PATH];
+        size_t dirs_created = 0;
         root[0] = '\0';
         int n = snprintf(root, sizeof(root), "%s\\build\\host_data_scan_%lu_%llu",
                          cwd, (unsigned long)GetCurrentProcessId(),
                          (unsigned long long)GetTickCount64());
         int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
         int tree_ok = root_path_ok &&
-            host_data_bench_make_tree(root, counts[sample], dataroot, sizeof(dataroot));
+            host_data_bench_make_tree(root, counts[sample], dataroot,
+                                      sizeof(dataroot), &dirs_created);
         expect(tree_ok, "the mixed-case 1-to-4-level synthetic host-data tree was created");
         if (!tree_ok) {
             if (root_path_ok) host_data_bench_remove_tree(root);
@@ -4219,11 +4259,18 @@ static void test_host_data_scan_scaling(void) {
                "the synthetic prepared-tree route reaches READY");
         expect(sr_hle_test_data_entry_count() == counts[sample],
                "the primary and loose walks publish every synthetic file exactly once");
+        names[sample] = sr_hle_test_data_scan_names();
+        probes[sample] = sr_hle_test_data_scan_probes();
+        dirs[sample] = sr_hle_test_data_walk_calls();
+        skeleton[sample] = (unsigned long)dirs_created;
+        expect(probes[sample] == (unsigned long long)counts[sample],
+               "the census opens every synthetic file's metadata exactly once");
         fprintf(stderr,
-                "[HOST_DATA_SCALE] files=%zu total_ms=%llu archive_discover_ms=%llu "
-                "walk_ms=%llu loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu "
-                "publish_ms=%llu\n",
-                counts[sample], elapsed_ms[sample],
+                "[HOST_DATA_SCALE] files=%zu total_ms=%llu names_read=%llu file_probes=%llu "
+                "dirs=%lu skeleton=%lu archive_discover_ms=%llu walk_ms=%llu "
+                "loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu publish_ms=%llu\n",
+                counts[sample], elapsed_ms[sample], names[sample], probes[sample],
+                dirs[sample], skeleton[sample],
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_ARCHIVE_DISCOVER),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PRIMARY_WALK),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_LOOSE_WALK),
@@ -4234,13 +4281,21 @@ static void test_host_data_scan_scaling(void) {
         sr_hle_test_data_reset(0);
         host_data_bench_remove_tree(root);
     }
-    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u,
+    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u &&
+               names[0] != 0u && names[1] != 0u && names[2] != 0u,
            "all three synthetic scaling sizes were measured");
-    expect(elapsed_ms[1] <= elapsed_ms[0] * 3u + 1000u &&
-               elapsed_ms[2] <= elapsed_ms[0] * 7u + 2000u,
-           "host-data preparation growth stays near-linear from 15k to 60k files");
-    expect(elapsed_ms[2] <= 20000u,
-           "a 60k-file primary-plus-loose synthetic tree prepares within 20 seconds");
+    /* Doubling the files may at most double the names read (2.5x) and may not
+     * quadruple them; quadrupling the files may at most quadruple them (4.5x).
+     * A per-file re-walk or re-probe reports 4x and 16x here. */
+    expect(names[1] <= names[0] * 5u / 2u && names[2] <= names[0] * 9u / 2u,
+           "host-data enumeration name reads grow with the file count, not with its square");
+    /* The skeleton's directories are enumerated by the archive-discovery walk
+     * and again by the primary walk, plus a handful for the loose-content root;
+     * the multiplier is headroom for that, and a per-file enumeration would add
+     * one directory walk per indexed file. */
+    expect(dirs[0] <= skeleton[0] * 4u + 16ul && dirs[1] <= skeleton[1] * 4u + 16ul &&
+               dirs[2] <= skeleton[2] * 4u + 16ul,
+           "directory enumeration is bounded by the prepared tree's skeleton, not the file count");
 }
 
 typedef struct {
