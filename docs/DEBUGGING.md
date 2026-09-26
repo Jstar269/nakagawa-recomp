@@ -182,7 +182,7 @@ should ignore the trailing uid/vblank columns.
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |
 | `SR_TEXDUMP_AFTER=N` | Defer texture dumping until GE frame `N`, preserving the fixed distinct-texture budget for a late deterministic scene |
-| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` |
+| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, `non_finite` (non-finite values among the four effective matrices, so the record names what the GE drops), decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` |
 | `SR_NAN_TRAP_LIMIT=N` | Report limit for the `SR_NAN_TRAP` build option below (default 20; `0` silences it). Only has an effect in a package built with `make NAN_TRAP=1` |
 
 ### Locating the instruction that produced a NaN (issue #69)
@@ -194,13 +194,37 @@ write — in the generated code and in the AOT-gap interpreter alike — with a 
 first few instructions whose result went non-finite **from operands that were all finite**:
 
 ```text
-NAN_TRAP pc=0x00001234 op=div.s dst=f7 in=[0,0] out=[nan]
-NAN_TRAP pc=0x088a1f2c op=vdiv.s dst=v13 in=[0,4.5,0,4.5] out=[nan,1,0,1]
+NAN_TRAP pc=0x00001234 op=div.s dst=f7 vbl=1180 in=[0,0] out=[nan]
+NAN_TRAP pc=0x088a1f2c op=vdiv.s dst=v13 vbl=1180 in=[0,4.5,0,4.5] out=[nan,1,0,1]
 ```
 
 It is a diagnostic, never a semantic gate: no result changes on any path, and a NaN that is only
 *propagated* (every later instruction in a long chain) is not reported, so the report names the
 origin rather than the last echo.
+
+`vbl=` is the guest VBLANK count, the same counter the `SR_GE_TRANSITION_TRACE` records stamp as
+their `frame`, so a trap line and the draw that showed its effect sit in one frame without
+inference. It is read from the mirror the runtime hands to the GE each vblank, so a report produced
+inside a vblank handler carries the frame it is about to be drawn in.
+
+`in=` lists **every operand the instruction consumed**, in operand order, which is what makes a
+report readable lane by lane:
+
+| Form | `in=` order |
+| --- | --- |
+| scalar FPU (`add.s`, `div.s`, …) | its source registers |
+| lane forms (`vadd`, `vdot`, `vmin`, `vocp`, …) | first source vector, then second |
+| `vmmul` | S rows (`side`×`side`), then T rows (`side`×`side`) |
+| `vtfm`/`vhtfm` | matrix lanes (`side`×`side`, row-major), then the vector lanes it multiplies by |
+
+A form that reported only part of its operands would classify a propagation as an origin: a `vtfm`
+whose vector lane already carried a NaN used to be reported as the instruction that made it, and
+the vector was not in the record at all. With every operand listed, that `vtfm` is silent and the
+real origin (the instruction that made the vector lane NaN) is the one that reports.
+
+One run with both diagnostics therefore carries both ends of the corruption: the `NAN_TRAP` line
+names the instruction, and the trace record with the same `frame`/`vbl` and a non-zero `non_finite`
+names the draw it reached.
 
 Rebuild the package with the trap, play to the corruption, and read the first `NAN_TRAP` lines:
 
