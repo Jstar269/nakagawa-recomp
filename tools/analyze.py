@@ -1995,8 +1995,8 @@ def code_pointer_evidence(elf, ranges):
         an address materialized as a constant in code (``lui`` + ``addiu``/``ori``),
         i.e. taken for an indirect call, a callback, or a stored pointer.
     ``data``
-        an in-range word found in a non-code section: function-pointer tables,
-        vtables, jump tables, export/import tables.
+        an aligned word found in an allocated non-code section that points
+        into an analyzer-owned range or a file-backed executable segment.
 
     :func:`analyze` folds these signals into its start set and then discards
     *which* signal fired.  The entry-role audit needs them kept apart, because
@@ -2006,6 +2006,7 @@ def code_pointer_evidence(elf, ranges):
     contract this analysis cannot see.
     """
     evidence = {kind: set() for kind in ("jal", "branch-link", "immediate", "data")}
+    file_exec_ranges = _file_backed_exec_ranges(elf)
 
     hireg = {}
     clear_next = False
@@ -2044,14 +2045,21 @@ def code_pointer_evidence(elf, ranges):
     # used by the regressions, which carry no data segment at all; treat that as
     # "no data evidence" rather than requiring the fixtures to fake a container.
     for section in getattr(elf, "sections", ()):
-        if section.get("typ") != 1 or not section.get("size"):
+        if (
+            section.get("typ") != 1
+            or not section.get("size")
+            or not (section.get("flags", 0) & 2)
+        ):
             continue
         if section.get("nm") in (".text", ".sceStub.text"):
             continue
         blob = section_bytes(elf, section)
         for off in range(0, len(blob) - 3, 4):
             value = int.from_bytes(blob[off:off + 4], "little")
-            if in_ranges(value, ranges) and (value & 3) == 0:
+            if (
+                (in_ranges(value, ranges) or in_ranges(value, file_exec_ranges))
+                and (value & 3) == 0
+            ):
                 evidence["data"].add(value)
 
     return {kind: frozenset(values) for kind, values in evidence.items()}
@@ -2086,8 +2094,24 @@ def analyze(elf, extra_spans=None):
     hc = set()
     noisy = set()
     jtails = set()  # every in-range `j` target; candidates for tail-call promotion below
-    if in_ranges(elf.entry, ranges):
+    if (elf.entry & 3) == 0 and (
+        in_ranges(elf.entry, ranges) or in_ranges(elf.entry, file_exec_ranges)
+    ):
         hc.add(elf.entry)
+    # Some module-start trampolines begin at an executable PT_LOAD's first byte,
+    # before the named .text section, and are reached through the loader rather
+    # than a statically visible pointer. Seed only the segment boundary when it
+    # has the usual negative stack-allocation prologue; CFG tracing below still
+    # limits ownership to instructions reachable from that candidate.
+    for start, _ in file_exec_ranges:
+        if (start & 3) or in_ranges(start, ranges):
+            continue
+        first = elf.read_at_vaddr(start, 4)
+        if first is None or len(first) < 4:
+            continue
+        word = int.from_bytes(first, "little")
+        if (word >> 16) == 0x27BD and (word & 0x8000):
+            hc.add(start)
 
     # Build a file-offset -> vaddr lookup from PT_LOAD segments (needed because
     # the raw file's byte offset differs from the guest virtual address for PRX/rebased ELFs).
@@ -2184,6 +2208,10 @@ def analyze(elf, extra_spans=None):
             val = int.from_bytes(blob[o:o + 4], 'little')
             if in_ranges(val, ranges) and (val & 3) == 0:
                 hc.add(val)
+
+    # Linker-specific data-section names can also contain function pointers.
+    # Keep their file-backed executable targets as traced entry candidates.
+    hc.update(code_pointer_evidence(elf, ranges)["data"])
 
     # Sweep executable sections for weaker "block boundary" signals and possible indirect
     # targets. Direct JAL targets are collected by trace_function only after their source
