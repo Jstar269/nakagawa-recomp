@@ -1018,7 +1018,8 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     if (!have_python) {
         player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
                              "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
-                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.",
+                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.\n"
+                             "Automatic build-prerequisite installation is in the works (#324).",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }

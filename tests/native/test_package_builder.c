@@ -389,6 +389,7 @@ static void test_toolchain_preflight(void) {
                                              tool, sizeof(tool), msg, sizeof(msg)));
     assert(strcmp(tool, "gcc") == 0);
     assert(strstr(msg, "BUILD_TOOLCHAIN_MISSING") != NULL);
+    assert(strstr(msg, "in the works (#324)") != NULL);
     assert(strstr(msg, "gcc") != NULL);
     assert(strstr(msg, "PATH") != NULL);
 

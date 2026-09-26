@@ -394,7 +394,8 @@ bool package_builder_toolchain_missing(
     if (out_message && out_message_size) {
         snprintf(out_message, out_message_size,
                  "BUILD_TOOLCHAIN_MISSING: %s was not found on PATH. The package build "
-                 "runs python, gcc and mingw32-make, so it cannot start. %s",
+                 "runs python, gcc and mingw32-make, so it cannot start. %s "
+                 "Automatic build-prerequisite installation is in the works (#324).",
                  tool, fix);
     }
     return true;

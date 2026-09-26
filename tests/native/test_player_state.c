@@ -2292,6 +2292,7 @@ int main(int argc, char **argv) {
         assert(strcmp(capp->last_error.error_code, "BUILD_TOOLCHAIN_MISSING") == 0);
         assert(strstr(capp->last_error.message, "gcc") != NULL);
         assert(strstr(capp->last_error.message, "BUILD_TOOLCHAIN_MISSING") != NULL);
+        assert(strstr(capp->last_error.message, "in the works (#324)") != NULL);
         assert(capp->build_session.is_building == false);
 
         /* Restore the process environment before any later probe. */
