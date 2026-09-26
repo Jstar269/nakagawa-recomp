@@ -72,6 +72,10 @@ typedef struct {
     /* Runtime configuration */
     NkRuntimeConfig config;
 
+    /* Optional player-owned BOOT_EVENT side channel used to hand focus to the
+       child after its GUI window is ready. Empty for ordinary launch callers. */
+    char boot_event_file_path[NK_MAX_PATH];
+
     /* Live process tracking */
     NkProcessHandle process;
     bool is_running;

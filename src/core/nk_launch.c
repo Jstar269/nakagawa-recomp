@@ -1192,7 +1192,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     /* The player launch smoke uses this opt-in side channel because a spawned
        runtime's stderr is not a stable API of either platform backend. Normal
        launches do not set it and therefore incur no extra file I/O. */
-    const char *boot_event_path = getenv("SR_BOOT_EVENT_FILE");
+    const char *boot_event_path = session->boot_event_file_path[0]
+        ? session->boot_event_file_path : getenv("SR_BOOT_EVENT_FILE");
     if (boot_event_path && *boot_event_path) {
         int w = snprintf(env_boot_event, sizeof(env_boot_event),
                          "SR_BOOT_EVENT_FILE=%s", boot_event_path);

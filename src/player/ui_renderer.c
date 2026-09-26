@@ -1920,7 +1920,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
     } else {
         draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f,
-                             "Configuration saved to settings.json. Game settings apply at the next launch.",
+                             "Game settings apply at the next launch; launcher fullscreen applies now.",
                              1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
     }
     /* Identify the platform the player runs, never imply endorsement. */
@@ -1986,12 +1986,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             y = by + 52.0f;
         }
         /* Display toggles. */
-        draw_text(ren, col1_x, y, "DISPLAY (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "GAME DISPLAY (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
         {
             char vsync_label[32];
             snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
             char fs_label[64];
-            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
+            snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
             float by = y + 24.0f;
             float bx = col1_x;
             bool focused = (app->focus_index == focus);
@@ -2022,6 +2022,23 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             }
             focus++;
             y = by + 52.0f;
+        }
+        draw_text(ren, col1_x, y, "LAUNCHER WINDOW", 1.1f, COLOR_TEXT_DIM);
+        {
+            char launcher_fs_label[64];
+            snprintf(launcher_fs_label, sizeof(launcher_fs_label),
+                     "Launcher fullscreen: %s",
+                     app->settings.launcher_fullscreen ? "ON" : "OFF");
+            bool focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, col1_x, y + 24.0f, 310.0f, 36.0f,
+                                    launcher_fs_label,
+                                    app->settings.launcher_fullscreen, in, focused)) {
+                player_app_toggle_launcher_fullscreen(app);
+            }
+            focus++;
+            draw_text(ren, col1_x + 326.0f, y + 32.0f,
+                      "F11 / Alt+Enter", 0.9f, COLOR_TEXT_DIM);
+            y += 68.0f;
         }
         /* Volume stepper and audio text. */
         draw_text(ren, col1_x, y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);
@@ -2137,7 +2154,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Display toggles */
     float tog_y = fps_y + 90.0f;
-    draw_text(ren, col1_x, tog_y, "DISPLAY (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, tog_y, "GAME DISPLAY (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
     {
         char vsync_label[32];
         snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
@@ -2147,7 +2164,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
         char fs_label[64];
-        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
+        snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
@@ -2161,6 +2178,24 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
     }
+
+    float launcher_window_y = tog_y + 44.0f;
+    {
+        char launcher_fs_label[64];
+        snprintf(launcher_fs_label, sizeof(launcher_fs_label),
+                 "Launcher fullscreen: %s",
+                 app->settings.launcher_fullscreen ? "ON" : "OFF");
+        bool focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, col1_x + 220.0f, launcher_window_y + 24.0f,
+                                310.0f, 36.0f, launcher_fs_label,
+                                app->settings.launcher_fullscreen, in, focused)) {
+            player_app_toggle_launcher_fullscreen(app);
+        }
+        focus++;
+    }
+    draw_text(ren, col1_x + 220.0f, launcher_window_y + 64.0f,
+              "Toggle launcher fullscreen: F11 / Alt+Enter", 0.85f,
+              COLOR_TEXT_DIM);
 
     /* Audio */
     draw_text(ren, col2_x, col2_y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);

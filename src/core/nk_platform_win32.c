@@ -457,6 +457,9 @@ bool nk_platform_spawn_process(
         return false;
     }
 
+    /* The player may minimize itself after the runtime reports its first GUI
+       window. Allow that user-launched child to claim the foreground then. */
+    AllowSetForegroundWindow(pi.dwProcessId);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     out_process->native_handle = (void *)pi.hProcess;
