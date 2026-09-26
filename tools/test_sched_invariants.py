@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Source-level guards for scheduler / thread-lifecycle invariants (2026-07-18 campaign).
 
