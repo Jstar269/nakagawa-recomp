@@ -20,11 +20,20 @@ third-party-derived code without resolving its actual source/license chain.
 
 **You don't need to handle provenance controls.** Two files, `PUBLIC_EXPORT.json` and
 `assets/public_provenance_ledger.json`, are generated from a private trusted ledger that
-contributors don't have. Don't edit them by hand. If **Trusted provenance attestation** or the
-publication-safety step in **Hygiene and security** reports a provenance mismatch, a maintainer
-refreshes those files on your branch. If you add a new file, say in the pull request where it came
-from: written by you, or derived from which project, at which revision, and under which license. A
-maintainer then admits the path.
+contributors don't have. Don't edit them by hand, and don't run a generator to "fix" them: they
+are maintained by the maintainer with tooling you don't have. If **Trusted provenance
+attestation** or the publication-safety step in **Hygiene and security** reports a provenance
+mismatch, a maintainer refreshes those files on your branch. If you add a new file, say in the pull
+request where it came from: written by you, or derived from which project, at which revision, and
+under which license. A maintainer then admits the path.
+
+**What a provenance failure means for you.** When the only findings are
+`TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED`, or a new path the publication scope has not
+admitted yet, the job summary now says so in one line: *a maintainer will admit these N new files;
+nothing for you to do*. That is the gate's real answer, not a reprieve — the check still fails
+closed until the admission lands. Any other finding (`CONTENT_MISMATCH`, `CLAIM_UNBACKED`,
+`EXPORT_FIELD_MISMATCH`, a policy or CI finding) is about your change and is yours to fix. The
+summary distinguishes the two so a new file never reads as a mistake you made.
 
 ### What the pull-request checks mean
 
@@ -86,6 +95,36 @@ auto-detected Vulkan SDK/loader. The native player is the repository's only user
 - Prefer general behavior/correctness fixes over address-specific compatibility overrides. Any unavoidable game-specific behavior needs evidence, a regression/route, and a retirement criterion.
 
 ## Verify
+
+### The fast path: one command
+
+```bash
+make contrib-check          # Linux
+mingw32-make contrib-check   # Windows (MSYS2 UCRT64 on PATH)
+```
+
+`contrib-check` looks at the files your branch changed against `origin/main` and runs only the
+gates that apply to them — Ruff, the Python test modules matching the changed `tools/` modules, a
+strict `-Werror` C compile of the changed C, markdownlint and the documentation-freshness lint for
+changed Markdown, and the publication-safety audit. It finishes in minutes, and a documentation
+change usually takes seconds. It is a *subset*: `make check` and `make readiness` remain the
+authoritative gates, and CI still runs the hosted matrix.
+
+Every gate reports one of four outcomes, and they are not interchangeable:
+
+| Outcome | Meaning |
+| --- | --- |
+| `PASS` | The gate ran and the change satisfies it. |
+| `FAIL` | The gate ran and the change does not satisfy it. This fails the target. |
+| `SKIP` | The tool is not installed in this environment. **Not a pass** — install it and re-run. |
+| `NOT_RUN` | Your change does not touch that surface. |
+| `MAINTAINER-SIDE` | Publication findings only a maintainer can clear, by regenerating the controls. Printed, never hidden, and never counted as your failure. |
+
+Path routing is `tools/ci_paths.py`, the same classifier the hosted workflow uses, so the local
+selection cannot drift from the hosted one. Set `CONTRIB_BASE` to measure against a different base
+(`CONTRIB_BASE=upstream/main make contrib-check`).
+
+### The full gates
 
 Run checks proportional to the change:
 
