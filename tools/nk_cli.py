@@ -647,6 +647,9 @@ def _current_package_cache_key(
     }
     environment = _runtime_build_environment()
     options = _package_codegen_options(manifest, environment)
+    options["planner_sha256"] = package_cache.sha256_file(
+        ROOT / "tools" / "title_codegen_plan.py"
+    )
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
         codegen_options=options,
@@ -1489,7 +1492,7 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         "is_experimental": is_experimental,
     })
     _write_private_file(library_path, json.dumps({"schema_version": 1, "games": games},
-                                                sort_keys=True, separators=(",", ":")).encode("utf-8"))
+                                                separators=(",", ":")).encode("utf-8"))
 
 
 def _write_experimental_module_bindings(profile_path: Path, profile: dict,
