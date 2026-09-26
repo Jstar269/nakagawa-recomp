@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0d6f0f1b7419f2cb1919f43917fa8de0ad5c6f8912d24cbcf408f15ca8941042"
+      "sha256": "61d48ca4d5e7984f9349ce7c6a422c79ba54d36278799eac81c0eb3ae330edd1"
     },
     {
       "path": "NOTICE.md",
@@ -922,7 +922,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1b93d9075710cfe55b029585dfda73b6049e0aa450c965f9153692ab75e38e3c"
+      "sha256": "e08b5cbacc74c064e2b28eff6a2252fa44b0f6231abdf3e93118dac12120d727"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -3954,7 +3954,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e8a6a147b0309f2baa95e93bf08bc138a8271dae1b404ac55a0b15f08ebad7a9"
+      "sha256": "5108315bcafb4e01502d2e8938ec0e0d65838decfec8471cc1b67e31256c986a"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -6035,7 +6035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "868bef321659728dbf855d9204b83b9d96dce03edf459399e9b534a6f72dc3fd"
+      "sha256": "930be2cae73febaf58a9e1aa82c89afbcf273dd1fad0bfaad0e73c4086dc3909"
     },
     {
       "path": "tools/nk_core/__init__.py",
