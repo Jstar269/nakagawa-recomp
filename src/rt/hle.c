@@ -10432,6 +10432,8 @@ static const struct { const char *name; uint32_t bit; } s_route_btn[] = {
     { "CIRCLE",   NK_PSP_BTN_CIRCLE_BIT   },
     { "CROSS",    NK_PSP_BTN_CROSS_BIT    },
     { "SQUARE",   NK_PSP_BTN_SQUARE_BIT   },
+    { "HOME",     NK_PSP_BTN_HOME_BIT     },
+    { "HOLD",     NK_PSP_BTN_HOLD_BIT     },
 };
 #define ROUTE_NBTN ((int)(sizeof s_route_btn / sizeof s_route_btn[0]))
 
@@ -10501,7 +10503,7 @@ static void route_describe_mask(uint32_t mask, char *out, size_t n) {
 
 /* The names a mask argument may use, for the refusal that has to teach the fix. */
 static const char *route_button_names(void) {
-    return "SELECT START UP RIGHT DOWN LEFT L R TRIANGLE CIRCLE CROSS SQUARE, "
+    return "SELECT START UP RIGHT DOWN LEFT L R TRIANGLE CIRCLE CROSS SQUARE HOME HOLD, "
            "joinable with '+'";
 }
 

@@ -431,8 +431,8 @@ publish from):
 | `SELECT` | `0x0001` | `L` | `0x0100` | `CIRCLE` | `0x2000` |
 | `START` | `0x0008` | `R` | `0x0200` | `CROSS` | `0x4000` |
 | `UP` | `0x0010` | `TRIANGLE` | `0x1000` | `SQUARE` | `0x8000` |
-| `RIGHT` | `0x0020` | | | | |
-| `DOWN` | `0x0040` | | | | |
+| `RIGHT` | `0x0020` | `HOME` | `0x10000` | | |
+| `DOWN` | `0x0040` | `HOLD` | `0x20000` | | |
 | `LEFT` | `0x0080` | | | | |
 
 ```text
