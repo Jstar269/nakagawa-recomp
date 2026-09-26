@@ -123,6 +123,11 @@ ifneq ($(filter default undefined,$(origin CC)),)
 CC := gcc
 endif
 PYTHON     ?= python
+ifeq ($(OS),Windows_NT)
+POWERSHELL ?= powershell.exe
+else
+POWERSHELL ?= pwsh
+endif
 # Direct Make callers may provide VULKAN_SDK explicitly (or export it).
 # If unset, discover dynamically via tools/vulkan_sdk.py.
 ifeq ($(VULKAN_SDK),)
@@ -1563,7 +1568,7 @@ compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUI
 		$(ATRAC3P_OBJS) \
 		$(BUILD_DIR)/atrac3p_bridge.o \
 		$(LIBS)
-	pwsh -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
+	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME).exe')"
 
 clean:
