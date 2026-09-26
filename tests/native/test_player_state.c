@@ -1051,6 +1051,76 @@ int main(int argc, char **argv) {
         assert(cfg.master_volume == 55);
     }
 
+    /* 9c. The host input mapping the launched runtime receives is the one the
+     * selected disc asked for: its own per-title mapping when it has one, the
+     * global profile otherwise (#520). */
+    printf("[PLAYER_STATE_TEST] Subtest 9c: per-title mapping reaches the launch session\n");
+    fflush(stdout);
+    {
+        PlayerApp *mapped = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(mapped != NULL);
+        nk_library_init(&mapped->library);
+        input_settings_init(&mapped->input_settings);
+        snprintf(mapped->input_settings.profile_path,
+                 sizeof(mapped->input_settings.profile_path),
+                 "build/test_launch_global_profile.json");
+
+        GameRecord tennis;
+        memset(&tennis, 0, sizeof(tennis));
+        snprintf(tennis.disc_id, sizeof(tennis.disc_id), "UCUS98701");
+        snprintf(tennis.title_name, sizeof(tennis.title_name), "Mapping Fixture");
+
+        /* No per-title entry: the disc runs the global profile. */
+        assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path,
+                      "build/test_launch_global_profile.json") == 0);
+        assert(mapped->input_profile_notice[0] == '\0');
+
+        /* Give that disc its own mapping. */
+        assert(input_settings_set_scope(&mapped->input_settings, "UCUS98701"));
+        NkBindingSource left_stick;
+        left_stick.type = NK_BINDING_HOST_BUTTON;
+        left_stick.index = NK_HOST_BUTTON_LEFT_STICK;
+        assert(input_settings_assign_binding(&mapped->input_settings,
+                                             INPUT_CONTROL_BTN_CROSS, left_stick));
+        assert(input_settings_save(&mapped->input_settings, NULL) == NK_OK);
+
+        /* The session now names a profile file of its own for that disc, and the
+         * file the child would load is the disc's mapping, not the global one. */
+        assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
+        const char *profile_path = mapped->launch_session.config.input_profile_path;
+        assert(strstr(profile_path, "UCUS98701") != NULL);
+        assert(strcmp(profile_path, "build/test_launch_global_profile.json") != 0);
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+        NkInputProfile handed;
+        assert(nk_input_profile_load(&handed, profile_path, diag, sizeof(diag)) == NK_OK);
+        assert(handed.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+        assert(handed.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == NK_INPUT_DEFAULT_DEADZONE_INNER);
+
+        /* Another disc still gets the global profile: two mappings, one session. */
+        GameRecord boxing;
+        memset(&boxing, 0, sizeof(boxing));
+        snprintf(boxing.disc_id, sizeof(boxing.disc_id), "ULUS10041");
+        assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path,
+                      "build/test_launch_global_profile.json") == 0);
+
+        /* A disc ID the document has no entry for is not an error, and NULL
+         * arguments are safe no-ops that change nothing. */
+        char before[NK_MAX_PATH];
+        snprintf(before, sizeof(before), "%s",
+                 mapped->launch_session.config.input_profile_path);
+        assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path, before) == 0);
+        assert(player_app_apply_input_profile_to_session(mapped, NULL) != NK_OK);
+        assert(player_app_apply_input_profile_to_session(NULL, &tennis) != NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path, before) == 0);
+
+        remove(profile_path);
+        remove("build/test_launch_global_profile.json");
+        free(mapped);
+    }
+
     /* 10. Focus clamps into range so keyboard/gamepad activation can never
      * target a control the view no longer draws. */
     printf("[PLAYER_STATE_TEST] Subtest 10: focus clamps\n");
@@ -1129,26 +1199,26 @@ int main(int argc, char **argv) {
         stops->games[0] = entry;
         stops->game_count = 1;
         stops->selected_game_index = 0;
-        assert(player_app_focus_count(stops) == 2); /* incompatible package: add + remove */
+        assert(player_app_focus_count(stops) == 3); /* incompatible package: add + remove + mapping */
 
         stops->games[0].is_prepared = true;
-        assert(player_app_focus_count(stops) == 2); /* no validated package: add + remove */
+        assert(player_app_focus_count(stops) == 3); /* no validated package: add + remove + mapping */
 
         stops->is_game_running = true;
-        assert(player_app_focus_count(stops) == 3); /* stop + add + remove */
+        assert(player_app_focus_count(stops) == 4); /* stop + add + remove + mapping */
 
         /* Overflow adds the two paging stops. */
         stops->is_game_running = false;
         stops->window_width = 640;
         assert(player_app_visible_library_cards(stops) == 2);
         stops->game_count = 1;
-        assert(player_app_focus_count(stops) == 2);
+        assert(player_app_focus_count(stops) == 3); /* add + remove + mapping */
         seed_entry(&entry, "FCS00002", "Second");
         stops->games[1] = entry;
         seed_entry(&entry, "FCS00003", "Third");
         stops->games[2] = entry;
         stops->game_count = 3;
-        assert(player_app_focus_count(stops) == 4);
+        assert(player_app_focus_count(stops) == 5); /* + both paging stops */
 
         /* A title with missing package offers the BUILD PACKAGE button */
         stops->window_width = 1280;
@@ -1156,7 +1226,7 @@ int main(int argc, char **argv) {
         seed_entry(&entry, "ULUS10041", "Street Supremacy");
         snprintf(entry.title_id, sizeof(entry.title_id), "ulus-10041");
         stops->games[0] = entry;
-        assert(player_app_focus_count(stops) == 3); /* build package + add + remove */
+        assert(player_app_focus_count(stops) == 4); /* build package + add + remove + mapping */
 
         stops->active_view = VIEW_BUILDING_PACKAGE;
         assert(player_app_focus_count(stops) == 1); /* cancel build */
@@ -1172,7 +1242,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_SETTINGS;
         assert(player_app_focus_count(stops) == 13); /* 8x preset not offered */
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
-        assert(player_app_focus_count(stops) == 22);
+        assert(player_app_focus_count(stops) == 23); /* + the global / this-game choice */
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
         assert(player_app_focus_count(stops) == 1);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_EXTREMES;
@@ -1180,7 +1250,12 @@ int main(int argc, char **argv) {
         stops->input_settings.calib.stage = CALIBRATION_STAGE_RESULT;
         assert(player_app_focus_count(stops) == 2);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_INACTIVE;
+        assert(player_app_focus_count(stops) == 23);
+        /* With no library disc there is nothing to name, so the choice is not a
+         * focus stop and the count is the pre-#520 one. */
+        stops->selected_game_index = -1;
         assert(player_app_focus_count(stops) == 22);
+        stops->selected_game_index = 0;
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 

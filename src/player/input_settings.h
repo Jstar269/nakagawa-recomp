@@ -99,10 +99,18 @@ typedef struct {
 
 /**
  * In-memory controller settings editing state (SDL-free, unit-testable).
+ *
+ * `file` is the whole persisted profile document: the global mapping plus the
+ * optional per-title entries (#520). `profile` is the mapping the user is
+ * editing right now, which is either the global one (`editing_disc_id` empty) or
+ * the per-title entry named by `editing_disc_id`. Editing a per-title mapping
+ * therefore never touches the global one.
  */
 typedef struct {
+    NkInputProfileFile file;
     NkInputProfile profile;
     char profile_path[NK_MAX_PATH];
+    char editing_disc_id[NK_MAX_DISC_ID_LEN];
     char load_diagnostic[NK_INPUT_DIAGNOSTIC_MAX_LEN];
     char save_diagnostic[NK_INPUT_DIAGNOSTIC_MAX_LEN];
     bool loaded_from_file;
@@ -140,9 +148,79 @@ NkResult input_settings_load(InputSettingsState *state, const char *custom_path)
 /**
  * @brief Save profile to disk atomically (write to .tmp then rename).
  *
- * If custom_path is NULL or empty, uses state->profile_path.
+ * If custom_path is NULL or empty, uses state->profile_path. The mapping being
+ * edited is written back into its slot first, so per-title entries survive a
+ * save of the global mapping and vice versa.
  */
 NkResult input_settings_save(InputSettingsState *state, const char *custom_path);
+
+/**
+ * @brief Choose which mapping is being edited: the global one, or a disc's own.
+ *
+ * disc_id NULL or empty selects the global mapping. A disc that has no entry yet
+ * gets one seeded from the global mapping, so switching to a title always lands
+ * on an editable copy rather than an empty state. Any in-flight capture or
+ * calibration is cancelled, because it belonged to the previous scope.
+ * @return false for an unusable disc ID or a full per-title table; the previous
+ *         scope is kept in that case.
+ */
+bool input_settings_set_scope(InputSettingsState *state, const char *disc_id);
+
+/**
+ * @brief Switch between the global mapping and `disc_id`'s own mapping.
+ *
+ * Leaving a per-title scope for the global one drops that disc's entry, so a
+ * disc the user put back on the global mapping really launches on it.
+ * @return true when the scope changed; false when the switch was refused.
+ */
+bool input_settings_toggle_scope(InputSettingsState *state, const char *disc_id);
+
+/**
+ * @brief True when the state is editing a per-disc mapping rather than the
+ * global one.
+ */
+bool input_settings_is_title_scope(const InputSettingsState *state);
+
+/**
+ * @brief True when the document already carries a per-disc mapping for
+ * `disc_id`, which is what makes a launched disc use its own mapping.
+ */
+bool input_settings_has_title_mapping(const InputSettingsState *state, const char *disc_id);
+
+/**
+ * @brief Human-readable scope of the mapping being edited: "Global mapping" or
+ * the disc ID of the per-title mapping.
+ */
+const char *input_settings_scope_label(const InputSettingsState *state);
+
+/**
+ * @brief Effective mapping for `disc_id` in the loaded document, without
+ * changing which mapping is being edited.
+ */
+const NkInputProfile *input_settings_resolve_for_disc(
+    const InputSettingsState *state,
+    const char *disc_id,
+    char *diag_buf,
+    size_t diag_buf_sz
+);
+
+/**
+ * @brief Write the effective mapping for `disc_id` to
+ * <config>/input_profiles/<disc_id>.json and report the path.
+ *
+ * This is the file the player hands the launched runtime as NK_INPUT_PROFILE,
+ * so a per-title mapping reaches the child exactly like the global one does.
+ * Atomic (temp file plus rename); an unsafe disc ID, an unwritable directory or
+ * a refused mapping is an error with a diagnostic, never a partial file.
+ */
+NkResult input_settings_write_disc_profile(
+    const InputSettingsState *state,
+    const char *disc_id,
+    char *out_path,
+    size_t out_path_sz,
+    char *diag_buf,
+    size_t diag_buf_sz
+);
 
 /**
  * @brief Reset profile and calibration to defaults.
