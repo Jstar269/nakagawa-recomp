@@ -300,26 +300,22 @@ class SoakAuditTests(unittest.TestCase):
         self.assertIn("samples=1", out)
         self.assertIn("lead_peak_ms=100", out)
 
-    def test_both_backends_emit_the_fields_this_parser_reads(self) -> None:
+    def test_each_public_emitter_prints_the_fields_this_parser_reads(self) -> None:
         """The emitters' own format strings, not a copy of them.
 
         A drift number nobody can parse is the same as no drift number, so the format each
-        backend prints is read out of its source and fed to this module's patterns. Renaming a
-        field in C without teaching the audit fails here rather than in a soak.
+        public source prints is read out of that source and fed to this module's patterns.
+        Renaming a field in C without teaching the audit fails here rather than in a soak.
         """
         sys.path.insert(0, str(ROOT / "tools"))
         import soak_audit
 
-        mix = (ROOT / "src" / "rt" / "audio.c").read_text(encoding="utf-8")
+        # A run of the other backend's shape (AUDIOSTAT_WIN, one reading per ~5 s) is read
+        # the same way; that source is a private backend overlay and is not this tree's to pin.
+        self.assertEqual(soak_audit.lead_series(self._win(327, 100)), [100])
+        self.assertEqual(soak_audit.lead_series(self._win(627, 40)), [40])
+
         per_ch = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
-
-        win_fmt = self._format_for(mix, "AUDIOSTAT_WIN: vbl=%u frames=%lu")
-        self.assertIn("queued=%d", win_fmt)
-        self.assertIn("lead_ms=%ld", win_fmt)
-        line = self._as_python_format(win_fmt) % (327, 220500, 33043, 14, 409344, 4410, 100)
-        self.assertRegex(line, soak_audit.AUDIOSTAT_WIN)
-        self.assertEqual(soak_audit.lead_series(line), [100])
-
         host_fmt = self._format_for(per_ch, "AUDIOSTAT_HOST: state=%s driver=%s pushed=%llu")
         self.assertIn("queued=%d", host_fmt)
         self.assertIn("lead_ms=%ld", host_fmt)
