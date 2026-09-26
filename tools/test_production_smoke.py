@@ -1648,8 +1648,10 @@ class TestSanitizedBringup(unittest.TestCase):
 
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
-        self.assertEqual(report["failure_class"], "GUEST_MODULE_FORMAT_UNSUPPORTED")
-        self.assertEqual(report["issue_numbers"], [285, 295, 308])
+        # A still-encrypted "decrypted" copy is not a usable module: with no key
+        # file the module still needs the decryption boundary (#295).
+        self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
+        self.assertIn(295, report["issue_numbers"])
         nk_cli.validate_bringup_report(report)
 
     def test_catalog_bringup_stages_user_decrypted_prx(self):
