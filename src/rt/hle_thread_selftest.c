@@ -15391,6 +15391,93 @@ static void test_route_malformed_files_are_refused(void) {
     remove(RT_PATH);
 }
 
+/* A mask the parser cannot read must refuse the route, not press nothing.
+ *
+ * The failure this pins down is invisible from outside a run: `strtoul` reports no error,
+ * so any token that is not a number became mask 0, the step held no buttons, and the guest
+ * sat on its screen rendering and polling the pad -- byte-identical to a frozen game. Four
+ * separate campaign runs read a frozen title screen that way, because the route asked for
+ * "CROSS" (a name the file format never defined) and pressed nothing at all. The whole
+ * point of a route is that a press arrives; a route that cannot name a button must say so
+ * at load, and one that names it wrongly must not run as though it had.
+ */
+static void test_route_mask_must_be_a_hex_pad_mask(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* Every step that carries a mask refuses a token that is not one. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS CROSS 8\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a PRESS whose mask is a name is refused");
+    expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+    expect(sr_route_step(0, sigA) == 0u, "a refused route never reaches the guest as an empty press");
+
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS_UNTIL MAIN_MENU CROSS 8 240 1000\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a PRESS_UNTIL whose mask is a name is refused");
+
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS_WHILE MAIN_MENU CROSS 8 240 1000\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a PRESS_WHILE whose mask is a name is refused");
+
+    /* A bare pad script gets the same answer: its mask column is a mask too. */
+    sr_route_reset();
+    rt_write("8600 CROSS 16\n");
+    expect(sr_route_load(RT_PATH) == 0, "a bare pad script line whose mask is a name is refused");
+
+    /* Trailing junk, an empty column and an over-wide value are the same class of lie. */
+    sr_route_reset();
+    rt_write("8600 4000x8 16\n");
+    expect(sr_route_load(RT_PATH) == 0, "a mask with trailing junk is refused");
+    sr_route_reset();
+    rt_write("8600 0x 16\n");
+    expect(sr_route_load(RT_PATH) == 0, "a 0x prefix with no digits is refused");
+    sr_route_reset();
+    rt_write("8600 1000000000000 16\n");
+    expect(sr_route_load(RT_PATH) == 0, "a mask wider than 32 bits is refused instead of truncated");
+
+    /* The forms that were always legal still load and still reach the guest unchanged. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS 4000 16\n"
+             "PRESS 0x0008 8\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "hex masks with and without a 0x prefix load");
+    expect(sr_route_step(0, sigA) == 0x4000u, "a bare hex mask still reaches the guest");
+    for (uint32_t v = 1; v < 16; v++)
+        expect(sr_route_step(v, sigA) == 0x4000u, "the named-width press is held");
+    expect(sr_route_step(16, sigA) == 0x0008u, "the next press starts with its own mask");
+    for (uint32_t v = 17; v < 24; v++)
+        expect(sr_route_step(v, sigA) == 0x0008u, "the 0x-prefixed mask is held for its width");
+    expect(sr_route_step(24, sigA) == 0u, "the second press is released after its width");
+    expect(sr_route_status() == RT_DONE, "a legal mask route completes");
+
+    sr_route_reset();
+    rt_write("1 0x0008 8\n240 0008 8\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script with hex masks still loads");
+    expect(sr_route_status() == RT_LEGACY, "and keeps its original absolute-frame behaviour");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
     rt_write("1 0x0008 8\n240 0x0008 8\n8600 0x4000 16\n");
@@ -16077,6 +16164,7 @@ int main(int argc, char **argv) {
     test_route_press_until_timeout_fails_loudly();
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
+    test_route_mask_must_be_a_hex_pad_mask();
     test_route_legacy_pad_script_is_unchanged();
     test_route_samples_by_elapsed_vcount_cadence();
 

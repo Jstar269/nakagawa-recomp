@@ -10412,6 +10412,30 @@ static int route_hex_nib(int c) {
     return -1;
 }
 
+/* A pad mask the route asks for, as a number. `strtoul` is not enough: it reports no error,
+ * so a token it cannot read at all becomes 0 and the step presses NOTHING while the run
+ * continues, looking exactly like a guest that has frozen. A route is the only way a title's
+ * screens get driven without a person, and "the press never arrived" is indistinguishable
+ * from a hang from outside, so an unreadable mask refuses the route at load instead
+ * (docs/DEBUGGING.md, "A press that arrives and is ignored"). Hex digits only, with an
+ * optional 0x prefix and at most 8 of them, so nothing is silently truncated either. */
+static int route_parse_mask(const char *tok, uint32_t *out) {
+    if (!tok || !tok[0]) return -1;
+    const char *p = tok;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    int digits = 0;
+    unsigned long long v = 0;
+    for (; *p; p++) {
+        int d = route_hex_nib((unsigned char)*p);
+        if (d < 0) return -1;
+        if (++digits > 8) return -1;
+        v = (v << 4) | (unsigned)d;
+    }
+    if (digits == 0) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
 /* Exactly `want` bytes of hex and nothing else: a truncated signature would silently
  * compare only its prefix and match screens it has never seen. */
 static int route_parse_sig(const char *hex, uint8_t *out, int want) {
@@ -10547,7 +10571,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             return -1;
         }
         s_route_legacy[s_route_nlegacy].f    = (uint32_t)strtoul(tok, NULL, 10);
-        s_route_legacy[s_route_nlegacy].mask = (uint32_t)strtoul(m, NULL, 16);
+        if (route_parse_mask(m, &s_route_legacy[s_route_nlegacy].mask) != 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: '<frame> <hexmask> <width>': '%s' is not a hex "
+                            "pad mask\n", path, lineno, m);
+            return -1;
+        }
         s_route_legacy[s_route_nlegacy].w    = (uint32_t)strtoul(w, NULL, 10);
         s_route_nlegacy++;
         return 0;
@@ -10659,7 +10687,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 return -1;
             }
             snprintf(st.name, ROUTE_NAME_MAX, "%s", name);
-            st.a = (uint32_t)strtoul(m, NULL, 16);
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: %s <NAME> <hexmask> <width> <period> "
+                                "<timeout>: '%s' is not a hex pad mask\n", path, lineno, tok, m);
+                return -1;
+            }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             st.c = (uint32_t)strtoul(p, NULL, 10);
             st.d = (uint32_t)strtoul(t, NULL, 10);
@@ -10671,7 +10703,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             st.op = ROUTE_OP_PRESS;
             char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
             if (!m || !w) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS <hexmask> <width>\n", path, lineno); return -1; }
-            st.a = (uint32_t)strtoul(m, NULL, 16);
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS <hexmask> <width>: '%s' is not a hex "
+                                "pad mask\n", path, lineno, m);
+                return -1;
+            }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             if (st.b < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS width must be >= 1\n", path, lineno); return -1; }
         } else if (strcmp(tok, "DELAY") == 0) {
