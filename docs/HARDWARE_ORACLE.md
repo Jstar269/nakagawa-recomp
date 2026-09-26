@@ -32,6 +32,20 @@ proposals. Each claim covers only the exact fixture named:
   overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
   route and date. Bulk random differential fuzz (Loop A) remains unbuilt, and
   the PPSSPP-derived-table warning stands for every unmeasured encoding.
+- **Out-of-domain transcendental arguments** (issue #69): NOT_MEASURED, and the
+  runtime therefore fails closed rather than inventing a result. The
+  `vasin` unit reduces its argument to a fixed 9.23 index and a 128-entry
+  segment table, so every `|x| > 1` encoding is outside the reconstructed
+  domain; the runtime returns the PSP invalid NaN `0x7F800001` with the input
+  sign. Upstream describes that branch as a guess (its own accuracy sweeps stop
+  at `|x| = 1`) and `pspdev` `vfpu-docs` states no edge case for it, so the
+  real silicon result is unknown here. A qualified private-title route reaches
+  it: the `NAN_TRAP` diagnostic on the main-menu transition shows every
+  arc-sine argument of the guest's rotation solve leaving the domain
+  (`|x|` in `[1.026, 2.0]`), which propagates to the bone matrices the title
+  uploads. Closing this needs a Loop B microtest over the existing oracle
+  vector, which already carries `+2.0` and `-10.0`; the answer must be
+  measured before any value is baked in.
 - **Display/vblank masking** (detail: `ARCHITECTURE.md` display-mask section
   and the shipped `PSP-DISPLAY-001` oracle results): masked-window behavior is
   HARDWARE_MEASURED (+0 when no period crossed, +1 when one or two crossed,
