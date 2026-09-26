@@ -87,7 +87,7 @@ def parse_frames(output: str) -> list[dict[str, str]]:
     for line in output.splitlines():
         if not line.startswith("[PLAYER_UI_TEST] frame="):
             continue
-        fields = dict(re.findall(r"([a-z_]+)=([^ ]+)", line))
+        fields = dict(re.findall(r"([a-z_]+)=(\S+)", line))
         if "frame" not in fields or "view" not in fields:
             raise AssertionError(f"malformed player frame record: {line}")
         frames.append(fields)
@@ -351,6 +351,9 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[0]["error"], code)
                 self.assertEqual(frames[1]["view"], "library")
                 self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
+                # Only a missing or corrupt source reopens the file picker.
+                expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
+                self.assertEqual(frames[1]["picker"], expected_picker)
 
     def test_quit_from_library_runs_through_sdl_event_loop(self) -> None:
         run = self.run_player("library", ("KEY_ESCAPE",))
