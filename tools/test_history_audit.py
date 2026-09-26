@@ -117,5 +117,68 @@ class TestHistoryAudit(unittest.TestCase):
             )
 
 
+    def _repo_with_removed_blob(self, root, name, text):
+        run_git(("init", "-q"), cwd=root, check=True, capture_output=True)
+        (root / "safe.txt").write_text("safe\n", encoding="utf-8")
+        run_git(["add", "safe.txt"], cwd=root, check=True)
+        run_git(["commit", "-qm", "safe"], cwd=root, check=True)
+        (root / name).write_text(text, encoding="utf-8")
+        run_git(["add", name], cwd=root, check=True)
+        run_git(["commit", "-qm", "temporary"], cwd=root, check=True)
+        blob = run_git(["rev-parse", "HEAD:" + name], cwd=root, check=True,
+                       capture_output=True, text=True).stdout.strip()
+        run_git(["rm", "-q", name], cwd=root, check=True)
+        run_git(["commit", "-qm", "remove"], cwd=root, check=True)
+        return blob
+
+    def _write_reviewed(self, path, entries):
+        import json
+        path.write_text(json.dumps({"schema_version": 1, "reviewed": entries}), encoding="utf-8")
+
+    def test_reviewed_blob_is_reported_but_not_a_finding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            fixture = " ".join(("private", "trace", "path")) + "\n"
+            blob = self._repo_with_removed_blob(root, "notes.txt", fixture)
+            reviewed = Path(tmp) / "reviewed.json"
+            self._write_reviewed(reviewed, [{
+                "blob": blob, "code": "HISTORICAL_BLOB_PRIVATE_VOCABULARY",
+                "path": "notes.txt", "reason": "synthetic fixture"}])
+            report = history_audit.generate_full_history_audit_report(root, reviewed)
+            self.assertEqual(report["status"], "OK")
+            self.assertEqual(report["summary"]["reviewed_findings"], 1)
+            self.assertEqual(report["reviewed_findings"][0]["reason"], "synthetic fixture")
+
+    def test_review_of_one_blob_never_excuses_other_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            fixture = " ".join(("private", "trace", "path")) + "\n"
+            self._repo_with_removed_blob(root, "notes.txt", fixture)
+            reviewed = Path(tmp) / "reviewed.json"
+            self._write_reviewed(reviewed, [{
+                "blob": "0" * 40, "code": "HISTORICAL_BLOB_PRIVATE_VOCABULARY",
+                "path": "notes.txt", "reason": "different content"}])
+            report = history_audit.generate_full_history_audit_report(root, reviewed)
+            self.assertEqual(report["status"], "FAIL")
+            self.assertEqual(report["summary"]["reviewed_findings"], 0)
+
+    def test_malformed_reviewed_file_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reviewed = Path(tmp) / "reviewed.json"
+            self._write_reviewed(reviewed, [{"blob": "abc", "code": "X", "path": "p", "reason": "r"}])
+            with self.assertRaises(ValueError):
+                history_audit.load_reviewed_findings(reviewed)
+            self._write_reviewed(reviewed, [{"blob": "a" * 40, "code": "X", "path": "p", "reason": " "}])
+            with self.assertRaises(ValueError):
+                history_audit.load_reviewed_findings(reviewed)
+
+    def test_plain_title_file_name_is_not_private_vocabulary(self):
+        self.assertIsNone(history_audit.PRIVATE_OPERATIONAL_VOCABULARY.search(
+            "archive = " + "GAMEDATA" + ".BDL"))
+        self.assertIsNotNone(history_audit.PRIVATE_OPERATIONAL_VOCABULARY.search(
+            "HST" + "_PGD_VKEY_HEX"))
+
 if __name__ == "__main__":
     unittest.main()
