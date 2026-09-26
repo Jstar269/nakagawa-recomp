@@ -463,19 +463,19 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "4d9fa2e76cffe2e4d4fb354bd790eafc928867fdf714380526b1a8958555f6ec"
+      "sha256": "3050b272cb8f5bd2542ba86814f43219ef4c6e418a85cb72a61367a03ae56561"
     },
     {
-      "path": "assets/pypi_tool_metadata_2026-09-24.json",
+      "path": "assets/pypi_tool_metadata_2026-09-25.json",
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "pypi-tool-metadata-snapshot-392",
+        "record_id": "pypi-tool-metadata-snapshot-20260925",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c8224fe00c1a765ac8b20f8d7f951a21c0d40e634998ab00ca231510e31573d"
+      "sha256": "ba1aa42045b218c4960e6f3a1ae48283da6c8a75191a84817c179de6d16ab37b"
     },
     {
       "path": "assets/release_manifest.json",
@@ -496,7 +496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b478bfbe293a536f0bb7b4dd7e3155cae8344fdc9dd4e58b09b1c36813f25029"
+      "sha256": "1a90807fefe6876e73b56c8e33f3054800970dce8a4600dd28674f54e80f949a"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -5349,7 +5349,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "657804981b54d59ae20c8d8d7a0936f8c15706f609854ac406e6031f5d2f0e48"
+      "sha256": "0f18c7fec36b761da2a48ae1bb1158a5df3d8de403fa6a206023394fce5e58d3"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -7740,7 +7740,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "722cef991bb6fd713e62dd86de08d720fdf97d55659b230204e7265e60fe3ee1"
+      "sha256": "d63d5740643d4638f332588f773522a91dcedff3d6708c1afeb00d925d0fd1f3"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -7764,7 +7764,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7c984c03b71d7a01e490149214e6a8420930e904b00c978eddb33bf1c50f4d97"
+      "sha256": "9fd31887cd86880f548ea70582d20e9404b344829c9eace4b6520b69f389ec71"
     },
     {
       "path": "tools/test_sched_invariants.py",
