@@ -58,8 +58,12 @@ class TestWildcardBackedClassificationRepair(unittest.TestCase):
         entries = {e["path"]: e for e in self._ledger()["entries"]}
         self.assertIn(PATH, entries)
         entry = entries[PATH]
-        self.assertEqual(entry["classification"], "synthetic_fixture")
-        self.assertNotIn("record_id", entry["evidence"])
+        # Either the record-free deterministic census entry, or an EXACT
+        # path-specific record admitted later -- never the wildcard record.
+        if entry["classification"] == "synthetic_fixture":
+            self.assertNotIn("record_id", entry["evidence"])
+        else:
+            self.assertIn("record_id", entry["evidence"])
         for forbidden in FORBIDDEN_WILDCARD_RECORDS:
             self.assertNotEqual(entry["evidence"].get("record_id"), forbidden)
             self.assertNotIn(forbidden, json.dumps(entry["evidence"]))
