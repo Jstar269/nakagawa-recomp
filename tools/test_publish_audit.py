@@ -166,6 +166,51 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
 
+    def test_local_only_keystore_path_class_fails_closed(self):
+        # Issue #295: a key file can never be committed or packaged, under
+        # any directory, whatever it is called.
+        for path in (
+            "assets/psp-keyfile.json",
+            "keys/psp-keyfile.json",
+            "docs/example_keystore.json",
+            "tools/backup.keys",
+            "my_key_file",
+            "keys.json",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNotNone(publish_audit._forbidden_path(path))
+        # Outside the forbidden-prefix class, the key-file class names itself.
+        self.assertEqual(
+            publish_audit._forbidden_path("assets/psp-keyfile.json"),
+            "local-only key file (issue #295)",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("docs/example_keystore.json"),
+            "local-only key file (issue #295)",
+        )
+        # Engine sources and docs may carry the vocabulary without being key files.
+        for path in (
+            "src/core/nk_psp_keystore.c",
+            "src/core/nk_psp_keystore.h",
+            "tools/nk_core/decrypt_boundary.py",
+            "docs/SETUP.md",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(publish_audit._forbidden_path(path))
+
+    def test_keystore_content_class_covers_any_data_file(self):
+        # A loadable KeyStore always names its format; tracked under any
+        # non-source name it would ship key material, so it fails closed.
+        keystores = '{\n  "format": "nakagawa-psp-keystore-1",\n  "entries": {}\n}\n'
+        self.assertTrue(publish_audit.is_keystore_content("assets/notes.json", keystores))
+        self.assertTrue(publish_audit.is_keystore_content("assets/backup.dat", keystores))
+        # Source and prose files may name the format without carrying keys.
+        self.assertFalse(publish_audit.is_keystore_content("src/core/nk_psp_keystore.c", keystores))
+        self.assertFalse(publish_audit.is_keystore_content("tools/test_psp_decrypt.py", keystores))
+        self.assertFalse(publish_audit.is_keystore_content("docs/SETUP.md", keystores))
+        # Unrelated data without the marker stays allowed.
+        self.assertFalse(publish_audit.is_keystore_content("assets/manifest.json", '{"id": "x"}\n'))
+
     def test_direct_private_key_assignment_is_detected_without_storing_the_value(self):
         source = "VKEY = bytes.fromhex('0123456789abcdef' * 2)\n"
         self.assertEqual(publish_audit.private_key_assignment_lines(source, "test.py"), [])

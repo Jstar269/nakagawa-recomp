@@ -45,6 +45,16 @@ CORE_SOURCES = [
     "src/core/nk_json.c",
     "src/core/nk_font.c",
     "src/core/nk_input_profile.c",
+    "src/core/nk_psp_crypto.c",
+    "src/core/nk_psp_keystore.c",
+    "src/core/nk_psp_aes.c",
+    "src/core/nk_psp_sha1.c",
+    "src/core/nk_psp_ec.c",
+    "src/core/nk_psp_kirk.c",
+    "src/core/nk_psp_prx.c",
+    "src/core/nk_psp_kle.c",
+    "src/core/nk_psp_inflate.c",
+    "src/core/nk_psp_container.c",
     "src/core/generated/nk_title_catalog.c",
 ]
 
