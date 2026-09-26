@@ -493,7 +493,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fce2e9942d078f96bf2a7c3974043a90d936f49b62d617c60efd95977a1cb9b7"
+      "sha256": "20dec5d094a884a043097ae791682ecb90c0a28fd9ab4d6adb61a52eec2d011e"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -904,7 +904,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b44b59fabb96e28a93f8245721ce3e0251e5f04f6badb57c2794ca2c61163806"
+      "sha256": "e93ccca4eb3904db2668b2a92ea1e5ee57c27a13212d37d44e4dd9a2aaf0792a"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -952,7 +952,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a6898ecee236f79081e3f2f19f39f022bae5c9c6ebd1d9d99ae12c4f325a27dc"
+      "sha256": "ffcd554b1fa3021d035ddf916b1bd5611749c8f611c259c2ea5eeb453ebc28c0"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -3692,7 +3692,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6b6504feefec7289d937c11965d82d5c34ce23dd35a89554494a1e2980a84b0f"
+      "sha256": "b59e2fb5cd4a533a5be9cc82230d4feeb305d64cfed51554adc5b0d872e87990"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -3704,7 +3704,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57b31f54f918e324f1d5b04435088f3ebf41cb1ee3d4ed54e52412c1c1ad2686"
+      "sha256": "2b45e7333d930fea7026c84dcccdec0f91b000b6879b01b3857b162ac5f6349a"
     },
     {
       "path": "src/rt/fp_convert.h",
@@ -3754,7 +3754,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d5d08b405e75fd740f313e46b992e486d418111382ec39fb7e94c1ba8fc0e8fe"
+      "sha256": "0dd8b0dc2cc910a4039411186474e8a50fc374fb5c1147f7bb75f5bea7e7eb7d"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -3815,7 +3815,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d5215129e2927a3ab943cf3420cf51aedf85750be260e961fb808d38346f8ca2"
+      "sha256": "b4ca0b829a738df72c813bd6db8f2705034b1262e4e1aba6a112bb793c187495"
     },
     {
       "path": "src/rt/gpu_capture_selftest.c",
@@ -3865,7 +3865,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "cc5e135f7e25ae1d3d2febb33c1b67d37e534484adac7eddbc50076eb49a582f"
+      "sha256": "3da9a945e600ba686ccc743e7ddf1b1fb39276d5c487bcf800d067396b91ae9a"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -4410,7 +4410,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8c97b3236a9a7f2d8f27bb7ee1686bd18f756c4dacba74ec6e998f9da54434d3"
+      "sha256": "b9c82ebf28bd04f6dfd411055201506ae1e874438678a723c0609f113f5e889f"
     },
     {
       "path": "src/rt/recomp.h",
@@ -4423,7 +4423,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e5d1dfcbab21e9bb8f95ecdcd62018078152754ddad8ae8bf0237ac63f963244"
+      "sha256": "aa6e533b0cbb5be2260f102bf5f01430c0869cecb1caeead02cf702da8c12210"
     },
     {
       "path": "src/rt/savedata.c",
@@ -7184,6 +7184,18 @@
       "sha256": "7a14eb08ffe2d52c393d0a835a7e557115be678d8bccf1f0a940615cf032e936"
     },
     {
+      "path": "tools/test_ge_nonfinite_vertex.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-nonfinite-vertex-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9159f4bdfa630ff676ae8cbd9308c7a055cb20a9a2723ed5fff7044816f65395"
+    },
+    {
       "path": "tools/test_ge_transition_trace.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8480,6 +8492,18 @@
         "upstream_attribution": null
       },
       "sha256": "6de57b612cd66092844ce315aebaa0d9703f9add09d79e2d531a9ca3d25f1edd"
+    },
+    {
+      "path": "tools/test_trace_window_probe.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "trace-window-probe-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "dff3ddf78504825d73031f140252867d8ab130d01aa55e46fc7bc8409f0e6e4a"
     },
     {
       "path": "tools/test_validate_assets.py",

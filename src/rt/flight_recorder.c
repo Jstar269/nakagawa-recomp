@@ -48,6 +48,98 @@ typedef struct {
     const char *name;
 } SrFlightClassName;
 
+/* ---- SR_TRACE_PC: the address window over the instruction trace ----
+ * The contract is documented in flight_recorder.h. The stream is opened here so
+ * this diagnostic does not depend on the trace writer being linked, which every
+ * host of the runtime links instead. */
+static FILE *s_tw_fp;
+static int s_tw_configured;
+static int s_tw_armed;
+static int s_tw_skip;
+static uint32_t s_tw_lo, s_tw_hi;
+static SrTraceWindowIndices s_tw_indices;
+static unsigned long s_tw_limit, s_tw_count;
+
+static void sr_trace_window_list(const char *text, uint8_t *out, unsigned *count) {
+    *count = 0;
+    if (!text || !text[0]) return;
+    while (*text && *count < SR_TRACE_WINDOW_MAX_INDEX) {
+        char *end = NULL;
+        const unsigned long value = strtoul(text, &end, 0);
+        if (end == text) return;
+        if (value < 128u) out[(*count)++] = (uint8_t)value;
+        text = end;
+        while (*text == ',' || *text == ' ') text++;
+    }
+}
+
+void sr_trace_window_configure(void) {
+    if (s_tw_configured) return;
+    s_tw_configured = 1;
+    const char *window = getenv("SR_TRACE_PC");
+    if (!window || !window[0]) return;
+    const char *path = getenv("SR_TRACE");
+    if (!path || !path[0]) path = "logs/trace_window.txt";
+    const char *sep = strchr(window, ':');
+    if (!sep) sep = strchr(window, '-');
+    if (!sep) {
+        fprintf(stderr, "TRACE_WINDOW: SR_TRACE_PC needs LO:HI, got '%s'\n", window);
+        return;
+    }
+    const uint32_t lo = (uint32_t)strtoul(window, NULL, 0);
+    const uint32_t hi = (uint32_t)strtoul(sep + 1, NULL, 0);
+    if (hi < lo) {
+        fprintf(stderr, "TRACE_WINDOW: empty window %s\n", window);
+        return;
+    }
+    sr_trace_window_list(getenv("SR_TRACE_V"), s_tw_indices.v, &s_tw_indices.vn);
+    sr_trace_window_list(getenv("SR_TRACE_F"), s_tw_indices.f, &s_tw_indices.fn);
+    const char *limit = getenv("SR_TRACE_LIMIT");
+    s_tw_limit = limit && limit[0] ? strtoul(limit, NULL, 0) : 0ul;
+    s_tw_fp = fopen(path, "wb");
+    if (!s_tw_fp) {
+        fprintf(stderr, "TRACE_WINDOW: cannot open '%s'\n", path);
+        return;
+    }
+    fprintf(s_tw_fp, "# trace-window v1 lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u\n",
+            lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn);
+    s_tw_lo = lo;
+    s_tw_hi = hi;
+    s_tw_armed = 1;
+    fprintf(stderr, "TRACE_WINDOW: armed lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u path=%s\n",
+            lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn, path);
+}
+
+void sr_trace_note_frame(uint32_t frame) {
+    if (!s_tw_armed || !s_tw_fp) return;
+    fprintf(s_tw_fp, "frame %u\n", frame);
+}
+
+int sr_trace_window_armed(void) { return s_tw_armed; }
+
+int sr_trace_window_begin_instruction(uint32_t pc) {
+    s_tw_skip = pc < s_tw_lo || pc > s_tw_hi;
+    return !s_tw_skip;
+}
+
+const SrTraceWindowIndices *sr_trace_window_indices(void) {
+    return s_tw_armed ? &s_tw_indices : 0;
+}
+
+void sr_trace_window_record(uint32_t pc, const char *text) {
+    (void)pc;
+    if (!s_tw_armed || s_tw_skip || !s_tw_fp) return;
+    fprintf(s_tw_fp, "%s\n", text);
+    if (s_tw_limit && ++s_tw_count >= s_tw_limit) {
+        fprintf(s_tw_fp, "# window complete records=%lu\n", s_tw_count);
+        fflush(s_tw_fp);
+        /* Disarm rather than close: the trace writer's own stream is untouched,
+         * and the gate stops admitting in-window instructions, so the rest of
+         * the run executes uninstrumented. */
+        s_tw_armed = 0;
+    }
+}
+
 static SrFlightEvent s_flight_events[SR_FLIGHT_MAX_EVENTS];
 static uint32_t s_flight_classes;
 static uint32_t s_flight_limit = 256u;
