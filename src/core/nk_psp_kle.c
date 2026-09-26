@@ -178,7 +178,10 @@ static void output_raw(u32 *inputVal, u32 *range, u8 *probs, KleIn *in, u32 *cur
 int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, int inSize, void **end, int isKl4e)
 {
     u8 litProbs[2040];
-    u8 copyDistBitsProbs[304];
+    /* Slot 0 is padding: the length-code fallback below uses a base one byte
+     * below the table, so the table carries a leading spare byte and the base
+     * index is 1 + copyCountBits.  Every offset into the table is unchanged. */
+    u8 copyDistBitsProbs[1 + 304];
     u8 copyDistProbs[144];
     u8 copyCountBitsProbs[64];
     u8 copyCountProbs[256];
@@ -281,12 +284,12 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, int inSize, void **end, i
                 copyCount |= 1;
                 if (copyCountBits <= 0) {
                     powLimit = isKl4e ? 256 : 128;
-                    curCopyDistBitsProbs = &copyDistBitsProbs[56 + copyCountBits];
+                    curCopyDistBitsProbs = &copyDistBitsProbs[1 + 56 + copyCountBits];
                 }
             } else {
                 if (copyCountBits <= 0) {
                     powLimit = 64;
-                    curCopyDistBitsProbs = &copyDistBitsProbs[copyCountBits];
+                    curCopyDistBitsProbs = &copyDistBitsProbs[1 + copyCountBits];
                 }
             }
             if (copyCountBits > 0) {
@@ -306,12 +309,12 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, int inSize, void **end, i
                         }
                     }
                 }
-                curCopyDistBitsProbs = &copyDistBitsProbs[56 + copyCountBits];
+                curCopyDistBitsProbs = &copyDistBitsProbs[1 + 56 + copyCountBits];
                 powLimit = isKl4e ? 256 : 128;
             }
         } else {
             powLimit = 64;
-            curCopyDistBitsProbs = &copyDistBitsProbs[copyCountBits];
+            curCopyDistBitsProbs = &copyDistBitsProbs[1 + copyCountBits];
         }
         // Find out the number of bits used for distance codes.
         s32 curPow = 8;
