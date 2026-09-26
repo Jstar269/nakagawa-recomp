@@ -2485,7 +2485,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a1fe412f3f55bff8a7be97ed3ef2b53ad0fea0149d19a3ba5a6efed0324eacb"
+      "sha256": "5e3ed27b16ab0dbd75163bd9a710f1f04c223022de40271f352ec48817a280df"
     },
     {
       "path": "src/player/ui_renderer.h",

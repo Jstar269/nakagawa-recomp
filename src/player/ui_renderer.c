@@ -1124,7 +1124,7 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
     draw_rounded_fill(ren, 24.0f, 22.0f, 18.0f, 18.0f, 5.0f, COLOR_LIME);
     draw_text(ren, 52.0f, 16.0f, "NAKAGAWA RECOMP", 1.8f, COLOR_TEXT_WHITE);
     if (w >= 700.0f) {
-        draw_text(ren, 52.0f, 40.0f, "AUTHENTIC PSP PLAYER", 1.0f, COLOR_TEXT_MUTED);
+        draw_text(ren, 52.0f, 40.0f, "PSP RECOMPILATION PLAYER", 1.0f, COLOR_TEXT_MUTED);
     }
 
     /* Mode indicator: hidden on narrow windows so it can never sit under
@@ -1352,7 +1352,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
     } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
-                             "PlayStation Portable Classic · High-Definition Modern PC Recompilation",
+                             "PSP title · Native PC recompilation",
                              1.2f, hero_w - 64.0f, COLOR_TEXT_MUTED);
     }
 
@@ -1923,6 +1923,10 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                              "Configuration saved to settings.json. Game settings apply at the next launch.",
                              1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
     }
+    /* Identify the platform the player runs, never imply endorsement. */
+    draw_text_ellipsized(ren, card_x + 4.0f, card_y + card_h + 14.0f,
+                         "Nakagawa Recomp is an independent project, not affiliated with or endorsed by Sony Interactive Entertainment.",
+                         0.9f, card_w - 64.0f, COLOR_TEXT_DIM);
 
     float col1_x = card_x + 32.0f;
     float col2_x = two_col ? card_x + card_w * 0.5f : col1_x;
