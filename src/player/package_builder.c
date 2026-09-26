@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* The downloader and bootstrapper are Windows-only, but the Linux strict-C gate still compiles this
+ * file with -std=c99; this exposes POSIX declarations to it and to the headers it includes. */
 #if !defined(_WIN32) && !defined(_WIN64) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -443,6 +445,8 @@ static bool winhttp_open(void *context, const char *url, const char *allowed_hos
                 return false;
             }
             if (!allowed_url(state->final_url, allowed_hosts)) {
+                /* Not a download: the response carries the rejected redirect target so the caller's
+                 * allowed_url(final_url) check refuses it and can name the host in its error. */
                 response->final_url = state->final_url;
                 response->context = state;
                 response->read = winhttp_read;

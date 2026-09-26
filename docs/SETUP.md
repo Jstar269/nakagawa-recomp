@@ -483,9 +483,10 @@ it needs all of the following:
 - `python`, `gcc`, and `mingw32-make` from either the current environment or the
   player's per-user downloaded build tools. The player changes `PATH` only for
   the build child; it never edits system `PATH` or the registry.
-- `powershell.exe`, which ships with Windows 11. The asset-copy step uses the
-  built-in Windows PowerShell 5.1; PowerShell 7 remains the development baseline
-  for the other repository scripts.
+- `powershell.exe` (Windows PowerShell 5.1, built into Windows 10 and 11). The
+  asset-copy step and the unpacking of the downloaded Python archive
+  (`Expand-Archive`) use it; PowerShell 7 remains the development baseline for
+  the other repository scripts.
 
 When a pinned Windows prerequisite is missing, BUILD PACKAGE opens one consent
 card showing each component's name, version, source host, download size, and
