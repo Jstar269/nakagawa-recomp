@@ -636,19 +636,20 @@ static void poll_input(int *quit) {
 
     uint32_t b = 0;
     const bool *k = SDL_GetKeyboardState(NULL);
-    /* Same bindings as the GDI front-end (gui.c read_keys). */
-    if (k[SDL_SCANCODE_RETURN]) b |= 0x0008;                       /* START   */
-    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= 0x0001; /* SELECT */
-    if (k[SDL_SCANCODE_X]) b |= 0x4000;                            /* CROSS   */
-    if (k[SDL_SCANCODE_Z]) b |= 0x2000;                            /* CIRCLE  */
-    if (k[SDL_SCANCODE_A]) b |= 0x8000;                            /* SQUARE  */
-    if (k[SDL_SCANCODE_S]) b |= 0x1000;                            /* TRIANGLE*/
-    if (k[SDL_SCANCODE_Q]) b |= 0x0100;                            /* L       */
-    if (k[SDL_SCANCODE_W]) b |= 0x0200;                            /* R       */
-    if (k[SDL_SCANCODE_UP])    b |= 0x0010;
-    if (k[SDL_SCANCODE_DOWN])  b |= 0x0040;
-    if (k[SDL_SCANCODE_LEFT])  b |= 0x0080;
-    if (k[SDL_SCANCODE_RIGHT]) b |= 0x0020;
+    /* Same bindings as the GDI front-end (gui.c read_keys), from the same table
+     * (src/core/nk_input_profile.h). */
+    if (k[SDL_SCANCODE_RETURN]) b |= NK_PSP_BTN_START_BIT;         /* START   */
+    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= NK_PSP_BTN_SELECT_BIT; /* SELECT */
+    if (k[SDL_SCANCODE_X]) b |= NK_PSP_BTN_CROSS_BIT;              /* CROSS   */
+    if (k[SDL_SCANCODE_Z]) b |= NK_PSP_BTN_CIRCLE_BIT;             /* CIRCLE  */
+    if (k[SDL_SCANCODE_A]) b |= NK_PSP_BTN_SQUARE_BIT;             /* SQUARE  */
+    if (k[SDL_SCANCODE_S]) b |= NK_PSP_BTN_TRIANGLE_BIT;           /* TRIANGLE*/
+    if (k[SDL_SCANCODE_Q]) b |= NK_PSP_BTN_LTRIGGER_BIT;           /* L       */
+    if (k[SDL_SCANCODE_W]) b |= NK_PSP_BTN_RTRIGGER_BIT;           /* R       */
+    if (k[SDL_SCANCODE_UP])    b |= NK_PSP_BTN_UP_BIT;
+    if (k[SDL_SCANCODE_DOWN])  b |= NK_PSP_BTN_DOWN_BIT;
+    if (k[SDL_SCANCODE_LEFT])  b |= NK_PSP_BTN_LEFT_BIT;
+    if (k[SDL_SCANCODE_RIGHT]) b |= NK_PSP_BTN_RIGHT_BIT;
 
     uint8_t lx = 128, ly = 128;
     s_pad_present = s_pad != NULL;
