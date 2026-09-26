@@ -175,10 +175,13 @@
     },
     {
       "path": ".github/workflows/provenance-attestation.yml",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-attestation-workflow",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "03c6fa0b638d242817ebf23833e69201568db74c2cdd53cb25708db3f9f3aefc"
     },
@@ -298,7 +301,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3882f471a0a7642093fb503c3e69b8691ab9ae62feecda167f55cf86c1b87d19"
+      "sha256": "ab4f635a268690685f2a8dddc82c103e6f2a5e53a2477c1ad67bd3c29b116cac"
     },
     {
       "path": "NOTICE.md",
@@ -475,7 +478,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f5f71863de3cb95bde3bada8a94d9b1d87bc48938a51f12bc03217476f96d50b"
+      "sha256": "4f4b14f5c8ddcd3c73e74a66aa94402477e519e91867510e90736b6b96072c0e"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -2323,7 +2326,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3d3088cf660fc769577d970bcd9344d7ec574ec30b2e3d15d8afba45d3c6c924"
+      "sha256": "ec3b596cb1ab3258aaebf47cd1fc730ec5db5077aa68cb10789c97006e63f88d"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2419,7 +2422,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "08c5f65de54cabdb9a205b860102ef3ee981500ba12d8bc5a3b78a70fc0bf369"
+      "sha256": "f74eaf435c4a92add6d53cf4e3612e6791baf451cc745b658e36f9d79fc666bd"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -2431,7 +2434,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f76f93df2d21192826fcbdfcd83ce6edaec9e704c6450733e29208e4c9821a48"
+      "sha256": "a3f7c8e13ffc6ec36c1b7f3a16a28c24d67d4c3b6225787ca0f235053f1cc111"
     },
     {
       "path": "src/ref/cpu.h",
@@ -4854,6 +4857,18 @@
         "upstream_attribution": null
       },
       "sha256": "85fb3cb093cb5de28f0c11bfb461add48b86574b9610944e313ae4763f03adfd"
+    },
+    {
+      "path": "tests/native/test_player_ui.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "player-ui-event-render-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "1867a8ac560b63b105caf15cb52d755564538288a3b5054c4c4469ea06d024ce"
     },
     {
       "path": "tests/native/test_posix_process.c",
