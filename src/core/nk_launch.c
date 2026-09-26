@@ -750,6 +750,7 @@ NkResult nk_launch_prepare_session(
     session->config.vsync = true;
     session->config.benchmark_mode = false;
     session->config.gui_mode = false;
+    session->config.master_volume = 100;
 
     NkRuntimePackageInfo package_info;
     char package_error[1024] = "";
@@ -1108,12 +1109,18 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_modules[NK_MAX_PATH * 2 + 32];
     char env_tables[64];
     char env_boot_event[NK_MAX_PATH + 32];
+    char env_fullscreen[32];
+    char env_volume[32];
     char sep = nk_platform_path_separator();
 
     snprintf(env_fps, sizeof(env_fps), "SR_FPS_CAP=%d", session->config.fps_cap);
     snprintf(env_ge, sizeof(env_ge), "SR_GPU_GE=1");
     snprintf(env_scale, sizeof(env_scale), "SR_RESOLUTION_SCALE=%d", session->config.resolution_scale);
     snprintf(env_vsync, sizeof(env_vsync), "SR_VSYNC=%d", session->config.vsync ? 1 : 0);
+    snprintf(env_fullscreen, sizeof(env_fullscreen), "SR_FULLSCREEN=%d",
+             session->config.fullscreen ? 1 : 0);
+    snprintf(env_volume, sizeof(env_volume), "SR_MASTER_VOLUME=%d",
+             session->config.master_volume);
     snprintf(env_fs, sizeof(env_fs), "SR_FSDIR=fs");
     snprintf(env_memstick, sizeof(env_memstick), "SR_MEMSTICK=%s", session->memstick_root);
     snprintf(env_tables, sizeof(env_tables), "PSP_VFPU_TABLES=assets%cvfpu", sep);
@@ -1128,6 +1135,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_scale;
     envp[env_count++] = env_vsync;
     envp[env_count++] = env_fs;
+    envp[env_count++] = env_fullscreen;
+    envp[env_count++] = env_volume;
     /* A session assembled by hand rather than by nk_launch_prepare_session may
        carry no resolved root; leaving SR_MEMSTICK unset lets the runtime apply
        its own default instead of being pointed at an empty path. */
