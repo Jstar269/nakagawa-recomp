@@ -64,6 +64,8 @@ int sr_route_test_sample(uint8_t *out);
  * state machine without a scheduler or GPU. */
 extern void sr_route_test_tick(uint32_t v);
 extern int sr_route_test_cadence_state(uint32_t *last_attempt);
+extern void sr_route_test_import(uint32_t nid);
+extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
@@ -15585,6 +15587,87 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
 }
 
+/* WAIT_NID: the step that lets a route gate on what the guest DOES.
+ *
+ * Every other gated step needs a screen signature, and a signature can only be recorded from
+ * a run that is already on that screen -- so the step that would reach a new screen is the one
+ * step that cannot be written. What the guest calls is observable from the first boot and is
+ * the same for every title. Pinned here: the step completes on the import and only on that
+ * import, an import that happened BEFORE the step began does not satisfy it, a name and a raw
+ * NID are the same step, an unknown name is refused at load, and a guest that never calls it
+ * fails the run loudly instead of waiting forever. */
+static void test_route_gates_on_a_guest_event_not_a_signature(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+    expect(open_nid != 0u, "the runtime's own NID table resolves sceIoOpen");
+    expect(sr_route_test_nid("0x109f50bc") == open_nid,
+           "a route may write the same import as raw hex");
+    expect(sr_route_test_nid("sceNotAnImport") == 0u,
+           "a name that is not an import does not resolve");
+
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "PRESS CROSS 8\n"
+             "WAIT_NID sceIoOpen 600\n"
+             "DELAY 2\n"
+             "END\n", hexA);
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that waits on an import loads");
+    expect(sr_route_step(0, sigA) == 0x4000u, "the press before the wait is held");
+    for (uint32_t v = 1; v < 8; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_step(8, sigA) == 0u, "and released after its width");
+
+    /* Another import is not the one being waited for. */
+    sr_route_test_import(0x11111111u);
+    expect(sr_route_step(9, sigA) == 0u, "an unrelated import does not complete the step");
+    expect(sr_route_status() == RT_RUNNING, "and the route is still waiting");
+
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(10, sigA) == 0u, "the waited-for import completes the step");
+    expect(sr_route_step(11, sigA) == 0u, "the step after it begins on the next vblank");
+    expect(sr_route_step(14, sigA) == 0u, "its DELAY is honoured");
+    expect(sr_route_status() == RT_DONE, "and the route completes");
+    remove(RT_PATH);
+
+    /* An import that already happened cannot satisfy a later step. Two waits for the SAME
+     * import in a row is the shape that can tell them apart: the first completes on a feed,
+     * and the second must still be waiting because that feed predates it. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "WAIT_NID sceIoOpen 20\n"
+             "WAIT_NID sceIoOpen 50\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "two waits for one import load");
+    expect(sr_route_step(0, sigA) == 0u, "the WAIT is satisfied by the screen");
+    expect(sr_route_status() == RT_RUNNING, "and the first import wait has begun");
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(1, sigA) == 0u, "the feed completes the first import wait");
+    for (uint32_t v = 2; v < 55; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_status() == RT_FAILED,
+           "a guest that never makes the import again fails the run instead of waiting forever");
+    remove(RT_PATH);
+
+    /* An unknown name is a load-time refusal, not a wait that can never succeed. */
+    sr_route_reset();
+    rt_write("WAIT_NID sceNotAnImport 600\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "an unknown import name is refused at load");
+    expect(sr_route_status() == RT_FAILED, "and the route fails rather than waiting");
+    sr_route_reset();
+    rt_write("WAIT_NID sceIoOpen\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "a WAIT_NID without a timeout is refused at load");
+    sr_route_reset();
+    remove(RT_PATH);
+}
+
 /* A press mask that names the wrong button cannot fail: the guest receives a bit the
  * screen ignores and the run looks exactly like a game that has frozen, which is how a
  * whole investigation once went looking for a scheduler deadlock that was not there. So a
@@ -16334,6 +16417,7 @@ int main(int argc, char **argv) {
     test_route_mask_refuses_what_it_cannot_mean();
     test_route_legacy_pad_script_is_unchanged();
     test_route_names_the_buttons_it_presses();
+    test_route_gates_on_a_guest_event_not_a_signature();
     test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();

@@ -304,6 +304,7 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
 | `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
+| `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
 | `END` | Route complete |
 
 A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
@@ -413,6 +414,37 @@ ROUTE: step 1 (PRESS_WHILE) presses CROSS
 — so a route that stalls says which button it offered. Note that the boot prefix wants `START`
 (warning screens, intro movie) and title screens usually want `CROSS`; one press is not
 automatically the right one for the next screen.
+
+### Waiting on what the guest does (`WAIT_NID`)
+
+Every other gated step watches the *screen*, and a screen signature can only be recorded from
+a run that is already on that screen. That is a chicken-and-egg problem for any route trying
+to reach a screen nobody has a signature for yet: the step that would get there is the one
+step that cannot be written. What the guest **calls** has no such problem — a module load, a
+savedata status poll, a display-mode change is observable from the first boot and means the
+same thing in every title, so the runtime can offer it and the route file names it:
+
+```text
+WAIT_NID sceIoOpen 600
+WAIT_NID 0x109f50bc 600      # the same import as raw hex
+```
+
+The name comes from the runtime's own table (`src/rt/nid_names.h`); the hex form exists so a
+route never depends on a name being in it, and a name that resolves to nothing is refused at
+load rather than becoming a wait that can never succeed. Three properties matter and are
+tested:
+
+- the wait completes on that import and **only** on that import — an unrelated call leaves the
+  route waiting;
+- it counts calls made **since the step began**, so an event that already happened cannot
+  satisfy a later step (two waits for the same import in a row is the shape that shows it);
+- a guest that never makes the call **fails the run**, naming the import, the vblank range and
+  how many imports it did make — the alternative, a route that waits forever, is
+  indistinguishable from a hang.
+
+It costs one store per import, and only while such a step is running, at the single point
+(`sr_syscall`) every guest import already passes through. The step needs no framebuffer
+observation, so it also does not pay the observer's sampling cost.
 
 ### Visual-oracle runs (`-Action VisualOracle`)
 

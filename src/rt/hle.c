@@ -10410,7 +10410,7 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 #define ROUTE_FAIL_EXIT  86
 
 enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
-       ROUTE_OP_WHILE, ROUTE_OP_END };
+       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
 /* One named screen. Parts of a screen legitimately vary between otherwise identical
@@ -10460,6 +10460,50 @@ static int      s_route_have_attempt;
 static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
 static int      s_route_nlegacy;
 static int      s_route_loaded;
+
+/* WAIT_NID: gate a step on a guest-visible EVENT rather than on what a screen looks like.
+ *
+ * A screen signature has to be recorded from a run that is already on that screen, and until
+ * a route can reach a screen it cannot record one: the step before any checkpoint is the one
+ * that needs a screen nobody has a signature for. What the guest does, on the other hand, is
+ * observable from the first boot -- a module load, a savedata status poll, a display mode
+ * change -- and it is the same for every title, so a route file can name it and the runtime
+ * stays title-neutral.
+ *
+ * sr_syscall() is the single point every guest import passes through, so the observation is
+ * one store there and one compare here. The ring holds the most recent dispatches; a step
+ * matches only an entry newer than the moment the step began, so an event that already
+ * happened cannot satisfy a later step. Set when the running step is a WAIT_NID, so a build
+ * with no route pays one predictable branch per import. */
+#define ROUTE_NID_RING 64
+static uint32_t s_route_nid_ring[ROUTE_NID_RING];
+static unsigned long s_route_nid_pos;      /* total dispatches observed, ever */
+static int      s_route_watch_nid;         /* a running WAIT_NID step wants the ring */
+static unsigned long s_route_nid_start;    /* dispatch count when that step began */
+
+/* The one place the ring is written, so the dispatcher's gate and the selftest's feed are
+ * the same code. */
+static void route_note_nid(uint32_t nid) {
+    s_route_nid_ring[s_route_nid_pos % ROUTE_NID_RING] = nid;
+    s_route_nid_pos++;
+}
+
+/* Has the guest called `nid` since the running step began? */
+static int route_nid_since(uint32_t nid) {
+    unsigned long seen = s_route_nid_pos - s_route_nid_start;
+    if (seen > ROUTE_NID_RING) seen = ROUTE_NID_RING;
+    for (unsigned long i = 0; i < seen; i++) {
+        unsigned long idx = s_route_nid_pos - 1 - i;
+        if (s_route_nid_ring[idx % ROUTE_NID_RING] == nid) return 1;
+    }
+    return 0;
+}
+
+static void route_nid_watch(int on) {
+    s_route_watch_nid = on;
+    s_route_nid_start = s_route_nid_pos;
+}
+
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
@@ -10566,6 +10610,16 @@ static int route_parse_mask(const char *tok, uint32_t *out) {
     }
     *out = mask;
     return 0;
+}
+
+/* An import named as the runtime names it, or as raw hex. The hex form exists so a route
+ * never depends on a name being in the table: the NID is the guest-visible fact, the name is
+ * a convenience. */
+static int route_nid_from_token(const char *tok, uint32_t *out) {
+    if (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) return route_parse_mask(tok, out);
+    for (size_t i = 0; i < sr_nid_table_count; i++)
+        if (strcmp(sr_nid_table[i].name, tok) == 0) { *out = sr_nid_table[i].nid; return 0; }
+    return -1;
 }
 
 /* What a mask presses, in words. Printed once per press step at load so any run's own
@@ -10867,6 +10921,25 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             if (st.b < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS width must be >= 1\n", path, lineno); return -1; }
+        } else if (strcmp(tok, "WAIT_NID") == 0) {
+            st.op = ROUTE_OP_NID;
+            char *nid = strtok(NULL, " \t\r\n"), *to = strtok(NULL, " \t\r\n");
+            if (!nid || !to) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID <import|0xNID> <timeout>\n", path, lineno);
+                return -1;
+            }
+            if (route_nid_from_token(nid, &st.b) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID: '%s' is not an import name and not "
+                                "a 0x-prefixed NID (the runtime's own table is "
+                                "src/rt/nid_names.h; a name it does not carry can be written as hex)\n",
+                        path, lineno, nid);
+                return -1;
+            }
+            st.a = (uint32_t)strtoul(to, NULL, 10);
+            if (st.a < 1u) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID timeout must be >= 1 vblank\n", path, lineno);
+                return -1;
+            }
         } else if (strcmp(tok, "DELAY") == 0) {
             st.op = ROUTE_OP_DELAY;
             char *n = strtok(NULL, " \t\r\n");
@@ -10900,6 +10973,7 @@ void sr_route_reset(void) {
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
+    route_nid_watch(0);
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
 }
@@ -10964,6 +11038,15 @@ int sr_route_load(const char *path) {
                     st->op == ROUTE_OP_PRESS ? "PRESS" :
                     st->op == ROUTE_OP_UNTIL ? "PRESS_UNTIL" : "PRESS_WHILE", what);
         }
+        /* And say what each WAIT_NID is waiting for, the same way: a route that stalls on an
+         * event names the event in the log instead of leaving a reader to guess. */
+        for (int i = 0; i < s_route_nsteps; i++) {
+            RouteStep *st = &s_route_prog[i];
+            if (st->op != ROUTE_OP_NID) continue;
+            const char *nm = sr_nid_name(st->b);
+            fprintf(stderr, "ROUTE: step %d (WAIT_NID) waits for %s (0x%08x) for %u vblanks\n",
+                    i, nm ? nm : "an unnamed import", st->b, st->a);
+        }
         return 1;
     }
     if (s_route_nlegacy > 0) {
@@ -11011,7 +11094,13 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             return keys;
         }
         RouteStep *st = &s_route_prog[s_route_pc];
-        if (!s_route_step_started) { s_route_step_start = v; s_route_step_started = 1; }
+        if (!s_route_step_started) {
+            s_route_step_start = v;
+            s_route_step_started = 1;
+            /* The NID watch is armed by the step that wants it, so "called since this step
+             * began" is measured from this vblank and not from the start of the route. */
+            route_nid_watch(st->op == ROUTE_OP_NID);
+        }
         uint32_t el = v - s_route_step_start;
         switch (st->op) {
         case ROUTE_OP_PRESS:
@@ -11109,6 +11198,25 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
                            st->line, st->name, v,
                            bi >= 0 ? s_route_cp[bi].name : "<unknown>", bd, st->name, d,
                            wi >= 0 ? s_route_cp[wi].tol : s_route_tol);
+            }
+            return keys;
+        }
+        case ROUTE_OP_NID: {
+            const char *nm = sr_nid_name(st->b);
+            if (route_nid_since(st->b)) {
+                fprintf(stderr, "ROUTE: guest called %s (0x%08x) at vblank %u (step %d, after "
+                                "%u vblanks)\n",
+                        nm ? nm : "an unnamed import", st->b, v, s_route_pc, el);
+                route_advance();
+                continue;
+            }
+            if (el >= st->a) {
+                route_fail("line %d: WAIT_NID %s (0x%08x) was not called within %u vblanks "
+                           "(from vblank %u to %u); the guest made %lu imports in that time, "
+                           "none of them this one",
+                           st->line, nm ? nm : "?", st->b, el, s_route_step_start, v,
+                           s_route_nid_pos - s_route_nid_start);
+                return keys;
             }
             return keys;
         }
@@ -11778,7 +11886,11 @@ static void route_tick(uint32_t v) {
     int pending = 0;
     if (s_route_state == ROUTE_RUNNING && s_route_pc < s_route_nsteps) {
         int op = s_route_prog[s_route_pc].op;
-        pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END);
+        /* WAIT_NID is the one gated step that watches the guest rather than the screen, so it
+         * needs no signature: sampling the framebuffer for it would cost the observer's ~20%
+         * of vblank rate (measured) to learn nothing. */
+        pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END ||
+                    op == ROUTE_OP_NID);
     }
     /* Elapsed-delivered-VCOUNT cadence (#109 reconstruction): delivered VCOUNT is
      * elapsed-period accounting and may jump over every exact residue of
@@ -11807,6 +11919,14 @@ static void route_tick(uint32_t v) {
  * regression drive production sampling/cadence/state-machine behavior without
  * a scheduler, a title, or a GPU. Production builds compile none of this. */
 void sr_route_test_tick(uint32_t v) { route_tick(v); }
+/* Feed the import ring exactly as sr_syscall() does, gate included, and resolve a route's
+ * name-or-hex token through the production resolver. A step that waits on a guest event is
+ * only trustworthy if the observation it reads is the one the dispatcher writes. */
+void sr_route_test_import(uint32_t nid) { if (s_route_watch_nid) route_note_nid(nid); }
+uint32_t sr_route_test_nid(const char *tok) {
+    uint32_t nid = 0;
+    return route_nid_from_token(tok, &nid) == 0 ? nid : 0u;
+}
 /* Read-only view of the cadence bookkeeping: whether an attempt was recorded
  * and which delivered VCOUNT it holds. Pins the record-BEFORE-readback order
  * (a failed readback must still consume its cadence slot). */
@@ -16470,6 +16590,9 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     const int rt_phase_saved = sr_rt_phase;
     sr_rt_phase = SR_RT_PHASE_SYSCALL;
     sr_rt_nid = nid;
+    /* One store per import, and only while a route is waiting on one: this is what lets a
+     * route gate on a guest-visible event instead of on a screen signature. */
+    if (s_route_watch_nid) route_note_nid(nid);
     uint64_t flight_sequence = sr_flight_hle_import(
         nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
     if (flight_sequence != 0u && s) {
