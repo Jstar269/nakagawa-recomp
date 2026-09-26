@@ -1530,6 +1530,11 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         self.assertIn("EBOOT.OLD is the game executable", cfw_check["message"])
         self.assertIn("decrypted EBOOT.elf", cfw_check["message"])
+        self.assertIn(
+            "Custom-firmware-patched dump: using the original executable",
+            cfw_check["message"],
+        )
+        self.assertIn("in the works (#308)", cfw_check["message"])
         selected_elf = work_root / "work" / "selected.elf"
         self.assertEqual(selected_elf.read_bytes(), decrypted_eboot)
         profile = json.loads(
@@ -1541,6 +1546,12 @@ class TestSanitizedBringup(unittest.TestCase):
             profile["input_identity"]["selected_executable"].rsplit("/", 1)[-1],
             "EBOOT.BIN",
         )
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn(
+            "Custom-firmware-patched dump: using the original executable",
+            summary,
+        )
+        self.assertIn("in the works (#308)", summary)
         nk_cli.validate_bringup_report(report)
 
     def test_module_placement_without_safe_runtime_range_is_named(self):
