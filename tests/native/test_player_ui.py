@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import re
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
+import zlib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +62,97 @@ def pixel_rgb(
     return red, green, blue
 
 
+def png_pixel(red: int, green: int, blue: int) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        body = kind + payload
+        return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00" + bytes((red, green, blue, 255))))
+        + chunk(b"IEND", b"")
+    )
+
+
+def synthetic_art_iso(path: Path) -> None:
+    sector_size = 2048
+    image = bytearray(22 * sector_size)
+
+    def both_endian(value: int) -> bytes:
+        return struct.pack("<I", value) + struct.pack(">I", value)
+
+    def record(name: bytes, lba: int, size: int, directory: bool) -> bytes:
+        record_size = 33 + len(name)
+        if record_size & 1:
+            record_size += 1
+        result = bytearray(record_size)
+        result[0] = record_size
+        result[2:10] = both_endian(lba)
+        result[10:18] = both_endian(size)
+        result[25] = 2 if directory else 0
+        result[28] = 1
+        result[31] = 1
+        result[32] = len(name)
+        result[33 : 33 + len(name)] = name
+        return bytes(result)
+
+    pvd = memoryview(image)[16 * sector_size : 17 * sector_size]
+    pvd[0] = 1
+    pvd[1:6] = b"CD001"
+    pvd[6] = 1
+    pvd[158:166] = both_endian(17)
+    pvd[166:174] = both_endian(sector_size)
+    pvd[156:190] = record(b"\x00", 17, sector_size, True)
+
+    root_records = (
+        record(b"\x00", 17, sector_size, True)
+        + record(b"\x01", 17, sector_size, True)
+        + record(b"PSP_GAME", 18, sector_size, True)
+    )
+    game_records = (
+        record(b"\x00", 18, sector_size, True)
+        + record(b"\x01", 17, sector_size, True)
+        + record(b"ICON0.PNG;1", 19, len(png_pixel(50, 190, 120)), False)
+        + record(b"PIC1.PNG;1", 20, len(png_pixel(50, 100, 190)), False)
+    )
+    image[17 * sector_size : 17 * sector_size + len(root_records)] = root_records
+    image[18 * sector_size : 18 * sector_size + len(game_records)] = game_records
+    image[19 * sector_size : 19 * sector_size + len(png_pixel(50, 190, 120))] = png_pixel(
+        50, 190, 120
+    )
+    image[20 * sector_size : 20 * sector_size + len(png_pixel(50, 100, 190))] = png_pixel(
+        50, 100, 190
+    )
+    path.write_bytes(image)
+
+
+def synthetic_stale_package(runtime_root: Path) -> None:
+    package = runtime_root / "packages" / "TEST00006"
+    package.mkdir(parents=True)
+    package_json = {
+        "format": "nakagawa-aot-package",
+        "schema_version": 1,
+        "title": {
+            "id": "stale-synthetic-title",
+            "display_name": "Synthetic stale package",
+            "kind": "retail",
+            "manifest_sha256": "0" * 64,
+            "protected_digest": "0" * 64,
+        },
+        "inputs": {},
+        "runtime": {},
+        "executable": {"path": "stale-synthetic.exe"},
+        "cache": {},
+        "generated_objects": [],
+        "required_local_assets": [],
+        "build_report": "build-report.json",
+    }
+    (package / "package.json").write_text(json.dumps(package_json), encoding="utf-8")
+    (package / "build-report.json").write_text("{}", encoding="utf-8")
+    (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
+
+
 def has_amber_badge(bmp: tuple[int, int, int, bytes]) -> bool:
     width, height, _, _ = bmp
     # The selected card's status pill is at x=64, y=124 in a 1280x720 frame.
@@ -70,6 +164,29 @@ def has_amber_badge(bmp: tuple[int, int, int, bytes]) -> bool:
         )
         for y in range(min(112, bottom), bottom)
         for x in range(min(56, right), right)
+    )
+
+
+def has_hero_title_text(bmp: tuple[int, int, int, bytes]) -> bool:
+    width, height, _, _ = bmp
+    return any(
+        all(channel > 200 for channel in pixel_rgb(bmp, x, y))
+        for y in range(145, min(210, height))
+        for x in range(48, min(720, width))
+    )
+
+
+# The synthetic ICON0.PNG is one opaque pixel of this color, and the hero card
+# draws it centered in the 108x64 icon box at the card's top right.
+ICON_ART_RGB = (50, 190, 120)
+
+
+def has_icon_art(bmp: tuple[int, int, int, bytes]) -> bool:
+    width, height, _, _ = bmp
+    return any(
+        all(abs(channel - want) <= 12 for channel, want in zip(pixel_rgb(bmp, x, y), ICON_ART_RGB, strict=True))
+        for y in range(112, min(196, height))
+        for x in range(min(1120, width), min(1210, width))
     )
 
 
@@ -95,6 +212,10 @@ class NativePlayerUiTests(unittest.TestCase):
         runtime_ready: bool = False,
         invalid_profile: bool = False,
         drop_invalid_iso: bool = False,
+        art_iso: str | None = None,
+        stale_package: bool = False,
+        show_window: bool = False,
+        wait_background: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -108,6 +229,16 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            ui_iso_path: Path | None = None
+            if art_iso is not None:
+                ui_iso_path = scratch / "source-owned-synthetic.iso"
+                synthetic_art_iso(ui_iso_path)
+                if art_iso == "unavailable":
+                    ui_iso_path.rename(scratch / "source-owned-synthetic.iso.offline")
+                elif art_iso != "available":
+                    raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
+            if stale_package:
+                synthetic_stale_package(runtime_root)
 
             env = os.environ.copy()
             env.update(
@@ -134,6 +265,12 @@ class NativePlayerUiTests(unittest.TestCase):
             args.append("--ui-test-events=" + ";".join(event_script))
             screenshot = scratch / "last-frame.bmp"
             args.append(f"--ui-test-screenshot={screenshot}")
+            if ui_iso_path is not None:
+                args.append(f"--ui-test-iso-path={ui_iso_path}")
+            if show_window:
+                args.append("--ui-test-show-window")
+            if wait_background:
+                args.append("--ui-test-wait-background")
             if error_code:
                 args.append(f"--ui-test-error-code={error_code}")
 
@@ -147,6 +284,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
             args.append(f"--runtime-root={runtime_root}")
 
+            started = time.perf_counter()
             completed = subprocess.run(
                 args,
                 cwd=ROOT,
@@ -156,6 +294,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 timeout=20,
                 check=False,
             )
+            wall_seconds = time.perf_counter() - started
             if completed.returncode != 0:
                 self.fail(
                     f"player returned {completed.returncode}\n"
@@ -177,6 +316,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 "bmp": bmp,
                 "profile_exists": profile.is_file(),
                 "stdout": completed.stdout,
+                "wall_seconds": wall_seconds,
             }
 
     def test_empty_library_wizard_picker_and_font_confirmation(self) -> None:
@@ -233,11 +373,73 @@ class NativePlayerUiTests(unittest.TestCase):
         experimental_frame = experimental["frames"][0]  # type: ignore[index]
         self.assertEqual(experimental_frame["selected_experimental"], "1")
 
-        ready = self.run_player("ready", (), runtime_ready=True)
-        ready_frame = ready["frames"][0]  # type: ignore[index]
+        ready = self.run_player(
+            "ready", ("KEY_LEFT",) * 4, runtime_ready=True, wait_background=True
+        )
+        ready_frames = ready["frames"]
+        assert isinstance(ready_frames, list)
+        ready_frame = ready_frames[-1]
         self.assertEqual(ready_frame["selected_runtime"], "1")
         self.assertEqual(ready_frame["selected_prepared"], "0")
         self.assertNotEqual(missing_frame["pixels"], ready_frame["pixels"])
+
+    def test_one_title_offline_art_and_stale_package_stay_off_frame_path(self) -> None:
+        # The counters are the load-bearing gate: package validation and ISO
+        # reads must never run on the UI thread, on any frame. The wall-clock
+        # bounds below are deliberately generous because the headless
+        # software renderer, not the product's GPU path, sets the absolute
+        # per-frame floor here; they only reject the maintainer-reported shape
+        # (a first frame of seconds, steady frames of hundreds of ms).
+        events = ("KEY_LEFT",) * 24
+        offline = self.run_player(
+            "ready",
+            events,
+            art_iso="unavailable",
+            stale_package=True,
+            show_window=True,
+            wait_background=True,
+        )
+        frames = offline["frames"]
+        assert isinstance(frames, list)
+        self.assertGreaterEqual(len(frames), 20)
+        validation_calls = [int(frame["package_validations"]) for frame in frames]
+        self.assertEqual(validation_calls, [0] * len(frames))
+        elapsed = [int(frame["render_ns"]) for frame in frames]
+        self.assertLess(elapsed[0], 1_000_000_000)
+        self.assertLess(max(elapsed[1:]), 250_000_000)
+        self.assertLess(sorted(elapsed[1:])[len(elapsed[1:]) // 2], 60_000_000)
+        # Coarse end-to-end guard over process start through the last frame:
+        # the maintainer-reported 3 fps interactive loop would need ~9s here.
+        self.assertLess(offline["wall_seconds"], 6.0)
+        self.assertEqual(frames[-1]["selected_package_status"], "3")
+        self.assertEqual(frames[-1]["selected_runtime"], "0")
+        self.assertTrue(has_hero_title_text(offline["bmp"]))
+        # An absent disc image must show the initials placeholder, never a
+        # blank or a blocked frame waiting for the drive.
+        self.assertFalse(has_icon_art(offline["bmp"]))
+        self.assertIn("window_shown=1 high_density=1", offline["stdout"])
+
+        available = self.run_player(
+            "ready",
+            ("KEY_LEFT",) * 8,
+            art_iso="available",
+            stale_package=True,
+            show_window=True,
+            wait_background=True,
+        )
+        art_frames = available["frames"]
+        assert isinstance(art_frames, list)
+        self.assertEqual(
+            [int(frame["package_validations"]) for frame in art_frames],
+            [0] * len(art_frames),
+        )
+        self.assertEqual(art_frames[-1]["selected_package_status"], "3")
+        # Art arrives on a worker thread after the first frame, so the very
+        # first frame is already the drawn library with its title. A readable
+        # disc image with PIC1.PNG must not leave the card clipped away.
+        self.assertTrue(has_hero_title_text(available["bmp"]))
+        self.assertTrue(has_icon_art(available["bmp"]))
+        self.assertIn("window_shown=1 high_density=1", available["stdout"])
 
     def test_inspection_and_support_screens_render_and_return(self) -> None:
         for view in ("inspecting", "supported", "experimental", "unsupported", "preparing"):

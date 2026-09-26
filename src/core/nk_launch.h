@@ -102,6 +102,13 @@ NkRuntimePackageStatus nk_launch_validate_runtime_package(
     size_t reason_size
 );
 
+/* Stable metadata key for the player's per-title package status cache. */
+bool nk_launch_runtime_package_cache_identity(
+    const char *user_data_root,
+    const NkGameEntry *game,
+    char out_identity[65]
+);
+
 /* Validate a promoted staging EBOOT.BIN against the selected title manifest.
  * Plain ELF32/MIPS files receive full program-header, load-range, entry, and
  * BSS checks. A PSP ~PSP container is recognized as a bounded encrypted/source

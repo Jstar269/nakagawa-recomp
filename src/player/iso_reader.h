@@ -36,6 +36,14 @@ typedef enum {
 
 #define NK_ICON_MAX_BYTES (1024 * 1024) /* 1 MiB bound */
 
+typedef struct {
+    NkIconStatus status;
+    uint8_t *data;
+    size_t size;
+    uint32_t width;
+    uint32_t height;
+} NkIsoImageData;
+
 /* Validates a PNG buffer in memory:
  * - Checks PNG 8-byte signature: \x89PNG\r\n\x1a\n
  * - Parses IHDR chunk (length 13, type "IHDR")
@@ -54,5 +62,10 @@ NkIconStatus nk_iso_validate_png_header(const uint8_t *data, size_t size, uint32
 NkIconStatus nk_iso_read_image_entry(const char *iso_path, const char *rel_path,
                                      uint8_t **out_data, size_t *out_size,
                                      uint32_t *out_w, uint32_t *out_h);
+
+/* Read both library images while opening/indexing the ISO once. The returned
+ * image buffers are owned by the caller and must be freed. */
+void nk_iso_read_game_art(const char *iso_path, NkIsoImageData *icon,
+                          NkIsoImageData *background);
 
 #endif /* NAKAGAWA_ISO_READER_H */

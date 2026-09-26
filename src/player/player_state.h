@@ -64,6 +64,19 @@ typedef enum {
 typedef NkGameEntry GameRecord;
 
 typedef struct {
+    bool status_valid;
+    bool identity_valid;
+    bool validation_pending;
+    bool runtime_available;
+    char disc_id[MAX_DISC_ID_LEN];
+    char title_id[64];
+    char selected_executable[MAX_PATH_LEN];
+    char package_identity[65];
+    NkRuntimePackageStatus status;
+    uint64_t last_checked_ms;
+} PlayerRuntimePackageCacheEntry;
+
+typedef struct {
     PlayerPrepStage stage;
     char operation[64];
     char current_item[128];
@@ -152,6 +165,8 @@ typedef struct {
 typedef struct {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
+    PlayerRuntimePackageCacheEntry runtime_package_cache[MAX_LIBRARY_GAMES];
+    uint64_t runtime_package_cache_generation;
     int game_count;
     int selected_game_index;
     GameRecord inspecting_game;
@@ -235,6 +250,22 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     size_t reason_size
 );
 bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game);
+NkRuntimePackageStatus player_app_cached_runtime_package_status(
+    const PlayerApp *app, const GameRecord *game);
+bool player_app_cached_game_has_runtime(const PlayerApp *app,
+                                        const GameRecord *game);
+bool player_app_runtime_package_check_pending(const PlayerApp *app,
+                                               const GameRecord *game);
+void player_app_runtime_package_cache_invalidate(PlayerApp *app);
+void player_app_runtime_package_cache_mark_pending(PlayerApp *app, int game_index);
+void player_app_runtime_package_cache_store(
+    PlayerApp *app, int game_index, const GameRecord *game,
+    bool identity_valid, const char *package_identity,
+    NkRuntimePackageStatus status, bool runtime_available,
+    uint64_t checked_ms);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+uint64_t player_app_ui_test_validation_calls(void);
+#endif
 
 #define NK_PLAYER_SETTINGS_SCHEMA_VERSION 1
 

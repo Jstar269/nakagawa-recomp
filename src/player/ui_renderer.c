@@ -260,6 +260,8 @@ static void ui_font_ensure(void) {
 }
 
 /* --- Per-game ISO texture cache (ICON0.PNG and PIC1.PNG) --- */
+typedef struct UiArtJob UiArtJob;
+
 typedef struct {
     char iso_path[MAX_PATH_LEN];
     SDL_Texture *icon_tex;
@@ -270,10 +272,104 @@ typedef struct {
     float pic1_w;
     float pic1_h;
     bool pic1_attempted;
+    UiArtJob *job;
 } GameTextureCacheEntry;
 
 #define GAME_TEXTURE_CACHE_SIZE 64
 static GameTextureCacheEntry s_game_textures[GAME_TEXTURE_CACHE_SIZE];
+
+enum { PLAYER_UI_ART_EVENT_CODE = 0x55494152 };
+
+struct UiArtJob {
+    SDL_Thread *thread;
+    char iso_path[MAX_PATH_LEN];
+    NkIconStatus icon_status;
+    uint8_t *icon_bytes;
+    size_t icon_size;
+    uint32_t icon_w;
+    uint32_t icon_h;
+    NkIconStatus pic1_status;
+    uint8_t *pic1_bytes;
+    size_t pic1_size;
+    uint32_t pic1_w;
+    uint32_t pic1_h;
+};
+
+static UiArtJob *s_art_jobs[GAME_TEXTURE_CACHE_SIZE];
+
+static int SDLCALL ui_art_thread_main(void *userdata) {
+    UiArtJob *job = (UiArtJob *)userdata;
+    if (!job) return 1;
+    NkIsoImageData icon;
+    NkIsoImageData background;
+    nk_iso_read_game_art(job->iso_path, &icon, &background);
+    job->icon_status = icon.status;
+    job->icon_bytes = icon.data;
+    job->icon_size = icon.size;
+    job->icon_w = icon.width;
+    job->icon_h = icon.height;
+    job->pic1_status = background.status;
+    job->pic1_bytes = background.data;
+    job->pic1_size = background.size;
+    job->pic1_w = background.width;
+    job->pic1_h = background.height;
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_EVENT_USER;
+    event.user.code = PLAYER_UI_ART_EVENT_CODE;
+    event.user.data1 = job;
+    (void)SDL_PushEvent(&event);
+    return 0;
+}
+
+static bool ui_start_art_job(GameTextureCacheEntry *entry,
+                             const char *iso_path) {
+    if (!entry || !iso_path || !iso_path[0] || entry->job ||
+        entry->icon_attempted || entry->pic1_attempted) return false;
+    int slot = -1;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (!s_art_jobs[i]) {
+            slot = i;
+            break;
+        }
+    }
+    UiArtJob *job = (UiArtJob *)calloc(1, sizeof(*job));
+    if (!job || slot < 0) {
+        free(job);
+        entry->icon_attempted = true;
+        entry->pic1_attempted = true;
+        return false;
+    }
+    int path_length = snprintf(job->iso_path, sizeof(job->iso_path), "%s",
+                               iso_path);
+    if (path_length <= 0 || (size_t)path_length >= sizeof(job->iso_path)) {
+        free(job);
+        entry->icon_attempted = true;
+        entry->pic1_attempted = true;
+        return false;
+    }
+    job->thread = SDL_CreateThread(ui_art_thread_main, "nakagawa-ui-art", job);
+    if (!job->thread) {
+        free(job);
+        entry->icon_attempted = true;
+        entry->pic1_attempted = true;
+        return false;
+    }
+    entry->job = job;
+    s_art_jobs[slot] = job;
+    return true;
+}
+
+static void ui_art_job_release(UiArtJob *job) {
+    if (!job) return;
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    free(job->icon_bytes);
+    free(job->pic1_bytes);
+    free(job);
+}
 
 static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
     if (!iso_path || !*iso_path) return NULL;
@@ -316,10 +412,17 @@ static void ui_game_textures_shutdown(void) {
         s_game_textures[i].iso_path[0] = '\0';
         s_game_textures[i].icon_attempted = false;
         s_game_textures[i].pic1_attempted = false;
+        s_game_textures[i].job = NULL;
     }
 }
 
 void ui_font_shutdown(void) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i]) {
+            ui_art_job_release(s_art_jobs[i]);
+            s_art_jobs[i] = NULL;
+        }
+    }
     ui_game_textures_shutdown();
     if (!g_font.attempted) return;
     for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
@@ -339,6 +442,75 @@ void ui_font_shutdown(void) {
         g_font.lib = NULL;
     }
     g_font.ready = false;
+}
+
+bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
+                                    const SDL_Event *event) {
+    if (!renderer || !event || event->type != SDL_EVENT_USER ||
+        event->user.code != PLAYER_UI_ART_EVENT_CODE) return false;
+    UiArtJob *job = (UiArtJob *)event->user.data1;
+    if (!job) return true;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i] == job) {
+            s_art_jobs[i] = NULL;
+            break;
+        }
+    }
+    GameTextureCacheEntry *entry = NULL;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_game_textures[i].job == job) {
+            entry = &s_game_textures[i];
+            break;
+        }
+    }
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (entry) {
+        entry->job = NULL;
+        entry->icon_attempted = true;
+        entry->pic1_attempted = true;
+        if (job->icon_status == NK_ICON_OK && job->icon_bytes && job->icon_size) {
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+            SDL_IOStream *io = SDL_IOFromConstMem(job->icon_bytes, job->icon_size);
+            SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
+            if (surface) {
+                entry->icon_tex = SDL_CreateTextureFromSurface(renderer, surface);
+                if (entry->icon_tex) {
+                    SDL_GetTextureSize(entry->icon_tex, &entry->icon_w,
+                                       &entry->icon_h);
+                }
+                SDL_DestroySurface(surface);
+            }
+#endif
+        }
+        if (job->pic1_status == NK_ICON_OK && job->pic1_bytes && job->pic1_size) {
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+            SDL_IOStream *io = SDL_IOFromConstMem(job->pic1_bytes, job->pic1_size);
+            SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
+            if (surface) {
+                entry->pic1_tex = SDL_CreateTextureFromSurface(renderer, surface);
+                if (entry->pic1_tex) {
+                    SDL_GetTextureSize(entry->pic1_tex, &entry->pic1_w,
+                                       &entry->pic1_h);
+                }
+                SDL_DestroySurface(surface);
+            }
+#endif
+        }
+    }
+    free(job->icon_bytes);
+    free(job->pic1_bytes);
+    free(job);
+    return true;
+}
+
+bool ui_renderer_art_pending(void) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i]) return true;
+    }
+    return false;
 }
 
 void ui_font_set_density(float density) {
@@ -765,31 +937,8 @@ static void draw_monogram(SDL_Renderer *ren, float x, float y, float size,
 }
 
 static void ui_load_pic1_if_needed(SDL_Renderer *ren, GameTextureCacheEntry *entry, const char *iso_path) {
-    if (!entry || entry->pic1_attempted || !iso_path || !*iso_path) return;
-    entry->pic1_attempted = true;
-    uint8_t *bytes = NULL;
-    size_t size = 0;
-    uint32_t w = 0, h = 0;
-    NkIconStatus st = nk_iso_read_image_entry(iso_path, "PSP_GAME/PIC1.PNG",
-                                              &bytes, &size, &w, &h);
-    if (st == NK_ICON_OK && bytes && size > 0) {
-#if SDL_VERSION_ATLEAST(3, 4, 0)
-        SDL_IOStream *io = SDL_IOFromConstMem(bytes, size);
-        if (io) {
-            SDL_Surface *surf = SDL_LoadPNG_IO(io, true);
-            if (surf) {
-                entry->pic1_tex = SDL_CreateTextureFromSurface(ren, surf);
-                if (entry->pic1_tex) {
-                    SDL_GetTextureSize(entry->pic1_tex, &entry->pic1_w, &entry->pic1_h);
-                }
-                SDL_DestroySurface(surf);
-            }
-        }
-#else
-        (void)ren;
-#endif
-        free(bytes);
-    }
+    (void)ren;
+    (void)ui_start_art_job(entry, iso_path);
 }
 
 static void draw_game_icon(SDL_Renderer *ren, float x, float y, float max_w, float max_h,
@@ -797,30 +946,7 @@ static void draw_game_icon(SDL_Renderer *ren, float x, float y, float max_w, flo
     GameTextureCacheEntry *entry = NULL;
     if (game && game->iso_path[0]) {
         entry = ui_get_game_texture_entry(game->iso_path);
-        if (entry && !entry->icon_attempted) {
-            entry->icon_attempted = true;
-            uint8_t *bytes = NULL;
-            size_t size = 0;
-            uint32_t w = 0, h = 0;
-            NkIconStatus st = nk_iso_read_image_entry(game->iso_path, "PSP_GAME/ICON0.PNG",
-                                                      &bytes, &size, &w, &h);
-            if (st == NK_ICON_OK && bytes && size > 0) {
-#if SDL_VERSION_ATLEAST(3, 4, 0)
-                SDL_IOStream *io = SDL_IOFromConstMem(bytes, size);
-                if (io) {
-                    SDL_Surface *surf = SDL_LoadPNG_IO(io, true);
-                    if (surf) {
-                        entry->icon_tex = SDL_CreateTextureFromSurface(ren, surf);
-                        if (entry->icon_tex) {
-                            SDL_GetTextureSize(entry->icon_tex, &entry->icon_w, &entry->icon_h);
-                        }
-                        SDL_DestroySurface(surf);
-                    }
-                }
-#endif
-                free(bytes);
-            }
-        }
+        if (entry) (void)ui_start_art_job(entry, game->iso_path);
     }
 
     if (entry && entry->icon_tex && entry->icon_w > 0.0f && entry->icon_h > 0.0f) {
@@ -1249,14 +1375,16 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         ui_load_pic1_if_needed(ren, hero_tex_entry, game->iso_path);
         if (hero_tex_entry->pic1_tex) {
             SDL_Rect prev_clip;
-            bool had_clip = SDL_GetRenderClipRect(ren, &prev_clip);
+            bool had_clip = SDL_RenderClipEnabled(ren);
+            bool saved_clip = had_clip &&
+                              SDL_GetRenderClipRect(ren, &prev_clip);
             SDL_Rect hero_clip = { (int)hero_x + 1, (int)hero_y + 1, (int)hero_w - 2, (int)hero_h - 2 };
             SDL_SetRenderClipRect(ren, &hero_clip);
             SDL_SetTextureAlphaMod(hero_tex_entry->pic1_tex, 40);
             SDL_FRect dst = { hero_x, hero_y, hero_w, hero_h };
             SDL_RenderTexture(ren, hero_tex_entry->pic1_tex, NULL, &dst);
             draw_filled_rect(ren, hero_x, hero_y, hero_w, hero_h, (SDL_Color){ 12, 15, 18, 120 });
-            SDL_SetRenderClipRect(ren, had_clip ? &prev_clip : NULL);
+            SDL_SetRenderClipRect(ren, saved_clip ? &prev_clip : NULL);
         }
     }
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
@@ -1264,17 +1392,26 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     /* Staged assets still need a runtime unless the same readiness predicate
        used by PLAY NOW can resolve one. Keep that boundary visible while the
        primary action below remains BUILD PACKAGE when the package is missing. */
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-        app, game, NULL, NULL, 0);
-    bool package_ready = player_app_game_has_runtime(app, game);
+    NkRuntimePackageStatus package_status =
+        player_app_cached_runtime_package_status(app, game);
+    bool package_ready = player_app_cached_game_has_runtime(app, game);
+    bool package_checking =
+        player_app_runtime_package_check_pending(app, game);
     bool runtime_required = game->assets_staged && !package_ready &&
                             package_status == NK_RUNTIME_PACKAGE_MISSING;
     const char *card_status = game->is_experimental ? "EXPERIMENTAL"
-        : (runtime_required ? "RUNTIME REQUIRED"
-            : ((game->assets_staged && !game->is_prepared)
-                ? "ASSETS STAGED" : status_label(game->status)));
+        : (package_checking ? "CHECKING PACKAGE"
+            : (package_status == NK_RUNTIME_PACKAGE_STALE ? "PACKAGE STALE"
+                : (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE
+                    ? "PACKAGE INCOMPATIBLE"
+                    : (runtime_required ? "RUNTIME REQUIRED"
+                        : ((game->assets_staged && !game->is_prepared)
+                            ? "ASSETS STAGED" : status_label(game->status))))));
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
-               (game->is_experimental || runtime_required) ? COLOR_AMBER : COLOR_EMERALD);
+               (game->is_experimental || package_checking || runtime_required ||
+                package_status == NK_RUNTIME_PACKAGE_STALE ||
+                package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE)
+                   ? COLOR_AMBER : COLOR_EMERALD);
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
@@ -1435,6 +1572,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             player_app_launch_game(app, app->selected_game_index);
         }
         focus++;
+    } else if (package_checking) {
+        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                         "CHECKING PACKAGE...");
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "REBUILD PACKAGE", true, in, primary_focused)) {

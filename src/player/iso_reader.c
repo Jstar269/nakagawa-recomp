@@ -85,51 +85,32 @@ NkIconStatus nk_iso_validate_png_header(const uint8_t *data, size_t size, uint32
     return NK_ICON_OK;
 }
 
-NkIconStatus nk_iso_read_image_entry(const char *iso_path, const char *rel_path,
-                                     uint8_t **out_data, size_t *out_size,
-                                     uint32_t *out_w, uint32_t *out_h) {
+static NkIconStatus nk_iso_read_image_with_reader(
+    NkIsoReader *reader, const char *rel_path, uint8_t **out_data,
+    size_t *out_size, uint32_t *out_w, uint32_t *out_h) {
     if (out_data) *out_data = NULL;
     if (out_size) *out_size = 0;
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
 
-    if (!iso_path || !iso_path[0] || !rel_path || !rel_path[0] || !out_data || !out_size) {
+    if (!reader || !rel_path || !rel_path[0] || !out_data || !out_size) {
         return NK_ICON_ERR_INVALID_PARAM;
-    }
-
-    NkIsoReader *reader = nk_iso_reader_open(iso_path);
-    if (!reader) {
-        return NK_ICON_ERR_MISSING;
     }
 
     uint32_t lba = 0;
     uint32_t size = 0;
     bool is_dir = false;
     int rc = nk_iso_reader_lookup(reader, rel_path, &lba, &size, &is_dir);
-    if (rc != 0 || is_dir) {
-        nk_iso_reader_close(reader);
-        return NK_ICON_ERR_MISSING;
-    }
+    if (rc != 0 || is_dir) return NK_ICON_ERR_MISSING;
 
-    if (size == 0) {
-        nk_iso_reader_close(reader);
-        return NK_ICON_ERR_CORRUPT;
-    }
+    if (size == 0) return NK_ICON_ERR_CORRUPT;
 
-    if (size > NK_ICON_MAX_BYTES) {
-        nk_iso_reader_close(reader);
-        return NK_ICON_ERR_OVERSIZED;
-    }
+    if (size > NK_ICON_MAX_BYTES) return NK_ICON_ERR_OVERSIZED;
 
     uint8_t *buf = (uint8_t *)malloc(size);
-    if (!buf) {
-        nk_iso_reader_close(reader);
-        return NK_ICON_ERR_CORRUPT;
-    }
+    if (!buf) return NK_ICON_ERR_CORRUPT;
 
     int bytes_read = nk_iso_reader_read(reader, lba, 0, buf, size);
-    nk_iso_reader_close(reader);
-
     if (bytes_read != (int)size) {
         free(buf);
         return NK_ICON_ERR_CORRUPT;
@@ -144,4 +125,49 @@ NkIconStatus nk_iso_read_image_entry(const char *iso_path, const char *rel_path,
     *out_data = buf;
     *out_size = size;
     return NK_ICON_OK;
+}
+
+NkIconStatus nk_iso_read_image_entry(const char *iso_path, const char *rel_path,
+                                     uint8_t **out_data, size_t *out_size,
+                                     uint32_t *out_w, uint32_t *out_h) {
+    if (out_data) *out_data = NULL;
+    if (out_size) *out_size = 0;
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (!iso_path || !iso_path[0] || !rel_path || !rel_path[0] ||
+        !out_data || !out_size) return NK_ICON_ERR_INVALID_PARAM;
+
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    if (!reader) return NK_ICON_ERR_MISSING;
+    NkIconStatus status = nk_iso_read_image_with_reader(
+        reader, rel_path, out_data, out_size, out_w, out_h);
+    nk_iso_reader_close(reader);
+    return status;
+}
+
+void nk_iso_read_game_art(const char *iso_path, NkIsoImageData *icon,
+                          NkIsoImageData *background) {
+    if (icon) {
+        memset(icon, 0, sizeof(*icon));
+        icon->status = NK_ICON_ERR_INVALID_PARAM;
+    }
+    if (background) {
+        memset(background, 0, sizeof(*background));
+        background->status = NK_ICON_ERR_INVALID_PARAM;
+    }
+    if (!iso_path || !iso_path[0] || !icon || !background) return;
+
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    if (!reader) {
+        icon->status = NK_ICON_ERR_MISSING;
+        background->status = NK_ICON_ERR_MISSING;
+        return;
+    }
+    icon->status = nk_iso_read_image_with_reader(
+        reader, "PSP_GAME/ICON0.PNG", &icon->data, &icon->size,
+        &icon->width, &icon->height);
+    background->status = nk_iso_read_image_with_reader(
+        reader, "PSP_GAME/PIC1.PNG", &background->data,
+        &background->size, &background->width, &background->height);
+    nk_iso_reader_close(reader);
 }

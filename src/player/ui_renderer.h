@@ -33,6 +33,11 @@ int ui_focus_count(const PlayerApp *app);
  * when typography never initialized. */
 void ui_font_shutdown(void);
 
+/* Consume an asynchronously loaded ISO-art event on the renderer thread. */
+bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
+                                    const SDL_Event *event);
+bool ui_renderer_art_pending(void);
+
 /* Pixel-density multiplier applied to raster point sizes (crisper type on
  * high-density displays). Values outside [1, 3] are ignored. */
 void ui_font_set_density(float density);
