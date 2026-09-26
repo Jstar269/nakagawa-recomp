@@ -350,25 +350,37 @@ int sr_flight_event_at(uint32_t index, SrFlightEvent *out) {
  * else (a hand-compile with a malformed -D) is recorded as null with a visible
  * diagnostic, never as a value that would corrupt the evidence bundle.
  */
+/* Upper bound of the schema's source_date_epoch: 9999-12-31T23:59:59Z. */
+#define SR_FLIGHT_EPOCH_MAX 253402300799ULL
+
 static int decimal_epoch_text(const char *text) {
     size_t length;
+    unsigned long long value = 0u;
     if (!text || !*text) return 0;
     length = strlen(text);
-    if (length > 20u) return 0;
+    if (length > 12u) return 0;
     for (const char *p = text; *p; ++p) {
         if (*p < '0' || *p > '9') return 0;
+        value = value * 10u + (unsigned long long)(*p - '0');
     }
-    return 1;
+    return value <= SR_FLIGHT_EPOCH_MAX;
 }
 
-static int hex_identity_text(const char *text) {
+/* Accepts hex digits in either case and writes the lowercase form the schema
+ * requires into out (at least 65 bytes). */
+static int hex_identity_text(const char *text, char *out) {
     size_t length;
+    size_t i;
     if (!text) return 0;
     length = strlen(text);
     if (length < 7u || length > 64u) return 0;
-    for (const char *p = text; *p; ++p) {
-        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) return 0;
+    for (i = 0; i < length; ++i) {
+        char c = text[i];
+        if (c >= 'A' && c <= 'F') c = (char)(c - 'A' + 'a');
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return 0;
+        out[i] = c;
     }
+    out[length] = '\0';
     return 1;
 }
 
@@ -404,6 +416,7 @@ static int write_bundle(int reason) {
     const char *epoch_json = "null";
     const char *build_id_json = "null";
     char build_id_buffer[80];
+    char build_id_hex[65];
     if (s_flight_source_date_epoch[0]) {
         if (decimal_epoch_text(s_flight_source_date_epoch)) {
             epoch_json = s_flight_source_date_epoch;
@@ -413,9 +426,9 @@ static int write_bundle(int reason) {
         }
     }
     if (s_flight_build_id[0]) {
-        if (hex_identity_text(s_flight_build_id)) {
+        if (hex_identity_text(s_flight_build_id, build_id_hex)) {
             int length = snprintf(build_id_buffer, sizeof(build_id_buffer), "\"%s\"",
-                                  s_flight_build_id);
+                                  build_id_hex);
             if (length >= 0 && (size_t)length < sizeof(build_id_buffer)) {
                 build_id_json = build_id_buffer;
             }

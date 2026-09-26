@@ -228,6 +228,26 @@ class RecorderBundleTests(unittest.TestCase):
         self.assertIn("SR_FLIGHT", stderr)
         flight_diff.validate_bundle(bundle)
 
+    def test_epoch_beyond_the_schema_maximum_fails_closed_to_null(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle, raw, stderr = self._build_and_dump(
+                Path(tmp),
+                "huge-epoch",
+                ["-DSR_SOURCE_DATE_EPOCH=253402300800", f'-DSR_BUILD_ID="{FAKE_COMMIT}"'],
+            )
+        self.assertIsNone(bundle["build"]["source_date_epoch"])
+        self.assertNotIn("253402300800", raw)
+        self.assertIn("SR_FLIGHT", stderr)
+        flight_diff.validate_bundle(bundle)
+
+    def test_uppercase_build_id_is_recorded_lowercase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle, _, _ = self._build_and_dump(
+                Path(tmp), "upper", [f'-DSR_BUILD_ID="{FAKE_COMMIT.upper()}"']
+            )
+        self.assertEqual(bundle["build"]["build_id"], FAKE_COMMIT.lower())
+        flight_diff.validate_bundle(bundle)
+
 
 if __name__ == "__main__":
     unittest.main()

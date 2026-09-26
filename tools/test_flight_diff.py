@@ -175,6 +175,16 @@ class FlightBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(flight_diff.FlightDiffError, "reproducible build identity"):
             flight_diff.validate_bundle(bundle)
 
+    def test_schema_itself_rejects_an_identity_less_v3_build(self):
+        schema = json.loads(flight_diff.SCHEMA_PATH.read_text(encoding="utf-8"))
+        bundle = make_bundle([event(1, "sched", version=3)], version=3)
+        bundle["build"]["source_date_epoch"] = None
+        bundle["build"]["build_id"] = None
+        with self.assertRaises(flight_diff.FlightDiffError):
+            flight_diff._validate_schema(bundle, schema)
+        bundle["build"]["build_id"] = "0123456789abcdef"
+        flight_diff._validate_schema(bundle, schema)
+
     def test_schema_v3_rejects_out_of_range_epoch(self):
         bundle = make_bundle([event(1, "sched", version=3)], version=3)
         bundle["build"]["source_date_epoch"] = -1

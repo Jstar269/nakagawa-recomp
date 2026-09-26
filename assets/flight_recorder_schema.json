@@ -20,7 +20,7 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; a bundle must record at least one of the two (enforced by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
+      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; a schema_version 3 bundle must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
       "required": ["compiler", "pointer_bits"],
       "properties": {
         "compiler": {"enum": ["gcc", "clang", "other"]},
@@ -152,6 +152,7 @@
       "if": {"properties": {"schema_version": {"const": 3}}, "required": ["schema_version"]},
       "then": {"properties": {"build": {"allOf": [
         {"required": ["source_date_epoch", "build_id"]},
+        {"not": {"properties": {"source_date_epoch": {"type": "null"}, "build_id": {"type": "null"}}}},
         {"not": {"required": ["compiled_date"]}},
         {"not": {"required": ["compiled_time"]}}
       ]}}}
