@@ -42,6 +42,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "flight_recorder.h"
 #include "iso.h"
 #include "title_config.h"
+#include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -15495,6 +15496,82 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
 }
 
+/* A press mask that names the wrong button cannot fail: the guest receives a bit the
+ * screen ignores and the run looks exactly like a game that has frozen, which is how a
+ * whole investigation once went looking for a scheduler deadlock that was not there. So a
+ * route may name the button instead of counting bits, the name must mean the same bit the
+ * host front-ends publish (NK_PSP_BTN_*_BIT, so a live press and a scripted press cannot
+ * disagree), and a name that is not a button is refused instead of read as a mask. */
+static void test_route_names_the_buttons_it_presses(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* CROSS by name, then the same mask as hex: the two forms must be the same press. */
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 16\n"
+             "DELAY 4\n"
+             "PRESS 4000 16\n"
+             "DELAY 4\n"
+             "PRESS_WHILE MAIN_MENU START+UP 4 30 100000\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that names buttons loads");
+    expect(sr_route_step(0, NULL) == 0u, "an unobserved screen check presses nothing");
+    expect(sr_route_step(1, sigA) == NK_PSP_BTN_CROSS_BIT,
+           "the press begins on the vblank the screen is reached");
+    for (uint32_t v = 2; v < 17; v++)
+        expect(sr_route_step(v, NULL) == NK_PSP_BTN_CROSS_BIT, "CROSS stays held for its width");
+    expect(sr_route_step(17, NULL) == 0u, "CROSS is released after its width");
+    expect(sr_route_step(21, NULL) == NK_PSP_BTN_CROSS_BIT,
+           "a hex mask means the same button as its name");
+    expect(sr_route_step(38, NULL) == 0u, "the release between presses is honoured");
+
+    /* The repeating step, checked as a pattern rather than against a vblank arithmetic the
+     * reader would have to redo: 120 vblanks is exactly four of its 30-vblank periods, so a
+     * 4-vblank press inside each must be held for 16 of them and released for the rest. */
+    const uint32_t pulse = NK_PSP_BTN_START_BIT | NK_PSP_BTN_UP_BIT;
+    uint32_t first = 0;
+    for (uint32_t v = 30; v < 120 && first == 0; v++)
+        if (sr_route_step(v, NULL) & pulse) first = v;
+    expect(first != 0, "names joined with '+' reach the guest as every button named");
+    int held = 0, loose = 0;
+    for (uint32_t v = first; v < first + 120; v++) {
+        if (sr_route_step(v, NULL) & pulse) held++; else loose++;
+    }
+    expect(held == 16, "the repeating step holds the named buttons 4 of every 30 vblanks");
+    expect(loose == 104, "the repeating step releases the pad between its pulses");
+    expect(sr_route_status() == RT_RUNNING, "the scripted press is still inside its step");
+    remove(RT_PATH);
+
+    /* Case does not matter, and an unknown name is a refusal rather than a silent 0. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS cross 4\n"
+             "PRESS OK 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a button name that is not a button is refused");
+    expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+    remove(RT_PATH);
+
+    /* The legacy absolute-frame table takes names too: strtoul used to read "CROSS" as 0,
+     * which is the same silent-nothing press one syntax layer down. */
+    sr_route_reset();
+    rt_write("1 0x0008 8\n8600 CROSS 16\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script accepts a button name");
+    expect(sr_route_status() == RT_LEGACY, "the named bare row keeps legacy behaviour");
+    expect(sr_route_step(8600, NULL) == 0u, "the program stepper stays inert for a legacy script");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 /* Route observer cadence (#109 reconstruction): sample by ELAPSED delivered
  * VCOUNT, not exact modulo.
  *
@@ -16166,6 +16243,7 @@ int main(int argc, char **argv) {
     test_route_malformed_files_are_refused();
     test_route_mask_must_be_a_hex_pad_mask();
     test_route_legacy_pad_script_is_unchanged();
+    test_route_names_the_buttons_it_presses();
     test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();
