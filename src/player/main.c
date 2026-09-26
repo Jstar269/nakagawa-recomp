@@ -566,6 +566,10 @@ static int stage_iso_synchronously(PlayerApp *app) {
     return 0;
 }
 
+/* Bound on one headless --launch-index run. A guest that reaches its own exit
+   ends the run sooner; this only caps a run that would otherwise wait forever. */
+#define NK_HEADLESS_LAUNCH_TIMEOUT_MS 120000
+
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
     SetConsoleOutputCP(CP_UTF8);
@@ -611,7 +615,8 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--iso=<path>] [--stage|--stage-only] "
-                   "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>]\n");
+                   "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
+                   "[--launch-index=N [--headless-launch]]\n");
             return 0;
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
@@ -643,6 +648,8 @@ int main(int argc, char *argv[]) {
             override_h = atoi(argv[i] + 9);
         } else if (strcmp(argv[i], "--demo") == 0) {
             populate_sample = true;
+        } else if (strcmp(argv[i], "--headless-launch") == 0) {
+            app.launch_headless = true;
         } else if (strcmp(argv[i], "--empty") == 0) {
             force_empty = true;
         } else if (strcmp(argv[i], "--wizard") == 0) {
@@ -992,9 +999,28 @@ int main(int argc, char *argv[]) {
         }
         printf("[PLAYER] Launch argv contains --gui: %s\n",
                app.launch_session.argv_has_gui ? "yes" : "no");
-        if (!app.launch_session.argv_has_gui) {
+        if (!app.launch_session.argv_has_gui && !app.launch_headless) {
+            /* A windowed launch that lost its --gui request is a failure. */
             player_app_stop_game(&app);
             return 5;
+        }
+        if (!app.launch_session.argv_has_gui) {
+            /* Headless launch: the same player-owned session, spawned without a
+               window so a host with no display can still run it. The bound is
+               the whole check -- a run that has not ended inside it is reported
+               as a timeout with a distinct status, never as a launch. */
+            int headless_code = nk_launch_wait(&app.launch_session,
+                                               NK_HEADLESS_LAUNCH_TIMEOUT_MS);
+            app.is_game_running = false;
+            if (headless_code < 0) {
+                fprintf(stderr,
+                        "[PLAYER] Headless launch did not finish within %d ms; stopping the child.\n",
+                        NK_HEADLESS_LAUNCH_TIMEOUT_MS);
+                player_app_stop_game(&app);
+                return 7;
+            }
+            printf("[PLAYER] Headless launch child exited with code %d.\n", headless_code);
+            return headless_code;
         }
         int child_code = nk_launch_wait(&app.launch_session, -1);
         app.is_game_running = false;
@@ -1401,36 +1427,7 @@ int main(int argc, char *argv[]) {
         }
 
         /* Monitor running game process */
-        if (app.is_game_running) {
-            if (app.launch_time_ms == 0) {
-                app.launch_time_ms = SDL_GetTicks();
-            }
-            if (!nk_launch_is_running(&app.launch_session)) {
-                uint64_t now_ms = SDL_GetTicks();
-                uint64_t elapsed_ms = now_ms >= app.launch_time_ms ? (now_ms - app.launch_time_ms) : 0;
-                int code = nk_launch_wait(&app.launch_session, 0);
-                app.is_game_running = false;
-                printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code, (unsigned long long)elapsed_ms);
-
-                if (elapsed_ms < 500) {
-                    char err_msg[512];
-                    snprintf(err_msg, sizeof(err_msg),
-                             "Child runtime exited prematurely after %llu ms (exit code %d).\n"
-                             "Process terminated before initialization or scheduler loop could start.",
-                             (unsigned long long)elapsed_ms, code);
-                    player_app_set_error(&app, "RUNTIME_PREMATURE_EXIT", "Child Process Terminated Early",
-                                         err_msg, "Return to Library", VIEW_LIBRARY);
-                } else if (code != 0) {
-                    char err_msg[512];
-                    snprintf(err_msg, sizeof(err_msg),
-                             "Child runtime process exited abnormally with code %d.\n"
-                             "Check runtime log files for crash traceback or missing symbol details.",
-                             code);
-                    player_app_set_error(&app, "RUNTIME_ERROR_EXIT", "Child Process Error Exit",
-                                         err_msg, "Return to Library", VIEW_LIBRARY);
-                }
-            }
-        }
+        player_app_monitor_game_session(&app, SDL_GetTicks());
 
         /* Live input sampling for controller settings monitor (#357) */
         if (gamepad) {

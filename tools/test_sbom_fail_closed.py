@@ -47,7 +47,7 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
         packages = generate_sbom.parse_python_lockfile(path)
         self.assertEqual(
             [(p["name"], p["version"], len(p["declared_sha256"])) for p in packages],
-            [("compiledb", "0.10.7", 2), ("ruff", "0.16.0", 18),
+            [("compiledb", "0.10.7", 2), ("ruff", "0.16.8", 18),
              ("click", "8.5.0", 2), ("bashlex", "0.18", 2)],
         )
 
