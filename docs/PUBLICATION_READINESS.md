@@ -61,7 +61,10 @@ or a human legal decision.
    `included_content_sha256`, both deterministic for a given source index.
 4. **History and object audit.** `tools/history_audit.py` scans every reachable
    commit, tree path, ref, and blob content in the proposed history. A clean tip
-   is not sufficient.
+   is not sufficient. Published history is never rewritten; a historical blob the
+   maintainer has reviewed and accepted is listed by its exact blob id, finding
+   code, path and reason in `assets/history_audit_reviewed.json`, and is reported
+   separately instead of failing the audit. Any other blob is still a finding.
 5. **Supply-chain inventory.** The release manifest and SBOM cover the expected
    provenance families (sal063, PPSSPP, PSPSDK, FFmpeg/ATRAC3+, SDL3, Vulkan,
    shadcn/ui, and VFPU) with synchronized notices and lock data.

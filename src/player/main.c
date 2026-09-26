@@ -147,6 +147,373 @@ static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
     SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
 }
 
+/* Keep the user-input mapping in one place so the native loop and the headless
+ * regression drive the same SDL event path. Worker and device-lifecycle events
+ * remain owned by the loop because they carry live handles. */
+static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
+                                     SDL_Window *window, bool *running,
+                                     const SDL_Event *event) {
+    if (!app || !input || !running || !event) return false;
+
+    switch (event->type) {
+    case SDL_EVENT_QUIT:
+        *running = false;
+        return true;
+    case SDL_EVENT_WINDOW_RESIZED:
+        app->window_width = event->window.data1;
+        app->window_height = event->window.data2;
+        return true;
+    case SDL_EVENT_MOUSE_MOTION:
+        input->mouse_x = (int)event->motion.x;
+        input->mouse_y = (int)event->motion.y;
+        return true;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (event->button.button == SDL_BUTTON_LEFT) {
+            input->mouse_down = true;
+            input->mouse_clicked = true;
+        }
+        return true;
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
+        return true;
+    case SDL_EVENT_KEY_DOWN:
+        if (event->key.key == SDLK_ESCAPE) {
+            if (app->active_view == VIEW_SETUP_WIZARD) {
+                player_app_wizard_back(app);
+            } else if (app->active_view == VIEW_CONTROLLER_SETTINGS) {
+                if (input_settings_is_capturing(&app->input_settings)) {
+                    input_settings_cancel_capture(&app->input_settings);
+                } else if (input_settings_is_calibrating(&app->input_settings)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                } else {
+                    player_app_set_view(app, VIEW_SETTINGS);
+                }
+            } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
+                player_app_cancel_package_build(app);
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else if (!player_view_is_library(app->active_view)) {
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else {
+                *running = false;
+            }
+        } else if (event->key.key == SDLK_O && !app->wizard.is_extracting) {
+            trigger_file_picker(window, app);
+        } else if (event->key.key == SDLK_S && app->active_view != VIEW_INSPECTING) {
+            if (app->active_view == VIEW_SETTINGS) {
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else {
+                player_app_set_view(app, VIEW_SETTINGS);
+            }
+        } else if (event->key.key == SDLK_TAB) {
+            int count = ui_focus_count(app);
+            player_app_move_focus(app, (event->key.mod & SDL_KMOD_SHIFT) ? -1 : 1,
+                                  count);
+        } else if (event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER ||
+                   event->key.key == SDLK_SPACE) {
+            /* Held-key auto-repeat must not re-fire actions: the first PLAY
+               press swaps the button to STOP, so a repeat would stop the game. */
+            if (!event->key.repeat) input->activate_pressed = true;
+        } else if (player_view_is_library(app->active_view)) {
+            if (event->key.key == SDLK_LEFT) {
+                player_app_move_selection(app, -1);
+            } else if (event->key.key == SDLK_RIGHT) {
+                player_app_move_selection(app, 1);
+            } else if (event->key.key == SDLK_UP) {
+                player_app_move_focus(app, -1, ui_focus_count(app));
+            } else if (event->key.key == SDLK_DOWN) {
+                player_app_move_focus(app, 1, ui_focus_count(app));
+            } else if (event->key.key == SDLK_HOME) {
+                app->selected_game_index = app->game_count > 0 ? 0 : -1;
+            } else if (event->key.key == SDLK_END) {
+                app->selected_game_index = app->game_count - 1;
+            } else if (event->key.key == SDLK_PAGEUP) {
+                player_app_move_selection(app, -player_app_visible_library_cards(app));
+            } else if (event->key.key == SDLK_PAGEDOWN) {
+                player_app_move_selection(app, player_app_visible_library_cards(app));
+            }
+        } else if (event->key.key == SDLK_LEFT || event->key.key == SDLK_UP) {
+            player_app_move_focus(app, -1, ui_focus_count(app));
+        } else if (event->key.key == SDLK_RIGHT || event->key.key == SDLK_DOWN) {
+            player_app_move_focus(app, 1, ui_focus_count(app));
+        }
+        return true;
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (player_view_is_library(app->active_view) && event->wheel.y != 0.0f) {
+            player_app_move_selection(app, event->wheel.y > 0.0f ? -1 : 1);
+        }
+        return true;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
+            input_settings_is_capturing(&app->input_settings) &&
+            (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
+             event->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
+            event->gaxis.value > 16000) {
+            NkBindingSource src;
+            src.type = NK_BINDING_HOST_TRIGGER;
+            src.index = event->gaxis.axis;
+            input_settings_feed_capture_source(&app->input_settings, src);
+        }
+        return true;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
+            input_settings_is_capturing(&app->input_settings)) {
+            NkBindingSource src;
+            src.type = NK_BINDING_HOST_BUTTON;
+            src.index = event->gbutton.button;
+            input_settings_feed_capture_source(&app->input_settings, src);
+            return true;
+        }
+        if (player_view_is_library(app->active_view)) {
+            switch (event->gbutton.button) {
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+                player_app_move_selection(app, -1);
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+                player_app_move_selection(app, 1);
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_UP:
+                player_app_move_focus(app, -1, ui_focus_count(app));
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+                player_app_move_focus(app, 1, ui_focus_count(app));
+                break;
+            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+                player_app_move_selection(app, -player_app_visible_library_cards(app));
+                break;
+            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
+                player_app_move_selection(app, player_app_visible_library_cards(app));
+                break;
+            case SDL_GAMEPAD_BUTTON_SOUTH:
+                input->activate_pressed = true;
+                break;
+            case SDL_GAMEPAD_BUTTON_START:
+                player_app_set_view(app, VIEW_SETTINGS);
+                break;
+            default:
+                break;
+            }
+        } else if (event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
+            if (app->active_view == VIEW_SETUP_WIZARD) {
+                player_app_wizard_back(app);
+            } else if (app->active_view == VIEW_CONTROLLER_SETTINGS) {
+                if (input_settings_is_calibrating(&app->input_settings)) {
+                    input_settings_cancel_calibration(&app->input_settings);
+                } else {
+                    player_app_set_view(app, VIEW_SETTINGS);
+                }
+            } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
+                player_app_cancel_package_build(app);
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else {
+                player_app_set_view(app, VIEW_LIBRARY);
+            }
+        } else if (event->gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) {
+            input->activate_pressed = true;
+        } else if (event->gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT ||
+                   event->gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+            player_app_move_focus(app, -1, ui_focus_count(app));
+        } else if (event->gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT ||
+                   event->gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+            player_app_move_focus(app, 1, ui_focus_count(app));
+        } else if (event->gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+            if (app->active_view == VIEW_SETTINGS ||
+                app->active_view == VIEW_CONTROLLER_SETTINGS) {
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else {
+                player_app_set_view(app, VIEW_SETTINGS);
+            }
+        }
+        return true;
+    case SDL_EVENT_DROP_FILE:
+        if (event->drop.data) {
+            const char *files[2] = { event->drop.data, NULL };
+            on_file_dialog_callback(app, files, 0);
+        }
+        return true;
+    default:
+        return false;
+    }
+}
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static int player_ui_test_next_event(const char *script, size_t *cursor,
+                                    SDL_Event *event) {
+    if (!script || !cursor || !event) return -1;
+    size_t length = strlen(script);
+    while (*cursor < length && script[*cursor] == ';') (*cursor)++;
+    if (*cursor >= length) return 0;
+
+    size_t start = *cursor;
+    while (*cursor < length && script[*cursor] != ';') (*cursor)++;
+    size_t token_length = *cursor - start;
+    if (token_length == 0 || token_length >= 1024) return -1;
+    char token[1024];
+    memcpy(token, script + start, token_length);
+    token[token_length] = '\0';
+    memset(event, 0, sizeof(*event));
+
+    if (strcmp(token, "QUIT") == 0) {
+        event->type = SDL_EVENT_QUIT;
+        return 1;
+    }
+    if (strncmp(token, "DROP_FILE=", 10) == 0) {
+        event->type = SDL_EVENT_DROP_FILE;
+        event->drop.data = SDL_strdup(token + 10);
+        return event->drop.data ? 1 : -1;
+    }
+    if (strncmp(token, "MOUSE_MOVE=", 11) == 0) {
+        int x = 0;
+        int y = 0;
+        char trailing = '\0';
+        if (sscanf(token + 11, "%d,%d%c", &x, &y, &trailing) != 2) return -1;
+        event->type = SDL_EVENT_MOUSE_MOTION;
+        event->motion.x = (float)x;
+        event->motion.y = (float)y;
+        return 1;
+    }
+    if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0) {
+        event->type = strcmp(token, "MOUSE_DOWN") == 0
+            ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event->button.button = SDL_BUTTON_LEFT;
+        return 1;
+    }
+    if (strncmp(token, "KEY_", 4) == 0) {
+        static const struct { const char *name; SDL_Keycode key; } keys[] = {
+            { "ESCAPE", SDLK_ESCAPE }, { "RETURN", SDLK_RETURN },
+            { "TAB", SDLK_TAB }, { "SPACE", SDLK_SPACE }, { "LEFT", SDLK_LEFT },
+            { "RIGHT", SDLK_RIGHT }, { "UP", SDLK_UP }, { "DOWN", SDLK_DOWN },
+            { "HOME", SDLK_HOME }, { "END", SDLK_END },
+            { "PAGEUP", SDLK_PAGEUP }, { "PAGEDOWN", SDLK_PAGEDOWN },
+            { "S", SDLK_S }, { "O", SDLK_O }
+        };
+        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            if (strcmp(token + 4, keys[i].name) == 0) {
+                event->type = SDL_EVENT_KEY_DOWN;
+                event->key.key = keys[i].key;
+                return 1;
+            }
+        }
+        return -1;
+    }
+    if (strncmp(token, "PAD_", 4) == 0) {
+        static const struct { const char *name; SDL_GamepadButton button; } buttons[] = {
+            { "SOUTH", SDL_GAMEPAD_BUTTON_SOUTH },
+            { "NORTH", SDL_GAMEPAD_BUTTON_NORTH },
+            { "EAST", SDL_GAMEPAD_BUTTON_EAST },
+            { "DPAD_LEFT", SDL_GAMEPAD_BUTTON_DPAD_LEFT },
+            { "DPAD_RIGHT", SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
+            { "DPAD_UP", SDL_GAMEPAD_BUTTON_DPAD_UP },
+            { "DPAD_DOWN", SDL_GAMEPAD_BUTTON_DPAD_DOWN },
+            { "START", SDL_GAMEPAD_BUTTON_START }
+        };
+        for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
+            if (strcmp(token + 4, buttons[i].name) == 0) {
+                event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+                event->gbutton.button = buttons[i].button;
+                return 1;
+            }
+        }
+        return -1;
+    }
+    return -1;
+}
+
+static const char *player_ui_test_view_name(PlayerView view) {
+    switch (view) {
+    case VIEW_LIBRARY: return "library";
+    case VIEW_INSPECTING: return "inspecting";
+    case VIEW_SUPPORTED_TITLE: return "supported";
+    case VIEW_EXPERIMENTAL_TITLE: return "experimental";
+    case VIEW_UNSUPPORTED_TITLE: return "unsupported";
+    case VIEW_PREPARING: return "preparing";
+    case VIEW_SETTINGS: return "settings";
+    case VIEW_ERROR: return "error";
+    case VIEW_SETUP_WIZARD: return "wizard";
+    case PLAYER_VIEW_READY_LIBRARY: return "ready_library";
+    case VIEW_CONTROLLER_SETTINGS: return "controller";
+    case VIEW_BUILDING_PACKAGE: return "building_package";
+    default: return "unknown";
+    }
+}
+
+static const char *player_ui_test_wizard_step_name(WizardStep step) {
+    switch (step) {
+    case WIZARD_STEP_WELCOME: return "welcome";
+    case WIZARD_STEP_SELECT_GAME: return "select_game";
+    case WIZARD_STEP_INSPECT_VERIFY: return "inspect_verify";
+    case WIZARD_STEP_SYSTEM_FONTS: return "system_fonts";
+    case WIZARD_STEP_READY_LAUNCH: return "ready_launch";
+    default: return "unknown";
+    }
+}
+
+static uint64_t player_ui_test_frame_hash(SDL_Renderer *renderer) {
+    SDL_Surface *surface = SDL_RenderReadPixels(renderer, NULL);
+    if (!surface || !surface->pixels || surface->pitch <= 0 || surface->h <= 0) {
+        if (surface) SDL_DestroySurface(surface);
+        return 0;
+    }
+    const uint8_t *pixels = (const uint8_t *)surface->pixels;
+    size_t size = (size_t)surface->pitch * (size_t)surface->h;
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < size; i++) {
+        hash ^= pixels[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    SDL_DestroySurface(surface);
+    return hash;
+}
+
+static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
+                                        SDL_Renderer *renderer, bool running) {
+    const GameRecord *selected = NULL;
+    NkRuntimePackageStatus package_status = NK_RUNTIME_PACKAGE_MISSING;
+    if (app->selected_game_index >= 0 && app->selected_game_index < app->game_count) {
+        selected = &app->games[app->selected_game_index];
+        package_status = player_app_validate_runtime_package(
+            app, selected, NULL, NULL, 0);
+    }
+    SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
+    bool badge_valid = ui_last_status_badge_rect(&badge);
+    printf("[PLAYER_UI_TEST] frame=%d view=%s selected=%d focus=%d focus_count=%d wizard_step=%s "
+           "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
+           "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
+           "controller_capturing=%d controller_conflicts=%d calibrating=%d "
+           "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
+           "selected_experimental=%d selected_prepared=%d selected_staged=%d "
+           "selected_runtime=%d selected_package_status=%d games=%d build_stage=%d "
+           "badge=%d,%d,%d,%d running=%d pixels=%016llx\n",
+           frame_number, player_ui_test_view_name(app->active_view),
+           app->selected_game_index, app->focus_index, ui_focus_count(app),
+           player_ui_test_wizard_step_name(app->wizard.step),
+           app->wizard.font_confirmed ? 1 : 0,
+           app->wizard.is_extracting ? 1 : 0, app->wizard.extraction_percent,
+           player_app_wizard_cancel_requested(app) ? 1 : 0,
+           app->last_error.error_code[0] ? app->last_error.error_code : "NONE",
+           app->request_file_picker ? 1 : 0,
+           app->build_session.is_building ? 1 : 0,
+           app->build_session.is_cancelled ? 1 : 0,
+           app->input_settings.has_load_diagnostic ? 1 : 0,
+           input_settings_is_capturing(&app->input_settings) ? 1 : 0,
+           input_settings_has_conflicts(&app->input_settings) ? 1 : 0,
+           input_settings_is_calibrating(&app->input_settings) ? 1 : 0,
+           app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_SELECT].primary.index,
+           app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index,
+           app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_CIRCLE].primary.index,
+           app->input_settings.has_save_diagnostic ? 1 : 0,
+           selected && selected->is_experimental ? 1 : 0,
+           selected && selected->is_prepared ? 1 : 0,
+           selected && selected->assets_staged ? 1 : 0,
+           selected && player_app_game_has_runtime(app, selected) ? 1 : 0,
+           (int)package_status, app->game_count,
+           (int)app->build_session.current_stage,
+           badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
+           badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
+           running ? 1 : 0,
+           (unsigned long long)player_ui_test_frame_hash(renderer));
+}
+#endif
+
 enum {
     PLAYER_STAGING_EVENT_PROGRESS = 1,
     PLAYER_STAGING_EVENT_COMPLETE = 2
@@ -566,6 +933,10 @@ static int stage_iso_synchronously(PlayerApp *app) {
     return 0;
 }
 
+/* Bound on one headless --launch-index run. A guest that reaches its own exit
+   ends the run sooner; this only caps a run that would otherwise wait forever. */
+#define NK_HEADLESS_LAUNCH_TIMEOUT_MS 120000
+
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
     SetConsoleOutputCP(CP_UTF8);
@@ -593,6 +964,16 @@ int main(int argc, char *argv[]) {
     const char *manifest_overlay_path = NULL;
     const char *initial_iso_path = NULL;
     const char *runtime_root_path = NULL;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    const char *ui_test_events = "";
+    const char *ui_test_screenshot_path = NULL;
+    const char *ui_test_error_code = NULL;
+    bool ui_test_mode = false;
+    bool ui_test_failed = false;
+    bool ui_test_quit_queued = false;
+    size_t ui_test_event_cursor = 0;
+    int ui_test_frame = 0;
+#endif
     bool launch_now = false;
     bool stage_initial_iso = false;
     bool stage_only = false;
@@ -611,10 +992,22 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--iso=<path>] [--stage|--stage-only] "
-                   "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>]\n");
+                   "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
+                   "[--launch-index=N [--headless-launch]]\n");
             return 0;
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        } else if (strncmp(argv[i], "--ui-test-events=", 17) == 0) {
+            ui_test_events = argv[i] + 17;
+            ui_test_mode = true;
+        } else if (strncmp(argv[i], "--ui-test-screenshot=", 21) == 0) {
+            ui_test_screenshot_path = argv[i] + 21;
+            ui_test_mode = true;
+        } else if (strncmp(argv[i], "--ui-test-error-code=", 21) == 0) {
+            ui_test_error_code = argv[i] + 21;
+            ui_test_mode = true;
+#endif
         } else if (strncmp(argv[i], "--view=", 7) == 0) {
             test_view = argv[i] + 7;
         } else if (strncmp(argv[i], "--manifest-overlay=", 19) == 0) {
@@ -643,6 +1036,8 @@ int main(int argc, char *argv[]) {
             override_h = atoi(argv[i] + 9);
         } else if (strcmp(argv[i], "--demo") == 0) {
             populate_sample = true;
+        } else if (strcmp(argv[i], "--headless-launch") == 0) {
+            app.launch_headless = true;
         } else if (strcmp(argv[i], "--empty") == 0) {
             force_empty = true;
         } else if (strcmp(argv[i], "--wizard") == 0) {
@@ -845,6 +1240,25 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "library") == 0) {
             player_app_set_view(&app, VIEW_LIBRARY);
+        } else if (strcmp(test_view, "experimental-library") == 0) {
+            /* In-memory synthetic card for rendered UI regression; it is never
+               admitted to the user's persistent library. */
+            nk_library_init(&app.library);
+            app.game_count = 0;
+            app.selected_game_index = -1;
+            GameRecord experimental;
+            memset(&experimental, 0, sizeof(experimental));
+            snprintf(experimental.disc_id, sizeof(experimental.disc_id), "TEST00007");
+            snprintf(experimental.title_name, sizeof(experimental.title_name),
+                     "Nakagawa Synthetic Experimental Fixture");
+            snprintf(experimental.title_id, sizeof(experimental.title_id),
+                     "synthetic-ui-test-v1");
+            experimental.status = NK_STATUS_IDENTIFIED;
+            experimental.is_experimental = true;
+            app.games[0] = experimental;
+            app.game_count = 1;
+            app.selected_game_index = 0;
+            player_app_set_view(&app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "ready-library") == 0 ||
                    strcmp(test_view, "ready") == 0) {
             /* Synthetic capture fixture for the post-staging card. It is kept
@@ -882,6 +1296,17 @@ int main(int argc, char *argv[]) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00001");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Nakagawa Synthetic Allegrex Fixture");
             player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
+        } else if (strcmp(test_view, "experimental") == 0) {
+            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00007");
+            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name),
+                     "Nakagawa Synthetic Experimental Fixture");
+            snprintf(app.inspecting_game.title_id, sizeof(app.inspecting_game.title_id),
+                     "synthetic-ui-test-v1");
+            snprintf(app.inspecting_game.selected_executable,
+                     sizeof(app.inspecting_game.selected_executable), "EBOOT.BIN");
+            app.inspecting_game.status = NK_STATUS_IDENTIFIED;
+            app.inspecting_game.is_experimental = true;
+            player_app_set_view(&app, VIEW_EXPERIMENTAL_TITLE);
         } else if (strcmp(test_view, "unsupported") == 0) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "ULES99999");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Unknown PSP Game");
@@ -921,9 +1346,11 @@ int main(int argc, char *argv[]) {
             app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
         } else if (strcmp(test_view, "wizard-staging") == 0) {
             player_app_start_setup_wizard(&app);
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
-            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path), "selected/Hot Shots Tennis.iso");
+            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00008");
+            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name),
+                     "Nakagawa Synthetic Staging Fixture");
+            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path),
+                     "fixtures/synthetic_staging.iso");
             app.inspecting_game.status = NK_STATUS_VERIFIED;
             app.wizard.iso_selected = true;
             app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
@@ -933,9 +1360,9 @@ int main(int argc, char *argv[]) {
             app.wizard.total_files = 12;
             snprintf(app.wizard.extraction_current_file,
                      sizeof(app.wizard.extraction_current_file),
-                     "xbdata/ui/menus/title_menu.xb");
+                     "xbdata/menu.xb");
             snprintf(app.wizard.status_message, sizeof(app.wizard.status_message),
-                     "Unpacking clean-room XB assets...");
+                     "Decoding the selected synthetic XB assets...");
         } else if (strcmp(test_view, "wizard4") == 0) {
             player_app_start_setup_wizard(&app);
             app.wizard.step = WIZARD_STEP_SYSTEM_FONTS;
@@ -962,6 +1389,18 @@ int main(int argc, char *argv[]) {
             package_builder_add_output_line(&app.build_session, "[compile] RUNNING: Compiling translated native C sources...");
         }
     }
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_error_code) {
+        player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
+                             "Synthetic UI regression error state.",
+                             "Return to Library", VIEW_LIBRARY);
+    }
+#endif
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_mode) app.settings.reduce_motion = true;
+#endif
 
     app.window_width = override_w;
     app.window_height = override_h;
@@ -992,9 +1431,28 @@ int main(int argc, char *argv[]) {
         }
         printf("[PLAYER] Launch argv contains --gui: %s\n",
                app.launch_session.argv_has_gui ? "yes" : "no");
-        if (!app.launch_session.argv_has_gui) {
+        if (!app.launch_session.argv_has_gui && !app.launch_headless) {
+            /* A windowed launch that lost its --gui request is a failure. */
             player_app_stop_game(&app);
             return 5;
+        }
+        if (!app.launch_session.argv_has_gui) {
+            /* Headless launch: the same player-owned session, spawned without a
+               window so a host with no display can still run it. The bound is
+               the whole check -- a run that has not ended inside it is reported
+               as a timeout with a distinct status, never as a launch. */
+            int headless_code = nk_launch_wait(&app.launch_session,
+                                               NK_HEADLESS_LAUNCH_TIMEOUT_MS);
+            app.is_game_running = false;
+            if (headless_code < 0) {
+                fprintf(stderr,
+                        "[PLAYER] Headless launch did not finish within %d ms; stopping the child.\n",
+                        NK_HEADLESS_LAUNCH_TIMEOUT_MS);
+                player_app_stop_game(&app);
+                return 7;
+            }
+            printf("[PLAYER] Headless launch child exited with code %d.\n", headless_code);
+            return headless_code;
         }
         int child_code = nk_launch_wait(&app.launch_session, -1);
         app.is_game_running = false;
@@ -1009,7 +1467,11 @@ int main(int argc, char *argv[]) {
     }
 
     Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (screenshot_path != NULL) {
+    if (screenshot_path != NULL
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        || ui_test_mode
+#endif
+    ) {
         win_flags |= SDL_WINDOW_HIDDEN;
     }
 
@@ -1036,6 +1498,25 @@ int main(int argc, char *argv[]) {
 
     UiInput input;
     memset(&input, 0, sizeof(input));
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    SDL_Texture *ui_test_target = NULL;
+    if (ui_test_mode) {
+        ui_test_target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                           SDL_TEXTUREACCESS_TARGET,
+                                           app.window_width, app.window_height);
+        if (!ui_test_target || !SDL_SetRenderTarget(renderer, ui_test_target)) {
+            fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
+                    SDL_GetError());
+            if (ui_test_target) SDL_DestroyTexture(ui_test_target);
+            SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+            ui_font_shutdown();
+            SDL_Quit();
+            return 1;
+        }
+    }
+#endif
 
     /* Headless Screenshot Mode */
     if (screenshot_path != NULL) {
@@ -1105,7 +1586,49 @@ int main(int argc, char *argv[]) {
        process-exit monitoring alive while the user is idle; staging progress
        and normal input still wake the loop immediately. */
     ui_render_frame(renderer, &app, &input);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    char *ui_test_drop_data = NULL;
+    if (ui_test_mode) player_ui_test_report_frame(0, &app, renderer, true);
+#endif
     while (running && !app.should_quit) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (ui_test_mode && !ui_test_quit_queued) {
+            SDL_Event scripted_event;
+            int next_event = player_ui_test_next_event(
+                ui_test_events, &ui_test_event_cursor, &scripted_event);
+            if (next_event > 0) {
+                if (scripted_event.type == SDL_EVENT_DROP_FILE) {
+                    ui_test_drop_data = (char *)scripted_event.drop.data;
+                }
+                if (!SDL_PushEvent(&scripted_event)) {
+                    if (ui_test_drop_data) {
+                        SDL_free(ui_test_drop_data);
+                        ui_test_drop_data = NULL;
+                    }
+                    ui_test_failed = true;
+                    running = false;
+                    fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
+                } else if (scripted_event.type == SDL_EVENT_QUIT) {
+                    ui_test_quit_queued = true;
+                }
+            } else if (next_event == 0) {
+                memset(&scripted_event, 0, sizeof(scripted_event));
+                scripted_event.type = SDL_EVENT_QUIT;
+                if (!SDL_PushEvent(&scripted_event)) {
+                    ui_test_failed = true;
+                    running = false;
+                    fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic quit.\n");
+                } else {
+                    ui_test_quit_queued = true;
+                }
+            } else {
+                ui_test_failed = true;
+                running = false;
+                fprintf(stderr, "[PLAYER_UI_TEST] Invalid synthetic event script near byte %llu.\n",
+                        (unsigned long long)ui_test_event_cursor);
+            }
+        }
+#endif
         uint64_t now_tick = SDL_GetTicks();
         uint32_t delta_ms = (uint32_t)(now_tick >= last_tick ? (now_tick - last_tick) : 0);
         last_tick = now_tick;
@@ -1119,230 +1642,50 @@ int main(int argc, char *argv[]) {
         bool event_available = SDL_WaitEventTimeout(&event, 50);
         if (event_available) {
             do {
-                switch (event.type) {
-                case SDL_EVENT_QUIT:
-                    running = false;
-                    break;
-                case SDL_EVENT_WINDOW_RESIZED:
-                    app.window_width = event.window.data1;
-                    app.window_height = event.window.data2;
-                    break;
-                case SDL_EVENT_MOUSE_MOTION:
-                    input.mouse_x = (int)event.motion.x;
-                    input.mouse_y = (int)event.motion.y;
-                    break;
-                case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                    if (event.button.button == SDL_BUTTON_LEFT) {
-                        input.mouse_down = true;
-                        input.mouse_clicked = true;
-                    }
-                    break;
-                case SDL_EVENT_MOUSE_BUTTON_UP:
-                    if (event.button.button == SDL_BUTTON_LEFT) {
-                        input.mouse_down = false;
-                    }
-                    break;
-                case SDL_EVENT_KEY_DOWN:
-                    if (event.key.key == SDLK_ESCAPE) {
-                        if (app.active_view == VIEW_SETUP_WIZARD) {
-                            player_app_wizard_back(&app);
-                        } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
-                            if (input_settings_is_capturing(&app.input_settings)) {
-                                input_settings_cancel_capture(&app.input_settings);
-                            } else if (input_settings_is_calibrating(&app.input_settings)) {
-                                input_settings_cancel_calibration(&app.input_settings);
-                            } else {
-                                player_app_set_view(&app, VIEW_SETTINGS);
+                if (!player_dispatch_ui_event(&app, &input, window, &running, &event)) {
+                    switch (event.type) {
+                    case SDL_EVENT_GAMEPAD_ADDED:
+                        if (!gamepad) {
+                            gamepad = SDL_OpenGamepad(event.gdevice.which);
+                            if (gamepad) {
+                                const char *pad_name = SDL_GetGamepadName(gamepad);
+                                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                                         "%s", pad_name ? pad_name : "Controller");
+                                app.settings.controller_connected = true;
+                                printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
                             }
-                        } else if (app.active_view == VIEW_BUILDING_PACKAGE) {
-                            player_app_cancel_package_build(&app);
-                            player_app_set_view(&app, VIEW_LIBRARY);
-                        } else if (!player_view_is_library(app.active_view)) {
-                            player_app_set_view(&app, VIEW_LIBRARY);
-                        } else {
-                            running = false;
                         }
-                    } else if (event.key.key == SDLK_O && !app.wizard.is_extracting) {
-                        /* Trigger file picker */
-                        trigger_file_picker(window, &app);
-                    } else if (event.key.key == SDLK_S && app.active_view != VIEW_INSPECTING) {
-                        /* Settings shortcut (topbar button is mouse-only). */
-                        if (app.active_view == VIEW_SETTINGS) {
-                            player_app_set_view(&app, VIEW_LIBRARY);
-                        } else {
-                            player_app_set_view(&app, VIEW_SETTINGS);
+                        break;
+                    case SDL_EVENT_GAMEPAD_REMOVED:
+                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                            SDL_CloseGamepad(gamepad);
+                            gamepad = NULL;
+                            app.settings.controller_name[0] = '\0';
+                            app.settings.controller_connected = false;
+                            printf("[PLAYER] Gamepad disconnected\n");
                         }
-                    } else if (event.key.key == SDLK_TAB) {
-                        int count = ui_focus_count(&app);
-                        if (event.key.mod & SDL_KMOD_SHIFT) {
-                            player_app_move_focus(&app, -1, count);
-                        } else {
-                            player_app_move_focus(&app, 1, count);
+                        break;
+                    case SDL_EVENT_USER:
+                        if (event.user.data1 == staging_job) {
+                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                                sync_staging_progress(&app, staging_job);
+                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                                sync_staging_progress(&app, staging_job);
+                                finish_staging_job(&app, staging_job);
+                            }
                         }
-                    } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER ||
-                               event.key.key == SDLK_SPACE) {
-                        /* Held-key auto-repeat must not re-fire actions: the
-                         * first PLAY press swaps the button to STOP, so a
-                         * repeat would instantly stop the just-started game. */
-                        if (!event.key.repeat) {
-                            input.activate_pressed = true;
-                        }
-                    } else if (player_view_is_library(app.active_view)) {
-                        /* Keyboard selection across the whole library, not
-                           just the cards that happen to fit on screen. */
-                        if (event.key.key == SDLK_LEFT) {
-                            player_app_move_selection(&app, -1);
-                        } else if (event.key.key == SDLK_RIGHT) {
-                            player_app_move_selection(&app, 1);
-                        } else if (event.key.key == SDLK_UP) {
-                            player_app_move_focus(&app, -1, ui_focus_count(&app));
-                        } else if (event.key.key == SDLK_DOWN) {
-                            player_app_move_focus(&app, 1, ui_focus_count(&app));
-                        } else if (event.key.key == SDLK_HOME) {
-                            app.selected_game_index = app.game_count > 0 ? 0 : -1;
-                        } else if (event.key.key == SDLK_END) {
-                            app.selected_game_index = app.game_count - 1;
-                        } else if (event.key.key == SDLK_PAGEUP) {
-                            player_app_move_selection(&app, -player_app_visible_library_cards(&app));
-                        } else if (event.key.key == SDLK_PAGEDOWN) {
-                            player_app_move_selection(&app, player_app_visible_library_cards(&app));
-                        }
-                    } else {
-                        /* Dialog views: arrows move focus so every button is
-                         * reachable without a mouse. */
-                        if (event.key.key == SDLK_LEFT || event.key.key == SDLK_UP) {
-                            player_app_move_focus(&app, -1, ui_focus_count(&app));
-                        } else if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_DOWN) {
-                            player_app_move_focus(&app, 1, ui_focus_count(&app));
-                        }
-                    }
-                    break;
-                case SDL_EVENT_MOUSE_WHEEL:
-                    if (player_view_is_library(app.active_view) && event.wheel.y != 0.0f) {
-                        player_app_move_selection(&app, event.wheel.y > 0.0f ? -1 : 1);
-                    }
-                    break;
-                case SDL_EVENT_GAMEPAD_ADDED:
-                    if (!gamepad) {
-                        gamepad = SDL_OpenGamepad(event.gdevice.which);
-                        if (gamepad) {
-                            const char *pad_name = SDL_GetGamepadName(gamepad);
-                            snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
-                                     "%s", pad_name ? pad_name : "Controller");
-                            app.settings.controller_connected = true;
-                            printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
-                        }
-                    }
-                    break;
-                case SDL_EVENT_GAMEPAD_REMOVED:
-                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                        SDL_CloseGamepad(gamepad);
-                        gamepad = NULL;
-                        app.settings.controller_name[0] = '\0';
-                        app.settings.controller_connected = false;
-                        printf("[PLAYER] Gamepad disconnected\n");
-                    }
-                    break;
-                case SDL_EVENT_USER:
-                    if (event.user.data1 == staging_job) {
-                        if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
-                            sync_staging_progress(&app, staging_job);
-                        } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
-                            sync_staging_progress(&app, staging_job);
-                            finish_staging_job(&app, staging_job);
-                        }
-                    }
-                    break;
-                case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-                    if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
-                        if ((event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
-                             event.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
-                            event.gaxis.value > 16000) {
-                            NkBindingSource src;
-                            src.type = NK_BINDING_HOST_TRIGGER;
-                            src.index = event.gaxis.axis;
-                            input_settings_feed_capture_source(&app.input_settings, src);
-                        }
-                    }
-                    break;
-                case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-                    if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
-                        NkBindingSource src;
-                        src.type = NK_BINDING_HOST_BUTTON;
-                        src.index = event.gbutton.button;
-                        input_settings_feed_capture_source(&app.input_settings, src);
+                        break;
+                    default:
                         break;
                     }
-                    if (player_view_is_library(app.active_view)) {
-                        switch (event.gbutton.button) {
-                            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
-                                player_app_move_selection(&app, -1);
-                                break;
-                            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
-                                player_app_move_selection(&app, 1);
-                                break;
-                            case SDL_GAMEPAD_BUTTON_DPAD_UP:
-                                player_app_move_focus(&app, -1, ui_focus_count(&app));
-                                break;
-                            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
-                                player_app_move_focus(&app, 1, ui_focus_count(&app));
-                                break;
-                            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
-                                player_app_move_selection(&app, -player_app_visible_library_cards(&app));
-                                break;
-                            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
-                                player_app_move_selection(&app, player_app_visible_library_cards(&app));
-                                break;
-                            case SDL_GAMEPAD_BUTTON_SOUTH:
-                                input.activate_pressed = true;
-                                break;
-                            case SDL_GAMEPAD_BUTTON_START:
-                                player_app_set_view(&app, VIEW_SETTINGS);
-                                break;
-                            default:
-                                break;
-                        }
-                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
-                        if (app.active_view == VIEW_SETUP_WIZARD) {
-                            player_app_wizard_back(&app);
-                        } else if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
-                            if (input_settings_is_calibrating(&app.input_settings)) {
-                                input_settings_cancel_calibration(&app.input_settings);
-                            } else {
-                                player_app_set_view(&app, VIEW_SETTINGS);
-                            }
-                        } else if (app.active_view == VIEW_BUILDING_PACKAGE) {
-                            player_app_cancel_package_build(&app);
-                            player_app_set_view(&app, VIEW_LIBRARY);
-                        } else {
-                            player_app_set_view(&app, VIEW_LIBRARY);
-                        }
-                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) {
-                        input.activate_pressed = true;
-                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT ||
-                               event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) {
-                        player_app_move_focus(&app, -1, ui_focus_count(&app));
-                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT ||
-                               event.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
-                        player_app_move_focus(&app, 1, ui_focus_count(&app));
-                    } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
-                        if (app.active_view == VIEW_SETTINGS || app.active_view == VIEW_CONTROLLER_SETTINGS) {
-                            player_app_set_view(&app, VIEW_LIBRARY);
-                        } else {
-                            player_app_set_view(&app, VIEW_SETTINGS);
-                        }
-                    }
-                    break;
-                case SDL_EVENT_DROP_FILE:
-                    if (event.drop.data) {
-                        const char *dropped = event.drop.data;
-                        const char *files[2] = { dropped, NULL };
-                        on_file_dialog_callback(&app, files, 0);
-                    }
-                    break;
-                default:
-                    break;
                 }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+                if (ui_test_drop_data && event.type == SDL_EVENT_DROP_FILE &&
+                    event.drop.data == ui_test_drop_data) {
+                    SDL_free(ui_test_drop_data);
+                    ui_test_drop_data = NULL;
+                }
+#endif
             } while (SDL_PollEvent(&event));
         }
 
@@ -1350,8 +1693,14 @@ int main(int argc, char *argv[]) {
            no window handle and must stay free of platform dialog calls, so the
            request is serviced here. */
         if (app.request_file_picker) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+            if (!ui_test_mode) {
+#endif
             app.request_file_picker = false;
             trigger_file_picker(window, &app);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+            }
+#endif
         }
 
         /* Step 3 requests one worker; progress and completion return through
@@ -1430,6 +1779,20 @@ int main(int argc, char *argv[]) {
         }
 
         ui_render_frame(renderer, &app, &input);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (ui_test_mode) {
+            ui_test_frame++;
+            player_ui_test_report_frame(ui_test_frame, &app, renderer,
+                                       running && !app.should_quit);
+            if (!running || app.should_quit) {
+                bool captured = ui_test_screenshot_path &&
+                    ui_capture_screenshot(renderer, ui_test_screenshot_path);
+                printf("[PLAYER_UI_TEST] screenshot=%s width=%d height=%d\n",
+                       captured ? "PASS" : "FAIL", app.window_width, app.window_height);
+                if (!captured) ui_test_failed = true;
+            }
+        }
+#endif
     }
 
     if (app.is_game_running) {
@@ -1442,9 +1805,18 @@ int main(int argc, char *argv[]) {
         SDL_CloseGamepad(gamepad);
         gamepad = NULL;
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_target) {
+        SDL_SetRenderTarget(renderer, NULL);
+        SDL_DestroyTexture(ui_test_target);
+    }
+#endif
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     ui_font_shutdown();
     SDL_Quit();
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_mode && ui_test_failed) return 1;
+#endif
     return 0;
 }

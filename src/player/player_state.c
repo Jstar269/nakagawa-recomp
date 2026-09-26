@@ -305,10 +305,10 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREPARING:
             return 1;
         case VIEW_SETTINGS:
-            /* Resolution (4) + frame cap (3) + display toggles (3: vsync,
+            /* Resolution (3) + frame cap (3) + display toggles (3: vsync,
              * fullscreen, reduce-motion) + volume stepper (2) + controller settings (1) + close (1),
-             * in draw order. */
-            return 14;
+             * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
+            return 13;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -371,7 +371,7 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count) {
 
 void player_app_settings_init_default(PlayerSettings *settings) {
     if (!settings) return;
-    settings->resolution_scale = 4; /* 1080p modern default */
+    settings->resolution_scale = 1; /* native 480x272: the verified path; upscaling is opt-in */
     settings->fullscreen = false;
     settings->vsync = true;
     settings->fps_cap = 60;
@@ -379,11 +379,13 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->reduce_motion = false;
     settings->controller_name[0] = '\0';
     settings->controller_connected = false;
-    snprintf(settings->save_directory, sizeof(settings->save_directory), "savedata");
 }
 
 static bool resolution_scale_valid(int scale) {
-    return scale == 1 || scale == 2 || scale == 3 || scale == 4 || scale == 8;
+    /* The GPU rasterizer supports at most 4x (ge_gpu MAX_SCALE); 8x was never
+       honoured by any consumer, so a persisted 8 falls back to the default
+       instead of pretending. */
+    return scale == 1 || scale == 2 || scale == 3 || scale == 4;
 }
 
 /* Settings paths come from the per-user config directory, which is UTF-8 and
@@ -649,12 +651,13 @@ void player_app_set_resolution_scale(PlayerApp *app, int scale) {
 
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
     if (!app) return;
-    /* UI offers 1/2/4/8. Scale 3 stays accepted for forward compatibility
+    /* UI offers 1/2/4: the GPU rasterizer caps at 4x (ge_gpu MAX_SCALE), so
+     * scale 8 is not selectable. Scale 3 stays accepted for forward compatibility
      * (resolution_label knows it) but is skipped by the stepper. */
-    static const int kOrder[] = { 1, 2, 4, 8 };
+    static const int kOrder[] = { 1, 2, 4 };
     int current = app->settings.resolution_scale;
     int at = 0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         if (kOrder[i] == current) {
             at = i;
             break;
@@ -662,9 +665,9 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
         if (kOrder[i] < current) at = i;
     }
     if (direction < 0) {
-        at = (at + 3) % 4;
+        at = (at + 2) % 3;
     } else {
-        at = (at + 1) % 4;
+        at = (at + 1) % 3;
     }
     app->settings.resolution_scale = kOrder[at];
     maybe_persist_settings(app);
@@ -830,9 +833,9 @@ void player_app_populate_sample_games(PlayerApp *app) {
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
-    /* A launch initiated by the player always requests a GUI child, even if
+    /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
 
     char package_error[2048] = "";
     player_app_validate_runtime_package(
@@ -850,7 +853,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     NkResult res = nk_launch_prepare_session(&app->launch_session, game,
                                               player_package_root(app, game));
     /* nk_launch defaults gui_mode to false for headless harnesses. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
     if (res != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
@@ -877,10 +880,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     }
 
     /* Apply user settings via typed runtime configuration */
-    app->launch_session.config.resolution_scale = app->settings.resolution_scale;
-    app->launch_session.config.fps_cap = app->settings.fps_cap;
-    app->launch_session.config.vsync = app->settings.vsync;
-    app->launch_session.config.fullscreen = app->settings.fullscreen;
+    player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
 
     printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", app->launch_session.executable_path, app->launch_session.iso_path);
 
@@ -934,6 +934,16 @@ void player_app_stop_game(PlayerApp *app) {
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+}
+
+void player_app_apply_settings_to_session(const PlayerSettings *settings,
+                                          NkRuntimeConfig *config) {
+    if (!settings || !config) return;
+    config->resolution_scale = settings->resolution_scale;
+    config->fps_cap = settings->fps_cap;
+    config->vsync = settings->vsync;
+    config->fullscreen = settings->fullscreen;
+    config->master_volume = settings->master_volume;
 }
 
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {

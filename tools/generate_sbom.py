@@ -27,7 +27,7 @@ DOCUMENT_NAMESPACE_BASE = "https://spdx.org/spdxdocs/nakagawa-recomp"
 
 PYTHON_RELEASE_INDEX_SCHEMA_VERSION = 1
 PYTHON_HASH_EVIDENCE_SCHEMA = "nakagawa-python-artifact-hash:v1"
-PYTHON_RELEASE_INDEX_IDENTITY = "assets/pypi_tool_metadata_2026-09-24.json"
+PYTHON_RELEASE_INDEX_IDENTITY = "assets/pypi_tool_metadata_2026-09-25.json"
 PYTHON_RELEASE_INDEX_PATH = ROOT / PYTHON_RELEASE_INDEX_IDENTITY
 SBOM_CREATED = "2026-08-06T00:00:00Z"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
