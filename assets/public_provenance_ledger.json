@@ -7866,7 +7866,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6960f7ff7a8e06b1104d76b7aefe718c08e1f99b6f8049f5ec35e3608abd0dc5"
+      "sha256": "6177cd4cd03fab813292213fd59b83ed559d62f5288d4a0334ffbd684857da57"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -7878,7 +7878,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8af9c51f04e0cf164757426706f5458422c78d7f3f3b31cfc82ac9873e7e5976"
+      "sha256": "a1d7cb037b00998cb872c3d932d2e9fda781244010bd401a9cb9bd61309dde3c"
     },
     {
       "path": "tools/test_prx_loader_cleanroom.py",
