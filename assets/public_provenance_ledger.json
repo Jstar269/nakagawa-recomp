@@ -4931,7 +4931,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5359f36ebc1d92c02b34f85502a3569509a81572bafb4bc3bb031e1ed601a6b7"
+      "sha256": "f7d90b66c8a9e851e3253471ddbfec0e29ace46cdcf5735767047469cfb946aa"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -5773,7 +5773,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "59cab7dd76f7623f33f683c522a2091619d8c8b47f766768d44d0ded4c1db3f1"
+      "sha256": "98edbe86e37e76d84f4cdf89a8d677b7729c72e8771b6cc63a5b873c522d29fe"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7638,7 +7638,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b35c2992edd0c7bc5a3306e1642a2e09121d21c350dcf4a550c41cf3fa40ce91"
+      "sha256": "7d39d21876606325d17eb158e8811858068d28a9d589e8fa82152ccfa4f1a0f9"
     },
     {
       "path": "tools/test_nid_name_proof.py",
@@ -7794,7 +7794,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55b79ec41b0b11bc8af7ef2d588e3052250960598b4918a53011c29e2fec1d1f"
+      "sha256": "e2d7d4a8a8b40a00abd97e9fedd7c1b1f446dc811f046dc9b4fce356299fee0b"
     },
     {
       "path": "tools/test_portability_inventory.py",
