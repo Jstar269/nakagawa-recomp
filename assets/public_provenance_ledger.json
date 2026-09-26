@@ -154,10 +154,13 @@
     },
     {
       "path": ".github/workflows/dependency-review.yml",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-config-dependency-review",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "aa0c7f62b3425fe9c34c44205b4b8ac58e1d5c042fa5b73c89f9500a7957bbd6"
     },
@@ -1415,10 +1418,13 @@
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-cosim",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b498ac3146d644e926cf0e2f8c64329baffc50e06c8cf4291899dc91602735dc"
     },
@@ -1448,19 +1454,25 @@
     },
     {
       "path": "fixtures/cosim/generate.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-cosim",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b180e09f8dc727f7bae024b2eaa5416c8bab12a65e43255d2124ba7b43570f7c"
     },
     {
       "path": "fixtures/cosim/mutate.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-cosim",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1e60495dcbe20209ea0884284dee7618a6a4277232cc4c5814056a2150ce78b3"
     },
@@ -1478,55 +1490,73 @@
     },
     {
       "path": "fixtures/nakagawa_minimal/Makefile",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-minimal",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f7bbc339e45b85be2e7d30ea0b621e6768c0a16a76cf1dae5a644dde8420b572"
     },
     {
       "path": "fixtures/nakagawa_minimal/main.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-minimal",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3cafddcd62c554768de40b1883f4f9ea905bdee92aeabda71a09fe07073f3713"
     },
     {
       "path": "fixtures/nakagawa_minimal_v3/Makefile",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-minimal",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "fa10b27b7d7535c47e39dc0f636876df88387e06b90b492dad6b8207771a4c2f"
     },
     {
       "path": "fixtures/nakagawa_minimal_v3/main.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-minimal",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "43f2f02bb3f8524595d01c42ebe35bd852afcbfa8a71814204bce8aa5818a0ef"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-minimal",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0c5802488b8b6edd3979da2fd8e0de0f7439502fe8ab505e71e34d8e1ea8f982"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/main.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-minimal",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9ff4c56ec6ec753127e03d43f3520d1eacf41069e03fe07e199ca332d31bbce4"
     },
@@ -1574,10 +1604,13 @@
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-psp-oracle",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8bfe1775c43e24e56086a09bba8a8f706ef84e34cfe5382050d580c447d5e746"
     },
@@ -1601,10 +1634,13 @@
     },
     {
       "path": "fixtures/psp_oracle/probe.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-psp-oracle",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e5429e5d918207d0baae38bde96fa5c7f906f38e9259cc2855ce355e5e5a27f2"
     },
@@ -1811,19 +1847,25 @@
     },
     {
       "path": "fixtures/pspdev_phase5/Makefile",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-pspdev-phase5",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "5ed5757207c34b0ab806768d545ef2e626e319e324cd13c79d778cb10cd96a46"
     },
     {
       "path": "fixtures/pspdev_phase5/main.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-pspdev-phase5",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6aee2c6686e4ce9db1a276e18a67396c6e36aacda7d39b1df87265224f55ebdc"
     },
@@ -1901,55 +1943,73 @@
     },
     {
       "path": "fixtures/vfpu_nan_payload/Makefile",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-nan",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "eafc4c42840216f4efc88ff54ba340b6df89fb0b3b392dece37769fdc5c9e471"
     },
     {
       "path": "fixtures/vfpu_nan_payload/vfpu_nan_cases.h",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-nan",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a55124ce38074c36397bff760520c6250633a348c6fc42db7201ffc9db23654c"
     },
     {
       "path": "fixtures/vfpu_nan_payload/vfpu_nan_probe.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-nan",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "21457b1e4268b5216df6a5c3357acf077c83948625a63319ffff333915bb5932"
     },
     {
       "path": "fixtures/vfpu_oracle/Makefile",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-oracle",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ea592e46d986139019eb05bf78613bbe1059cf90972d9e05e6096630847e313b"
     },
     {
       "path": "fixtures/vfpu_oracle/vfpu_oracle_cases.h",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-oracle",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8cc1d402f8def1dbbfa2089ca996c808c6bc01aa23f9ada2110af862d4b44a98"
     },
     {
       "path": "fixtures/vfpu_oracle/vfpu_probe.c",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-oracle",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "111ea76d0354f8b730bf054afa9f0667642d71a2c981df953b50df2caae8d8bd"
     },
@@ -1964,10 +2024,13 @@
     },
     {
       "path": "mk/build_common.mk",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-config-build-common",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "cffdaa909f8783b1d79f955a6faf67327171e468a0eab452e28aba88a6000ec6"
     },
@@ -2134,7 +2197,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3158452aefa3f6290c1841c2c17020766e85c1b199a79237c289a3b0ff03fcdb"
+      "sha256": "6326d337a6d083d599de0e2c043ba27baeb978d55d41d4f9d395899302b66f86"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -2146,7 +2209,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab0ea5e5dbe46745c4249ffefa1bc38da5fadfa3ae616e7bcfc83798f2b35782"
+      "sha256": "957f93b55b7d705b9a39ef906c282c7e2a7f2cf71f392c61b52429dbc618b57d"
     },
     {
       "path": "src/core/nk_library.c",
@@ -2362,7 +2425,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b99d0b423813f113fb9a1bdd867b6f241bf0164c4a8ccbcb77ac829e219ef181"
+      "sha256": "6b4cc6db13e0ef921ce85d314c59a22a11d97268867145f9f6dff5823ecb5d32"
     },
     {
       "path": "src/player/player_state.h",
@@ -2374,7 +2437,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d4be79e49878f0e41210d563089a67f73643cbcb27a38d2d0319bcd4377eb0f7"
+      "sha256": "fc689d5e9d114e1cc3fd05cb6c164825f2b590b3f444bab5ee95eaad6142afd4"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -2422,7 +2485,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f74eaf435c4a92add6d53cf4e3612e6791baf451cc745b658e36f9d79fc666bd"
+      "sha256": "2a1fe412f3f55bff8a7be97ed3ef2b53ad0fea0149d19a3ba5a6efed0324eacb"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -3400,7 +3463,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "28bf0646c9357daf8f39eeca2413812e05dc14fe4a90ff28f6b0240534f4da73"
+      "sha256": "f826100873027b7cfa14233c0ace9cb8a5a3f63ff73c2ff9e63e954bc3077005"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -3752,7 +3815,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e031788cbfb8e3bc0535778913190b0c3701a21648a2c6952009c95a0e88509"
+      "sha256": "341d6a158508486dfb0755328d351d898f075310a7b0e45069cc5a6f63eb0ae6"
     },
     {
       "path": "src/rt/gpu_coherence_selftest.c",
@@ -3790,7 +3853,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "15b04293e15eed8576b5bd97e2b86281e13b40a2ad330edd2bba850f5e09d11e"
+      "sha256": "cc5e135f7e25ae1d3d2febb33c1b67d37e534484adac7eddbc50076eb49a582f"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -3803,7 +3866,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1a6b6f1239923bf443efcecf0022b7594596cb6a50483d8e19459763e13a62c7"
+      "sha256": "0fb3dd9dca67f9ba2e0efcf7c0801e7087ce7b9b91e597da3dfa4cda4485f7aa"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
@@ -3842,7 +3905,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "690eb40156f13a377b61722304d00ed67deed25f9e82908d7d3931e185d4bcf1"
+      "sha256": "58796d8029e82724cd7cb2858c162486640b9a093ecc8dc8dab4c29a8bf64316"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -3855,7 +3918,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ad3f53d287e30d18fafef238809dbec39aabc52e38239b6be173dd2e12d67481"
+      "sha256": "1671cda28639b5c1a929ea8b29d5cba76650e77126b9037d404523d2eb04b3d6"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
@@ -4796,7 +4859,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "afac9c92c3f79dc648de9841ce80fdddde02fbb4d9c3d336912df1736ab8c587"
+      "sha256": "ac805c3bf2dd0a63f55e6ec58bdfb543b161502738766395aa898d2941db47db"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -4856,7 +4919,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "85fb3cb093cb5de28f0c11bfb461add48b86574b9610944e313ae4763f03adfd"
+      "sha256": "7a3998dbb37c42a09e1ac1cb489ab86b0094c8b8b2b8ba7441be26a529c9c0f1"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -4985,19 +5048,26 @@
     },
     {
       "path": "tools/README.md",
-      "classification": "reviewed_documentation",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-tools-readme",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "cdb1c549a5e5c38cb93432e542be321e897abc938aa9b160bc4cad1eccc27233"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
-      "classification": "reviewed_documentation",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-derived-trace-format",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "5c105e11df11bff86c65e52b114b856be64d9f5720a9a88424d7a70d14bced5f"
     },
@@ -5524,10 +5594,13 @@
     },
     {
       "path": "tools/import_audit_baseline.json",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-config-import-baseline",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e4a3f19db74d39228eed911e88959c6726e7f280d68d552d08e65ffa6d8d7412"
     },
@@ -6451,28 +6524,37 @@
     },
     {
       "path": "tools/test_analyze_tailcall.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "51438bd10165d3b4586c30d8e9ba72eaac933f03ccfcbb311fea102c055582e1"
     },
     {
       "path": "tools/test_analyze_toml_emit.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1c8025e0a229b7de7a0ef912776718782e34946df7a012fd2be2ecdd09773988"
     },
     {
       "path": "tools/test_analyzer_span_scope.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6070a972d9f1a47135180b62c4cc59da4cdab9adbd39e6fe6b41cfe55d00bcd2"
     },
@@ -6490,19 +6572,25 @@
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "eaa280f0bcb27d56c4df9fc0a4a6b01dbd788240a3d3d7cf39e4fabab8e56cee"
     },
     {
       "path": "tools/test_boot_gate.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a8e4d080f6008610ed9305ba5bdba7281e917baed6a1121c276704ecdf21fea0"
     },
@@ -6544,10 +6632,13 @@
     },
     {
       "path": "tools/test_callback_correctness.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-cpu-dispatch",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "35ea7a2a10f6471b84648d651abdebdd22f4fdd57bb5faa5c7de3a7e0c79a95f"
     },
@@ -6577,46 +6668,62 @@
     },
     {
       "path": "tools/test_codegen_continuations.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7607c4c3771e2b76dd8916c6363f978cf1f0f3fb375c1dcd379fcfc59f19125e"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8dc6a360a35545b57da20a4d2b3a65e1338deab866f36d6748f68fe1e70218e3"
     },
     {
       "path": "tools/test_codegen_fp_convert.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "bfb45e5f8940098de7fcd42188276a8c613b769eee204e666e734eb7b2b2b393"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
-      "classification": "synthetic_fixture",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-derived-test-codegen-gate-b-encoding",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "241fd866cb649198012ec347e5bd32def3c4c61053b3d1417ecd465284e6e641"
     },
     {
       "path": "tools/test_codegen_madd_msub.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "94342ea86a9c2dd05d6156658797db4adbd88857355e4ea864924f1948bcc365"
     },
@@ -6634,64 +6741,85 @@
     },
     {
       "path": "tools/test_codegen_no_shadow_stubs.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "59739c655cfdaf21e09e175c0612ba80af8f0bb0323c47bd47db59fa9dea9377"
     },
     {
       "path": "tools/test_codegen_profile_isolation.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "16fc85f0b79da5b82926c78b29b2f4d057c75edf656fa5941bd836de47dfbef8"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b3c8ec2660e11aac65e5f5680b1f927577fe8b42f052831e93d66ffb665716cc"
     },
     {
       "path": "tools/test_codegen_static_verify.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "bd2e182f942ed75045ee3008b598e225871f2846b7017b55da10f95632181cad"
     },
     {
       "path": "tools/test_codegen_transfer_target_timing.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "acf6dc677690ef5394eb968102f7859589809c6cb67efc02793c123e376cb416"
     },
     {
       "path": "tools/test_codegen_vfpu_fallback.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e380d286a2a01559a94ec510f2884825d85a358392323a7063a4686f869a1933"
     },
     {
       "path": "tools/test_compat_manifest.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1a07856ad981bb8fc0f038e303fc24fc59be6f3562ed9d1a5ca428108497a20f"
     },
@@ -6709,10 +6837,13 @@
     },
     {
       "path": "tools/test_cosim_fixture.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-cosim",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b47ac3c8b070087c447bb918f4b459fc9a2652fdb01fa7af299099dc1ded288d"
     },
@@ -6730,64 +6861,85 @@
     },
     {
       "path": "tools/test_dco_policy.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "41980f9231e4332e27b22a10a372b83440240e2a211e92c6bfbf743d93821f8d"
     },
     {
       "path": "tools/test_debug.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "454cabd8d775acffd4f5e102c93fed7f2ec046c0d0cd20b36854c3499886e07e"
     },
     {
       "path": "tools/test_decompme_export.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0cd9688ddf26b5afa8c7ccded25180a36f618a84a158e09740830a3621e28f10"
     },
     {
       "path": "tools/test_direct_j_omission_mutation.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8c8173cda45f98d5fd1a65f8b81e33a497f87d401519616ef31b265ea6eede33"
     },
     {
       "path": "tools/test_discovery_contract.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c1fabbb86b372cdd638f3d62184e27580e9bd270acad0336ee7b089bdac43306"
     },
     {
       "path": "tools/test_dispatch_c.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-cpu-dispatch",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e4d1135499618fc78aa3d0ec1b9aeefd960fb9e743a3487897cdfab4d566f00d"
     },
     {
       "path": "tools/test_dispatch_call_boundary.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-cpu-dispatch",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "454967c27b58b438ce1ec0bc97ac62d1267c81780807fc98929aabe42d848d94"
     },
@@ -6805,10 +6957,13 @@
     },
     {
       "path": "tools/test_dmac_semantics.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a0ac55ba846e6d6a7ded7545c8e26117927b7190068ced6719f9eb826da72a67"
     },
@@ -6826,10 +6981,13 @@
     },
     {
       "path": "tools/test_elf_bounds.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7aeebf69ddc6fe96abb39f19218b5d8d8361ba39997eb837944ecb8ca1b8766f"
     },
@@ -6847,37 +7005,49 @@
     },
     {
       "path": "tools/test_entry_frame_balance.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "69c90b61000f08a0d6c048b9e985c1e4d1f5f6b807800b9b1df28140b5996dd4"
     },
     {
       "path": "tools/test_evf_c.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6d0a5e3941891b4d0d0a225e4ba3f27f415ef2013909210acd6df78498727041"
     },
     {
       "path": "tools/test_evidence_model.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "b0039e14170aedce97934499eee9ced0303715d9e7db8b5d8293ea8c6a41d44f"
     },
     {
       "path": "tools/test_extract_xb_gim.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0c3661e99445b17ed88f33a60198f458328dfe46e68e7f53b35f79df6b673878"
     },
@@ -6943,10 +7113,13 @@
     },
     {
       "path": "tools/test_fp_scalar_mutations.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fpu-vfpu",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a7f69fd2002ffaa6a5c84618ce350ea5c460fd9d8aad8111359ebddf2a4d15cf"
     },
@@ -6964,19 +7137,25 @@
     },
     {
       "path": "tools/test_gate_exit_resolution.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0af6459294089f3f52a94e74805dac94c18ac1e65d59608f439cb6f948346375"
     },
     {
       "path": "tools/test_ge_capture.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "cda06d44c0b26503bd92696a8db4e76be9afdd33d11d19327b518194ae1871c0"
     },
@@ -7018,37 +7197,49 @@
     },
     {
       "path": "tools/test_generic_title_planning_proof.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "10a201b4a5b01b6021e75c0f9dafd3d4c91b6d26c1aa40d1e258b86d9866a72b"
     },
     {
       "path": "tools/test_guest_printf.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "896a0211627558b827de16c931ba9f8bb76f2550c488ffef197583687a512c74"
     },
     {
       "path": "tools/test_guest_span_routing.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-storage-vfs",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "a41c6815361704e0cfae4feae1c3f407d1047f51974ecfec445b5ff880e1fe5f"
     },
     {
       "path": "tools/test_guestmem_c.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-storage-vfs",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3a791304e18172271ffb7ba66e4829a1744924812774804494cebd9bf7a448fd"
     },
@@ -7078,37 +7269,50 @@
     },
     {
       "path": "tools/test_hle_manifest.py",
-      "classification": "synthetic_fixture",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-derived-test-hle-manifest",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "be3cced3ed580af24e1c60ff3e98eaf74bba2d70f3b924544b9dffe4e9b157bc"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ecc2cc15bb10374fb5bea17277783e7e8b4fa950949d023d5a02f482026052b2"
     },
     {
       "path": "tools/test_hle_title_isolation.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "cce8785d1fa4bef3954bab211ab9ac0e4c87579b6fdacc4be6f70f8167850e4f"
     },
     {
       "path": "tools/test_hle_umd_wakeup.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ce04d1e895cd17798b41acd1ad8d8c47846e73a8f6f47e9fc527f1051a0d38c5"
     },
@@ -7126,73 +7330,97 @@
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "7e648baeee067489d20643fe2369788751faa66436559b533074d9b4ab4bcf5a"
     },
     {
       "path": "tools/test_hst_manager_manifest.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "063f65b66ae1621eeafac3bca6aeaafbf747f1ff77ccf20ab1246d9cd767f5f0"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "820574fc4109dbedecb7c9c13b6ed21757d89f244a5b22c995633b2d169e3ba2"
     },
     {
       "path": "tools/test_import_audit.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "cc1d36a89721a46dbe1a36db9b37ba1bffb33ae98efeae74cf91dc747bda0f18"
     },
     {
       "path": "tools/test_import_name_safety.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "2bbed677974a2d28674fa5e6d1b2d0f27d671d2ec0f1aed85a47f928b29bc417"
     },
     {
       "path": "tools/test_imports.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "51bbdb2639a2aa01b4daec328170d0f4fb70909c72e1a6da14967831bd3de8c0"
     },
     {
       "path": "tools/test_incident_regression_private.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-security-hardening",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "692861e05d4d4242bfc68dcc3a32ab0e252e0d267aa7c6a0b283f061aaca8146"
     },
     {
       "path": "tools/test_intr_waits_matrix.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ab322063a27cff3f3509fd87a0a71fa643c8ca5ae2588959de6c6a1b92f7e8f7"
     },
@@ -7210,10 +7438,13 @@
     },
     {
       "path": "tools/test_key_scrub_tools.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-security-hardening",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "dc6742e97e2eba408264ab0ff9aef9168fcd35d03be5c5391f5277e4993859e8"
     },
@@ -7231,37 +7462,49 @@
     },
     {
       "path": "tools/test_manager_safety.ps1",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "913901c51f927548b6360084b245284219abaa4368c1a9a4137c9122af5fdea4"
     },
     {
       "path": "tools/test_manager_safety.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "218a61c0435a716393f448b5535daf494650e2794c234b70a4a67872dc77288e"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "763b3ef6eeac36005169511a7fef14ee36420fdb42539a4a20c41d1a0e39f8a7"
     },
     {
       "path": "tools/test_matrix_disposition.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f389ae20c9c8ac62133febaae1157bcd66c52016669e961e2f61380e2d470b06"
     },
@@ -7291,37 +7534,49 @@
     },
     {
       "path": "tools/test_modified_file_notice_audit.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "98b70d30baed55ba68bb9722385c4c28a1225d33073e4b084bab84c4b0cc3653"
     },
     {
       "path": "tools/test_mpeg_h264_bounds.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-security-hardening",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d718df8c6b54194b8e6d8aa9485a26994ec05e88c1016d1df178b9c71474da13"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-security-hardening",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "83d8e6228c2b8e83958c935fd80e47f00cf84c6538b682ff2c41a2481108153b"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6172f5f131bad2c28247744e600e450f2adb12827af21ce388ced4166de12e89"
     },
@@ -7423,19 +7678,25 @@
     },
     {
       "path": "tools/test_padscript_from_log.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-host-tooling",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "85991c6985235193fca0fb3f0b9a0d1d885b697ab42716bb4014257aad3c42ad"
     },
     {
       "path": "tools/test_parse_fuzz.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-security-hardening",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8ef73d834a8c705f61f716e98d4bd697ac9b016897eca60f3479417f3530ed80"
     },
@@ -7525,19 +7786,25 @@
     },
     {
       "path": "tools/test_progress_evidence.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "cd6d1a8754ba16b93d80673fffcba96e49c1ae59a0470343cd6e5c905e023b96"
     },
     {
       "path": "tools/test_progress_tracker.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-test-infrastructure",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "70a3e7056565f1d28f46511175578d891dc7c73fc4ad885d03bdc0d58ab33870"
     },
@@ -7603,10 +7870,13 @@
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "bdd4ef7a3ac6999d8659b32ac06b2571368e19c2a87a29ddf8c65a590891107c"
     },
@@ -7624,28 +7894,37 @@
     },
     {
       "path": "tools/test_prxload_psp_header.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f71e664ce64742d1035eafaf1c9466a3e9d97ecccf1c7e1c4ee3328fe6c1e3f2"
     },
     {
       "path": "tools/test_prxload_relocations.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c30029c9e86dcfd10846b17a51ba1852e4b114b46dba8eb16f2b0bb983e8803a"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "34787bb5c88617a3a02fcf879851e462561608701b7598cce4432b0a4cd8c1f3"
     },
@@ -7663,10 +7942,13 @@
     },
     {
       "path": "tools/test_psp_oracle.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-psp-oracle",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "e95d3c4b70ec0b12b99a5171df9b0083e04bc94dc6f9ddec88954efbf6161a58"
     },
@@ -7684,10 +7966,13 @@
     },
     {
       "path": "tools/test_psp_readiness.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "021e48aaa01bc6bd5c13e3cc7a0c0d82220aa13102def6f8fc020fdeb4be4080"
     },
@@ -7705,55 +7990,73 @@
     },
     {
       "path": "tools/test_pspdev_lock.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "40502e87dafaaab0d6bec054c047a7ec56a58e68b672ee54e31c8983003a8a13"
     },
     {
       "path": "tools/test_pspdev_probe.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-pspdev-phase5",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "96f827cdee36af4ba2429c98319466d905669ded10eb0941571fd0ed2aff5b33"
     },
     {
       "path": "tools/test_pspsdk_sync.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "8a1191706e91f56a5fae7e1302808ef3411685197bc9f577beac104894a3fa76"
     },
     {
       "path": "tools/test_public_candidate.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ee39c2bda54b96c61615fe55d695eac3b96584cc6acf39533ceaf02e4b673db5"
     },
     {
       "path": "tools/test_public_ci_wiring.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d6aa8a46f629efcb55530a5d23592ba101d598126848c331a8403a922d620fff"
     },
     {
       "path": "tools/test_public_export.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "aeeb49ac4f45bff8aed94db98079812d1e395d33cc7f9f8bbdaa11bd9ad75ded"
     },
@@ -7807,10 +8110,13 @@
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-security-hardening",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "779a8637b59f26b19f6d61116c40970274a26e76d2b3e889db61813ef2aef9ee"
     },
@@ -7828,19 +8134,26 @@
     },
     {
       "path": "tools/test_savedata_security.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-storage-vfs",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f371069a9ee7779ae0a3476ea86315904b8de1a9f2091b14530b8c48132b05e8"
     },
     {
       "path": "tools/test_savedata_spans.py",
-      "classification": "synthetic_fixture",
+      "classification": "upstream_derived",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-derived-test-savedata-spans",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e6158b3e15643df43c2919ea0ab2d6cc5a014acb5baf7f6578cdb97b4aabae65"
     },
@@ -7882,19 +8195,25 @@
     },
     {
       "path": "tools/test_sched_invariants.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "50414d8768c590ca7c22a1bb911ddbe0b0dd5f5ccde27781e4d4bd9f9cd8f1f0"
     },
     {
       "path": "tools/test_sdkver_c.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-hle-scheduler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "dd30940cbcbf11cbb8b050fe3889b52369abdf3607f0869d7d7c022b0b8320ba"
     },
@@ -7912,10 +8231,13 @@
     },
     {
       "path": "tools/test_shader_embed.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ae51f20e4e4e1626d3b545224a9ee034d12413a49e0ed41d0195a31bb3af0d9a"
     },
@@ -7969,10 +8291,13 @@
     },
     {
       "path": "tools/test_text_write_newlines.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-host-tooling",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "ef331bebe599d22518b6c8b36a8d994d6df13ccb275ca72f6edaf6a9c223ee3a"
     },
@@ -8002,46 +8327,61 @@
     },
     {
       "path": "tools/test_title_codegen_plan.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d633b860c5f3a29169a3d5a52210522e4a2feef33c7554890db7742c992b2937"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c103903b0365a689b418e82ad14a8633607707cce2ea891d2536e9ddb1322520"
     },
     {
       "path": "tools/test_title_manager_adapter.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "04944c38e3f0cbbb8e206175533f82c072166e15903f018aa45b8e6d67e4d795"
     },
     {
       "path": "tools/test_title_manager_plan.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "311a7742284c6f9e7779039f21ceabbc85f24bd58cab006522a240d000428b98"
     },
     {
       "path": "tools/test_title_manifest.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "abc1d5908ed2f293529b4dbf7d00e720a30d0df1055ab85555f1594c7f668274"
     },
@@ -8059,28 +8399,37 @@
     },
     {
       "path": "tools/test_title_protected_digest.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "26684eda051eaecfae4e203b0d387fdf2a89af4553524f5855576434e32ec729"
     },
     {
       "path": "tools/test_title_pspdev_phase5.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-pspdev-phase5",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "2453594ddd1a4aef0980fb25f0a34082cf9408dee73979ad2e3f9dbbfda2c363"
     },
     {
       "path": "tools/test_title_runtime_config.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-title-manager",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "6de57b612cd66092844ce315aebaa0d9703f9add09d79e2d531a9ca3d25f1edd"
     },
@@ -8134,109 +8483,145 @@
     },
     {
       "path": "tools/test_vfpu_interp_guards.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fpu-vfpu",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f63d986bafdb3c7237e6fda1e5431cce31fc2b380dc846d8d963acdb6aa222dd"
     },
     {
       "path": "tools/test_vfpu_nan_payload.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-nan",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c7204419e52f49178d0e54eb0ea3eb306ce2e94af10569635b6575ea73b35e04"
     },
     {
       "path": "tools/test_vfpu_oracle.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fixture-vfpu-oracle",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "91e43c16ab5148c10368ea19b504d486c7176e0101cd07e1ba3a6cf8229fe221"
     },
     {
       "path": "tools/test_vfpu_provenance.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fpu-vfpu",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "58621998bebe3a766307d368942cf5125b0f40e9e134e5cfb42f940941b8b308"
     },
     {
       "path": "tools/test_vfpu_synth_corpus.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fpu-vfpu",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "01285ddbea820b62d3d1b9f910b054d1fee9e5ecf06ccb7f19f7b7e2eb3b2e0e"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fpu-vfpu",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "1869c94e6ed67a186bddd53aa3c4775be7399f21f6e953a3cd76b17825583174"
     },
     {
       "path": "tools/test_vfpu_trace_bits.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-fpu-vfpu",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "f08f66b8011ba3beb4717b98f62ca11a69e7196d459ca2b1f4f19586181b8dd9"
     },
     {
       "path": "tools/test_vfs_c.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-storage-vfs",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "9c7ab07f593953e2c431f90a77689befe3dbdc73ec9cc54146499c5eb856d11e"
     },
     {
       "path": "tools/test_vfs_contained.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-storage-vfs",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "c75a8b61b8b6161f4901f997d14bcc1b761109ad1c2cf2bcda442bbb5ad17723"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "0834bca920e6f30136d847a15dc1117a1827e2c19b7a119090f187b1e4e3a651"
     },
     {
       "path": "tools/test_visual_oracle.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "3fea96ac3e98cd0dfc6dbb4e6e4dac7761b553447924ae92551b4c9cc7c87683"
     },
     {
       "path": "tools/test_vulkan_sdk.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d6dfdbfc789c297ed8bd65cac1dac749147ff331e885aa7386e835237bb86502"
     },
@@ -8266,10 +8651,13 @@
     },
     {
       "path": "tools/test_xb_probe.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c-gap-elf-prx-import",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "51b1ae565796bee574a85472b0e8e42503535b8ff40a45b4ccfcfc062e3234e8"
     },
