@@ -425,6 +425,18 @@
       "sha256": "c11973cd95bb94414ac2615b710a222e36426fb4e7540eebe3c2a9897ea47ccd"
     },
     {
+      "path": "assets/history_audit_reviewed.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "history-audit-reviewed-findings",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "96b2a70b6ca7e4440cd00f7de8d4702a0015bd5463e9f915afe4ca166dd6342a"
+    },
+    {
       "path": "assets/issue_routing.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -463,7 +475,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "603b140fbb812853ae56dfa7671b9e41340dcb8375833f4dd5adf22c9c3c8e9f"
+      "sha256": "f5f71863de3cb95bde3bada8a94d9b1d87bc48938a51f12bc03217476f96d50b"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1126,7 +1138,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ad9ee7863bd2c6bc8a9eddd953321bd848995110e1d8dfb66edc9648451cc356"
+      "sha256": "afea1ff3f3233ef4751297adfcf88c8fcc660a63858bd839347d398cad6e8ff8"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -5421,7 +5433,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e989358313638d18becde655b87b9a191bb4ab2b02e4242d4d7aa2e8cdbf62f7"
+      "sha256": "636a1b44f6539ac625cbfc216235fd8969acb67e7142f3ed42376d0acc19983b"
     },
     {
       "path": "tools/hle_manifest.py",
@@ -6991,12 +7003,15 @@
     },
     {
       "path": "tools/test_history_audit.py",
-      "classification": "synthetic_fixture",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "history-audit-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
-      "sha256": "09f92255ce41bc132621bc55c9ec53dfea1eb19597bfce2827c4a50732a8ba07"
+      "sha256": "b0006be4971c96172282f43303d5580237df7525bb5cdb2a44bdfc0b7c5a2aa8"
     },
     {
       "path": "tools/test_hle_manifest.py",

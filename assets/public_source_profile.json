@@ -177,6 +177,7 @@
     "assets/bringup_report.schema.json",
     "assets/enhancement_package.schema.json",
     "assets/flight_recorder_schema.json",
+    "assets/history_audit_reviewed.json",
     "assets/issue_routing.json",
     "assets/issue_routing.schema.json",
     "assets/public_provenance_ledger.json",
