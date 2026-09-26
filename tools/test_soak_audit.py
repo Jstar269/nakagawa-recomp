@@ -104,6 +104,15 @@ class SoakAuditTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("SOAK_CHECK: cadence PASS", out)
 
+    def test_cadence_tail_is_chronological_not_the_best_seconds(self) -> None:
+        # Catch-up bursts (61 Hz seconds) early in the run must not be selected as
+        # "the tail": the last 30 seconds in time order run at the source rate.
+        seconds = [(28.0, 61.0)] * 40 + [(28.0, 59.94)] * 30
+        code, out = self._run("--perf", self._write("perf.csv", _perf(seconds)))
+        self.assertEqual(code, 0, out)
+        self.assertIn("mean_hz=59.94", out)
+        self.assertIn("run_mean_hz=60.55", out)
+
     def test_cadence_skips_when_there_is_not_enough_of_a_run(self) -> None:
         code, out = self._run("--perf", self._write("perf.csv", _perf([(28.0, 59.9)] * 5)))
         self.assertEqual(code, 0, out)

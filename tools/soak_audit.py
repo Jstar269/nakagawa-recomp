@@ -189,21 +189,28 @@ def check_presenting(report: Report, rows: list[dict[str, str]], min_ratio: floa
 def check_cadence(report: Report, rows: list[dict[str, str]], min_hz: float,
                   tail_s: int) -> None:
     _, window = presenting_window(rows)
-    hz = sorted((_number(r, "vblank_hz", 0.0) or 0.0) for r in window
-                if (_number(r, "vblank_hz", 0.0) or 0.0) > 0)
+    # Chronological samples. The tail is the LAST tail_s seconds in time order;
+    # sorting happens only to find its worst second and 5th percentile. (Sorting
+    # first and then slicing selected the BEST seconds -- a run's backlog catch-up
+    # bursts -- and read a 59.94 Hz run as ~61.4 Hz. tools/vblank_ledger.py judges
+    # the delivered rate over the whole run.)
+    hz = [(_number(r, "vblank_hz", 0.0) or 0.0) for r in window
+          if (_number(r, "vblank_hz", 0.0) or 0.0) > 0]
     if len(hz) < max(1, tail_s):
         report.add("cadence", None, f"only {len(hz)} presenting seconds with a cadence sample")
         return
     tail = hz[-tail_s:] if tail_s else hz
+    ordered = sorted(tail)
     mean = sum(tail) / len(tail)
-    worst = tail[0]
-    p5 = tail[max(0, int(len(tail) * 0.05))]
+    worst = ordered[0]
+    p5 = ordered[max(0, int(len(ordered) * 0.05))]
+    run_mean = sum(hz) / len(hz)
     ok = p5 >= min_hz
     report.add(
         "cadence",
         ok,
-        f"mean_hz={mean:.2f} worst_s={worst:.2f} p5_hz={p5:.2f} min={min_hz:.2f} "
-        f"window_s={len(tail)}",
+        f"mean_hz={mean:.2f} worst_s={worst:.2f} p5_hz={p5:.2f} run_mean_hz={run_mean:.2f} "
+        f"min={min_hz:.2f} window_s={len(tail)}",
     )
 
 
