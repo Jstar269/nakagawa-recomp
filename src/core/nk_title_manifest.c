@@ -321,7 +321,9 @@ static bool is_guest_device_path(const char *s) {
 }
 
 static bool is_load_address_evidence(const char *s) {
-    static const char * const classes[] = {"measured-hw", "measured-ppsspp", "provisional", NULL};
+    static const char * const classes[] = {
+        "measured-hw", "measured-ppsspp", "provisional", "documented-psp-default", NULL
+    };
     for (int i = 0; classes[i]; i++) {
         if (strcmp(s, classes[i]) == 0) return true;
     }
@@ -590,8 +592,15 @@ bool nk_title_manifest_parse_buffer(
 
     /* 7. executable validation */
     JsonNode *exe_node = obj_get(root, "executable");
-    static const char * const allowed_exe_keys[] = {"base", "entry", "bss_metadata_source", "extra_executable_spans", NULL};
-    if (!check_object_keys(exe_node, "$.executable", allowed_exe_keys, allowed_exe_keys, error_buf, error_buf_len)) {
+    static const char * const allowed_exe_keys[] = {
+        "base", "entry", "bss_metadata_source", "extra_executable_spans",
+        "load_address", "load_address_evidence", NULL
+    };
+    static const char * const required_exe_keys[] = {
+        "base", "entry", "bss_metadata_source", "extra_executable_spans", NULL
+    };
+    if (!check_object_keys(exe_node, "$.executable", allowed_exe_keys,
+                           required_exe_keys, error_buf, error_buf_len)) {
         json_free(root);
         return false;
     }
@@ -604,6 +613,35 @@ bool nk_title_manifest_parse_buffer(
     }
     if (!parse_uint32(obj_get(exe_node, "entry"), &exe_entry)) {
         if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.entry: invalid entry address");
+        json_free(root);
+        return false;
+    }
+    JsonNode *load_address_node = obj_get(exe_node, "load_address");
+    JsonNode *load_address_evidence_node = obj_get(exe_node, "load_address_evidence");
+    if (load_address_node) {
+        uint32_t load_address = 0;
+        if (!parse_uint32(load_address_node, &load_address)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.load_address: invalid address");
+            json_free(root);
+            return false;
+        }
+        if (exe_base != load_address) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.base: must match load_address when a main executable load binding is declared");
+            json_free(root);
+            return false;
+        }
+        if (!load_address_evidence_node || load_address_evidence_node->type != JSON_STRING ||
+            !is_load_address_evidence(load_address_evidence_node->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.load_address_evidence: unsupported evidence class");
+            json_free(root);
+            return false;
+        }
+    } else if (load_address_evidence_node) {
+        if (error_buf) snprintf(error_buf, error_buf_len,
+                                "$.executable.load_address_evidence: requires load_address");
         json_free(root);
         return false;
     }

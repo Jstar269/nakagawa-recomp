@@ -288,7 +288,6 @@ static void register_exit(void) {
 
 void sr_flight_init(void) {
     sr_watch_configure();
-    sr_trace_window_configure();
     if (s_flight_init_state == 2) return;
     if (s_flight_init_state == 1) return;
     s_flight_init_state = 1;

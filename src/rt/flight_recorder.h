@@ -89,8 +89,8 @@ typedef struct {
  * This is a diagnostic stream, not the byte-comparable oracle trace: a record is
  * the canonical line the trace writer already rendered, followed by the absolute
  * values. It is owned by the diagnostic recorder because every host of the
- * runtime links that file -- runtime initialization probes the window before
- * guest execution, and the GE's vblank tick marks the frame timeline. Nothing here
+ * runtime links that file -- the host probes the window before guest execution,
+ * and the GE's vblank tick marks the frame timeline. Nothing here
  * is active unless SR_TRACE_PC names a window. The index list is one shared type
  * in both branches below, so a host that does not link the recorder still
  * compiles the trace writer against the same declaration. */
@@ -103,7 +103,7 @@ typedef struct {
 
 #if defined(SR_FLIGHT_RECORDER_LINKED) && !defined(SR_FLIGHT_RECORDER_STANDALONE)
 
-void sr_trace_window_configure(void);   /* lazy env probe; runtime init and vblank hooks */
+void sr_trace_window_configure(void);   /* lazy env probe; host start and vblank hooks */
 void sr_trace_note_frame(uint32_t frame);
 int  sr_trace_window_armed(void);
 int  sr_trace_window_begin_instruction(uint32_t pc);  /* 0 when outside the window */

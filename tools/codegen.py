@@ -2809,6 +2809,7 @@ def main(argv):
         except Unsupported as e:
             reason = str(e).replace('"', "'")
             text = f"void {entry_symbol(a, resume_owners)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
+            text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
             text += f'    sr_unimplemented(0x{a:08x}u, "{reason}");\n}}'
             func_texts.append(text)
             emitted.append(a)
@@ -2856,6 +2857,7 @@ def main(argv):
             except Unsupported as e:
                 reason = str(e).replace('"', "'")
                 text = f"void f_{a:08x}(CpuState *s) {{  /* untranslatable: {reason} */\n"
+                text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
                 text += f'    sr_unimplemented(0x{a:08x}u, "{reason}");\n}}'
                 func_texts.append(text)
                 emitted.append(a)

@@ -17,8 +17,8 @@ non-invasive:
 * with no window armed the trace stream is byte-identical to the un-windowed
   one (the absolute-value block and the record budget are both behind the same
   arming flag), so the oracle/diff builds that compare traces keep working;
-* the window is armed from runtime initialization, before guest execution, and
-  vblank hooks mark the frame timeline;
+* the stream can be armed before guest execution, while per-vblank hooks retain
+  the frame markers, so the trace build needs no title-specific code;
 * the parse rejects a malformed window and never arms on one.
 
 It is a source-shape test on purpose: the hooks live in recomp.c, which the
@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RECOMP_C = (ROOT / "src/rt/recomp.c").read_text(encoding="utf-8")
 RECOMP_H = (ROOT / "src/rt/recomp.h").read_text(encoding="utf-8")
 GE_C = (ROOT / "src/rt/ge.c").read_text(encoding="utf-8")
+DRIVER_C = (ROOT / "src/rt/driver.c").read_text(encoding="utf-8")
 WINDOW_C = (ROOT / "src/rt/flight_recorder.c").read_text(encoding="utf-8")
 WINDOW_H = (ROOT / "src/rt/flight_recorder.h").read_text(encoding="utf-8")
 INTERP_C = (ROOT / "src/rt/guest_interp.c").read_text(encoding="utf-8")
@@ -125,9 +126,9 @@ class TraceWindowProbeTests(unittest.TestCase):
         self.assertIn("if (s_tw_limit && ++s_tw_count >= s_tw_limit)", record)
         self.assertIn("s_tw_armed = 0;", record)
 
-    def test_window_is_armed_before_guest_execution(self):
+    def test_vblank_hooks_mark_trace_and_watch_timelines(self):
         flight_init = body_of(WINDOW_C, "void sr_flight_init(void)")
-        self.assertIn("sr_trace_window_configure();", flight_init)
+        self.assertIn("sr_watch_configure();", flight_init)
 
         configure = body_of(GE_C, "void ge_set_frame(uint32_t frame)")
         self.assertIn("sr_trace_window_configure();", configure)
@@ -137,6 +138,15 @@ class TraceWindowProbeTests(unittest.TestCase):
         # The frame marker is a no-op unless a window is armed.
         note = body_of(WINDOW_C, "void sr_trace_note_frame(uint32_t frame)")
         self.assertIn("if (!s_tw_armed || !s_tw_fp) return;", note)
+
+    def test_window_is_armed_before_guest_execution(self):
+        main = body_of(DRIVER_C, "int main(int argc, char **argv)")
+        trace_open = main.index("sr_trace_open(out")
+        configure = main.index("sr_trace_window_configure();")
+        guest_start = main.index("sched_run(")
+        self.assertLess(trace_open, configure)
+        self.assertLess(configure, guest_start,
+                        "a guest busy-loop before its first vblank must still be traceable")
 
     def test_index_list_is_bounded(self):
         listing = body_of(WINDOW_C, "static void sr_trace_window_list(")
