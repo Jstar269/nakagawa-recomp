@@ -196,7 +196,8 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, int inSize, void **end, i
     in.cur = inBuf;
     in.end = inBuf + inSize;
     in.overrun = 0;
-    inputVal = (inBuf[1] << 24) | (inBuf[2] << 16) | (inBuf[3] << 8) | inBuf[4];
+    inputVal = ((u32)inBuf[1] << 24) | ((u32)inBuf[2] << 16) |
+               ((u32)inBuf[3] << 8) | (u32)inBuf[4];
     // Handle the direct copy case (if the file is actually not compressed).
     if (inBuf[0] & 0x80) {
         u8 *dataEnd = outBuf + inputVal;
