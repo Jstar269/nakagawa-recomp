@@ -63,6 +63,27 @@ typedef enum {
 
 typedef NkGameEntry GameRecord;
 
+/* Requested client-area geometry in SDL screen/window coordinate units. */
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+} PlayerWindowRect;
+
+/* Window decoration sizes in the same coordinate units as PlayerWindowRect. */
+typedef struct {
+    int top;
+    int left;
+    int bottom;
+    int right;
+} PlayerWindowFrame;
+
+typedef enum {
+    PLAYER_CLOSE_QUIT = 0,
+    PLAYER_CLOSE_CONFIRM_REQUIRED
+} PlayerCloseDecision;
+
 typedef struct {
     PlayerPrepStage stage;
     char operation[64];
@@ -78,10 +99,17 @@ typedef struct {
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     bool fullscreen;
+    bool launcher_fullscreen;
     bool vsync;
     int fps_cap;          /* 30, 60, 0 = uncapped */
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
+    bool launcher_window_maximized;
+    bool launcher_window_position_valid;
+    int launcher_window_x;
+    int launcher_window_y;
+    int launcher_window_width;
+    int launcher_window_height;
     char controller_name[64];
     bool controller_connected;
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
@@ -214,6 +242,10 @@ typedef struct {
     int window_width;
     int window_height;
     float dpi_scale;
+    bool logical_ui;
+    bool enable_focus_handoff;
+    bool child_window_ready;
+    char boot_event_file_path[MAX_PATH_LEN];
     bool should_quit;
 } PlayerApp;
 
@@ -268,6 +300,16 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
 void player_app_cycle_fps_cap(PlayerApp *app, int direction);
 void player_app_toggle_fullscreen(PlayerApp *app);
+void player_app_toggle_launcher_fullscreen(PlayerApp *app);
+PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
+                                              bool user_confirmed);
+bool player_app_boot_event_is_window_ready(const char *line);
+bool player_app_child_window_ready(PlayerApp *app);
+bool player_window_fit_to_display(PlayerWindowRect requested,
+                                  PlayerWindowRect usable,
+                                  PlayerWindowFrame frame,
+                                  bool requested_position_valid,
+                                  PlayerWindowRect *out);
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);

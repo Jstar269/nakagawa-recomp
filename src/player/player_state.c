@@ -10,6 +10,7 @@
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #include <io.h>
+#include <process.h>
 #else
 #include <unistd.h>
 #endif
@@ -335,10 +337,11 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREPARING:
             return 1;
         case VIEW_SETTINGS:
-            /* Resolution (3) + frame cap (3) + display toggles (3: vsync,
-             * fullscreen, reduce-motion) + volume stepper (2) + controller settings (1) + close (1),
+            /* Resolution (3) + frame cap (3) + game display toggles (3) +
+             * launcher fullscreen (1) + volume stepper (2) + controller
+             * settings (1) + close (1),
              * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
-            return 13;
+            return 14;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -403,10 +406,17 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     if (!settings) return;
     settings->resolution_scale = 1; /* native 480x272: the verified path; upscaling is opt-in */
     settings->fullscreen = false;
+    settings->launcher_fullscreen = false;
     settings->vsync = true;
     settings->fps_cap = 60;
     settings->master_volume = 80;
     settings->reduce_motion = false;
+    settings->launcher_window_maximized = false;
+    settings->launcher_window_position_valid = false;
+    settings->launcher_window_x = 0;
+    settings->launcher_window_y = 0;
+    settings->launcher_window_width = 1280;
+    settings->launcher_window_height = 720;
     settings->controller_name[0] = '\0';
     settings->controller_connected = false;
 }
@@ -553,6 +563,49 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.fullscreen = fs_val;
     }
 
+    NkJsonNode *launcher_fs_node = nk_json_obj_get(root, "launcher_fullscreen");
+    bool launcher_fs_val = false;
+    if (launcher_fs_node && nk_json_get_bool(launcher_fs_node, &launcher_fs_val)) {
+        app->settings.launcher_fullscreen = launcher_fs_val;
+    }
+
+    NkJsonNode *launcher_max_node = nk_json_obj_get(root, "launcher_window_maximized");
+    bool launcher_max_val = false;
+    if (launcher_max_node && nk_json_get_bool(launcher_max_node, &launcher_max_val)) {
+        app->settings.launcher_window_maximized = launcher_max_val;
+    }
+
+    NkJsonNode *window_x_node = nk_json_obj_get(root, "launcher_window_x");
+    NkJsonNode *window_y_node = nk_json_obj_get(root, "launcher_window_y");
+    NkJsonNode *window_w_node = nk_json_obj_get(root, "launcher_window_width");
+    NkJsonNode *window_h_node = nk_json_obj_get(root, "launcher_window_height");
+    NkJsonNode *window_position_valid_node =
+        nk_json_obj_get(root, "launcher_window_position_valid");
+    bool window_position_valid = false;
+    int64_t window_x = 0;
+    int64_t window_y = 0;
+    int64_t window_w = 0;
+    int64_t window_h = 0;
+    if (window_position_valid_node &&
+        nk_json_get_bool(window_position_valid_node, &window_position_valid) &&
+        window_position_valid && window_x_node && window_y_node &&
+        nk_json_get_int64(window_x_node, &window_x) &&
+        nk_json_get_int64(window_y_node, &window_y) &&
+        window_x >= -131072 && window_x <= 131072 &&
+        window_y >= -131072 && window_y <= 131072) {
+        app->settings.launcher_window_x = (int)window_x;
+        app->settings.launcher_window_y = (int)window_y;
+        app->settings.launcher_window_position_valid = true;
+    }
+    if (window_w_node && nk_json_get_int64(window_w_node, &window_w) &&
+        window_w >= 320 && window_w <= 16384) {
+        app->settings.launcher_window_width = (int)window_w;
+    }
+    if (window_h_node && nk_json_get_int64(window_h_node, &window_h) &&
+        window_h >= 240 && window_h <= 16384) {
+        app->settings.launcher_window_height = (int)window_h;
+    }
+
     NkJsonNode *rm_node = nk_json_obj_get(root, "reduce_motion");
     bool rm_val = false;
     if (rm_node && nk_json_get_bool(rm_node, &rm_val)) {
@@ -622,6 +675,16 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"fps_cap\": %d,\n", app->settings.fps_cap);
     fprintf(f, "  \"vsync\": %s,\n", app->settings.vsync ? "true" : "false");
     fprintf(f, "  \"fullscreen\": %s,\n", app->settings.fullscreen ? "true" : "false");
+    fprintf(f, "  \"launcher_fullscreen\": %s,\n",
+            app->settings.launcher_fullscreen ? "true" : "false");
+    fprintf(f, "  \"launcher_window_maximized\": %s,\n",
+            app->settings.launcher_window_maximized ? "true" : "false");
+    fprintf(f, "  \"launcher_window_position_valid\": %s,\n",
+            app->settings.launcher_window_position_valid ? "true" : "false");
+    fprintf(f, "  \"launcher_window_x\": %d,\n", app->settings.launcher_window_x);
+    fprintf(f, "  \"launcher_window_y\": %d,\n", app->settings.launcher_window_y);
+    fprintf(f, "  \"launcher_window_width\": %d,\n", app->settings.launcher_window_width);
+    fprintf(f, "  \"launcher_window_height\": %d,\n", app->settings.launcher_window_height);
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
@@ -733,6 +796,113 @@ void player_app_toggle_fullscreen(PlayerApp *app) {
     if (!app) return;
     app->settings.fullscreen = !app->settings.fullscreen;
     maybe_persist_settings(app);
+}
+
+void player_app_toggle_launcher_fullscreen(PlayerApp *app) {
+    if (!app) return;
+    app->settings.launcher_fullscreen = !app->settings.launcher_fullscreen;
+    maybe_persist_settings(app);
+}
+
+PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
+                                              bool user_confirmed) {
+    if (app && app->is_game_running && !user_confirmed) {
+        return PLAYER_CLOSE_CONFIRM_REQUIRED;
+    }
+    return PLAYER_CLOSE_QUIT;
+}
+
+bool player_app_boot_event_is_window_ready(const char *line) {
+    return line && (strstr(line, "BOOT_EVENT phase=window_ready") != NULL ||
+                    strstr(line, "BOOT_EVENT phase=first_frame") != NULL);
+}
+
+bool player_app_child_window_ready(PlayerApp *app) {
+    if (!app || app->child_window_ready || !app->boot_event_file_path[0]) {
+        return app && app->child_window_ready;
+    }
+
+    FILE *file = settings_fopen(app->boot_event_file_path, "rb");
+    if (!file) return false;
+
+    char events[8192];
+    size_t length = fread(events, 1, sizeof(events) - 1, file);
+    fclose(file);
+    events[length] = '\0';
+
+    char *line = events;
+    while (*line) {
+        char *next = strchr(line, '\n');
+        if (next) *next = '\0';
+        if (player_app_boot_event_is_window_ready(line)) {
+            app->child_window_ready = true;
+            break;
+        }
+        if (!next) break;
+        line = next + 1;
+    }
+    return app->child_window_ready;
+}
+
+bool player_window_fit_to_display(PlayerWindowRect requested,
+                                  PlayerWindowRect usable,
+                                  PlayerWindowFrame frame,
+                                  bool requested_position_valid,
+                                  PlayerWindowRect *out) {
+    if (!out || usable.width <= 0 || usable.height <= 0) return false;
+
+    int left = frame.left > 0 ? frame.left : 0;
+    int right = frame.right > 0 ? frame.right : 0;
+    int top = frame.top > 0 ? frame.top : 0;
+    int bottom = frame.bottom > 0 ? frame.bottom : 0;
+    int64_t max_width = (int64_t)usable.width - left - right;
+    int64_t max_height = (int64_t)usable.height - top - bottom;
+    if (max_width <= 0 || max_height <= 0) return false;
+
+    int requested_width = requested.width > 0 ? requested.width : 1280;
+    int requested_height = requested.height > 0 ? requested.height : 720;
+    double scale = 1.0;
+    if ((double)max_width / requested_width < scale) {
+        scale = (double)max_width / requested_width;
+    }
+    if ((double)max_height / requested_height < scale) {
+        scale = (double)max_height / requested_height;
+    }
+
+    int width = (int)(requested_width * scale);
+    int height = (int)(requested_height * scale);
+    if (width < 1 || height < 1) return false;
+
+    int64_t outer_width = (int64_t)width + left + right;
+    int64_t outer_height = (int64_t)height + top + bottom;
+    int64_t min_x = usable.x;
+    int64_t min_y = usable.y;
+    int64_t max_x = (int64_t)usable.x + usable.width - outer_width;
+    int64_t max_y = (int64_t)usable.y + usable.height - outer_height;
+    int64_t x = requested.x;
+    int64_t y = requested.y;
+
+    bool intersects = requested_position_valid &&
+        x < (int64_t)usable.x + usable.width &&
+        x + outer_width > usable.x &&
+        y < (int64_t)usable.y + usable.height &&
+        y + outer_height > usable.y;
+    if (!intersects) {
+        x = min_x + ((int64_t)usable.width - outer_width) / 2;
+        y = min_y + ((int64_t)usable.height - outer_height) / 2;
+    } else {
+        if (x < min_x) x = min_x;
+        if (x > max_x) x = max_x;
+        if (y < min_y) y = min_y;
+        if (y > max_y) y = max_y;
+    }
+
+    if (x < INT_MIN || x > INT_MAX || y < INT_MIN || y > INT_MAX) return false;
+    out->x = (int)x;
+    out->y = (int)y;
+    out->width = width;
+    out->height = height;
+    return true;
 }
 
 void player_app_toggle_vsync(PlayerApp *app) {
@@ -860,6 +1030,36 @@ void player_app_populate_sample_games(PlayerApp *app) {
     }
 }
 
+static bool player_prepare_boot_event_file(PlayerApp *app) {
+    if (!app) return false;
+
+    char cache_dir[MAX_PATH_LEN];
+    if (!nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir))) {
+        app->boot_event_file_path[0] = '\0';
+        return false;
+    }
+
+    static unsigned int launch_sequence;
+#if defined(_WIN32) || defined(_WIN64)
+    unsigned long process_id = (unsigned long)_getpid();
+#else
+    unsigned long process_id = (unsigned long)getpid();
+#endif
+    ++launch_sequence;
+    int written = snprintf(app->boot_event_file_path,
+                           sizeof(app->boot_event_file_path),
+                           "%s%cplayer-boot-%lu-%u.events", cache_dir,
+                           nk_platform_path_separator(), process_id,
+                           launch_sequence);
+    if (written <= 0 || (size_t)written >= sizeof(app->boot_event_file_path)) {
+        app->boot_event_file_path[0] = '\0';
+        return false;
+    }
+
+    remove(app->boot_event_file_path);
+    return true;
+}
+
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
@@ -878,6 +1078,12 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         return false;
     }
 
+    app->child_window_ready = false;
+    if (app->enable_focus_handoff) {
+        player_prepare_boot_event_file(app);
+    } else {
+        app->boot_event_file_path[0] = '\0';
+    }
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
     NkResult res = nk_launch_prepare_session(&app->launch_session, game,
@@ -885,6 +1091,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     /* nk_launch defaults gui_mode to false for headless harnesses. */
     app->launch_session.config.gui_mode = !app->launch_headless;
     if (res != NK_OK) {
+        if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
         const char *err_title = "Recompiled Binary Not Available";
@@ -911,11 +1118,17 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     /* Apply user settings via typed runtime configuration */
     player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
+    if (app->boot_event_file_path[0]) {
+        snprintf(app->launch_session.boot_event_file_path,
+                 sizeof(app->launch_session.boot_event_file_path), "%s",
+                 app->boot_event_file_path);
+    }
 
     printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", app->launch_session.executable_path, app->launch_session.iso_path);
 
     NkResult start_res = nk_launch_start(&app->launch_session);
     if (start_res != NK_OK) {
+        if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
         printf("[PLAYER] Runtime process spawn failed: %s\n", app->launch_session.last_error);
         player_app_set_error(
             app,
@@ -964,6 +1177,8 @@ void player_app_stop_game(PlayerApp *app) {
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+    app->child_window_ready = false;
+    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
 }
 
 void player_app_apply_settings_to_session(const PlayerSettings *settings,
@@ -994,6 +1209,8 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
        memset silently discarded the stale handle, leaking one process and
        one job handle per finished game in the long-lived player (#511). */
     nk_launch_stop(&app->launch_session);
+    app->child_window_ready = false;
+    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
     printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
            (unsigned long long)elapsed_ms);
 

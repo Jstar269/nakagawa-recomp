@@ -1170,7 +1170,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 13); /* 8x preset not offered */
+        assert(player_app_focus_count(stops) == 14); /* launcher fullscreen; 8x preset absent */
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
         assert(player_app_focus_count(stops) == 22);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
@@ -1698,16 +1698,27 @@ int main(int argc, char **argv) {
         assert(s_app->settings.fps_cap == 60);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
+        assert(s_app->settings.launcher_fullscreen == false);
         assert(s_app->settings.reduce_motion == false);
         assert(s_app->settings.master_volume == 80);
+        assert(s_app->settings.launcher_window_width == 1280);
+        assert(s_app->settings.launcher_window_height == 720);
+        assert(s_app->settings.launcher_window_position_valid == false);
 
         /* Mutate all settings and round-trip */
         s_app->settings.resolution_scale = 2;
         s_app->settings.fps_cap = 30;
         s_app->settings.vsync = false;
         s_app->settings.fullscreen = true;
+        s_app->settings.launcher_fullscreen = true;
         s_app->settings.reduce_motion = true;
         s_app->settings.master_volume = 55;
+        s_app->settings.launcher_window_maximized = true;
+        s_app->settings.launcher_window_position_valid = true;
+        s_app->settings.launcher_window_x = -1600;
+        s_app->settings.launcher_window_y = 80;
+        s_app->settings.launcher_window_width = 1100;
+        s_app->settings.launcher_window_height = 640;
 
         assert(player_app_save_settings(s_app, test_settings_path) == NK_OK);
 
@@ -1718,9 +1729,86 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.fps_cap == 30);
         assert(s_app2->settings.vsync == false);
         assert(s_app2->settings.fullscreen == true);
+        assert(s_app2->settings.launcher_fullscreen == true);
         assert(s_app2->settings.reduce_motion == true);
         assert(s_app2->settings.master_volume == 55);
+        assert(s_app2->settings.launcher_window_maximized == true);
+        assert(s_app2->settings.launcher_window_position_valid == true);
+        assert(s_app2->settings.launcher_window_x == -1600);
+        assert(s_app2->settings.launcher_window_y == 80);
+        assert(s_app2->settings.launcher_window_width == 1100);
+        assert(s_app2->settings.launcher_window_height == 640);
         assert(s_app2->settings_notice[0] == '\0');
+
+        /* Launcher and game fullscreen are independent persisted settings. */
+        player_app_toggle_launcher_fullscreen(s_app2);
+        assert(s_app2->settings.launcher_fullscreen == false);
+        assert(s_app2->settings.fullscreen == true);
+
+        /* Closing a running child requires explicit confirmation; closing an
+           idle player remains immediate. */
+        assert(player_app_close_decision(s_app2, false) == PLAYER_CLOSE_QUIT);
+        s_app2->is_game_running = true;
+        assert(player_app_close_decision(s_app2, false) ==
+               PLAYER_CLOSE_CONFIRM_REQUIRED);
+        assert(player_app_close_decision(s_app2, true) == PLAYER_CLOSE_QUIT);
+        s_app2->is_game_running = false;
+
+        assert(player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=window_ready backend=sdl"));
+        assert(player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=first_frame source=cpu"));
+        assert(!player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=guest_start mode=scheduler"));
+
+        /* A 1280x720 request fits the 1024x600 usable area after the window
+           frame is reserved; a saved position on a missing monitor centers
+           safely on the current display. */
+        {
+            PlayerWindowRect fitted;
+            PlayerWindowRect usable = { 0, 0, 1024, 600 };
+            PlayerWindowRect requested = { 0, 0, 1280, 720 };
+            PlayerWindowFrame frame = { 32, 8, 8, 8 };
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                false, &fitted));
+            assert(fitted.width > 0 && fitted.height > 0);
+            assert(fitted.width + frame.left + frame.right <= usable.width);
+            assert(fitted.height + frame.top + frame.bottom <= usable.height);
+
+            usable.x = -1280;
+            usable.y = 40;
+            usable.width = 1280;
+            usable.height = 680;
+            requested.x = 5000;
+            requested.y = 5000;
+            requested.width = 1280;
+            requested.height = 720;
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                true, &fitted));
+            assert(fitted.x >= usable.x);
+            assert(fitted.y >= usable.y);
+            assert((int64_t)fitted.x + fitted.width + frame.left + frame.right <=
+                   (int64_t)usable.x + usable.width);
+            assert((int64_t)fitted.y + fitted.height + frame.top + frame.bottom <=
+                   (int64_t)usable.y + usable.height);
+
+            /* On a 2x content-scale desktop, a 2x native-coordinate request
+               still fits by clamping against the same SDL screen units. */
+            usable.x = 0;
+            usable.y = 0;
+            usable.width = 3840;
+            usable.height = 2160;
+            frame.top = 64;
+            frame.left = 16;
+            frame.bottom = 16;
+            frame.right = 16;
+            requested.width = 2560;
+            requested.height = 1440;
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                false, &fitted));
+            assert(fitted.width == requested.width);
+            assert(fitted.height == requested.height);
+        }
 
         /* Corrupt JSON file resets to defaults and produces notice */
         write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
