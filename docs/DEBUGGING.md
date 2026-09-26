@@ -306,13 +306,15 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
 | `END` | Route complete |
 
-A mask is hex digits, with an optional `0x` prefix and at most eight of them. Anything else
-refuses the file at load, naming the line and the token, in `PRESS`, `PRESS_UNTIL`,
-`PRESS_WHILE` and the legacy `frame mask width` row alike. That refusal is the whole point:
-the parser used to coerce a mask it could not read to **zero**, so a route that asked for a
-button by a name the file format never defined pressed nothing at all while the run carried
-on — indistinguishable, from outside, from a game that had frozen. A press that is never
-delivered must be a load-time error, not a mystery.
+A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
+or a hex literal of at most eight digits with an optional `0x` prefix. Anything else refuses
+the file at load, naming the line and the token, in `PRESS`, `PRESS_UNTIL`, `PRESS_WHILE` and
+the legacy `frame hexmask width` row alike — an unknown name, a name cut short, a stray
+character after a hex literal, a bare `0x`, or a value too wide for the mask, none of which may
+quietly become a *different* press. That refusal is the point: the parser used to coerce a
+token it could not read at all to **zero**, so a route asking for a button the format never
+defined pressed nothing while the run carried on — indistinguishable, from outside, from a game
+that had frozen. A press that is never delivered must be a load-time error, not a mystery.
 
 `#` starts a comment. A screen is "observed" by a coarse signature of the presented
 framebuffer: the frame is split into `cols x rows` cells and each cell contributes its mean
@@ -386,7 +388,17 @@ PRESS START+UP 30
 
 Names are case-insensitive and join with `+`; a hex mask (`PRESS 4000 20`) still means exactly
 what it always did, in the program and in the legacy `frame hexmask width` table. A name that is
-not a button is refused at load, which fails the route instead of pressing nothing.
+not a button is refused at load, which fails the route instead of pressing nothing. Every press
+step is narrated at load, so the log names the button rather than leaving a hex mask to be
+decoded:
+
+```text
+ROUTE: step 1 (PRESS_WHILE) presses CROSS
+```
+
+A press that reaches the guest and is ignored still cannot be told from a hang by the guest, so
+put an `EXPECT` or a `WAIT` after it: `PRESS_UNTIL` is that wait, and it is the honest form
+whenever the press has a consequence.
 
 Count the bits by hand only as a last resort, because a mask that is one bit out cannot fail
 visibly: the guest receives a button the screen ignores, the screen never changes, and the run
