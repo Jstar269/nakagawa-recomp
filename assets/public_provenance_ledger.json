@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2d00dde4665bd5f88ce30d4505dd1ea006dbef413b28486b9f1f5061e67331bc"
+      "sha256": "8aa07a2aa1c8a538facdc68ae628b7cdb8576e716f9e734183785c3d753760c3"
     },
     {
       "path": "REVIEW.md",
@@ -404,7 +404,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d64fa72d3d5294112ad79e2c8389aec6cbf5bf6b87bdcecfc366bc658b756f3"
+      "sha256": "949bbd1a6ffd699392edd971e9c10c226a49c862c85fc6c303d79bbbb11ddab5"
     },
     {
       "path": "assets/enhancement_package.schema.json",
@@ -904,7 +904,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b98c8e58a8f9d72bc4bccd15ad74c1c486497b25c3cf93c764d3820b87a797a"
+      "sha256": "db60b89bd6faf0a4161e07181372fda56348a7ab4e7185cf9bb6f3f9eac7adad"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2bf6993bc23a7ccd6662762ac36bdca84667dbeca260770e25b91d367908baa4"
+      "sha256": "72109bc24d4bfc3d31bfe929482c4d01467ab30728d8d7baddb4bef53174478e"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1201,7 +1201,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0dbfbe426697fbff1f86e7083a70eee349cb0b98c0b0733a121032831ce0d4ee"
+      "sha256": "5f0458f1fa30460b3d9ff231ebd60398c8d650c44e36176b3be3677c40c0fa08"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2221,7 +2221,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20dcdc7cdcc57764dcdb6e132e847856538a637e51f6ff434efcc502fca5858e"
+      "sha256": "6326d337a6d083d599de0e2c043ba27baeb978d55d41d4f9d395899302b66f86"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -2233,7 +2233,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "095514c31a09c6b9733eead32cb40d4d0037d9699db9d3c77283f55302f61b0d"
+      "sha256": "957f93b55b7d705b9a39ef906c282c7e2a7f2cf71f392c61b52429dbc618b57d"
     },
     {
       "path": "src/core/nk_library.c",
@@ -2293,7 +2293,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55a02708352dc8aaccb82dda50dd9b28cd64a978c4f8eabc0d4defc2e81db56b"
+      "sha256": "951c3d129766135675b02b3d7dc9f034c94853735180447b0f019445d3edcf88"
     },
     {
       "path": "src/core/nk_psp_aes.c",
@@ -2663,7 +2663,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d674e5c8c074c3aa70f337a4081ace7188d7f0cb82437e106db0e9840ab7e8a3"
+      "sha256": "ec3b596cb1ab3258aaebf47cd1fc730ec5db5077aa68cb10789c97006e63f88d"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2699,7 +2699,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65681ddcd3d142bb9391e3d2481f7ea8931013cd2699580a0befe94d3b04167a"
+      "sha256": "fc52f81403ee7afaa79a45213e26f08ee8fd7649b41ba1d77424f32f1eb6fa09"
     },
     {
       "path": "src/player/player_state.h",
@@ -2711,7 +2711,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84288ab27ea94661863cf468cb583ac9dfc236e844272a8cfe22f9c125332e6e"
+      "sha256": "4af18c9d8ec0df994beed2999a3f481e46da5d96c9c07c94c21a87094b9a12dc"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -2759,7 +2759,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "64080164bf0e6445bb28d02a5be96445cd3e49fa3182ec8ee2e54627bf49dce6"
+      "sha256": "9de1c6eb3db6f8745c6cff3fcc8924d661fcfeb8ecb4e8c2811faa9fcecbc5bd"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -5193,7 +5193,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f71da7ab3dc385640fa0ee3418465000d4e60a8a0c0aabda9ed79353c515283c"
+      "sha256": "20f55dfe7b567a061423c44c196856812b489eb724cf5e9d0516e1d271f478a6"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -6035,7 +6035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17db017039ac2622c6db3bc8ab2856bf70b9079ed7492300208a8e13b94b1f62"
+      "sha256": "8db3ec63d30d124f193de29a9caaebf4d5ae919c9f36c3c96d278704b3dca80c"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6059,7 +6059,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9764226684969234ff7c7718ccf66a4e6d316f9d88dedae66b4496d9392f949c"
+      "sha256": "7bb424bdc41fb848a8d9f0928b789b0f38ae30420383a78430b46803b5dd6927"
     },
     {
       "path": "tools/nk_core/decrypt_tool.py",
@@ -6107,7 +6107,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2f59b518c6ac579b60fa5b9159bd1a463e87034ce5cbb6de23e5150b3d6893be"
+      "sha256": "a643898edcca72ef63706161b19e5a7e90fc6659f73113a4b2fc0dcf09087f04"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -8284,7 +8284,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "de439f325c35874f7d7cee3a17c5a5ae1318b200e0a87f9340439b7f864e7cf5"
+      "sha256": "5c6015bffa627978c1c132ad90592eb090da29b02b8c065ec04d10a3f0ed853a"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",

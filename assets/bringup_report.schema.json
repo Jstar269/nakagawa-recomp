@@ -131,7 +131,16 @@
       "additionalProperties": false,
       "required": ["code", "status", "issue_numbers"],
       "properties": {
-        "code": { "enum": ["DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE", "SYSTEM_FONTS", "AUDIO_OUTPUT", "MODIFIED_DUMP_CFW_LOADER"] },
+        "code": {     "enum": [
+      "DISC_SFO",
+      "EXECUTABLE",
+      "EXPERIMENTAL",
+      "GUEST_MODULES",
+      "RUNTIME_PACKAGE",
+      "SYSTEM_FONTS",
+      "AUDIO_OUTPUT",
+      "MODIFIED_DUMP_CFW_LOADER"
+     ] },
         "status": { "enum": ["OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS"] },
         "issue_numbers": {
           "type": "array",
