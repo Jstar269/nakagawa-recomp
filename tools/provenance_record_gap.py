@@ -15,7 +15,7 @@ change is wrong" when in fact the only remedy is a maintainer admission.
 This tool answers the batch question: which tracked paths would fail that way
 today?  It classifies with the gate's own code, never a second copy of it:
 
-* ``provenance_ledger._admission_requires_implementation`` decides whether a
+* ``provenance_ledger.admission_requires_implementation`` decides whether a
   path needs implementation-grade authority at all;
 * ``provenance_attest_verify._backing`` reports how strongly the authority
   speaks about a path -- ``exact``, ``deterministic``, ``blanket`` or ``none``;
@@ -93,7 +93,7 @@ def exact_paths_from_trusted_ledger(trusted_ledger: Path) -> set[str]:
     exact, _patterns, _ids = verifier.load_trusted_records(trusted_ledger.read_bytes())
     return {
         path for path, record in exact.items()
-        if provenance_ledger._class_for(path, record)[0] in verifier.IMPLEMENTATION_CLASSES
+        if provenance_ledger.class_for(path, record)[0] in verifier.IMPLEMENTATION_CLASSES
     }
 
 
@@ -114,11 +114,11 @@ def record_gaps(
     for path in tracked_paths(repo):
         if policy.resolve(path).disposition != "included":
             continue
-        if not provenance_ledger._admission_requires_implementation(path):
+        if not provenance_ledger.admission_requires_implementation(path):
             continue
         if path in covered:
             continue
-        classification, _evidence = provenance_ledger._class_for(path, None)
+        classification, _evidence = provenance_ledger.class_for(path, None)
         gaps.append({
             "path": path,
             "reason": "no exact trusted record",
@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     covered = None
     if args.trusted_ledger is not None:
         covered = exact_paths_from_trusted_ledger(args.trusted_ledger)
-        source = f"trusted authority {args.trusted_ledger}"
+        source = "trusted authority (--trusted-ledger)"
 
     gaps = record_gaps(repo=repo, covered=covered)
 

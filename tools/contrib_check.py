@@ -103,7 +103,7 @@ def find_tool(name: str) -> str | None:
     if os.name != "nt":
         return None
     for entry in os.environ.get("PATH", "").split(os.pathsep):
-        match = re.fullmatch(r"/([A-Za-z])/(.*)", entry.strip())
+        match = re.fullmatch(r"/([A-Za-z])/(.+?)/?", entry.strip())
         if not match:
             continue
         windows = f"{match.group(1).upper()}:\\{match.group(2).replace('/', os.sep)}"
@@ -134,18 +134,23 @@ def changed_paths(base: str) -> list[str]:
     merge_base = _git("merge-base", base, "HEAD").stdout.strip()
     if not merge_base:
         raise SystemExit(f"contrib-check: cannot resolve a merge base with {base}")
-    committed = _git("diff", "--name-only", "--find-renames", merge_base, "HEAD").stdout.split()
-    status = _git("status", "--porcelain", "--untracked-files=all", check=False).stdout
+    # NUL-separated output: paths are never quoted or split on spaces.
+    committed = _git("diff", "--name-only", "-z", "--find-renames", merge_base, "HEAD").stdout.split("\0")
+    status = _git("status", "--porcelain=v1", "-z", "--untracked-files=all", check=False).stdout
     working: list[str] = []
-    for line in status.splitlines():
-        if len(line) < 4:
+    entries = status.split("\0")
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
             continue
-        code, name = line[:2], line[3:].strip()
-        if "->" in name:  # a rename: both sides are relevant
-            name = name.split("->")[-1].strip()
-        if code.strip() == "D":
+        code, name = entry[:2], entry[3:]
+        if code[0] in "RC":  # a rename or copy: the next entry is the source path
+            index += 1
+        if "D" in code and code.strip() == "D":
             continue
-        working.append(name.strip('"'))
+        working.append(name)
     return sorted({path for path in committed + working if path})
 
 
@@ -347,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     skipped = [gate.name for gate in gates if gate.status == SKIP]
     if maintainer:
         print("\n  a maintainer regenerates PUBLIC_EXPORT.json and the public ledger from the "
-              "private trusted ledger; a contributor cannot do that, and these findings are "
+              "private trusted ledger (make provenance-refresh); a contributor cannot do that, and these findings are "
               "reported rather than counted as a local failure.")
     if skipped:
         print(f"  SKIPPED because the tool is not installed: {', '.join(skipped)} -- "

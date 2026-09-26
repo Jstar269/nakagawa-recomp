@@ -2373,3 +2373,10 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Public names for the admission decisions that other provenance tools share
+# (tools/provenance_record_gap.py); the verifier's existing imports keep the
+# underscore names.
+admission_requires_implementation = _admission_requires_implementation
+class_for = _class_for
