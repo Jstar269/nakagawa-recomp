@@ -67,7 +67,24 @@ EXTRA_ELF_ENV_ARG  = $(if $(strip $(GAME_EXTRA_ELFS)),--env-extra-elfs,)
 #     outside that code page arrives transliterated (CJK becomes "?").
 # Both leave a nonexistent path, on which the tools fail closed rather than opening a
 # different file.
+# Declared values need no explicit export to reach recipes: a command-line value
+# is passed through automatically, and an environment value passes with it. The
+# `?=` default is different. Exporting it unconditionally put eboot.elf into every
+# recipe's environment, so a make nested inside any repository recipe (the suite
+# under `make test` or `make contrib-check`) saw origin GAME_ELF = environment,
+# which GAME_INPUT_TRACKED below reads as "the operator declared an input", and
+# the guest-input stamp was demanded for a lane that declares none. Export the
+# default only when a file backs it -- exactly the wildcard branch of
+# GAME_INPUT_TRACKED -- so a default that does not exist stays invisible to
+# recipes and to every nested make, while a default that does exist is available
+# to --env-elf the same way a declared value is.
+ifeq ($(origin GAME_ELF),file)
+ifneq ($(wildcard $(GAME_ELF)),)
 export GAME_ELF
+endif
+else
+export GAME_ELF
+endif
 export GAME_PSP_HEADER
 
 # Make separates list elements with spaces, which is itself a legal filename character,

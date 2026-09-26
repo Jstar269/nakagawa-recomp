@@ -1199,6 +1199,45 @@ class GuestInputTransportTests(unittest.TestCase):
                          "a lane that declares no GAME_ELF was forced to supply one:\n" + blob)
         self.assertNotIn("GAME_ELF does not exist", blob, blob)
 
+    def test_the_makefile_default_guest_elf_does_not_reach_recipe_environments(self) -> None:
+        """The `?=` default must never masquerade as an operator-declared input.
+
+        An unconditional `export GAME_ELF` put eboot.elf into every recipe's
+        environment, so a make nested inside any repository recipe -- the suite
+        under `make test` or `make contrib-check` -- saw origin GAME_ELF =
+        environment, which GAME_INPUT_TRACKED reads as "the operator declared
+        an input": the guest-input stamp was demanded for a lane that declares
+        none. That is exactly how the public-lane test above failed whenever
+        the suite ran through make, and why the same suite passed when run
+        directly. A default without a file behind it must stay invisible to
+        recipes; a declared value (command line, operator environment) still
+        reaches them, and a default that exists on disk is exported by design.
+        """
+        if (ROOT / "eboot.elf").exists():
+            self.skipTest("the fixed default exists on disk and is exported by design")
+        probe = ("--eval=probe-guest-env: ; @$(PYTHON) -c "
+                 "\"import os; print('GAME_ELF_IN_ENV=' + str(os.environ.get('GAME_ELF')))\"")
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", probe, "probe-guest-env"],
+            cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False)
+        blob = self._blob(proc)
+        if proc.returncode != 0 and "unrecognized option" in blob:
+            self.skipTest("this GNU Make has no --eval support")
+        self.assertEqual(proc.returncode, 0, blob)
+        lines = [ln for ln in (proc.stdout or "").splitlines()
+                 if ln.startswith("GAME_ELF_IN_ENV=")]
+        self.assertEqual(len(lines), 1, "the environment probe did not run:\n" + blob)
+        ambient = os.environ.get("GAME_ELF")
+        if ambient is None:
+            self.assertEqual(
+                lines[0], "GAME_ELF_IN_ENV=None",
+                "the Makefile's default GAME_ELF leaked into a recipe environment:\n" + blob)
+        else:
+            self.assertEqual(
+                lines[0], "GAME_ELF_IN_ENV=" + ambient,
+                "an ambient GAME_ELF was not passed through unchanged:\n" + blob)
+
     # -- Make is also a parser -------------------------------------------
 
     def test_M5_make_expands_dollar_in_the_value_and_the_build_fails_closed(self) -> None:
