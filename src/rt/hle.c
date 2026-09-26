@@ -16259,6 +16259,11 @@ static int link_started_export(CpuState *s, uint32_t nid) {
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
+    /* A syscall is where a guest thread can stop making scheduler progress, so the
+     * attribution of a late display period has to be able to name it. */
+    const int rt_phase_saved = sr_rt_phase;
+    sr_rt_phase = SR_RT_PHASE_SYSCALL;
+    sr_rt_nid = nid;
     uint64_t flight_sequence = sr_flight_hle_import(
         nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
     if (flight_sequence != 0u && s) {
@@ -16274,6 +16279,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (link_started_export(s, nid)) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
+        sr_rt_phase = rt_phase_saved;
         return ret;
     }
     HleEntry *e = hle_find(nid);
@@ -16336,5 +16342,6 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (e->unsupported_error) {
         sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
     }
+    sr_rt_phase = rt_phase_saved;
     return ret;
 }

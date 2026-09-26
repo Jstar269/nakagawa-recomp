@@ -8,11 +8,39 @@ Closes/Tracks #
 
 <!-- Describe the smallest behaviorally meaningful change and why this approach was chosen. -->
 
+## New files and where they came from
+
+<!-- Required when this pull request adds a file; delete this section if it adds none. -->
+
+Every new file needs an answer, because the project cannot accept a file of unknown origin:
+
+- [ ] Every new file is written by me, or derived from a named upstream at a named revision under a
+      named license.
+- [ ] Each new source file carries `SPDX-License-Identifier: GPL-3.0-or-later` and the project
+      copyright line (Markdown and YAML use a comment form where the repository already does).
+- [ ] Each new third-party or AI-assisted file is detailed under **Third-party and AI provenance**
+      below.
+
+| Path | Written by / derived from | Revision | License | Why it is needed |
+| --- | --- | --- | --- | --- |
+| | | | | |
+
+A maintainer admits each new path into the publication scope and the protected provenance ledger.
+That is expected and is not something you can do yourself.
+
 ## Verification
 
 <!-- List the exact commands/routes run and their results. Do not replace evidence with "CI green". -->
 
-- [ ] `python -m unittest discover -s tools -p "test_*.py" -v`
+Start with the fast path, which runs only the gates your changed files select:
+
+```bash
+make contrib-check          # Linux
+mingw32-make contrib-check   # Windows
+```
+
+- [ ] `make contrib-check` — or the equivalent, with the result pasted below
+- [ ] `python -m unittest discover -s tools -p "test_*.py" -v` (for a change to shared tooling)
 - [ ] `python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency`
 - [ ] `pre-commit run --all-files` (when available in the environment)
 - [ ] Relevant native/runtime test or build gate for the changed area
@@ -20,6 +48,17 @@ Closes/Tracks #
 ### Results
 
 <!-- Record exact results, including anything blocked or unavailable. -->
+
+## Generated controls
+
+<!-- These two files are maintained by a maintainer from a private trusted ledger. -->
+
+- [ ] This pull request does not hand-edit `PUBLIC_EXPORT.json` or
+      `assets/public_provenance_ledger.json`.
+- [ ] A maintainer refreshes them after merge. No action needed from the author.
+- [ ] If **Trusted provenance attestation** reported only "a maintainer will admit these N new
+      files", that is the expected result for a pull request that adds files; it is not a defect in
+      this change.
 
 ## Integration and release safety
 
