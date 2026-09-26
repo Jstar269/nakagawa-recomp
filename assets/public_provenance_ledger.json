@@ -2711,7 +2711,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d74710bfddbe86dfe888534dcbe3e16bf9fbc010359f0cb65f15d66248682bb5"
+      "sha256": "4af18c9d8ec0df994beed2999a3f481e46da5d96c9c07c94c21a87094b9a12dc"
     },
     {
       "path": "src/player/setup_staging.c",
