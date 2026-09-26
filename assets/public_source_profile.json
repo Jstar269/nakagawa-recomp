@@ -832,6 +832,7 @@
     "tools/test_publish_audit.py",
     "tools/test_ref_run_elf_hardening.py",
     "tools/test_readme_images.py",
+    "tools/test_relocated_clone.py",
     "tools/test_release_manifest.py",
     "tools/test_savedata_security.py",
     "tools/test_savedata_spans.py",
