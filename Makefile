@@ -968,7 +968,7 @@ ifndef NK_TRUSTED_LEDGER
 	@exit 1
 endif
 	@echo "== readiness: base $(READINESS_BASE)"
-	@test -n "$(NK_GIT_REV_HEAD)" || { echo "readiness: FAIL -- no source revision: $(GIT) is unavailable or this is not a git checkout, and the provenance attestation compares a candidate revision. Set GIT to a git executable, or SR_SOURCE_COMMIT to the revision under attestation."; exit 1; }
+	@test -n "$(NK_GIT_REV_HEAD)" || { echo "readiness: FAIL -- no source revision: $(GIT) is unavailable or this is not a git checkout, and the provenance attestation compares a candidate revision. Readiness needs a git checkout; set GIT to a git executable if it is not on PATH."; exit 1; }
 	$(PYTHON) tools/policy_sync.py
 	$(PYTHON) tools/lint_docs.py
 	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
