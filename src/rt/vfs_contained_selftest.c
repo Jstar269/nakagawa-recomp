@@ -846,7 +846,7 @@ static void case_posix_guest_file_operations(void) {
              SR_CD_OK);
     CHECK(!strcmp(rel, "PSP/SAVEDATA/NEW-DIR"), "fatms0 backslash form normalizes safely");
     static const char *const escaped_guest_paths[] = {
-        "/tmp/outside/KEEP.BIN", "../outside/KEEP.BIN", "ms0:/../outside/KEEP.BIN",
+        "/abs/outside/KEEP.BIN", "../outside/KEEP.BIN", "ms0:/../outside/KEEP.BIN",
         "ms0:/PSP/SAVEDATA/../KEEP.BIN", "ms0://PSP/SAVEDATA/KEEP.BIN",
         "disc0:/PSP/SAVEDATA/KEEP.BIN"
     };
@@ -903,7 +903,7 @@ static void case_posix_guest_file_operations(void) {
     /* Every structural escape fails before a host operation and maps to the
      * PSP illegal-path error (EINVAL). */
     static const char *const escaped[] = {
-        "/tmp/outside/KEEP.BIN", "../outside/KEEP.BIN", "PSP/SAVEDATA/../KEEP.BIN",
+        "/abs/outside/KEEP.BIN", "../outside/KEEP.BIN", "PSP/SAVEDATA/../KEEP.BIN",
         "PSP//SAVEDATA/KEEP.BIN", "PSP/SAVEDATA/"
     };
     for (size_t i = 0; i < sizeof(escaped) / sizeof(escaped[0]); i++) {
