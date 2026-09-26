@@ -25,22 +25,28 @@ extern "C" {
 
 /**
  * Standard PSP digital buttons (14 total).
- * Corresponding to bits in SceCtrlData.Buttons:
- *   SELECT    = 0x000001
- *   START     = 0x000008
- *   UP        = 0x000010
- *   RIGHT     = 0x000020
- *   DOWN      = 0x000040
- *   LEFT      = 0x000080
- *   LTRIGGER  = 0x000100
- *   RTRIGGER  = 0x000200
- *   TRIANGLE  = 0x001000
- *   CIRCLE    = 0x002000
- *   CROSS     = 0x004000
- *   SQUARE    = 0x008000
- *   HOME      = 0x010000
- *   HOLD      = 0x020000
+ * Bits in SceCtrlData.Buttons, as published to the guest by every producer of pad
+ * state in this runtime: both host front-ends (src/rt/gui.c read_keys and
+ * src/rt/gpu_sdl3vk/sdl3vk.c) and the scripted-input route language in
+ * src/rt/hle.c. One table, because a producer that disagrees with a consumer by one
+ * bit does not fail -- it hands the guest a button the screen ignores, which is
+ * indistinguishable from a game that has frozen.
  */
+#define NK_PSP_BTN_SELECT_BIT    0x000001u
+#define NK_PSP_BTN_START_BIT     0x000008u
+#define NK_PSP_BTN_UP_BIT        0x000010u
+#define NK_PSP_BTN_RIGHT_BIT     0x000020u
+#define NK_PSP_BTN_DOWN_BIT      0x000040u
+#define NK_PSP_BTN_LEFT_BIT      0x000080u
+#define NK_PSP_BTN_LTRIGGER_BIT  0x000100u
+#define NK_PSP_BTN_RTRIGGER_BIT  0x000200u
+#define NK_PSP_BTN_TRIANGLE_BIT  0x001000u
+#define NK_PSP_BTN_CIRCLE_BIT    0x002000u
+#define NK_PSP_BTN_CROSS_BIT     0x004000u
+#define NK_PSP_BTN_SQUARE_BIT    0x008000u
+#define NK_PSP_BTN_HOME_BIT      0x010000u
+#define NK_PSP_BTN_HOLD_BIT      0x020000u
+
 typedef enum {
     NK_PSP_BTN_SELECT = 0,
     NK_PSP_BTN_START,

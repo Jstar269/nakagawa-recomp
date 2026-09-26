@@ -211,12 +211,17 @@ def generate_controls(
         candidate_policy=controls.candidate_policy,
         ledger_bytes=ledger_bytes,
     )
+    # ``generated_export`` is the full recomputation used for verification;
+    # only its control form is written into the repository, so an unrelated
+    # merge cannot turn into a conflict in every open pull request.  The
+    # verifier recomputes the tree-wide fields and refuses any declared value
+    # that disagrees, so nothing is lost.
     return replace(
         controls,
         generated_ledger=reconciled,
         generated_ledger_bytes=ledger_bytes,
         generated_export=export,
-        generated_export_bytes=verifier._canonical_json_bytes(export),
+        generated_export_bytes=controls.generated_export_bytes,
     )
 
 

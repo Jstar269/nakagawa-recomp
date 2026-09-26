@@ -599,5 +599,43 @@ int main(void) {{
         self.assertEqual(reports, [])
 
 
+class TestInterpreterOneSourceTrap(TrapHarness, unittest.TestCase):
+    """A one-source form through the interpreter reports its single input."""
+
+    PC = 0x00005680
+
+    def setUp(self):
+        # vsqrt.s v3, v2: VV2Op (0x34), optype 22, scalar.
+        self.word = (0x34 << 26) | (22 << 16) | (2 << 8) | 3
+        self.s_index = codegen.vreg_indices(2, 1)[0]
+        self.d_index = codegen.vreg_indices(3, 1)[0]
+        self.exe = self.compile(
+            "vfpu_interp_one_source",
+            INTERP_STUBS,
+            f"""
+int main(void) {{
+    CpuState st; CpuState *s = &st;
+    memset(s, 0, sizeof *s);
+    s->pc = 0x{self.PC:08x}u;
+    s->v[{self.s_index}] = sr_bits(getenv("ARG"));
+    int rc = sr_vfpu_interp(s, 0x{self.word:08x}u);
+    printf("RC=%d RESULT=0x%08x\\n", rc, sr_bits_out(&s->v[{self.d_index}]));
+    return 0;
+}}
+""",
+            extra_sources=("vfpu_interp.c",))
+
+    def test_finite_input_producing_nan_reports_one_input(self):
+        _result, reports = self.run_exe(self.exe, {"ARG": "bf800000"})  # sqrt(-1)
+        self.assertEqual(len(reports), 1, reports)
+        self.assertTrue(reports[0].startswith(f"NAN_TRAP pc=0x{self.PC:08x} op=vtrig.s dst=v3 in=[-1]"),
+                        reports[0])
+        self.assertTrue(reports[0].endswith("out=[nan]"), reports[0])
+
+    def test_finite_result_is_silent(self):
+        _result, reports = self.run_exe(self.exe, {"ARG": "40800000"})  # sqrt(4)
+        self.assertEqual(reports, [])
+
+
 if __name__ == "__main__":
     unittest.main()

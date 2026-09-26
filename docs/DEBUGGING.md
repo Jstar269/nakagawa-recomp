@@ -364,9 +364,9 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to record it again (see below) |
 | `WAIT <NAME> <timeout>` | Block until `NAME` is observed; fail the run on timeout |
 | `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
-| `PRESS <hexmask> <width>` | Hold `hexmask` for `width` vblanks |
-| `PRESS_UNTIL <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
-| `PRESS_WHILE <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
+| `PRESS <hexmask\|buttons> <width>` | Hold `hexmask` (or the named buttons) for `width` vblanks |
+| `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
+| `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
 | `END` | Route complete |
 
@@ -390,7 +390,7 @@ at load: they are not one screen, and a route built on them could not fail.
 their own START and there is no way to know in advance how many. As a fixed table, every
 extra press is one that lands on whatever comes next when the run is faster than the
 recording — which is precisely how a `CROSS` meant for the title screen ended up opening a
-menu. `PRESS_UNTIL TITLE_SCREEN 0008 8 240 15000` stops the moment the title appears.
+menu. `PRESS_UNTIL TITLE_SCREEN START 8 240 15000` stops the moment the title appears.
 
 **Failure is loud and terminal.** A failed `WAIT` or `EXPECT` prints `ROUTE_FAIL:` naming the
 step, the vblank and the screen that was actually there, then exits **86**. The manager reads
@@ -418,6 +418,45 @@ Two habits keep a program honest. Gate every screen *transition* with `WAIT`, an
 only for input cadence inside one screen — a `DELAY` standing in for a transition is the
 fixed-vblank bet again. And put an `EXPECT` after a press whose effect you care about: `WAIT`
 proves you arrived, `EXPECT` proves the press did what the route claims.
+
+### Naming the buttons a route presses
+
+A press mask is a bit in the `SceCtrlData.Buttons` field the guest reads — the same field a
+player's keyboard or controller produces. Name the button and the mask is filled in from one
+table (`NK_PSP_BTN_*_BIT` in `src/core/nk_input_profile.h`, which both host front-ends also
+publish from):
+
+| Name | Bit | Name | Bit | Name | Bit |
+| ---- | --- | ---- | --- | ---- | --- |
+| `SELECT` | `0x0001` | `L` | `0x0100` | `CIRCLE` | `0x2000` |
+| `START` | `0x0008` | `R` | `0x0200` | `CROSS` | `0x4000` |
+| `UP` | `0x0010` | `TRIANGLE` | `0x1000` | `SQUARE` | `0x8000` |
+| `RIGHT` | `0x0020` | `HOME` | `0x10000` | | |
+| `DOWN` | `0x0040` | `HOLD` | `0x20000` | | |
+| `LEFT` | `0x0080` | | | | |
+
+```text
+PRESS_WHILE TITLE CROSS 20 90 6000
+PRESS START+UP 30
+```
+
+Names are case-insensitive and join with `+`; a hex mask (`PRESS 4000 20`) still means exactly
+what it always did, in the program and in the legacy `frame hexmask width` table. A name that is
+not a button is refused at load, which fails the route instead of pressing nothing.
+
+Count the bits by hand only as a last resort, because a mask that is one bit out cannot fail
+visibly: the guest receives a button the screen ignores, the screen never changes, and the run
+looks exactly like a game that has frozen. `START` on a title that waits for `CROSS` is that
+mistake, and it cost a whole investigation before the log said which button was being pressed.
+Every run now narrates it at load —
+
+```text
+ROUTE: step 1 (PRESS_WHILE) presses CROSS
+```
+
+— so a route that stalls says which button it offered. Note that the boot prefix wants `START`
+(warning screens, intro movie) and title screens usually want `CROSS`; one press is not
+automatically the right one for the next screen.
 
 ### Visual-oracle runs (`-Action VisualOracle`)
 

@@ -28,6 +28,14 @@ extern "C" {
  * failure (caller falls back to the GDI path). */
 int  sdl3vk_init(const char *title);
 
+/* Swapchain present-mode choice for the SR_VSYNC setting (pure, no window needed).
+ * `available` lists VkPresentModeKHR values as plain ints so this header stays
+ * Vulkan-free: 0 = IMMEDIATE, 1 = MAILBOX, 2 = FIFO. vsync != 0 locks presentation
+ * to the display refresh (FIFO); vsync == 0 is uncapped, preferring MAILBOX, then
+ * IMMEDIATE, then FIFO as the guaranteed fallback. available may be NULL when
+ * count == 0. */
+int sdl3vk_pick_present_mode(int vsync, const int *available, int count);
+
 /* In-game performance HUD control (F1 / SR_HUD=1) */
 int  sdl3vk_hud_is_enabled(void);
 void sdl3vk_hud_set_enabled(int enabled);

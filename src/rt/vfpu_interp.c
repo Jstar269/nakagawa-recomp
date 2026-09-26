@@ -43,8 +43,12 @@
 #ifdef SR_NAN_TRAP
 #define VFPU_NAN(OP, OUT, NOUT, A, NA, B, NB) \
     SR_NAN_TRAP_V2(s->pc, (OP), (uint32_t)(vd), (OUT), (NOUT), (A), (NA), (B), (NB))
+/* One-source forms use the one-source trap, exactly as the generated code does. */
+#define VFPU_NAN1(OP, OUT, NOUT, A, NA) \
+    SR_NAN_TRAP_V(s->pc, (OP), (uint32_t)(vd), (OUT), (NOUT), (A), (NA))
 #else
 #define VFPU_NAN(OP, OUT, NOUT, A, NA, B, NB) ((void)0)
+#define VFPU_NAN1(OP, OUT, NOUT, A, NA) ((void)0)
 #endif
 
 /* Physical v[] indices for a VFPU vector register; the C twin of
@@ -517,7 +521,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 default: return SR_VFPU_OTHER;
             }
         }
-        VFPU_NAN(optype <= 5 ? "vv2op.s" : "vtrig.s", d, n, v, n, v, 0);
+        VFPU_NAN1(optype <= 5 ? "vv2op.s" : "vtrig.s", d, n, v, n);
         sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
     }
 
