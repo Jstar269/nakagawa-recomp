@@ -48,7 +48,7 @@ static const NkModuleDefinition s_modules_title_4[] = {
 };
 
 static const NkModuleDefinition s_modules_title_5[] = {
-    { "synthetic2.prx", 0x0a800000U, false },
+    { "synthetic2.prx", 0x09400000U, false },
 };
 
 const int nk_title_catalog_count = 6;
@@ -145,10 +145,10 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         "TEST00001",
         NULL,
         0x08800000U,
-        0x08800000U,
-        0x08801000U,
+        0x088000ecU,
+        0x088000ecU,
         "elf",
-        "fixtures/synthetic/data",
+        "fixtures/profile_zero",
         "build/synthetic/memstick",
         "synthetic-minimal",
         "none",
@@ -160,16 +160,16 @@ const NkTitleEntry nk_title_catalog_entries[] = {
     },
     {
         "synthetic-title2-v1",
-        "synthetic-title2",
+        "synthetic_title2",
         "Nakagawa Synthetic Title 2 Fixture",
         NK_TITLE_KIND_SYNTHETIC,
         "TEST00002",
         NULL,
-        0x0a400000U,
-        0x0a400000U,
-        0x0a401000U,
+        0x09000000U,
+        0x090000ecU,
+        0x090000ecU,
         "elf",
-        "fixtures/synthetic_title2/data",
+        "fixtures/profile_zero",
         "build/synthetic_title2/memstick",
         "synthetic-minimal",
         "none",
