@@ -26,6 +26,32 @@ Nakagawa Recomp is an experimental static recompiler that translates user-suppli
 - **Fonts need the user's own firmware fonts**: Authentic in-game typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped from a real PSP console (`flash0:/font/`). These proprietary files cannot legally be bundled and must be user-provided; import them into the validated local cache via `python tools/nk_cli.py fonts import <folder>` ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)). Public builds read these fonts with the clean-room public PGF reader ([#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)); a clean-room open-font converter is in the works ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 - **Windows is the supported player platform and Linux is development-only**: Only Windows 11 x64 is supported today for the desktop player runtime. Linux host runtime/player support is in progress after backend seams are portable ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)), followed by macOS (Apple Silicon) ([#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)) and Android ARM64 ([#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)). Linux/WSL currently serves as a development platform for building the player and portable core and running native tests ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#471](https://github.com/Jstar269/nakagawa-recomp/pull/471)).
 
+## Requirements when running the packaged player
+
+The v0.0.1 package layout (defined in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md)) is
+`bin/nakagawa_player.exe` beside the public source export under `source/`, which
+includes `tools/nk_cli.py`. The package ships no DLLs, so two responsibilities stay
+with the runner:
+
+- **Running the player:** place a compatible `SDL3.dll` beside `nakagawa_player.exe`
+  or on `PATH` (plus a Vulkan-capable GPU driver for game presentation). The player
+  itself runs without a source checkout; browsing the library and settings works.
+- **Typography (optional):** the UI loads `SDL3_ttf.dll` from beside the executable
+  first, then from `PATH`. Without it, every screen still renders with the built-in
+  readable debug font — nothing is hidden or broken, the interface is just plainer.
+  Dropping `SDL3_ttf.dll` next to `nakagawa_player.exe` is enough.
+- **BUILD PACKAGE:** recompiling a title needs the full developer toolchain. The
+  player looks for `tools/nk_cli.py` in this order: the `NK_INSTALL_ROOT` environment
+  variable (a folder containing `tools/`), beside the executable,
+  `<exe dir>/../tools`, `<exe dir>/../source/tools` (this release's layout), the
+  working directory, and its parent. It also needs `python`, `gcc`, and
+  `mingw32-make` on `PATH`; the supported install is the MSYS2 UCRT64 toolchain in
+  [`SETUP.md`](SETUP.md). Missing pieces are named, never silent: `CLI_NOT_FOUND`
+  lists every searched location and the `NK_INSTALL_ROOT` fix,
+  `BUILD_TOOLCHAIN_MISSING` names the missing tool, and `PYTHON_NOT_FOUND` names the
+  interpreter. In an unpackaged run, set `NK_INSTALL_ROOT` to the unzipped
+  `source/` folder so the player uses this package's CLI.
+
 ## Known issues
 
 - **Transient model corruption at main-menu transitions**: Transient character-model corruption occurs on main-menu transitions near the first switch to the second guest framebuffer. The corruption already exists in guest VRAM upstream of final presentation; root cause is under active investigation ([#69](https://github.com/Jstar269/nakagawa-recomp/issues/69)).
