@@ -33,6 +33,58 @@ def _powershell() -> str | None:
     return shutil.which("pwsh")
 
 
+def _helper_calls(source: str, helper: str) -> list[list[str]]:
+    """Named arguments of every ``helper ...`` command call in ``source``.
+
+    PowerShell's grammar is not a regex, so the argument list is scanned rather than
+    pattern-matched: a nested ``(Join-Path $root "x")`` is one *value*, and the ``-Path``
+    inside it is not an argument of the outer call. Only the leading run of ``-Name value``
+    pairs is returned.
+    """
+    calls: list[list[str]] = []
+    for match in re.finditer(r"(?<![\w-])" + re.escape(helper) + r"(?![\w-])", source):
+        i = match.end()
+        n = len(source)
+        named: list[str] = []
+        while i < n:
+            while i < n and source[i] in " \t":
+                i += 1
+            if i >= n or source[i] in ")\r\n;|":
+                break
+            arg = re.match(r"-([A-Za-z_][A-Za-z0-9_]*)", source[i:])
+            if not arg:
+                break
+            named.append(arg.group(1))
+            i += arg.end()
+            while i < n and source[i] in " \t":
+                i += 1
+            if i < n and source[i] in "\r\n;|)":
+                break
+            if i < n and source[i] == "(":
+                depth = 0
+                while i < n:
+                    if source[i] == "(":
+                        depth += 1
+                    elif source[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            i += 1
+                            break
+                    i += 1
+            elif i < n and source[i] in "\"'":
+                quote = source[i]
+                i += 1
+                while i < n and source[i] != quote:
+                    i += 2 if source[i] == "\\" else 1
+                i += 1
+            else:
+                while i < n and source[i] not in " \t\r\n;|)":
+                    i += 1
+        if named:
+            calls.append(named)
+    return calls
+
+
 class ManagerHelpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.source = MANAGER.read_text(encoding="utf-8-sig")
@@ -125,6 +177,60 @@ class ManagerSafetyContractTests(unittest.TestCase):
         self.assertIn("oracle_$OracleName", self.manager)
         # The archive reset must be root-contained.
         self.assertIn("Reset-OracleArchive -Path $outDir -AllowedRoot $script:LogDir", self.manager)
+
+    def test_safety_helper_calls_only_use_declared_parameters(self) -> None:
+        """Every named argument handed to a tools/nk_safety.ps1 helper must exist.
+
+        PowerShell binds a call with an undeclared ``-Name`` at *runtime*, not at
+        parse time, so a helper call that names a parameter the helper does not
+        declare is invisible until an action that uses it runs -- and then it is a
+        ``[FATAL SCRIPT ERROR]`` that aborts the whole manager. The OracleName
+        validation passed ``-Label`` to ``Test-SafeComponentName``, which declares
+        only ``-Name``: every ``-Action VisualOracle`` run on main died before it
+        launched the game, and nothing in CI reached that code path. The
+        fail-closed contract is that the binding is checked here instead.
+        """
+        safety = self.safety.replace("`\r\n", " ").replace("`\n", " ")
+        manager = self.manager.replace("`\r\n", " ").replace("`\n", " ")
+
+        declared: dict[str, set[str]] = {}
+        for match in re.finditer(r"^function\s+([\w-]+)\s*\{", safety, re.MULTILINE):
+            name = match.group(1)
+            body = safety[match.end():]
+            nxt = re.search(r"^function\s+[\w-]+\s*\{", body, re.MULTILINE)
+            if nxt:
+                body = body[:nxt.start()]
+            param = re.search(r"\bparam\s*\(", body)
+            params: set[str] = set()
+            if param:
+                depth, i = 0, param.end() - 1
+                while i < len(body):
+                    if body[i] == "(":
+                        depth += 1
+                    elif body[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    i += 1
+                params = {
+                    name
+                    for name in re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", body[param.end():i])
+                    if name not in ("true", "false", "null")
+                }
+            declared[name] = params
+
+        self.assertIn("Test-SafeComponentName", declared)
+        for helper, params in sorted(declared.items()):
+            if not params:
+                continue
+            for call in _helper_calls(manager, helper):
+                for named in call:
+                    self.assertIn(
+                        named,
+                        params,
+                        f"nk_manager.ps1 calls {helper} -{named}, which {helper} does not declare "
+                        f"(declared: {sorted(params)})",
+                    )
 
     def test_snap_cleanup_is_workspace_anchored_and_file_scoped(self) -> None:
         self.assertIn('-Filter "snap_*.ppm" -File', self.manager)
