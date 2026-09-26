@@ -620,19 +620,42 @@ uint32_t sr_thread_k0(void)        { return s_cur >= 0 ? s_tcb[s_cur].k0_init : 
  * would run the virtual clock away from the run.  This samples the clock (in
  * paced mode) and latches what is already due, and never services or
  * schedules -- no guest handler may run from inside CpuSuspendIntr. */
+/* Entering a masked window.
+ *
+ * The clamp that used to live here -- "keep exactly one owed episode" -- destroyed
+ * periods that had elapsed with the I-bit SET, and that is the wrong half of the
+ * level to collapse.  Two different things are being modelled and only one of them
+ * is a level:
+ *
+ *   - Edges that arrive while IE is CLEAR collapse.  HARDWARE_MEASURED
+ *     (display-mask-vcount, PSP-3001 / 6.61-ARK, 12/12 trials at 4/16.7/30/50 ms):
+ *     however many source periods the window covered, resume produces exactly ONE
+ *     coalesced delivery and credits VCOUNT exactly one.  That is
+ *     s_vblank_masked_pending, a flag, and it is the rule this file implements.
+ *
+ *   - Edges that arrived while IE was SET do NOT collapse.  That is the runtime's own
+ *     documented model rather than a guess: with the I-bit set the source latch advances
+ *     guest VCOUNT by every elapsed period (docs/ARCHITECTURE.md, display domain), so
+ *     those periods are counted as owed, and a clamp that destroyed the delivery left the
+ *     guest with a VCOUNT claiming periods the VBLANK handler never saw.  It also matches
+ *     the qualified record: the coalesced delivery in PSP-DISPLAY-001 was observed across
+ *     a MASKED window, so the collapse it measured is the window's, not the backlog's.
+ *     The runtime only recognises an interrupt at a service point, so a period that came
+ *     due inside a long syscall is still owed when the guest masks -- and the clamp's only
+ *     caller is sceKernelCpuSuspendIntr, so a title that masks around every allocation
+ *     paid the whole cost.  A/B on the flagship (one build, 480 s runs, machine otherwise
+ *     idle): with the clamp 1,337 episodes owed and never delivered over 419 presenting
+ *     seconds -- 3.19 Hz -- and a delivered rate of 56.73 Hz against the 59.94 Hz source,
+ *     so the two agree to 0.02 Hz and the clamp is the entire residual; without it, three
+ *     runs measured 59.86, 59.93 and 59.94 Hz with dropped=0.
+ *
+ * So the backlog is left intact here and delivered at the next eligible service point,
+ * which is the resume.  No guest handler may run from inside sceKernelCpuSuspendIntr, so
+ * deferring is the only option -- and it is a latency artifact of the runtime, not a
+ * semantic one. */
 static void sched_enter_masked(void) {
     vtime_refresh();
     s_vblank_masked_pending = 0;
-    /* The PSP's VBLANK pending state is a LEVEL, not a queue: an edge the source
-     * raised while IE was set stays pending across the mask, but the further
-     * edges collapse into that same level.  Clearing the I-bit therefore keeps
-     * exactly one owed episode, and this is a MODELLED loss, not a service-point
-     * one: the masked-window rule the hardware probe measured is the other half
-     * (resume credits VCOUNT exactly one).  A title that masks interrupts around
-     * every allocation pays one period per mask with the count clamped here --
-     * named, not hidden, and the next measurement is a PSP probe of the handler
-     * count across a mask (PSP-DISPLAY-002/004 do not cover it). */
-    if (s_pending_vblanks) s_pending_vblanks = 1;
 }
 
 uint32_t sched_suspend_interrupts(void) {
@@ -676,6 +699,16 @@ void sched_resume_interrupts(uint32_t state) {
          * when multiple crossed, and +0 at 4 ms where none did.  Never N, and
          * never zero when a period did become pending. */
         sr_display_advance_vcount(1u);
+        /* ... and the measured interrupt-conformance record is one coalesced
+         * VBLANK handler delivery on resume, not a VCOUNT credit with no event.
+         * Owe that episode explicitly instead of leaving it to the source bit:
+         * with a pre-mask backlog still owed, the delivery loop takes its count
+         * from the backlog and the bit is consumed by the same batch, so the
+         * window's own edge would otherwise never be delivered at all. */
+        if (s_pending_vblanks < UINT32_MAX) {
+            s_pending_vblanks++;
+            sr_perf_vblank_coalesced();
+        }
         s_vblank_masked_pending = 0;
     }
     if (was_enabled)
@@ -1129,6 +1162,22 @@ static void scheduler_latch_due_events(void) {
             else masked += (uint32_t)count;
         }
         scheduler_advance_vblank_deadlines(count);
+        /* A source timeline that saturates cannot express the periods it just
+         * crossed, and the owed-episode count has to stay a count the runtime can
+         * actually deliver: this is the same "a saturated source deadline raises
+         * nothing further" boundary the idle path already reports, seen from the
+         * latch side.  The elapsed periods collapse into the ONE episode the
+         * overflow can name, the queue is emptied, and both facts are counted --
+         * a silent queue here would run four billion handler episodes -- before the
+         * loop ends because the deadline is now saturated. */
+        if (s_vbl_next_us == UINT64_MAX) {
+            if (due > 1u) {
+                sr_perf_vblank_collapse(s_pending_vblanks, due - 1u);
+                due = 1u;
+                s_pending_vblanks = 0;
+            }
+            break;
+        }
     }
     if (masked) sr_perf_vblank_latch(0u, masked, 1);
     if (!due) return;
@@ -1454,9 +1503,10 @@ static SchedIdleState sched_classify_idle(void) {
  * crossed a period silently lost one -- which is what made a vblank-paced title
  * run at 55 Hz with an exactly-correct VCOUNT.
  *
- * Interrupt masking is deliberately NOT replayed here: sched_enter_masked()
- * drops the undelivered count, so a period the guest chose not to service is
- * lost exactly as the hardware loses it (one pending edge, one handler call). */
+ * Interrupt masking is deliberately NOT replayed here: an episode the guest chose not
+ * to service inside a masked window is not owed again, exactly as the hardware loses
+ * it (one pending edge, one handler call).  Masking does not, however, discard what
+ * the source owed before the window opened -- see sched_enter_masked(). */
 static void scheduler_service_pending(void) {
     if (!s_interrupts_enabled || s_servicing_interrupts) return;
     s_servicing_interrupts = 1;
@@ -1468,15 +1518,19 @@ static void scheduler_service_pending(void) {
         uint32_t episodes = s_pending_vblanks ? s_pending_vblanks : 1u;
         s_pending_vblanks = 0;
         for (uint32_t i = 0; i < episodes; i++) {
-            /* The handler itself can mask interrupts, and then the remaining
-             * episodes of this batch are no longer owed: it never took them. */
+            /* The handler itself can mask interrupts.  The episodes it never took
+             * stay owed -- they elapsed with the I-bit set -- and a batch that ends
+             * exactly on the mask point hands the window's own coalesced episode to
+             * the next resume. */
             if (!s_interrupts_enabled) {
                 s_pending_vblanks = episodes - i - 1u;
                 if (!s_pending_vblanks) s_vblank_masked_pending = 1;
+                episodes = i;      /* what the guest actually received */
                 break;
             }
             deliver_vblank();
         }
+        sr_perf_vblank_service(episodes);
     }
     s_servicing_interrupts = 0;
 }
@@ -1489,6 +1543,26 @@ static void scheduler_service_pending(void) {
  * so no amount of elapsed virtual time can promote it -- only a delivered edge
  * releases it. Latching and servicing here is what turns the time jump into an
  * event. */
+/* A thread switch is deliberately NOT an interrupt-recognition point.
+ *
+ * The obvious place to service the display source is the switch back into a
+ * runnable thread: a period that came due inside the previous thread's syscall
+ * (`syscall` class in the delivered-rate attribution) could be delivered there
+ * instead of at the next recomp yield.  It was built and measured, and it is not
+ * shipped: delivering the backlog at a switch boundary rather than at the guest's
+ * own yield point moved the flagship from 27.5 to 24.1-26.0 mean fps and raised the
+ * per-second vblank spread from sd 0.57 to sd 2.2, because the vblank handler and
+ * its callback walker then run mid-frame-switch instead of where the guest expects
+ * them.  Recognition points stay where the guest can observe them: a recomp yield,
+ * sceKernelCpuResumeIntr, and the scheduler's idle path.
+ *
+ * With the masked-window clamp gone (sched_enter_masked) the delivered rate is
+ * 59.9 Hz without any of that: the `syscall` class is LATENCY, not loss -- the
+ * periods it latches are owed and the next service point delivers them, which the
+ * PERF_ATTRIB vblank_owed ledger shows as late_owed == late_delivered with
+ * dropped=0.  Closing that latency needs a real interrupt-recognition point inside
+ * a long guest stretch, which is a codegen change, not a scheduler-boundary one. */
+
 static void sched_turbo_advance_to_vblank(void) {
     if (s_vbl_next_us > s_vtime_us) s_vtime_us = s_vbl_next_us;
     scheduler_latch_due_events();
@@ -2688,11 +2762,12 @@ void sr_yield(CpuState *s) {
         if (yield_count < 200) {
             uint32_t k0 = s->r[26];
             fprintf(stderr, "YIELD uid=0x%x pc=0x%08x ra=0x%08x tick=%llu k0=0x%08x k0+4=0x%08x\n",
-                    g_worker_uid, s->pc, s->r[31], s_tick, k0, MEM_R32(k0 + 4));
+                    g_worker_uid, s->pc, s->r[31], (unsigned long long)s_tick,
+                    k0, MEM_R32(k0 + 4));
             yield_count++;
         } else if ((yield_count % 5000) == 0) {
             fprintf(stderr, "PCSAMPLE uid=0x%x pc=0x%08x ra=0x%08x tick=%llu\n",
-                    g_worker_uid, s->pc, s->r[31], s_tick);
+                    g_worker_uid, s->pc, s->r[31], (unsigned long long)s_tick);
         }
         yield_count++;
     }
@@ -2775,7 +2850,8 @@ void sr_yield(CpuState *s) {
             static int post_yield_count = 0;
             if (post_yield_count < 256) {
                 fprintf(stderr, "POSTUMD-YIELD uid=0x%x pc=0x%08x ra=0x%08x tick=%llu a0=0x%08x a1=0x%08x a2=0x%08x libc_main_id[0x0030a040]=0x%08x last_alloc=0x%08x\n",
-                        g_worker_uid, s->pc, s->r[31], s_tick, s->r[4], s->r[5], s->r[6],
+                        g_worker_uid, s->pc, s->r[31], (unsigned long long)s_tick,
+                        s->r[4], s->r[5], s->r[6],
                         MEM_R32(0x0030a040u), MEM_R32(0x0030b000u));
                 fflush(stderr);
                 post_yield_count++;

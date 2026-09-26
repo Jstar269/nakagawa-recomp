@@ -101,6 +101,9 @@ void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
 /* Display-source service-cadence attribution (perf.c owns the real counters). */
 void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (void)periods; }
+void sr_perf_vblank_coalesced(void) {}
+void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
 void sr_perf_phase_report(int force) { (void)force; }
 int sr_rt_phase;
 uint32_t sr_rt_nid;
@@ -191,6 +194,8 @@ static void reset_sched(void) {
     s_interrupts_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_pending_vblanks = 0;          /* owed VBLANK episodes, since the count change */
+    s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_count = 0;
@@ -1602,8 +1607,15 @@ static void test_pending_interrupts_progress_and_resume(void) {
     sched_resume_interrupts(outer);
     expect(sched_interrupts_enabled(),
            "restoring the outer token re-enables interrupts");
-    expect(g_test_vblank_delivered == 1u,
-           "resume delivers one coalesced pending VBLANK");
+    /* Two episodes, and the count is the whole point.  The period whose deadline
+     * was already due when the fixture started elapsed with the I-bit SET, so the
+     * PSP would have taken it before the mask: the mask must not destroy it.  The
+     * one period the mask itself covered collapses to the single coalesced
+     * delivery the hardware probe measured.  The old expectation was 1, which is
+     * the flagship's delivered-rate defect in miniature: a title that masks around
+     * every allocation paid one period per mask. */
+    expect(g_test_vblank_delivered == 2u,
+           "resume delivers the pre-mask backlog plus one coalesced masked episode");
     expect((sched_pending_interrupts() & SCHED_INTR_VBLANK) == 0u,
            "delivered VBLANK is removed from the pending set");
     expect((sched_pending_interrupts() & SCHED_INTR_GE) != 0u,
@@ -1616,7 +1628,7 @@ static void test_pending_interrupts_progress_and_resume(void) {
     sched_resume_interrupts(inner);
     expect(!sched_interrupts_enabled(),
            "a later inner token can disable interrupts again");
-    expect(g_test_vblank_delivered == 1u,
+    expect(g_test_vblank_delivered == 2u,
            "re-disabling after service does not redeliver the same VBLANK");
 }
 
@@ -1914,6 +1926,93 @@ static void test_busy_guest_observes_every_display_period(void) {
      * coalescing delivery loses at least one per step and lands far below it. */
     expect(s_vbl_count - vbl0 == 120u,
            "the delivered count is 120 periods in 2 s (the 60000/1001 schedule), not fewer");
+    s_host_ns_fn = NULL;
+}
+
+/* A masked window must not destroy the periods that elapsed with the I-bit SET.
+ *
+ * This is the flagship's delivered-rate defect in miniature.  Two display periods
+ * pass inside one guest stretch with interrupts ENABLED and no service point (the
+ * shape a long syscall or a long frame has), the guest then brackets an allocation
+ * with sceKernelCpuSuspendIntr/sceKernelCpuResumeIntr, and one more period elapses
+ * while the bit is clear.  The PSP owes the guest three handler episodes: the two
+ * enabled ones are taken before the mask, and the masked window collapses to the
+ * single coalesced delivery the display-mask-vcount probe measured (12/12 trials at
+ * 4/16.7/30/50 ms: +1 however many periods the window covered, never N).
+ *
+ * The old sched_enter_masked() clamped the owed count to one at the mask, so the two
+ * enabled periods were destroyed and the guest heard two episodes instead of three.  A/B
+ * on the flagship, one build and 480 s runs: with the clamp 1,337 episodes owed and never
+ * delivered over 419 presenting seconds (3.19 Hz) and a delivered rate of 56.73 Hz
+ * against the 59.94 Hz source; without it, 59.86/59.93/59.94 Hz over three runs with
+ * dropped=0.  sceKernelCpuSuspendIntr is the clamp's only caller, so masking around every
+ * allocation paid the whole cost.
+ *
+ * MUTANT: restore `if (s_pending_vblanks) s_pending_vblanks = 1;` in
+ * sched_enter_masked(): the backlog assertion fails (1 != 2) and the delivery count
+ * is 2, not 3. */
+static void test_masked_window_keeps_the_enabled_backlog(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int owner = mk(0x41au, TH_RUNNING, 40);
+    s_cur = owner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* Two periods with the I-bit set and no service point in between (the
+     * fixture's origin deadline is due at t=0, so 25 ms covers exactly two). */
+    set_host_us(25000u);
+    vtime_refresh();
+    expect(s_pending_vblanks == 2u,
+           "two periods elapsed with the I-bit set are owed two episodes");
+    expect(g_test_vblank_delivered == 0u,
+           "nothing is delivered without a service point");
+
+    uint32_t token = sched_suspend_interrupts();
+    expect(token == 1u, "the mask returns the enabled token");
+    expect(s_pending_vblanks == 2u,
+           "a masked window does not destroy the periods that elapsed enabled");
+
+    /* One more period, this time entirely inside the window. */
+    set_host_us(45000u);
+    vtime_refresh();
+    expect(s_vblank_masked_pending,
+           "a period that elapses under the mask raises the coalesced pending level");
+    expect(s_pending_vblanks == 2u,
+           "a period under the mask adds no episode of its own");
+
+    sched_resume_interrupts(token);
+    expect(g_test_vblank_delivered == 3u,
+           "resume delivers the enabled backlog plus the one coalesced masked episode");
+    expect(s_pending_vblanks == 0u, "the batch is fully delivered at resume");
+    s_host_ns_fn = NULL;
+}
+
+/* An unrepresentable elapsed-period count is a named collapse, not a replay storm.
+ *
+ * The owed count has to stay a count the runtime can deliver.  A saturated guest
+ * timeline (the state test_clock_reads_are_observational asserts for the SOURCE
+ * deadline) makes the elapsed-period computation meaningless -- it asks for 1.1e15
+ * periods -- and the owed count then saturates to UINT32_MAX, so the delivery loop
+ * would run four billion handler episodes.  The saturated timeline cannot name the
+ * periods it crossed, so it collapses them into the one episode the overflow can
+ * name, and both halves of the loss are counted (sr_perf_vblank_collapse) rather than
+ * queued.
+ *
+ * MUTANT: delete the saturation branch in scheduler_latch_due_events: the owed count
+ * saturates to UINT32_MAX, this assertion fails, and the delivery below runs four
+ * billion handler episodes instead of one. */
+static void test_saturated_source_owes_one_deliverable_episode(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0u);
+    s_vbl_next_us = 0;
+    s_vtime_us = UINT64_MAX;                 /* a timeline that can no longer count */
+    scheduler_latch_due_events();
+    expect(s_vbl_next_us == UINT64_MAX, "the source deadline saturates");
+    expect(s_pending_vblanks == 1u,
+           "a saturated source owes one coalesced episode, not an unrepresentable count");
+    scheduler_service_pending();
+    expect(g_test_vblank_delivered == 1u,
+           "the collapsed episode is deliverable, so the source cannot wedge the loop");
     s_host_ns_fn = NULL;
 }
 
@@ -2766,6 +2865,8 @@ int main(void) {
     test_paced_vtime_is_host_anchored();
     test_paced_vblank_has_one_authority();
     test_busy_guest_observes_every_display_period();
+    test_masked_window_keeps_the_enabled_backlog();
+    test_saturated_source_owes_one_deliverable_episode();
     test_expired_timed_wait_enters_strict_priority();
     test_liveness_semaphore_handoff();
     test_liveness_event_flag_handoff();

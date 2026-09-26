@@ -423,6 +423,9 @@ void sr_perf_vblank(void) {}
 /* Display-source service-cadence attribution (perf.c owns the real counters; the
  * selftest needs only the symbols to link, and reads the phase tag directly). */
 void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (void)periods; }
+void sr_perf_vblank_coalesced(void) {}
+void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
 void sr_perf_phase_report(int force) { (void)force; }
 int sr_rt_phase;
 uint32_t sr_rt_nid;
@@ -2308,6 +2311,8 @@ static void reset_fixture(void) {
     s_dispatch_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_pending_vblanks = 0;          /* owed VBLANK episodes */
+    s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_count = 0;
