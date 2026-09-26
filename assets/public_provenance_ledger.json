@@ -2331,7 +2331,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ec27272290ca752c17c81778f73c6c5b9350cb5c0a8cd66ef67389c7507bab73"
+      "sha256": "2b29371e68e8bc796afd7f45585dc1a1eeb8e167f7338a58fff1d2e0075fde65"
     },
     {
       "path": "src/core/nk_psp_container.h",
@@ -2379,7 +2379,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9d9f6d613421b13ec56298a6b6460e465d977580a5c85de2b6935b96b4439841"
+      "sha256": "36821389f1f98ef8b016c2423cb2d9752d512f59d13d1c89c1e8743972bfb51a"
     },
     {
       "path": "src/core/nk_psp_ec.h",
@@ -2391,7 +2391,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d4bf96d81d364d6e86de14f9adc254f21c7e2191cfeaa1488e85c96eb767fab4"
+      "sha256": "ddee047d6e717891c5d0f0aff53d7ecfacaf5cd3db3a689574a8e537e27bcc5c"
     },
     {
       "path": "src/core/nk_psp_inflate.c",
@@ -2403,7 +2403,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd02198781c044d15b24f68562d1a280d9e83db09da1c6282e204b5f06fa0c9c"
+      "sha256": "c457383d11b1519b0dfd447c2c0b800b0298d48d6cb4604753a367e1863fe098"
     },
     {
       "path": "src/core/nk_psp_inflate.h",
@@ -2452,7 +2452,7 @@
         "license": "GPL-3.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "27f3496eb99bb1f986f0d72840a839ac937b8577068ffa134dee2887fffd7ae6"
+      "sha256": "f9571eb2d879d678efd3f5a0608d4f7248f7c6a62b2a5e88a6919c1ba59a9b17"
     },
     {
       "path": "src/core/nk_psp_kirk.h",
@@ -2478,7 +2478,7 @@
         "license": "GPL-3.0-only",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f30bf9d609adc62b183eab7a088aa307c8df7986c076977a572ec2f7c7c0f89e"
+      "sha256": "b90bc4b0794af7b2f4a177f6f8fccfcd60b4168bd5f3970c787ba03869a5eb34"
     },
     {
       "path": "src/core/nk_psp_kle.h",
@@ -2491,7 +2491,7 @@
         "license": "GPL-3.0-only",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d06917d19854996a5fd6a7495bd3b9bf17aac576a2b5a8ea41ddb7dbe7b206c9"
+      "sha256": "1f1eb15faed8c56fabb002a57f2ba3df68678aae550ccb28a8485a3f25adc849"
     },
     {
       "path": "src/core/nk_psp_prx.c",
@@ -5097,7 +5097,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "77c2ccaf49a327494a8a62f96f370bf855604d9a25dda906850747c52233db68"
+      "sha256": "fff0bffd4912c619ff36f7df91e7312e4399b15e4b1ea8bfbe27b932cdda4041"
     },
     {
       "path": "tests/native/test_input_profile.c",
