@@ -175,10 +175,13 @@
     },
     {
       "path": ".github/workflows/provenance-attestation.yml",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "provenance-attestation-workflow",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "03c6fa0b638d242817ebf23833e69201568db74c2cdd53cb25708db3f9f3aefc"
     },
@@ -4865,7 +4868,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5094fcf478e6d0168ae5f6d361abaea2e277be34f9034ce6c84b3fd371e2df05"
+      "sha256": "1867a8ac560b63b105caf15cb52d755564538288a3b5054c4c4469ea06d024ce"
     },
     {
       "path": "tests/native/test_posix_process.c",
