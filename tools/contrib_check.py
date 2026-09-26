@@ -134,7 +134,9 @@ def changed_paths(base: str) -> list[str]:
     merge_base = _git("merge-base", base, "HEAD").stdout.strip()
     if not merge_base:
         raise SystemExit(f"contrib-check: cannot resolve a merge base with {base}")
-    # NUL-separated output: paths are never quoted or split on spaces.
+    # NUL-separated output: paths are never quoted or split on spaces. In
+    # `status --porcelain=v1 -z` each entry is one field "XY path"; a rename or
+    # copy is followed by one more field holding its source path.
     committed = _git("diff", "--name-only", "-z", "--find-renames", merge_base, "HEAD").stdout.split("\0")
     status = _git("status", "--porcelain=v1", "-z", "--untracked-files=all", check=False).stdout
     working: list[str] = []
@@ -148,7 +150,7 @@ def changed_paths(base: str) -> list[str]:
         code, name = entry[:2], entry[3:]
         if code[0] in "RC":  # a rename or copy: the next entry is the source path
             index += 1
-        if "D" in code and code.strip() == "D":
+        if "D" in code:  # deleted in the index or the worktree: nothing to check
             continue
         working.append(name)
     return sorted({path for path in committed + working if path})
