@@ -163,10 +163,13 @@
     },
     {
       "path": ".github/workflows/osv-scanner.yml",
-      "classification": "reviewed_configuration",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "osv-scanner-workflow",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "d9e658ed670fb8fdeb4be9e1ab57ef11cb338d03e7aa703e949ca0bb15efe5a9"
     },
@@ -6349,10 +6352,13 @@
     },
     {
       "path": "tools/requirements-lock.txt",
-      "classification": "reviewed_documentation",
+      "classification": "project_authored_attested",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "python-tool-lockfile",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       },
       "sha256": "41183179b0981e5e57132181a9a653c368bac8b7396f1390409600e0bb1a1c65"
     },
