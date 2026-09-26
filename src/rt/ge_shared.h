@@ -14,6 +14,7 @@
 #ifndef GE_SHARED_H
 #define GE_SHARED_H
 
+#include <math.h>
 #include <stdint.h>
 
 typedef struct {
@@ -98,6 +99,31 @@ typedef struct {
  * colour, and per-vertex fog factor (1 = no fog). In transform mode u/v are stored
  * pre-multiplied by rw (texel coords over w). */
 typedef struct GeVtx { float x, y, z, rw; float u, v; float fog; int r, g, b, a; } GeVtx;
+
+/* The one fail-closed rule for a vertex that is about to be rasterized, shared by the
+ * software rasterizer (ge.c) and the Vulkan rasterizer (gpu_sdl3vk/ge_gpu.c) so the two
+ * GE paths cannot disagree: a vertex whose screen position or reciprocal clip-w is not
+ * finite drops its primitive instead of being rasterized.
+ *
+ * Why it must be explicit: every primitive-acceptance comparison in the GE is false
+ * against NaN (a NaN is neither <, == nor > anything), so a non-finite vertex would be
+ * accepted and then rasterized with NaN edge functions - unbounded garbage coverage,
+ * and on the GPU a NaN gl_Position whose fixed-function clipper verdict is undefined.
+ * The PSP's own answer for such a vertex is NOT_MEASURED (see docs/HARDWARE_ORACLE.md),
+ * so the primitive is dropped and counted rather than given an invented screen result.
+ *
+ * Scope: this is the check that belongs at the capture seam, where the clip-space
+ * position has already been projected away. The stronger per-vertex verdict - the clip
+ * position, the projected screen position AND the lit colour (CVtx::nf in ge.c) - is
+ * only available upstream, because GeVtx carries the lit colour already packed to
+ * 8 bits per channel; ge.c applies it before the seam and drops the primitive there.
+ * Texcoords are deliberately NOT part of the rule: a game may leave an infinite texgen
+ * matrix in place to force a constant s/t, exactly as it may leave infinite fog
+ * coefficients, so covering them would reject legal guest state. */
+/* 1 when the screen position (x, y, z) and the reciprocal clip-w (rw = 1/w) are all finite. */
+static inline int ge_vtx_finite(const GeVtx *v) {
+    return isfinite(v->x) && isfinite(v->y) && isfinite(v->z) && isfinite(v->rw);
+}
 
 typedef enum GeCpuPhase {
     GE_CPU_LIST_TOTAL = 0,       /* inclusive; remaining phases partition this total */
