@@ -123,6 +123,11 @@ ifneq ($(filter default undefined,$(origin CC)),)
 CC := gcc
 endif
 PYTHON     ?= python
+ifeq ($(OS),Windows_NT)
+POWERSHELL ?= powershell.exe
+else
+POWERSHELL ?= pwsh
+endif
 # Direct Make callers may provide VULKAN_SDK explicitly (or export it).
 # If unset, discover dynamically via tools/vulkan_sdk.py.
 ifeq ($(VULKAN_SDK),)
@@ -537,7 +542,7 @@ EXE_EXT             := .exe
 # its own executable-anchored root, so the step is absent rather than emulated
 # by a second copy script. A missing asset is reported by the runtime itself
 # (font_load / data walk), never silently ignored here.
-ASSET_COPY_STEP     = pwsh -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
+ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_EXTRA_LIBS   :=

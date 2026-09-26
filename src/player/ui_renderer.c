@@ -211,15 +211,15 @@ static void ui_font_ensure(void) {
     const char *force_off = getenv("NK_UI_NO_TTF");
     if (force_off && *force_off) return;
 
-#if defined(_WIN32) || defined(_WIN64)
-    static const char *kLibs[] = { "SDL3_ttf.dll", NULL };
-#elif defined(__APPLE__)
-    static const char *kLibs[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
-#else
-    static const char *kLibs[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
-#endif
-    for (int i = 0; kLibs[i]; i++) {
-        g_font.lib = SDL_LoadObject(kLibs[i]);
+    /* Beside the executable first (a user-placed SDL3_ttf.dll wins), then the
+     * platform loader's default bare-name search (PATH on Windows). Built by
+     * the pure player helper so tests pin the order without a loader. */
+    char ttf_candidates[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+    const char *exe_dir = SDL_GetBasePath();
+    int ttf_count = player_app_ttf_library_candidates(
+        exe_dir, ttf_candidates, PLAYER_APP_TTF_MAX_CANDIDATES);
+    for (int i = 0; i < ttf_count; i++) {
+        g_font.lib = SDL_LoadObject(ttf_candidates[i]);
         if (g_font.lib) break;
     }
     if (!g_font.lib) return;
