@@ -108,8 +108,44 @@ const char *package_builder_get_output_line(
 /* Locate Python 3 interpreter: checks PYTHON env, UCRT64 toolchain, and PATH. */
 bool package_builder_find_python(char *out_path, size_t out_size);
 
-/* Locate tools/nk_cli.py beside or one level above the player executable, then the working directory. */
+/* Maximum ordered tools/nk_cli.py candidates from
+ * package_builder_cli_candidate_paths(). */
+#define PACKAGE_BUILDER_CLI_MAX_CANDIDATES 6
+
+/* Pure: fill out[0..return-1] with the ordered tools/nk_cli.py candidate paths.
+ * override_root is the NK_INSTALL_ROOT value (NULL/empty when unset) and wins;
+ * install_root is the executable's folder (NULL/empty when unknown); the working
+ * directory and its parent are appended as relative paths. */
+int package_builder_cli_candidate_paths(
+    const char *install_root,
+    const char *override_root,
+    char out[][NK_MAX_PATH],
+    int max_out
+);
+
+/* Locate tools/nk_cli.py: NK_INSTALL_ROOT, beside/above the executable, the
+ * v0.0.1 release layout (<exe>/../source/tools), then the working directory. */
 bool package_builder_find_cli(const char *install_root, char *out_path, size_t out_size);
+
+/* Pure: guidance text for the CLI_NOT_FOUND card, naming every location the
+ * search covers and the NK_INSTALL_ROOT fix. Fits in PlayerLastError.message. */
+void package_builder_describe_cli_not_found(
+    const char *install_root, char *out, size_t out_size
+);
+
+/* Locate a host build tool ("gcc", "mingw32-make") on PATH only: the spawned
+ * build child sees exactly this PATH, so no hidden fallback location counts. */
+bool package_builder_find_tool(const char *name, char *out_path, size_t out_size);
+
+/* Pure: report the first missing build tool (python, gcc, mingw32-make).
+ * Returns false and clears the outputs when all three are present. On success
+ * out_tool holds the tool name and out_message a BUILD_TOOLCHAIN_MISSING card
+ * body that names it and how to install it. */
+bool package_builder_toolchain_missing(
+    bool have_python, bool have_gcc, bool have_make,
+    char *out_tool, size_t out_tool_size,
+    char *out_message, size_t out_message_size
+);
 
 /* Start the package build as a child process using nk_platform_spawn_process. */
 NkResult package_builder_start(

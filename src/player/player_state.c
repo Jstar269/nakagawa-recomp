@@ -175,6 +175,36 @@ bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming)
     return merged;
 }
 
+int player_app_ttf_library_candidates(const char *exe_dir,
+                                      char out[][MAX_PATH_LEN], int max_out) {
+    if (!out || max_out <= 0) return 0;
+
+#if defined(_WIN32) || defined(_WIN64)
+    static const char *kLibs[] = { "SDL3_ttf.dll", NULL };
+#elif defined(__APPLE__)
+    static const char *kLibs[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
+#else
+    static const char *kLibs[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
+#endif
+
+    int count = 0;
+    /* 1. Beside the executable: a user can drop the library next to the player
+     *    (the release does not ship it), and that beats any PATH hit. */
+    if (exe_dir && exe_dir[0] && count < max_out) {
+        size_t len = strlen(exe_dir);
+        bool has_sep = exe_dir[len - 1] == '/' || exe_dir[len - 1] == '\\';
+        snprintf(out[count], MAX_PATH_LEN, "%s%s%s", exe_dir, has_sep ? "" : "/", kLibs[0]);
+        count++;
+    }
+    /* 2. Bare names: the platform loader's default search (PATH on Windows,
+     *    the loader path elsewhere). */
+    for (int i = 0; kLibs[i] && count < max_out; i++) {
+        snprintf(out[count], MAX_PATH_LEN, "%s", kLibs[i]);
+        count++;
+    }
+    return count;
+}
+
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
     if (!app || !executable_directory || !executable_directory[0]) return false;
     int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
@@ -994,18 +1024,40 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
 
     char python_path[NK_MAX_PATH];
-    if (!package_builder_find_python(python_path, sizeof(python_path))) {
+    bool have_python = package_builder_find_python(python_path, sizeof(python_path));
+    if (!have_python) {
         player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
                              "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
-                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.",
+                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.\n"
+                             "Automatic build-prerequisite installation is in the works (#324).",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
 
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        char cli_guidance[512];
+        package_builder_describe_cli_not_found(app->install_root,
+                                               cli_guidance, sizeof(cli_guidance));
         player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
-                             "tools/nk_cli.py could not be located in the current workspace or install root.",
+                             cli_guidance,
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    /* Toolchain preflight: fail here with the missing tool named instead of
+     * deep inside the build when gcc or mingw32-make is not on PATH. */
+    char gcc_path[NK_MAX_PATH];
+    char make_path[NK_MAX_PATH];
+    bool have_gcc = package_builder_find_tool("gcc", gcc_path, sizeof(gcc_path));
+    bool have_make = package_builder_find_tool("mingw32-make", make_path, sizeof(make_path));
+    char missing_tool[32];
+    char missing_message[512];
+    if (package_builder_toolchain_missing(have_python, have_gcc, have_make,
+                                          missing_tool, sizeof(missing_tool),
+                                          missing_message, sizeof(missing_message))) {
+        player_app_set_error(app, "BUILD_TOOLCHAIN_MISSING", "Build Toolchain Missing",
+                             missing_message,
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }

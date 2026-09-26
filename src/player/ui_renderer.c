@@ -211,15 +211,15 @@ static void ui_font_ensure(void) {
     const char *force_off = getenv("NK_UI_NO_TTF");
     if (force_off && *force_off) return;
 
-#if defined(_WIN32) || defined(_WIN64)
-    static const char *kLibs[] = { "SDL3_ttf.dll", NULL };
-#elif defined(__APPLE__)
-    static const char *kLibs[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
-#else
-    static const char *kLibs[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
-#endif
-    for (int i = 0; kLibs[i]; i++) {
-        g_font.lib = SDL_LoadObject(kLibs[i]);
+    /* Beside the executable first (a user-placed SDL3_ttf.dll wins), then the
+     * platform loader's default bare-name search (PATH on Windows). Built by
+     * the pure player helper so tests pin the order without a loader. */
+    char ttf_candidates[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+    const char *exe_dir = SDL_GetBasePath();
+    int ttf_count = player_app_ttf_library_candidates(
+        exe_dir, ttf_candidates, PLAYER_APP_TTF_MAX_CANDIDATES);
+    for (int i = 0; i < ttf_count; i++) {
+        g_font.lib = SDL_LoadObject(ttf_candidates[i]);
         if (g_font.lib) break;
     }
     if (!g_font.lib) return;
@@ -1124,7 +1124,7 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
     draw_rounded_fill(ren, 24.0f, 22.0f, 18.0f, 18.0f, 5.0f, COLOR_LIME);
     draw_text(ren, 52.0f, 16.0f, "NAKAGAWA RECOMP", 1.8f, COLOR_TEXT_WHITE);
     if (w >= 700.0f) {
-        draw_text(ren, 52.0f, 40.0f, "AUTHENTIC PSP PLAYER", 1.0f, COLOR_TEXT_MUTED);
+        draw_text(ren, 52.0f, 40.0f, "PSP RECOMPILATION PLAYER", 1.0f, COLOR_TEXT_MUTED);
     }
 
     /* Mode indicator: hidden on narrow windows so it can never sit under
@@ -1352,7 +1352,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
     } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
-                             "PlayStation Portable Classic · High-Definition Modern PC Recompilation",
+                             "PSP title · Native PC recompilation",
                              1.2f, hero_w - 64.0f, COLOR_TEXT_MUTED);
     }
 
@@ -1923,6 +1923,10 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                              "Configuration saved to settings.json. Game settings apply at the next launch.",
                              1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
     }
+    /* Identify the platform the player runs, never imply endorsement. */
+    draw_text_ellipsized(ren, card_x + 4.0f, card_y + card_h + 14.0f,
+                         "Nakagawa Recomp is an independent project, not affiliated with or endorsed by Sony Interactive Entertainment.",
+                         0.9f, card_w - 64.0f, COLOR_TEXT_DIM);
 
     float col1_x = card_x + 32.0f;
     float col2_x = two_col ? card_x + card_w * 0.5f : col1_x;
