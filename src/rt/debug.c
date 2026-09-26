@@ -333,3 +333,116 @@ void sr_debug_init_watches(void) {
         fprintf(stderr, "DEBUG: SR_METADATA_WATCH enabled. Monitoring 0x0030a040..0x0030a0bf\n");
     }
 }
+
+/* ---- SR_NAN_TRAP reporter (see the SR_NAN_TRAP block in recomp.h) ----------
+ *
+ * Compiled only when -DSR_NAN_TRAP is defined. Without it this file contributes
+ * nothing at all, so an untrapped build is byte-identical and link-identical.
+ *
+ * Classification is on the raw IEEE-754 bits, not on a floating comparison: the
+ * predicate "was every input finite" must not itself be a guest-sensitive FP
+ * operation that ambient host DAZ could decide differently (the same argument
+ * that keeps sr_fpu_mul_s off a floating inf*0 precheck). A word is finite when
+ * its exponent field is not all ones. */
+#ifdef SR_NAN_TRAP
+/* Only for the SR_NAN_TRAP_DEFAULT_LIMIT contract and the two prototypes: the
+ * trap reporter is diagnostics, and debug.c stays the diagnostics home. */
+#include "recomp.h"
+
+static int s_nan_trap_armed = -1;
+static int s_nan_trap_limit = -1;
+static int s_nan_trap_hits = 0;
+
+static void sr_nan_trap_configure(void) {
+    if (s_nan_trap_armed >= 0) return;
+    s_nan_trap_armed = 1;
+    s_nan_trap_limit = SR_NAN_TRAP_DEFAULT_LIMIT;
+    const char *text = getenv("SR_NAN_TRAP_LIMIT");
+    if (text && text[0]) {
+        char *end = NULL;
+        long parsed = strtol(text, &end, 10);
+        if (end == text || *end != '\0' || parsed < 0 || parsed > 1000000L) {
+            fprintf(stderr, "NAN_TRAP: invalid SR_NAN_TRAP_LIMIT '%s' (using %d)\n",
+                    text, s_nan_trap_limit);
+        } else {
+            s_nan_trap_limit = (int)parsed;
+        }
+    }
+    fprintf(stderr, "NAN_TRAP: armed limit=%d (first N finite->non-finite results)\n",
+            s_nan_trap_limit);
+}
+
+/* 1 when the word is NaN or +/-Inf, 0 when it is finite. */
+static int sr_nan_trap_nonfinite(float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return (int)((bits & 0x7F800000u) == 0x7F800000u);
+}
+
+/* Render one value the way the guest sees it: a finite float as a number, a NaN
+ * as `nan`, an infinity as `inf`/`-inf`. Never `-nan(ind)`, which is a host
+ * printf spelling and not a stable token to grep. */
+static void sr_nan_trap_print(FILE *fp, const float *v, int n) {
+    for (int i = 0; i < n; i++) {
+        uint32_t bits;
+        memcpy(&bits, &v[i], sizeof(bits));
+        if (i) fputc(',', fp);
+        if ((bits & 0x7FFFFFFFu) == 0x7F800000u) {
+            fputs((bits & 0x80000000u) ? "-inf" : "inf", fp);
+        } else if ((bits & 0x7F800000u) == 0x7F800000u) {
+            fputs("nan", fp);
+        } else {
+            fprintf(fp, "%.9g", (double)v[i]);
+        }
+    }
+}
+
+static int sr_nan_trap_budget(void) {
+    sr_nan_trap_configure();
+    if (s_nan_trap_hits >= s_nan_trap_limit) {
+        if (s_nan_trap_hits == s_nan_trap_limit) {
+            s_nan_trap_hits++;
+            fprintf(stderr, "NAN_TRAP: limit=%d reached; further reports suppressed\n",
+                    s_nan_trap_limit);
+        }
+        return 0;
+    }
+    s_nan_trap_hits++;
+    return 1;
+}
+
+void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
+                      float out, const float *in, int nin) {
+    if (!sr_nan_trap_nonfinite(out)) return;
+    for (int i = 0; i < nin; i++)
+        if (sr_nan_trap_nonfinite(in[i])) return;   /* propagation, not origin */
+    if (!sr_nan_trap_budget()) return;
+    const float out1[1] = { out };
+    fprintf(stderr, "NAN_TRAP pc=0x%08x op=%s dst=f%u in=[", pc, op, fd);
+    sr_nan_trap_print(stderr, in, nin);
+    fputs("] out=[", stderr);
+    sr_nan_trap_print(stderr, out1, 1);
+    fputs("]\n", stderr);
+}
+
+void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
+                        const float *out, int nout,
+                        const float *in1, int nin1,
+                        const float *in2, int nin2) {
+    int produced = 0;
+    for (int i = 0; i < nout; i++) produced |= sr_nan_trap_nonfinite(out[i]);
+    if (!produced) return;
+    for (int i = 0; i < nin1; i++)
+        if (sr_nan_trap_nonfinite(in1[i])) return;   /* propagation, not origin */
+    for (int i = 0; i < nin2; i++)
+        if (sr_nan_trap_nonfinite(in2[i])) return;   /* propagation, not origin */
+    if (!sr_nan_trap_budget()) return;
+    fprintf(stderr, "NAN_TRAP pc=0x%08x op=%s dst=v%u in=[", pc, op, vd);
+    sr_nan_trap_print(stderr, in1, nin1);
+    if (nin2 > 0) fputc(',', stderr);
+    sr_nan_trap_print(stderr, in2, nin2);
+    fputs("] out=[", stderr);
+    sr_nan_trap_print(stderr, out, nout);
+    fputs("]\n", stderr);
+}
+#endif /* SR_NAN_TRAP */

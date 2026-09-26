@@ -15668,6 +15668,7 @@ static void test_route_gates_on_a_guest_event_not_a_signature(void) {
     remove(RT_PATH);
 }
 
+
 /* A press mask that names the wrong button cannot fail: the guest receives a bit the
  * screen ignores and the run looks exactly like a game that has frozen, which is how a
  * whole investigation once went looking for a scheduler deadlock that was not there. So a
@@ -15732,6 +15733,20 @@ static void test_route_names_the_buttons_it_presses(void) {
     expect(sr_route_load(RT_PATH) == 0, "a button name that is not a button is refused");
     expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
     remove(RT_PATH);
+
+    /* Every button the host front-ends publish can be named, HOME and HOLD included. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS home+HOLD 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "HOME and HOLD are route button names");
+    expect(sr_route_step(1, sigA) == (NK_PSP_BTN_HOME_BIT | NK_PSP_BTN_HOLD_BIT),
+           "HOME+HOLD reaches the guest as both system bits");
+    remove(RT_PATH);
+
 
     /* The legacy absolute-frame table takes names too: strtoul used to read "CROSS" as 0,
      * which is the same silent-nothing press one syntax layer down. */
@@ -16418,6 +16433,7 @@ int main(int argc, char **argv) {
     test_route_legacy_pad_script_is_unchanged();
     test_route_names_the_buttons_it_presses();
     test_route_gates_on_a_guest_event_not_a_signature();
+
     test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();

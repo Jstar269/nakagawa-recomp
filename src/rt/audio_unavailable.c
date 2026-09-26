@@ -13,6 +13,7 @@
 
 #define SDL_MAIN_HANDLED 1
 
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,6 +77,15 @@ static void sr_audio_cleanup(void) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
     s_audio_state = AUDIO_STATE_UNINITIALIZED;
+}
+
+/* Master-volume gain from SR_MASTER_VOLUME (player Settings > Master Volume,
+ * 0..100). Pure and clamped: 0 mutes, 100 is unity. Callers pass 100 when the
+ * variable is unset so a direct runtime launch keeps full volume. */
+static float sr_audio_master_gain(int percent) {
+    if (percent <= 0) return 0.0f;
+    if (percent >= 100) return 1.0f;
+    return (float)percent / 100.0f;
 }
 
 int sr_audio_init(void) {
@@ -143,6 +153,19 @@ int sr_audio_init(void) {
             }
             sr_audio_cleanup();
             return -1;
+        }
+    }
+
+    {
+        /* Apply the player's master volume once at backend init; the setting
+         * is fixed for the child's lifetime (settings apply at next launch). */
+        const char *mv = getenv("SR_MASTER_VOLUME");
+        float gain = sr_audio_master_gain((mv && mv[0]) ? atoi(mv) : 100);
+        for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+            if (!SDL_SetAudioStreamGain(s_streams[i], gain)) {
+                fprintf(stderr, "audio: could not apply master volume: %s\n",
+                        SDL_GetError());
+            }
         }
     }
 
@@ -444,11 +467,22 @@ static void test_null_backend_env(void) {
     printf("test_null_backend_env: PASS\n");
 }
 
+/* Master-volume gain mapping (SR_MASTER_VOLUME): pure, window-free. */
+static void test_master_volume_gain(void) {
+    assert(sr_audio_master_gain(0) == 0.0f);
+    assert(sr_audio_master_gain(-5) == 0.0f);
+    assert(sr_audio_master_gain(100) == 1.0f);
+    assert(sr_audio_master_gain(250) == 1.0f);
+    assert(sr_audio_master_gain(50) == 0.5f);
+    assert(sr_audio_master_gain(80) > 0.7999f && sr_audio_master_gain(80) < 0.8001f);
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     (void)argc;
     (void)argv;
     printf("--- Running audio selftest ---\n");
+    test_master_volume_gain();
     test_dummy_mixer_handoff();
     test_no_device_path();
     test_null_backend_env();

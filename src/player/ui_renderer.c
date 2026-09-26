@@ -1124,7 +1124,7 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
     draw_rounded_fill(ren, 24.0f, 22.0f, 18.0f, 18.0f, 5.0f, COLOR_LIME);
     draw_text(ren, 52.0f, 16.0f, "NAKAGAWA RECOMP", 1.8f, COLOR_TEXT_WHITE);
     if (w >= 700.0f) {
-        draw_text(ren, 52.0f, 40.0f, "AUTHENTIC PSP PLAYER", 1.0f, COLOR_TEXT_MUTED);
+        draw_text(ren, 52.0f, 40.0f, "PSP RECOMPILATION PLAYER", 1.0f, COLOR_TEXT_MUTED);
     }
 
     /* Mode indicator: hidden on narrow windows so it can never sit under
@@ -1352,7 +1352,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
     } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
-                             "PlayStation Portable Classic · High-Definition Modern PC Recompilation",
+                             "PSP title · Native PC recompilation",
                              1.2f, hero_w - 64.0f, COLOR_TEXT_MUTED);
     }
 
@@ -1875,6 +1875,22 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
  * launch preferences that PLAY NOW consumes, toggles flip, and volume
  * steps clamp 0..100. Focus order is stable so Tab/Enter and gamepad
  * SOUTH all reach the same actions as a mouse click. */
+/* Real save root the launcher resolves at launch: nk_launch_prepare_session
+ * points SR_MEMSTICK at <root>/<disc id> (platform per-user saves; writable by
+ * construction). Computed once because nk_platform_get_path creates the
+ * directory and the root cannot change while the player runs. Replaces the old
+ * save_directory field, which was never read by anything. */
+static char g_saves_root[MAX_PATH_LEN];
+static bool g_saves_root_ready;
+
+static const char *saves_root_display(void) {
+    if (!g_saves_root_ready) {
+        g_saves_root_ready = nk_platform_get_path(NK_PATH_SAVES, g_saves_root,
+                                                  sizeof(g_saves_root));
+    }
+    return g_saves_root_ready ? g_saves_root : "(unavailable)";
+}
+
 static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
@@ -1903,8 +1919,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (app->settings_notice[0]) {
         draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
     } else {
-        draw_text(ren, card_x + 32.0f, card_y + 96.0f, "Configuration saved to settings.json.", 1.0f, COLOR_TEXT_DIM);
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f,
+                             "Configuration saved to settings.json. Game settings apply at the next launch.",
+                             1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
     }
+    /* Identify the platform the player runs, never imply endorsement. */
+    draw_text_ellipsized(ren, card_x + 4.0f, card_y + card_h + 14.0f,
+                         "Nakagawa Recomp is an independent project, not affiliated with or endorsed by Sony Interactive Entertainment.",
+                         0.9f, card_w - 64.0f, COLOR_TEXT_DIM);
 
     float col1_x = card_x + 32.0f;
     float col2_x = two_col ? card_x + card_w * 0.5f : col1_x;
@@ -1918,14 +1940,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         float inner_r = card_x + card_w - 32.0f;
         float y = row_y;
         /* Resolution: 2x2 grid when four presets do not fit one row. */
-        draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
         {
             struct { const char *label; int scale; } kRes[] = {
-                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 }, { "8x (4K UHD)", 8 },
+                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
             };
             float bx = col1_x;
             float by = y + 24.0f;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 3; i++) {
                 bool selected = (app->settings.resolution_scale == kRes[i].scale);
                 bool focused = (app->focus_index == focus);
                 if (bx + 140.0f > inner_r + 1.0f && bx > col1_x) {
@@ -1969,7 +1991,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             char vsync_label[32];
             snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
             char fs_label[64];
-            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
+            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
             float by = y + 24.0f;
             float bx = col1_x;
             bool focused = (app->focus_index == focus);
@@ -1993,7 +2015,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                 by += 42.0f;
             }
             char rm_label[40];
-            snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s", app->settings.reduce_motion ? "ON" : "OFF");
+            snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
             focused = (app->focus_index == focus);
             if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
                 player_app_toggle_reduce_motion(app);
@@ -2006,7 +2028,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         y = draw_text_wrapped(ren, col1_x, y + 22.0f, inner_r - col1_x,
                               "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
                               0.95f, COLOR_TEXT_WHITE, 2);
-        draw_text(ren, col1_x, y + 6.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y + 6.0f, "MASTER VOLUME", 0.9f, COLOR_TEXT_DIM);
         {
             float by = y + 26.0f;
             bool minus_focused = (app->focus_index == focus);
@@ -2041,7 +2063,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                 draw_text(ren, col1_x, y + 24.0f, "No controller connected (keyboard ready).", 1.0f, COLOR_TEXT_WHITE);
             }
             draw_text_ellipsized(ren, col1_x, y + 44.0f,
-                                 app->settings.save_directory[0] ? app->settings.save_directory : "(not configured)",
+                                 saves_root_display(),
                                  1.0f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
@@ -2077,13 +2099,13 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     float col2_y = row_y;
 
     /* Resolution scale */
-    draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
     {
         struct { const char *label; int scale; } kRes[] = {
-            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 }, { "8x (4K UHD)", 8 },
+            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
         };
         float bx = col1_x;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 3; i++) {
             bool selected = (app->settings.resolution_scale == kRes[i].scale);
             bool focused = (app->focus_index == focus);
             if (draw_button_focused(ren, bx, row_y + 24.0f, 105.0f, 36.0f, kRes[i].label, selected, in, focused)) {
@@ -2125,14 +2147,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
         char fs_label[64];
-        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
+        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
         }
         focus++;
         char rm_label[40];
-        snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s", app->settings.reduce_motion ? "ON" : "OFF");
+        snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x, tog_y + 68.0f, 210.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
             player_app_toggle_reduce_motion(app);
@@ -2145,7 +2167,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     draw_text_wrapped(ren, col2_x, col2_y + 24.0f, card_x + card_w - 32.0f - col2_x,
                       "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
                       1.0f, COLOR_TEXT_WHITE, 2);
-    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
+    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME", 0.9f, COLOR_TEXT_DIM);
     {
         bool minus_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col2_x, col2_y + 86.0f, 44.0f, 34.0f, "-", false, in, minus_focused)) {
@@ -2192,7 +2214,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
      * toggle row, so its old slot now belongs to reduce-motion. */
     draw_text(ren, col2_x, pad_y + 92.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
     draw_text_ellipsized(ren, col2_x, pad_y + 116.0f,
-                         app->settings.save_directory[0] ? app->settings.save_directory : "(not configured)",
+                         saves_root_display(),
                          1.1f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_WHITE);
 
     /* Close */

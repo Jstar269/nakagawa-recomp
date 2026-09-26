@@ -1154,11 +1154,14 @@ static void scheduler_latch_due_events(void) {
          * applied, and no increment at all when no period became pending. */
         if (s_interrupts_enabled) {
             sr_display_advance_vcount((uint32_t)count);
-            if (due + count < due) due = UINT32_MAX;   /* saturate, never wrap */
+            /* count is 64-bit and the tallies are 32-bit: compare against the
+             * headroom, because a 64-bit sum can never wrap and a truncating
+             * add would. Saturate, never wrap. */
+            if (count > (uint64_t)(UINT32_MAX - due)) due = UINT32_MAX;
             else due += (uint32_t)count;
         } else {
             s_vblank_masked_pending = 1;   /* coalesced; credited once at resume */
-            if (due + count < due) masked = UINT32_MAX;   /* saturate, never wrap */
+            if (count > (uint64_t)(UINT32_MAX - masked)) masked = UINT32_MAX;
             else masked += (uint32_t)count;
         }
         scheduler_advance_vblank_deadlines(count);

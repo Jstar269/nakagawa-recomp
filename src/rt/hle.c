@@ -10552,6 +10552,8 @@ static const struct { const char *name; uint32_t bit; } s_route_btn[] = {
     { "CIRCLE",   NK_PSP_BTN_CIRCLE_BIT   },
     { "CROSS",    NK_PSP_BTN_CROSS_BIT    },
     { "SQUARE",   NK_PSP_BTN_SQUARE_BIT   },
+    { "HOME",     NK_PSP_BTN_HOME_BIT     },
+    { "HOLD",     NK_PSP_BTN_HOLD_BIT     },
 };
 #define ROUTE_NBTN ((int)(sizeof s_route_btn / sizeof s_route_btn[0]))
 
@@ -10568,13 +10570,13 @@ static int route_casecmp(const char *a, const char *b) {
  * or without the 0x prefix the legacy table accepts) or one or more button names joined by
  * '+'. A token is read as hex only when every one of its characters is a hex digit, because
  * several names begin with one (CROSS, CIRCLE) and a prefix test would swallow them whole.
- * The hex form is bounded: at most 8 digits and at least one, because `strtoul` neither
- * reports a value too wide for the mask nor a bare "0x", and both would arrive as a
+ * The hex form is bounded: at most 8 digits and at least one, because `strtoul` reports
+ * neither a value too wide for the mask nor a bare "0x", and both would arrive as a
  * different mask than the route asked for.
- * Returns 0 on success, -1 for anything else, so an unreadable token fails the route at
- * load instead of pressing nothing for the rest of the run - "the press never arrived" is
- * indistinguishable from a hang from outside (docs/DEBUGGING.md, "A press that arrives and
- * is ignored"). */
+ * Returns 0 on success, -1 for anything else, so an unreadable token -- an unknown button
+ * included -- fails the route at load instead of pressing nothing for the rest of the run.
+ * "The press never arrived" is indistinguishable from a hang from outside
+ * (docs/DEBUGGING.md, "A press that arrives and is ignored"). */
 static int route_parse_mask(const char *tok, uint32_t *out) {
     if (!tok || !tok[0]) return -1;
     const char *digits = (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) ? tok + 2 : tok;
@@ -10640,7 +10642,7 @@ static void route_describe_mask(uint32_t mask, char *out, size_t n) {
 
 /* The names a mask argument may use, for the refusal that has to teach the fix. */
 static const char *route_button_names(void) {
-    return "SELECT START UP RIGHT DOWN LEFT L R TRIANGLE CIRCLE CROSS SQUARE, "
+    return "SELECT START UP RIGHT DOWN LEFT L R TRIANGLE CIRCLE CROSS SQUARE HOME HOLD, "
            "joinable with '+'";
 }
 
@@ -10898,9 +10900,8 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             }
             snprintf(st.name, ROUTE_NAME_MAX, "%s", name);
             if (route_parse_mask(m, &st.a) != 0) {
-                fprintf(stderr, "ROUTE_PARSE: %s:%d: %s <NAME> <hexmask> <width> <period> "
-                                "<timeout>: '%s' is not a hex mask or a button name (%s)\n",
-                        path, lineno, tok, m, route_button_names());
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: %s: '%s' is not a hex mask or a button name "
+                                "(%s)\n", path, lineno, tok, m, route_button_names());
                 return -1;
             }
             st.b = (uint32_t)strtoul(w, NULL, 10);
@@ -10915,8 +10916,8 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
             if (!m || !w) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS <hexmask> <width>\n", path, lineno); return -1; }
             if (route_parse_mask(m, &st.a) != 0) {
-                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS <hexmask> <width>: '%s' is not a hex mask "
-                                "or a button name (%s)\n", path, lineno, m, route_button_names());
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS: '%s' is not a hex mask or a button name (%s)\n",
+                        path, lineno, m, route_button_names());
                 return -1;
             }
             st.b = (uint32_t)strtoul(w, NULL, 10);
