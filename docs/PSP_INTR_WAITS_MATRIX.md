@@ -17,7 +17,7 @@ the captured then-current-`main` classification of every cell.
 > may now resolve to an unrelated live public object. Read every bare number below as a
 > historical identifier unless it is written as an explicit link.
 
-This document is **historical evidence**, not a current plan or status dashboard.
+This document is **historical evidence**, not a current plan or status summary.
 It records what the cited hardware oracle and captured Nakagawa revision did,
 and which cells could not then be exercised. See historical tracker item #88 for the
 semantics work, and the PR ordering at the end of this file. PR-A, PR-B and PR-C1 are implemented; PR-C2

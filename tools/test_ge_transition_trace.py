@@ -84,6 +84,7 @@ extern uint32_t ge_run_list(uint32_t addr, int resume);
 
 #define LIST1 0x08010000u
 #define LIST2 0x08011000u
+#define LIST3 0x08012000u
 #define VERTS 0x08020000u
 
 static uint32_t s_pc;
@@ -101,6 +102,13 @@ static uint32_t emit_prim(int type, int count) {
 static void mat_upload(uint32_t num_cmd, uint32_t data_cmd, const float *m, int n) {
     W(num_cmd, 0);
     for (int i = 0; i < n; i++) W(data_cmd, f24(m[i]));
+}
+/* Raw float24 upload: the GE decodes a 24-bit pattern straight into a float32
+ * (decode_float24), so exponent 0xFF is reachable as a real guest upload and is
+ * how the maintainer's #69 trace got NaN bone matrices onto the GE. */
+static void mat_upload_raw(uint32_t num_cmd, uint32_t data_cmd, const uint32_t *m, int n) {
+    W(num_cmd, 0);
+    for (int i = 0; i < n; i++) W(data_cmd, m[i] & 0xFFFFFFu);
 }
 static void emit_vtx(uint32_t addr, float w, float u, float v, uint32_t col,
                      float nx, float ny, float nz, float x, float y, float z) {
@@ -183,6 +191,27 @@ int main(int argc, char **argv) {
     ge_set_frame(42);
     if (ge_run_list(LIST2, 0) != 0) { printf("list2 did not END\n"); return 1; }
 
+    /* Frame 43 (only with argv[2]=="nonfinite"): bone0 re-uploaded with raw float24
+     * words carrying a +Inf and a NaN, the exact shape the maintainer's #69 trace
+     * recorded. Every matrix lane must still reach the trace as valid JSON. */
+    uint32_t prim4 = 0;
+    if (argc > 2 && strcmp(argv[2], "nonfinite") == 0) {
+        emit_common_head(LIST3);
+        static const uint32_t bone_nf[12] = {
+            0x000000u, 0x3F8000u, 0x7F8000u, 0x7FC000u,
+            0xBF8000u, 0xFF8000u, 0x3E8000u, 0x400000u,
+            0x000000u, 0x3DCCCCDu, 0x3F0000u, 0x412000u,
+        };
+        mat_upload_raw(0x2A, 0x2B, bone_nf, 12);
+        W(0x12, VT);
+        W(0x01, VERTS - LIST3);
+        prim4 = emit_prim(3, 3);
+        W(0x0C, 0);
+        ge_set_frame(43);
+        if (ge_run_list(LIST3, 0) != 0) { printf("list3 did not END\n"); return 1; }
+        printf("LIST3=0x%08x PRIM4=0x%08x\n", LIST3, prim4);
+    }
+
     printf("LIST1=0x%08x PRIM1=0x%08x PRIM2=0x%08x VERTS=0x%08x\n",
            LIST1, prim1, prim2, VERTS);
     printf("LIST2=0x%08x PRIM3=0x%08x\n", LIST2, prim3);
@@ -226,12 +255,12 @@ class TestTransitionTraceC(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def run_harness(self, arg: str) -> subprocess.CompletedProcess:
+    def run_harness(self, arg: str, *extra: str) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env.pop("SR_GE_TRANSITION_TRACE", None)
         env.pop("SR_GESTAT", None)
         env.pop("SR_RTRACE", None)
-        return subprocess.run([os.fspath(self.exe), arg], capture_output=True, text=True,
+        return subprocess.run([os.fspath(self.exe), arg, *extra], capture_output=True, text=True,
                               cwd=self.tmp, env=env)
 
     def test_weighted_draw_records(self):
@@ -322,6 +351,42 @@ class TestTransitionTraceC(unittest.TestCase):
         self.assertNotIn("GE_TRANSITION_TRACE: armed", result.stderr)
         self.assertFalse(sentinel.exists())
 
+    def test_non_finite_bone_values_are_emitted_as_json_null(self):
+        # A real #69 trace put `-nan(ind)` in the JSONL (printf's NaN spelling) and
+        # tools/ge_transition_diff.py aborted on it. The emitter must produce valid
+        # JSON for every float the guest can upload, including Inf and NaN.
+        trace = self.tmp / "nonfinite.jsonl"
+        result = self.run_harness(os.fspath(trace), "nonfinite")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("DONE", result.stdout)
+        summary = dict(re.findall(r"(LIST1|PRIM1|PRIM2|VERTS|LIST2|PRIM3|LIST3|PRIM4|OOR)=(0x[0-9a-fA-F]+|\d+)",
+                                  result.stdout))
+        self.assertEqual(summary.get("OOR"), "0", "fixture caused out-of-range guest access")
+        raw = trace.read_text(encoding="utf-8")
+        self.assertNotIn("nan", raw.lower())
+        self.assertNotIn("inf", raw.lower())
+        records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        self.assertEqual(len(records), 4, "two draws in frame 41, one in 42, one in 43")
+        nf = records[3]
+        self.assertEqual(nf["frame"], 43)
+        self.assertEqual(nf["list"], f"0x{int(summary['LIST3'], 16):08x}")
+        self.assertEqual(nf["cmd"], f"0x{int(summary['PRIM4'], 16):08x}")
+        # Frame 43 bone0 word 2 is +Inf (0x7F8000) and word 3 is NaN (0x7FC000);
+        # every other uploaded lane stays a finite JSON number.
+        for side in ("bone_written", "bone_effective"):
+            self.assertEqual(nf[side][2], None, f"{side}[2] must be JSON null for +Inf")
+            self.assertEqual(nf[side][3], None, f"{side}[3] must be JSON null for NaN")
+            self.assertIsNone(nf[side][5], f"{side}[5] must be JSON null for -Inf")
+            self.assertEqual(nf[side][0], 0.0)
+            self.assertEqual(nf[side][1], 1.0)
+            self.assertEqual(nf[side][4], -1.0)
+            self.assertEqual(len(nf[side]), 96)
+        # Unrelated matrices keep their finite numbers (no null leakage).
+        for side in ("world_effective", "view_effective", "proj_effective"):
+            self.assertNotIn(None, nf[side], f"{side} must stay finite")
+        # ...and the finite rendering of an uncorrupted frame is byte-unchanged.
+        self.assertEqual(records[2]["bone_effective"][9], 7.5)
+
 
 def make_record(frame: int, draw: int, draw_id: str, **overrides) -> dict:
     record = {
@@ -402,6 +467,77 @@ class TestTransitionDiff(unittest.TestCase):
         missing = self.run_diff(trace, "--frames", "30:99")
         self.assertEqual(missing.returncode, 2)
         self.assertIn("FIRST_BAD frame=99 not in trace", missing.stderr)
+
+    def write_non_finite_trace(self) -> Path:
+        tmp = Path(tempfile.mkdtemp(prefix="getransitionnf_"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        trace = tmp / "nonfinite.jsonl"
+        finite36 = [float(i) for i in range(36)]
+        good = make_record(30, 0, "deadbeef",
+                           bone_written=finite36, bone_effective=list(finite36),
+                           bone_cursor=36)
+        # The exact shape the maintainer's trace had: bone_written and bone_effective
+        # all null over 0..35, world/view/proj still finite.
+        nan36 = [None] * 36
+        bad = make_record(31, 0, "deadbeef",
+                          bone_written=nan36, bone_effective=list(nan36),
+                          bone_cursor=36)
+        mixed = [1.0, 2.0, None, 4.0, 5.0, 6.0, 7.0, 8.0] * 4 + [0.0] * 4
+        finite_mixed = [0.0 if v is None else v for v in mixed]
+        good_c = make_record(30, 1, "cafef00d", bone_written=list(finite_mixed),
+                             bone_effective=list(finite_mixed), bone_cursor=36)
+        # A second record with a mixed lane set: index 2 null, 3 and 7 finite.
+        mixed = [1.0, 2.0, None, 4.0, 5.0, 6.0, 7.0, 8.0] * 4 + [0.0] * 4
+        bad_mixed = make_record(31, 1, "cafef00d",
+                                bone_written=list(mixed), bone_effective=list(mixed),
+                                bone_cursor=36)
+        with trace.open("w", encoding="utf-8") as fp:
+            for record in (good, good_c, bad, bad_mixed):
+                fp.write(json.dumps(record) + "\n")
+        return trace
+
+    def test_non_finite_bone_record_is_parsed_and_flagged(self):
+        result = self.run_diff(self.write_non_finite_trace(), "--frames", "30:31")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout
+        self.assertIn("LAST_GOOD frame=30", out)
+        self.assertIn("FIRST_BAD frame=31", out)
+        # The all-NaN draw: a null differs from every finite value, is flagged
+        # explicitly, and never reaches max|d|.
+        self.assertIn("draw_id=deadbeef", out)
+        self.assertIn("NON_FINITE in bone_written[0..35]", out)
+        self.assertIn("NON_FINITE in bone_effective[0..35]", out)
+        self.assertNotIn("max|d|", out.split("draw_id=deadbeef")[1].split("draw_id=")[0])
+        self.assertIn("FIRST_RECOVERED none after 31", out)
+        # A single bad lane inside an otherwise finite matrix is located exactly.
+        self.assertIn("draw_id=cafef00d", out)
+        self.assertIn("NON_FINITE in bone_written[2,10,18,26]", out)
+        self.assertIn("bone_written: 4/36 changed", out)
+        self.assertIn("[2]: 0.0 -> None", out)
+
+    def test_null_equals_null_so_recovery_still_matches(self):
+        # A null is a recorded value, not a missing field: two records that both
+        # carry the same null compare equal, so the diff reports no change and
+        # recovery detection still resolves.
+        tmp = Path(tempfile.mkdtemp(prefix="getransitionnfeq_"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        trace = tmp / "equal.jsonl"
+        nan36 = [None] * 36
+        with trace.open("w", encoding="utf-8") as fp:
+            for frame in (40, 41, 42):
+                record = make_record(frame, 0, "deadbeef",
+                                     bone_written=list(nan36), bone_effective=list(nan36),
+                                     bone_cursor=36)
+                fp.write(json.dumps(record) + "\n")
+        result = self.run_diff(trace, "--frames", "40:41")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("draw_id=deadbeef", result.stdout)
+        self.assertIn("FIRST_RECOVERED frame=42", result.stdout)
+        self.assertIn("good->bad changed: <none>", result.stdout)
+        # A carried-over NaN is still reported, separately from the change list: a
+        # stable-but-NaN draw is exactly the state the maintainer must not miss.
+        self.assertIn("good->bad NON_FINITE:", result.stdout)
+        self.assertIn("NON_FINITE in bone_written[0..35]", result.stdout)
 
 
 if __name__ == "__main__":

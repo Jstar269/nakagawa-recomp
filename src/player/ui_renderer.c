@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "ui_renderer.h"
+#include "ui_clip.h"
 #include "iso_reader.h"
 #include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
@@ -1008,8 +1009,21 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
     return y;
 }
 
+static SDL_FRect s_last_status_badge;
+static bool s_last_status_badge_valid;
+
+bool ui_last_status_badge_rect(SDL_FRect *out_rect) {
+    if (!s_last_status_badge_valid || !out_rect) return false;
+    *out_rect = s_last_status_badge;
+    return true;
+}
+
+static float badge_width(const char *label) {
+    return ui_font_text_width(label, 1.0f) + 16.0f;
+}
+
 static void draw_badge(SDL_Renderer *ren, float x, float y, const char *label, SDL_Color badge_color) {
-    float len = ui_font_text_width(label, 1.0f) + 16.0f;
+    float len = badge_width(label);
     SDL_Color bg = { (Uint8)(badge_color.r / 4), (Uint8)(badge_color.g / 4), (Uint8)(badge_color.b / 4), 255 };
     draw_rounded_fill(ren, x, y, len, 24.0f, 12.0f, bg);
     draw_rounded_outline(ren, x, y, len, 24.0f, 12.0f, badge_color);
@@ -1248,27 +1262,34 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     if (hero_tex_entry) {
         ui_load_pic1_if_needed(ren, hero_tex_entry, game->iso_path);
         if (hero_tex_entry->pic1_tex) {
-            SDL_Rect prev_clip;
-            bool had_clip = SDL_GetRenderClipRect(ren, &prev_clip);
+            UiClipState saved_clip = ui_clip_save(ren);
             SDL_Rect hero_clip = { (int)hero_x + 1, (int)hero_y + 1, (int)hero_w - 2, (int)hero_h - 2 };
             SDL_SetRenderClipRect(ren, &hero_clip);
             SDL_SetTextureAlphaMod(hero_tex_entry->pic1_tex, 40);
             SDL_FRect dst = { hero_x, hero_y, hero_w, hero_h };
             SDL_RenderTexture(ren, hero_tex_entry->pic1_tex, NULL, &dst);
             draw_filled_rect(ren, hero_x, hero_y, hero_w, hero_h, (SDL_Color){ 12, 15, 18, 120 });
-            SDL_SetRenderClipRect(ren, had_clip ? &prev_clip : NULL);
+            ui_clip_restore(ren, &saved_clip);
         }
     }
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
 
-    /* Status Pills: a successful staging transaction is distinct from runtime
-     * preparation. The card must expose that useful intermediate state without
-     * claiming that a recompiled child is already available. */
+    /* Staged assets still need a runtime unless the same readiness predicate
+       used by PLAY NOW can resolve one. Keep that boundary visible while the
+       primary action below remains BUILD PACKAGE when the package is missing. */
+    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+        app, game, NULL, NULL, 0);
+    bool package_ready = player_app_game_has_runtime(app, game);
+    bool runtime_required = game->assets_staged && !package_ready &&
+                            package_status == NK_RUNTIME_PACKAGE_MISSING;
     const char *card_status = game->is_experimental ? "EXPERIMENTAL"
-        : ((game->assets_staged && !game->is_prepared)
-            ? "ASSETS STAGED" : status_label(game->status));
+        : (runtime_required ? "RUNTIME REQUIRED"
+            : ((game->assets_staged && !game->is_prepared)
+                ? "ASSETS STAGED" : status_label(game->status)));
+    s_last_status_badge = (SDL_FRect){ hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f };
+    s_last_status_badge_valid = true;
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
-               game->is_experimental ? COLOR_AMBER : COLOR_EMERALD);
+               (game->is_experimental || runtime_required) ? COLOR_AMBER : COLOR_EMERALD);
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
@@ -1416,9 +1437,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     float btn_y = hero_y + hero_h - 62.0f;
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-        app, game, NULL, NULL, 0);
-    bool package_ready = player_app_game_has_runtime(app, game);
     if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);
@@ -1857,6 +1875,22 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
  * launch preferences that PLAY NOW consumes, toggles flip, and volume
  * steps clamp 0..100. Focus order is stable so Tab/Enter and gamepad
  * SOUTH all reach the same actions as a mouse click. */
+/* Real save root the launcher resolves at launch: nk_launch_prepare_session
+ * points SR_MEMSTICK at <root>/<disc id> (platform per-user saves; writable by
+ * construction). Computed once because nk_platform_get_path creates the
+ * directory and the root cannot change while the player runs. Replaces the old
+ * save_directory field, which was never read by anything. */
+static char g_saves_root[MAX_PATH_LEN];
+static bool g_saves_root_ready;
+
+static const char *saves_root_display(void) {
+    if (!g_saves_root_ready) {
+        g_saves_root_ready = nk_platform_get_path(NK_PATH_SAVES, g_saves_root,
+                                                  sizeof(g_saves_root));
+    }
+    return g_saves_root_ready ? g_saves_root : "(unavailable)";
+}
+
 static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
@@ -1885,7 +1919,9 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (app->settings_notice[0]) {
         draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
     } else {
-        draw_text(ren, card_x + 32.0f, card_y + 96.0f, "Configuration saved to settings.json.", 1.0f, COLOR_TEXT_DIM);
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f,
+                             "Configuration saved to settings.json. Game settings apply at the next launch.",
+                             1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
     }
 
     float col1_x = card_x + 32.0f;
@@ -1900,14 +1936,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         float inner_r = card_x + card_w - 32.0f;
         float y = row_y;
         /* Resolution: 2x2 grid when four presets do not fit one row. */
-        draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
         {
             struct { const char *label; int scale; } kRes[] = {
-                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 }, { "8x (4K UHD)", 8 },
+                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
             };
             float bx = col1_x;
             float by = y + 24.0f;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 3; i++) {
                 bool selected = (app->settings.resolution_scale == kRes[i].scale);
                 bool focused = (app->focus_index == focus);
                 if (bx + 140.0f > inner_r + 1.0f && bx > col1_x) {
@@ -1951,7 +1987,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             char vsync_label[32];
             snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
             char fs_label[64];
-            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
+            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
             float by = y + 24.0f;
             float bx = col1_x;
             bool focused = (app->focus_index == focus);
@@ -1975,7 +2011,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                 by += 42.0f;
             }
             char rm_label[40];
-            snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s", app->settings.reduce_motion ? "ON" : "OFF");
+            snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
             focused = (app->focus_index == focus);
             if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
                 player_app_toggle_reduce_motion(app);
@@ -1988,7 +2024,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         y = draw_text_wrapped(ren, col1_x, y + 22.0f, inner_r - col1_x,
                               "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
                               0.95f, COLOR_TEXT_WHITE, 2);
-        draw_text(ren, col1_x, y + 6.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y + 6.0f, "MASTER VOLUME", 0.9f, COLOR_TEXT_DIM);
         {
             float by = y + 26.0f;
             bool minus_focused = (app->focus_index == focus);
@@ -2023,7 +2059,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                 draw_text(ren, col1_x, y + 24.0f, "No controller connected (keyboard ready).", 1.0f, COLOR_TEXT_WHITE);
             }
             draw_text_ellipsized(ren, col1_x, y + 44.0f,
-                                 app->settings.save_directory[0] ? app->settings.save_directory : "(not configured)",
+                                 saves_root_display(),
                                  1.0f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
@@ -2059,13 +2095,13 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     float col2_y = row_y;
 
     /* Resolution scale */
-    draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
     {
         struct { const char *label; int scale; } kRes[] = {
-            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 }, { "8x (4K UHD)", 8 },
+            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
         };
         float bx = col1_x;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 3; i++) {
             bool selected = (app->settings.resolution_scale == kRes[i].scale);
             bool focused = (app->focus_index == focus);
             if (draw_button_focused(ren, bx, row_y + 24.0f, 105.0f, 36.0f, kRes[i].label, selected, in, focused)) {
@@ -2107,14 +2143,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
         char fs_label[64];
-        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
+        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
         }
         focus++;
         char rm_label[40];
-        snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s", app->settings.reduce_motion ? "ON" : "OFF");
+        snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x, tog_y + 68.0f, 210.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
             player_app_toggle_reduce_motion(app);
@@ -2127,7 +2163,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     draw_text_wrapped(ren, col2_x, col2_y + 24.0f, card_x + card_w - 32.0f - col2_x,
                       "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
                       1.0f, COLOR_TEXT_WHITE, 2);
-    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
+    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME", 0.9f, COLOR_TEXT_DIM);
     {
         bool minus_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col2_x, col2_y + 86.0f, 44.0f, 34.0f, "-", false, in, minus_focused)) {
@@ -2174,7 +2210,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
      * toggle row, so its old slot now belongs to reduce-motion. */
     draw_text(ren, col2_x, pad_y + 92.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
     draw_text_ellipsized(ren, col2_x, pad_y + 116.0f,
-                         app->settings.save_directory[0] ? app->settings.save_directory : "(not configured)",
+                         saves_root_display(),
                          1.1f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_WHITE);
 
     /* Close */
@@ -2832,6 +2868,10 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float btn_y = card_y + card_h - 58.0f;
     if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
         player_app_set_view(app, app->last_error.return_view);
+        if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+            strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
+            app->request_file_picker = true;
+        }
     }
 }
 
@@ -3281,6 +3321,7 @@ int ui_focus_count(const PlayerApp *app) {
 /* --- Main Frame Render Function --- */
 void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *input) {
     if (!renderer || !app) return;
+    s_last_status_badge_valid = false;
 
     /* Clamp focus before drawing so a resize or library change can never
      * leave the ring on a control that no longer exists. */

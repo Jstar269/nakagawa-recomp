@@ -109,7 +109,6 @@ The canonical names are:
 
 ### Phase 6: Documentation & Test Sweep (Complete)
 
-- Maintained docs, tests, CI routing, and dashboard code use the `nk_*` entry points.
 - A regression gate rejects removed HST compatibility paths and generic-tool dependencies.
 
 ---

@@ -269,10 +269,12 @@ expand one so a new file cannot inherit an old blanket attestation; letting a
 blanket authorize *replacement content* for an already-listed file would
 reintroduce the same hole through the back door.
 
-## What the gate found on `main`
+## Historical gate measurements against a prior `main` snapshot
 
-Measured against `origin/main` at `421016b1faf3f6473bbd7c20d67be315aa4302d5`
-and the private authority at `private/main`:
+The following counts were measured against `origin/main` at
+`421016b1faf3f6473bbd7c20d67be315aa4302d5`. They describe that older tree,
+not the current public tree; the retired UI rows and counts are retained as
+historical audit evidence:
 
 * **2 fatal findings.** `src/rt/guest_interp.c` and `src/rt/guest_interp.h`
   name `record_id: daybreak4-guest-interpreter`. That record does not exist in
