@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "42ba3ea887c240dcb2aecd8501c5cb1bc7692e48c9028074944a1bf9f6290a70"
+      "sha256": "c66538c58fc0fa9a26c094cadd8eda4afc2753e896705777a4e3e0f7aeb68abc"
     },
     {
       "path": "NOTICE.md",
@@ -1927,7 +1927,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eb09b02b11f69a6cba29efc54f4a31bd2b19faeece3f165b613ad94c0daf6807"
+      "sha256": "51b1c32c98414519aa4102c8124b3aa3dda93626e8cf4166b2f679d798f62ee6"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
@@ -4030,7 +4030,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "be19d01755eff717aefe11cdfe359fe43b56de563981b71c17ff20e00c284d3f"
+      "sha256": "56c927922144d02b1fb006d746288971721b6ba78585cda4f1bf27bb770282a2"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -4080,7 +4080,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "eb186532e645be1cbc84d8a8c50dd34d6beaafabf855a8d5f12460e603bfd2d7"
+      "sha256": "8cf6a68e3cd2de1dbee2dde201416119c826fa6e22f6699141ef4a295855a39e"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4229,7 +4229,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8a47e7ee600386f7a234b9685df33b9f35ba7769f67bcb755b90648a9da8de7d"
+      "sha256": "53b153544c3edfdae9f376934d83ca6fa08809f2655325226def15449a3c43ca"
     },
     {
       "path": "src/rt/perf.c",
@@ -6568,7 +6568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce8ea530cc1de53500f1f2aa368ef490614c6550f0a7a71bd9fe18feb8c08a3b"
+      "sha256": "933f8b8dce2e62945086dffdcdcebb90a26a2f495b485738ca4e3b00d0fa5f09"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
