@@ -513,6 +513,8 @@ void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
  * reports before its delay slot. */
 int  sr_trace_open(const char *path, const char *target, uint32_t start_pc);
 void sr_trace_close(void);
+/* The SR_TRACE_PC address window over this trace is declared in flight_recorder.h and
+ * implemented in src/rt/flight_recorder.c, with the runtime's other opt-in diagnostics. */
 /* Throughput: the generated chunks emit an sr_begin/sr_end pair around *every* guest
  * instruction (~1.5M call sites total). Since those huge files must compile at -O0, the
  * release build removes the hooks in the preprocessor. TRACE=1 retains a predicted-false

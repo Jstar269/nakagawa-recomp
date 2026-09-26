@@ -36,6 +36,7 @@
 #include "recomp.h"
 #include "ge_shared.h"
 #include "ge_capture.h"
+#include "flight_recorder.h"
 #include "strbuf.h"
 
 #include <stdint.h>
@@ -936,6 +937,11 @@ static int thru_ztest(void) {
 void ge_set_frame(uint32_t frame) {
     ge_capture_configure();
     ge_transition_trace_configure();
+    /* Arm the opt-in address-windowed instruction trace (SR_TRACE_PC) and mark every
+     * delivered vblank in it, so a windowed trace carries the frame each record belongs
+     * to. A cached env probe once per vblank; both calls are no-ops when it is unset. */
+    sr_trace_window_configure();
+    sr_trace_note_frame(frame);
     if (ge_capture_active() && frame != s_ge_frame) {
         int boundary_ok = !s_gpu || !s_gpu->capture_boundary || s_gpu->capture_boundary();
         if (!boundary_ok) {
