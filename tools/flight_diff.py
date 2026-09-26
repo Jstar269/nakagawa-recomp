@@ -130,6 +130,15 @@ def _forbid_embedded_text(value: Any, path: str = "$") -> None:
 def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
     if schema is None:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    # The schema also forbids an identity-less v3 build block; this check runs first so
+    # the operator gets the specific reason rather than a generic schema mismatch.
+    build = bundle.get("build") if isinstance(bundle, dict) else None
+    version = bundle.get("schema_version") if isinstance(bundle, dict) else None
+    if (isinstance(version, int) and not isinstance(version, bool) and version >= 3
+            and isinstance(build, dict)
+            and build.get("source_date_epoch") is None and build.get("build_id") is None):
+        _fail("$.build", "bundle must record a reproducible build identity "
+                         "(source_date_epoch or build_id); a clock stamp is never recorded")
     _validate_schema(bundle, schema)
     _forbid_embedded_text(bundle)
     version = bundle["schema_version"]

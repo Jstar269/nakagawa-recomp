@@ -15842,7 +15842,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 2") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 3") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
