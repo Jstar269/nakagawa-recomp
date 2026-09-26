@@ -473,6 +473,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
         package_status = player_app_validate_runtime_package(
             app, selected, NULL, NULL, 0);
     }
+    SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
+    bool badge_valid = ui_last_status_badge_rect(&badge);
     printf("[PLAYER_UI_TEST] frame=%d view=%s selected=%d focus=%d focus_count=%d wizard_step=%s "
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
@@ -480,7 +482,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
            "selected_runtime=%d selected_package_status=%d games=%d build_stage=%d "
-           "running=%d pixels=%016llx\n",
+           "badge=%d,%d,%d,%d running=%d pixels=%016llx\n",
            frame_number, player_ui_test_view_name(app->active_view),
            app->selected_game_index, app->focus_index, ui_focus_count(app),
            player_ui_test_wizard_step_name(app->wizard.step),
@@ -505,6 +507,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            selected && player_app_game_has_runtime(app, selected) ? 1 : 0,
            (int)package_status, app->game_count,
            (int)app->build_session.current_stage,
+           badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
+           badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
            running ? 1 : 0,
            (unsigned long long)player_ui_test_frame_hash(renderer));
 }

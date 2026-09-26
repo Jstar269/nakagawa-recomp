@@ -59,17 +59,26 @@ def pixel_rgb(
     return red, green, blue
 
 
-def has_amber_badge(bmp: tuple[int, int, int, bytes]) -> bool:
+def badge_rect(frame: dict[str, str]) -> tuple[int, int, int, int]:
+    """The status badge rectangle the renderer reported for this frame."""
+    x, y, w, h = (int(value) for value in frame["badge"].split(","))
+    if w <= 0 or h <= 0:
+        raise AssertionError(f"frame {frame.get('frame')} drew no status badge")
+    return x, y, w, h
+
+
+def has_amber_badge(bmp: tuple[int, int, int, bytes], rect: tuple[int, int, int, int]) -> bool:
+    """True when the reported status badge is drawn in the amber accent."""
     width, height, _, _ = bmp
-    # The selected card's status pill is at x=64, y=124 in a 1280x720 frame.
-    right = min(width, 244)
-    bottom = min(height, 164)
+    x0, y0, w, h = rect
+    right = min(width, x0 + w)
+    bottom = min(height, y0 + h)
     return any(
         (lambda color: color[0] > 180 and 90 < color[1] < 205 and color[2] < 90)(
             pixel_rgb(bmp, x, y)
         )
-        for y in range(min(112, bottom), bottom)
-        for x in range(min(56, right), right)
+        for y in range(max(0, y0), bottom)
+        for x in range(max(0, x0), right)
     )
 
 
@@ -254,7 +263,9 @@ class NativePlayerUiTests(unittest.TestCase):
         frame = run["frames"][0]  # type: ignore[index]
         self.assertEqual(frame["selected_staged"], "1")
         self.assertEqual(frame["selected_runtime"], "0")
-        self.assertTrue(has_amber_badge(run["bmp"]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(has_amber_badge(run["bmp"], badge_rect(frames[-1])))
 
     def test_staging_and_package_build_cancellation_render_progress(self) -> None:
         staging = self.run_player("wizard-staging", ("KEY_ESCAPE",))

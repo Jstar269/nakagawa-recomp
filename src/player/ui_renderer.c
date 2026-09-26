@@ -1009,8 +1009,21 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
     return y;
 }
 
+static SDL_FRect s_last_status_badge;
+static bool s_last_status_badge_valid;
+
+bool ui_last_status_badge_rect(SDL_FRect *out_rect) {
+    if (!s_last_status_badge_valid || !out_rect) return false;
+    *out_rect = s_last_status_badge;
+    return true;
+}
+
+static float badge_width(const char *label) {
+    return ui_font_text_width(label, 1.0f) + 16.0f;
+}
+
 static void draw_badge(SDL_Renderer *ren, float x, float y, const char *label, SDL_Color badge_color) {
-    float len = ui_font_text_width(label, 1.0f) + 16.0f;
+    float len = badge_width(label);
     SDL_Color bg = { (Uint8)(badge_color.r / 4), (Uint8)(badge_color.g / 4), (Uint8)(badge_color.b / 4), 255 };
     draw_rounded_fill(ren, x, y, len, 24.0f, 12.0f, bg);
     draw_rounded_outline(ren, x, y, len, 24.0f, 12.0f, badge_color);
@@ -1273,6 +1286,8 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         : (runtime_required ? "RUNTIME REQUIRED"
             : ((game->assets_staged && !game->is_prepared)
                 ? "ASSETS STAGED" : status_label(game->status)));
+    s_last_status_badge = (SDL_FRect){ hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f };
+    s_last_status_badge_valid = true;
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
                (game->is_experimental || runtime_required) ? COLOR_AMBER : COLOR_EMERALD);
     if (hero_w >= 560.0f) {
@@ -3288,6 +3303,7 @@ int ui_focus_count(const PlayerApp *app) {
 /* --- Main Frame Render Function --- */
 void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *input) {
     if (!renderer || !app) return;
+    s_last_status_badge_valid = false;
 
     /* Clamp focus before drawing so a resize or library change can never
      * leave the ring on a control that no longer exists. */
