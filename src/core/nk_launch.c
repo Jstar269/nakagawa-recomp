@@ -1111,6 +1111,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_boot_event[NK_MAX_PATH + 32];
     char env_fullscreen[32];
     char env_volume[32];
+    char env_input_profile[NK_MAX_PATH + 32];
     char sep = nk_platform_path_separator();
 
     snprintf(env_fps, sizeof(env_fps), "SR_FPS_CAP=%d", session->config.fps_cap);
@@ -1125,7 +1126,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_memstick, sizeof(env_memstick), "SR_MEMSTICK=%s", session->memstick_root);
     snprintf(env_tables, sizeof(env_tables), "PSP_VFPU_TABLES=assets%cvfpu", sep);
 
-    const char *envp[24];
+    const char *envp[32];
     int env_count = 0;
     /* An empty value masks an inherited ISO for staged sessions with no ISO. */
     snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
@@ -1182,6 +1183,14 @@ NkResult nk_launch_start(NkLaunchSession *session) {
                 envp[env_count++] = env_modules;
             }
         }
+    }
+
+    /* The player resolves the effective host input mapping for the disc being
+       launched (#520); a per-title entry becomes its own profile file handed to
+       the child here, so two discs in one session can use different mappings. */
+    if (nk_launch_format_input_profile_env(session, env_input_profile,
+                                          sizeof(env_input_profile))) {
+        envp[env_count++] = env_input_profile;
     }
 
     if (session->config.benchmark_mode) {
@@ -1250,6 +1259,23 @@ NkResult nk_launch_start(NkLaunchSession *session) {
 
     session->is_running = true;
     return NK_OK;
+}
+
+bool nk_launch_format_input_profile_env(
+    const NkLaunchSession *session,
+    char *buf,
+    size_t buf_sz
+) {
+    if (!buf || buf_sz == 0) return false;
+    buf[0] = '\0';
+    if (!session || !session->config.input_profile_path[0]) return false;
+    int written = snprintf(buf, buf_sz, "NK_INPUT_PROFILE=%s",
+                           session->config.input_profile_path);
+    if (written <= 0 || (size_t)written >= buf_sz) {
+        buf[0] = '\0';
+        return false;
+    }
+    return true;
 }
 
 bool nk_launch_is_running(NkLaunchSession *session) {
