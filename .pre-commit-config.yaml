@@ -42,7 +42,7 @@ repos:
         args: [--maxkb=25600]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: cb8c523fd4835aba42af70f4cad5568db4df0b6c # v0.16.0
+    rev: 2eeb5678de71a00c0902cbda7105d328432f72cb # v0.16.8
     hooks:
       - id: ruff-check
         files: ^(tools|fixtures)/.*\.py$
