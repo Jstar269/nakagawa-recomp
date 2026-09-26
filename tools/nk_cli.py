@@ -29,6 +29,7 @@ from nk_core import (
     inspect_iso,
 )
 from nk_core import package_cache
+from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key_file_path
 from nk_core.iso_inspect import (
     MAX_EXECUTABLE_BYTES,
     IsoInspectionError,
@@ -400,7 +401,14 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
 
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            module_dir_arg: Path | None,
-                           default_module_dir: Path | None = None) -> Path | None:
+                           default_module_dir: Path | None = None,
+                           user_data_root: Path | None = None) -> Path | None:
+    key_hint = (
+        f" A local key file at {key_file_path(user_data_root)} enables the built-in "
+        "decryption boundary (#295)."
+        if user_data_root is not None
+        else ""
+    )
     modules = [module for module in manifest.get("modules", [])
                if module.get("role") == "guest-prx" and module.get("required", False)]
     if not modules:
@@ -438,13 +446,25 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                     is_elf = module_stream.read(4) == b"\x7fELF"
             except OSError as exc:
                 raise PackageBuildError(f"Could not read required guest PRX {name}: {exc}") from exc
+            copied_by_boundary = False
+            boundary_detail = ""
+            if not is_elf and user_data_root is not None:
+                outcome = decrypt_bytes_to(
+                    source_path.read_bytes(), destination, user_data_root=user_data_root
+                )
+                boundary_detail = outcome.detail
+                if outcome.status == "ok":
+                    copied_by_boundary = True
+                    is_elf = True
             if not is_elf:
                 suggested = module_dir_arg or default_module_dir
                 raise PackageBuildError(
                     f"Required guest PRX {_module_label(name, disc_name)} is not a decrypted ELF; "
-                    f"supply decrypted modules at {suggested} (#295). Decrypted module intake is in the works."
+                    f"supply decrypted modules at {suggested} (#295). "
+                    f"{boundary_detail or 'A plain module is required here.'}{key_hint}"
                 )
-            _write_private_file(destination, source_path.read_bytes())
+            if not copied_by_boundary:
+                _write_private_file(destination, source_path.read_bytes())
             continue
         extracted = False
         members = []
@@ -483,13 +503,49 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                             offset += count
                     with temporary.open("rb") as module_stream:
                         is_elf = module_stream.read(4) == b"\x7fELF"
+                    boundary_detail = ""
+                    if not is_elf and user_data_root is not None:
+                        # The same built-in boundary decrypts the disc's own
+                        # container into the per-title decrypted folder under
+                        # its disc file name; the package cache keeps its own
+                        # private copy under the manifest module name.
+                        title_folder = default_module_dir
+                        if title_folder is not None:
+                            title_target = title_folder / (disc_name or name)
+                            outcome = decrypt_bytes_to(
+                                temporary.read_bytes(), title_target,
+                                user_data_root=user_data_root,
+                            )
+                            boundary_detail = outcome.detail
+                            if outcome.status == "ok":
+                                with title_target.open("rb") as check_stream:
+                                    is_elf = check_stream.read(4) == b"\x7fELF"
+                                if not is_elf:
+                                    title_target.unlink(missing_ok=True)
+                                    boundary_detail = "the decrypted module is not a plain ELF"
+                                    is_elf = False
+                                else:
+                                    temporary.unlink(missing_ok=True)
+                                    _write_private_file(
+                                        destination, title_target.read_bytes()
+                                    )
+                                    extracted = True
+                                    break
+                        else:
+                            outcome = decrypt_file_inplace(
+                                temporary, user_data_root=user_data_root
+                            )
+                            boundary_detail = outcome.detail
+                            if outcome.status == "ok":
+                                with temporary.open("rb") as check_stream:
+                                    is_elf = check_stream.read(4) == b"\x7fELF"
                     if not is_elf:
                         temporary.unlink(missing_ok=True)
                         suggested = module_dir_arg or default_module_dir
                         raise PackageBuildError(
                             f"Required guest PRX {_module_label(name, disc_name)} is encrypted or not a "
                             f"plain ELF; supply decrypted modules at {suggested} (#295). "
-                            "Decrypted module intake is in the works."
+                            f"{boundary_detail or 'The disc copy is not a plain ELF.'}{key_hint}"
                         )
                     os.replace(temporary, destination)
                     extracted = True
@@ -500,7 +556,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             suggested = module_dir_arg or default_module_dir
             raise PackageBuildError(
                 f"Required guest PRX {_module_label(name, disc_name)} is unavailable; supply "
-                f"decrypted modules at {suggested} (#295). Decrypted module intake is in the works."
+                f"decrypted modules at {suggested} (#295)."
             )
     return output
 
@@ -529,6 +585,9 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
     if instruction_trace:
         env["TRACE"] = "1"
+        runtime_opt = env.get("RUNTIME_OPT", "-O0")
+        if not any(flag.split("=", 1)[0] == "-DSR_INSTRUCTION_TRACE" for flag in runtime_opt.split()):
+            env["RUNTIME_OPT"] = f"{runtime_opt} -DSR_INSTRUCTION_TRACE".strip()
     return env
 
 
@@ -577,6 +636,8 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
             "STALE_CODE_POLICY", environment.get("SR_STALE_POLICY", "")
         ),
         "chunk_target_bytes": environment.get("CHUNK_TARGET_BYTES", ""),
+        # The planner writes this into the package's cache metadata, so the key must carry it too.
+        "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }
 
 
@@ -592,6 +653,7 @@ def _current_package_cache_key(
     psp_header: Path | None,
     *,
     public_safe: bool | None = None,
+    instruction_trace: bool = False,
 ) -> dict:
     if public_safe is None:
         public_safe = not _has_private_backends()
@@ -620,7 +682,7 @@ def _current_package_cache_key(
             if psp_header is not None else None
         ),
     }
-    environment = _runtime_build_environment()
+    environment = _runtime_build_environment(instruction_trace=instruction_trace)
     options = _package_codegen_options(manifest, environment)
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
@@ -797,7 +859,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
             raise PackageBuildError(
                 f"Encrypted executable: supply decrypted modules at {folder} (#295). "
-                "Automatic decryption is in the works."
+                f"Automatic decryption is in the works; to enable the built-in boundary, "
+                f"supply a local key file at {key_file_path(user_root)}."
             )
         selected = str(selected_value).upper()
         selected_from_library = entry.get("selected_executable", "")
@@ -876,6 +939,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             cache_dir,
             args.module_dir.expanduser().resolve() if args.module_dir else None,
             decrypted_module_dir(user_root, disc_id),
+            user_data_root=user_root,
         )
         reporter.report("extract", "PASS", "Executable and modules prepared")
 
@@ -891,6 +955,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             module_dir,
             cached_header,
             public_safe=public_safe,
+            instruction_trace=bool(getattr(args, "instruction_trace", False)),
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
         decision = package_cache.compare_cache_keys(previous_key, cache_key)
@@ -1364,7 +1429,7 @@ def _fail_bringup(report: dict, stage: str, failure_class: str, issues=(), durat
 
 def _sanitized_checks(preflight: dict) -> list[dict]:
     known_codes = {
-        "DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE",
+        "DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "GUEST_MODULES", "RUNTIME_PACKAGE",
         "SYSTEM_FONTS", "AUDIO_OUTPUT", "MODIFIED_DUMP_CFW_LOADER",
     }
     known_status = {"OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS"}
@@ -1389,8 +1454,22 @@ def _write_bringup_report(report: dict, path: Path) -> None:
 
 
 def _bringup_human_summary(report: dict) -> str:
+    uses_cfw_original = any(
+        check.get("code") == "MODIFIED_DUMP_CFW_LOADER"
+        and check.get("status") == "IN_PROGRESS"
+        for check in report.get("preflight_checks", [])
+    )
+    cfw_prefix = (
+        "Custom-firmware-patched dump: using the original executable EBOOT.OLD "
+        "through the supplied decrypted EBOOT.elf; the EBOOT.BIN loader and patch "
+        "modules are excluded. Broader CFW dump support is in the works (#308). "
+        if uses_cfw_original else ""
+    )
     if report["failure_class"] == "NONE":
-        return f"Bring-up reached {report['reached_stage']}; launch {report['exit_classification'].lower()}."
+        return (
+            f"{cfw_prefix}Bring-up reached {report['reached_stage']}; launch "
+            f"{report['exit_classification'].lower()}."
+        )
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
         return (
             "Bring-up stopped at inspect: this disc image was modified by a custom-firmware "
@@ -1438,7 +1517,10 @@ def _bringup_human_summary(report: dict) -> str:
             detail = f" (runtime emitted no diagnostic; exit code {report['process_exit_code']})"
         elif kind == "OTHER":
             detail = f" (runtime output did not match a known boundary; exit code {report['process_exit_code']})"
-    return f"Bring-up stopped at {report['reached_stage']}: {report['failure_class']}{detail}{suffix}."
+    return (
+        f"{cfw_prefix}Bring-up stopped at {report['reached_stage']}: "
+        f"{report['failure_class']}{detail}{suffix}."
+    )
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
@@ -1462,7 +1544,7 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         "is_experimental": is_experimental,
     })
     _write_private_file(library_path, json.dumps({"schema_version": 1, "games": games},
-                                                sort_keys=True, separators=(",", ":")).encode("utf-8"))
+                                                separators=(",", ":")).encode("utf-8"))
 
 
 def _write_experimental_module_bindings(profile_path: Path, profile: dict,
@@ -1770,7 +1852,48 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 candidate["kind"] == "encrypted-prx" for candidate in module_candidates
             )
             _update_issues(report, [285, 308])
-            if report["counts"]["encrypted_modules"]:
+            # Every candidate must resolve to a plain module. A plain copy on
+            # disc is staged from the image; an encrypted container (or any
+            # candidate the intake cannot classify) is satisfied by a valid
+            # plain copy in the per-title decrypted folder -- user-supplied or
+            # produced there by the built-in boundary. A user-supplied plain
+            # module always wins, and CFW patch modules stay excluded.
+            title_folder = decrypted_module_dir(user_root, metadata.disc_id)
+            module_sources: list[tuple[dict, str, Path | None]] = []
+            unready: list[dict] = []
+            for candidate in module_candidates:
+                folder_copy = None
+                if title_folder is not None:
+                    candidate_file = title_folder / candidate["name"]
+                    if candidate_file.is_file() and \
+                            _classify_decrypted_elf_file(candidate_file) == "PLAIN_MIPS_ELF32":
+                        folder_copy = candidate_file
+                if folder_copy is not None:
+                    module_sources.append((candidate, "folder", folder_copy))
+                elif candidate["kind"] == "plain-elf":
+                    module_sources.append((candidate, "iso", None))
+                else:
+                    unready.append(candidate)
+            module_sources = [
+                (candidate, source, folder_copy)
+                for candidate, source, folder_copy in module_sources
+                if source != "folder" or not _has_cfw_or_kernel_only_imports(
+                    folder_copy.read_bytes() if folder_copy is not None else b""
+                )
+            ]
+            module_report = preflight.get("module_decryption") or {}
+            unresolved = [
+                candidate for candidate in unready
+                if candidate["kind"] == "encrypted-prx"
+            ]
+            if unresolved:
+                for candidate in unresolved:
+                    detail = next(
+                        (result["detail"] for result in module_report.get("results", [])
+                         if result["name"] == candidate["name"] and result.get("detail")),
+                        "the module is still encrypted",
+                    )
+                    print(f"MODULE {candidate['name']}: not ready ({detail})")
                 _fail_bringup(
                     report, "prepare_import", "GUEST_MODULE_DECRYPTION_REQUIRED",
                     [295], int((time.perf_counter() - started) * 1000),
@@ -1778,7 +1901,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
                 return 1
-            if any(candidate["kind"] == "unsupported" for candidate in module_candidates):
+            if unready:
                 _fail_bringup(
                     report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
                     [295, 308], int((time.perf_counter() - started) * 1000),
@@ -1786,10 +1909,10 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
                 return 1
-            if module_candidates:
+            if module_sources:
                 plain_modules = [
-                    candidate for candidate in module_candidates
-                    if candidate["kind"] == "plain-elf"
+                    candidate for candidate, source, _folder_copy in module_sources
+                    if source == "iso"
                 ]
                 try:
                     module_dir = _stage_iso_modules(
@@ -1803,6 +1926,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     _write_bringup_report(report, report_path)
                     print(_bringup_human_summary(report))
                     return 1
+                for candidate, source, folder_copy in module_sources:
+                    if source == "folder" and folder_copy is not None:
+                        _write_private_file(
+                            module_dir / candidate["name"], folder_copy.read_bytes()
+                        )
                 try:
                     module_inputs = [
                         (
@@ -1810,7 +1938,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                             module_dir / candidate["name"],
                             "disc0:/" + "/".join((*candidate["directory"], candidate["name"])),
                         )
-                        for candidate in plain_modules
+                        for candidate, _source, _folder_copy in module_sources
                     ]
                     module_bindings = plan_provisional_module_bindings(
                         selected_elf, module_inputs
@@ -1843,6 +1971,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             module_dir = _copy_optional_modules(
                 iso_path, manifest,
                 user_root / "cache" / "bringup" / metadata.disc_id.upper(), None,
+                decrypted_module_dir(user_root, metadata.disc_id),
+                user_data_root=user_root,
             )
         library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
         _write_bringup_library(

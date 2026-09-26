@@ -418,7 +418,8 @@ void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
         if (sr_nan_trap_nonfinite(in[i])) return;   /* propagation, not origin */
     if (!sr_nan_trap_budget()) return;
     const float out1[1] = { out };
-    fprintf(stderr, "NAN_TRAP pc=0x%08x op=%s dst=f%u in=[", pc, op, fd);
+    fprintf(stderr, "NAN_TRAP pc=0x%08x op=%s dst=f%u vbl=%u in=[", pc, op, fd,
+            sr_audio_vbl());
     sr_nan_trap_print(stderr, in, nin);
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out1, 1);
@@ -437,7 +438,8 @@ void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
     for (int i = 0; i < nin2; i++)
         if (sr_nan_trap_nonfinite(in2[i])) return;   /* propagation, not origin */
     if (!sr_nan_trap_budget()) return;
-    fprintf(stderr, "NAN_TRAP pc=0x%08x op=%s dst=v%u in=[", pc, op, vd);
+    fprintf(stderr, "NAN_TRAP pc=0x%08x op=%s dst=v%u vbl=%u in=[", pc, op, vd,
+            sr_audio_vbl());
     sr_nan_trap_print(stderr, in1, nin1);
     if (nin2 > 0) fputc(',', stderr);
     sr_nan_trap_print(stderr, in2, nin2);

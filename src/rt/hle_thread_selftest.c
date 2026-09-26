@@ -64,6 +64,8 @@ int sr_route_test_sample(uint8_t *out);
  * state machine without a scheduler or GPU. */
 extern void sr_route_test_tick(uint32_t v);
 extern int sr_route_test_cadence_state(uint32_t *last_attempt);
+extern void sr_route_test_import(uint32_t nid);
+extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
@@ -140,6 +142,8 @@ extern int sr_host_data_prepare(void);
 extern size_t sr_host_data_entry_count(void);
 extern void sr_hle_test_data_mark_guest_start(void);
 extern unsigned long sr_hle_test_data_walk_calls(void);
+extern unsigned long long sr_hle_test_data_scan_names(void);
+extern unsigned long long sr_hle_test_data_scan_probes(void);
 extern unsigned long sr_hle_test_data_build_attempts(void);
 extern unsigned long sr_hle_test_data_builds_after_guest(void);
 extern int sr_hle_test_data_state(void);
@@ -163,6 +167,10 @@ extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *imm
                                         uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
 extern void sr_hle_test_audio_reset(void);
+extern void sr_hle_test_audio_lead_reset(void);
+extern void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued);
+extern unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                                   unsigned long *noqueue, long *last_ms);
 extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
@@ -2603,6 +2611,54 @@ static void test_audio_regular_contract_safety(void) {
            "the negative queue sentinel takes the open-loop path after one query");
 }
 
+/* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
+ *
+ * A push count cannot tell a guest that submits what it consumes from one that submits twice
+ * as much: both push frames, and only the queue depth separates them. So the runtime reads
+ * sr_audio_queued() where the blocking output paces against it and publishes the deepest lead
+ * any channel carried in each window. What is pinned here is the contract a reader of the
+ * telemetry depends on: the window's peak is the worst channel, not the last; a window in
+ * which every output had no host queue reports -1 rather than a drift of zero; and the
+ * accumulator resets when a window closes, so the next window starts from nothing. */
+static void test_audio_drift_window_reports_the_pacing_value(void) {
+    int peak = -1;
+    uint32_t peak_ch = 0xffffffffu;
+    unsigned long noqueue = 0, outputs = 0;
+    long last_ms = 0;
+
+    sr_hle_test_audio_lead_reset();
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "a fresh drift window has counted no outputs");
+    expect(last_ms == -1L, "and has published no milliseconds, not zero");
+
+    sr_hle_test_audio_lead_feed(10u, 0, 4410);
+    sr_hle_test_audio_lead_feed(20u, 3, 8820);
+    sr_hle_test_audio_lead_feed(30u, 8, 2205);
+    outputs = sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms);
+    expect(outputs == 3u, "every output in the window is counted");
+    expect(peak == 8820, "the window publishes the deepest lead, not the last reading");
+    expect(peak_ch == 3u, "and the channel that was carrying it");
+
+    /* One window is 300 delivered vblanks; crossing it prints what it saw and resets. */
+    sr_hle_test_audio_lead_feed(300u, 0, 4410);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the window that crosses the boundary starts the next one empty");
+    expect(last_ms == 200L, "the window printed its own peak, 8820 frames as 200 ms");
+    expect(peak == 0, "and the peak resets with it");
+    expect(noqueue == 0u, "as does the count of outputs with no queue");
+    (void)outputs;
+
+    /* No host queue anywhere in a window is absence of a measurement, never a zero drift. */
+    sr_hle_test_audio_lead_reset();
+    sr_hle_test_audio_lead_feed(10u, 0, -1);
+    sr_hle_test_audio_lead_feed(20u, 0, -1);
+    sr_hle_test_audio_lead_feed(300u, 0, -1);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the all-unmeasured window closed and reset like any other");
+    expect(last_ms == -1L, "a window with no host queue reports -1 ms, not 0");
+    sr_hle_test_audio_lead_reset();
+}
+
 static uint64_t selftest_guest_u64(uint32_t addr) {
     return (uint64_t)MEM_R32(addr) | ((uint64_t)MEM_R32(addr + 4u) << 32);
 }
@@ -4035,8 +4091,12 @@ enum {
     HOST_DATA_PHASE_PUBLISH
 };
 
-static int host_data_bench_dir(const char *base, size_t bucket,
-                               char *path, size_t capacity, int create) {
+/* `dirs_created` accumulates the fixture's directory skeleton, so the scaling
+ * assertion can bound directory enumeration against the tree the benchmark
+ * actually built instead of against a hard-coded constant. */
+static int host_data_bench_dir(const char *base, size_t bucket, char *path,
+                               size_t capacity, int create,
+                               size_t *dirs_created) {
     if (!base || !path || capacity == 0u) return 0;
     size_t used = (size_t)snprintf(path, capacity, "%s", base);
     if (used >= capacity) return 0;
@@ -4045,7 +4105,10 @@ static int host_data_bench_dir(const char *base, size_t bucket,
                            bucket, (unsigned)(bucket % 3u));
     if (written < 0 || (size_t)written >= capacity - used) return 0;
     used += (size_t)written;
-    if (create && !hle_make_directory(path)) return 0;
+    if (create) {
+        if (!hle_make_directory(path)) return 0;
+        if (dirs_created) (*dirs_created)++;
+    }
     unsigned components[] = {
         (unsigned)bucket,
         (unsigned)((bucket / 4u) % 20u),
@@ -4057,22 +4120,25 @@ static int host_data_bench_dir(const char *base, size_t bucket,
                            names[level - 1u], components[level - 1u]);
         if (written < 0 || (size_t)written >= capacity - used) return 0;
         used += (size_t)written;
-        if (create && !hle_make_directory(path)) return 0;
+        if (create) {
+            if (!hle_make_directory(path)) return 0;
+            if (dirs_created) (*dirs_created)++;
+        }
     }
     return 1;
 }
 
 static int host_data_bench_write_files(const char *base, size_t count,
-                                       char prefix) {
+                                       char prefix, size_t *dirs_created) {
     char directory[MAX_PATH];
     char path[MAX_PATH];
     for (size_t bucket = 0; bucket < 80u; bucket++) {
         if (!host_data_bench_dir(base, bucket, directory,
-                                 sizeof(directory), 1)) return 0;
+                                 sizeof(directory), 1, dirs_created)) return 0;
     }
     for (size_t i = 0; i < count; i++) {
         if (!host_data_bench_dir(base, i % 80u, directory,
-                                 sizeof(directory), 0)) return 0;
+                                 sizeof(directory), 0, dirs_created)) return 0;
         int written = snprintf(path, sizeof(path), "%s\\%c%05zu.DaTa",
                               directory, prefix, i);
         if (written < 0 || (size_t)written >= sizeof(path)) return 0;
@@ -4112,7 +4178,8 @@ static void host_data_bench_remove_tree(const char *root) {
 }
 
 static int host_data_bench_make_tree(const char *root, size_t total_files,
-                                     char *dataroot, size_t dataroot_capacity) {
+                                     char *dataroot, size_t dataroot_capacity,
+                                     size_t *dirs_created) {
     char usrdir[MAX_PATH];
     char loose[MAX_PATH];
     int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\xbdata_extracted", root);
@@ -4123,15 +4190,40 @@ static int host_data_bench_make_tree(const char *root, size_t total_files,
     if (n < 0 || (size_t)n >= sizeof(loose) ||
         !hle_make_directory(root) || !hle_make_directory(usrdir) ||
         !hle_make_directory(dataroot) || !hle_make_directory(loose)) return 0;
+    /* The four directories above plus every prepared bucket directory are part
+     * of the skeleton a walk has to enumerate. */
+    if (dirs_created) *dirs_created += 4u;
     size_t primary_count = total_files * 4u / 5u;
     size_t loose_count = total_files - primary_count;
-    return host_data_bench_write_files(dataroot, primary_count, 'P') &&
-           host_data_bench_write_files(loose, loose_count, 'L');
+    return host_data_bench_write_files(dataroot, primary_count, 'P', dirs_created) &&
+           host_data_bench_write_files(loose, loose_count, 'L', dirs_created);
 }
 
+/* The census cost is proved by WORK COUNTS, never by the wall clock.
+ *
+ * This used to bound the wall clock of the synthetic 15k/30k/60k preparations,
+ * and a clock is not a correctness input: on a loaded host the same unmodified
+ * source failed this bound in one run out of three (issue #520) while every
+ * count below stayed exactly where it is now.  The three trees have ONE shape
+ * and 1x/2x/4x the files, so the work the census reports must grow 1x/2x/4x as
+ * well; a census that re-enumerated or re-probed per file (O(n^2)) reports
+ * 1x/4x/16x instead, which is what these bounds reject:
+ *
+ *   probes -- the per-file readability open, exactly one per indexed file;
+ *   names  -- every directory entry the census retrieved, "." and ".." included,
+ *             across both the archive-discovery and the primary walk;
+ *   dirs   -- directories enumerated, bounded by the fixture's own skeleton
+ *             (host_data_bench_make_tree counts it) instead of by the file count.
+ *
+ * Wall clock and the per-phase split stay an informational print: they are the
+ * developer evidence about this host's filesystem, and a human reads them. */
 static void test_host_data_scan_scaling(void) {
     static const size_t counts[] = { 15000u, 30000u, 60000u };
     unsigned long long elapsed_ms[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long long names[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long long probes[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long dirs[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long skeleton[sizeof(counts) / sizeof(counts[0])] = { 0 };
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) {
         expect(0, "the synthetic host-data benchmark has a working directory");
@@ -4144,13 +4236,15 @@ static void test_host_data_scan_scaling(void) {
     for (size_t sample = 0; sample < sizeof(counts) / sizeof(counts[0]); sample++) {
         char root[MAX_PATH];
         char dataroot[MAX_PATH];
+        size_t dirs_created = 0;
         root[0] = '\0';
         int n = snprintf(root, sizeof(root), "%s\\build\\host_data_scan_%lu_%llu",
                          cwd, (unsigned long)GetCurrentProcessId(),
                          (unsigned long long)GetTickCount64());
         int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
         int tree_ok = root_path_ok &&
-            host_data_bench_make_tree(root, counts[sample], dataroot, sizeof(dataroot));
+            host_data_bench_make_tree(root, counts[sample], dataroot,
+                                      sizeof(dataroot), &dirs_created);
         expect(tree_ok, "the mixed-case 1-to-4-level synthetic host-data tree was created");
         if (!tree_ok) {
             if (root_path_ok) host_data_bench_remove_tree(root);
@@ -4165,11 +4259,18 @@ static void test_host_data_scan_scaling(void) {
                "the synthetic prepared-tree route reaches READY");
         expect(sr_hle_test_data_entry_count() == counts[sample],
                "the primary and loose walks publish every synthetic file exactly once");
+        names[sample] = sr_hle_test_data_scan_names();
+        probes[sample] = sr_hle_test_data_scan_probes();
+        dirs[sample] = sr_hle_test_data_walk_calls();
+        skeleton[sample] = (unsigned long)dirs_created;
+        expect(probes[sample] == (unsigned long long)counts[sample],
+               "the census opens every synthetic file's metadata exactly once");
         fprintf(stderr,
-                "[HOST_DATA_SCALE] files=%zu total_ms=%llu archive_discover_ms=%llu "
-                "walk_ms=%llu loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu "
-                "publish_ms=%llu\n",
-                counts[sample], elapsed_ms[sample],
+                "[HOST_DATA_SCALE] files=%zu total_ms=%llu names_read=%llu file_probes=%llu "
+                "dirs=%lu skeleton=%lu archive_discover_ms=%llu walk_ms=%llu "
+                "loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu publish_ms=%llu\n",
+                counts[sample], elapsed_ms[sample], names[sample], probes[sample],
+                dirs[sample], skeleton[sample],
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_ARCHIVE_DISCOVER),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PRIMARY_WALK),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_LOOSE_WALK),
@@ -4180,13 +4281,21 @@ static void test_host_data_scan_scaling(void) {
         sr_hle_test_data_reset(0);
         host_data_bench_remove_tree(root);
     }
-    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u,
+    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u &&
+               names[0] != 0u && names[1] != 0u && names[2] != 0u,
            "all three synthetic scaling sizes were measured");
-    expect(elapsed_ms[1] <= elapsed_ms[0] * 3u + 1000u &&
-               elapsed_ms[2] <= elapsed_ms[0] * 7u + 2000u,
-           "host-data preparation growth stays near-linear from 15k to 60k files");
-    expect(elapsed_ms[2] <= 20000u,
-           "a 60k-file primary-plus-loose synthetic tree prepares within 20 seconds");
+    /* Doubling the files may at most double the names read (2.5x) and may not
+     * quadruple them; quadrupling the files may at most quadruple them (4.5x).
+     * A per-file re-walk or re-probe reports 4x and 16x here. */
+    expect(names[1] <= names[0] * 5u / 2u && names[2] <= names[0] * 9u / 2u,
+           "host-data enumeration name reads grow with the file count, not with its square");
+    /* The skeleton's directories are enumerated by the archive-discovery walk
+     * and again by the primary walk, plus a handful for the loose-content root;
+     * the multiplier is headroom for that, and a per-file enumeration would add
+     * one directory walk per indexed file. */
+    expect(dirs[0] <= skeleton[0] * 4u + 16ul && dirs[1] <= skeleton[1] * 4u + 16ul &&
+               dirs[2] <= skeleton[2] * 4u + 16ul,
+           "directory enumeration is bounded by the prepared tree's skeleton, not the file count");
 }
 
 typedef struct {
@@ -15419,6 +15528,103 @@ static void test_route_malformed_files_are_refused(void) {
     remove(RT_PATH);
 }
 
+/* A mask the parser cannot read must refuse the route, not press nothing.
+ *
+ * The failure this pins down is invisible from outside a run: `strtoul` reports no error,
+ * so any token that is not a number became mask 0, the step held no buttons, and the guest
+ * sat on its screen rendering and polling the pad -- byte-identical to a frozen game. Four
+ * separate campaign runs read a frozen title screen that way, because the route asked for
+ * "CROSS" (a name the file format never defined) and pressed nothing at all. The whole
+ * point of a route is that a press arrives; a route that cannot name a button must say so
+ * at load, and one that names it wrongly must not run as though it had.
+ */
+/* A route may name the button it presses (test_route_names_the_buttons_it_presses), so the
+ * remaining failure mode is a token that means no button and no mask: a truncated name, a
+ * hex literal with a stray character, a bare prefix, or a value too wide for the pad mask.
+ * None of these may become a press, because a press that never arrives is indistinguishable
+ * from a game that has frozen. They are refused at load, naming the line and the token. */
+static void test_route_mask_refuses_what_it_cannot_mean(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* Every step that carries a mask refuses a token that is neither. */
+    static const char *const bad[] = {
+        "4000junk",     /* a hex literal with something after it */
+        "0x",           /* a prefix with no digits at all */
+        "1FFFFFFFFF",   /* wider than the 32-bit pad mask: refuse, never truncate */
+        "CROSS+",       /* a name with an empty one after it */
+        "+CROSS",       /* and an empty one before it */
+        "NOSUCHBUTTON", /* a name long enough that a fixed buffer would have cut it short */
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS %s 8\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS mask that means nothing is refused");
+        expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+        expect(sr_route_step(0, sigA) == 0u, "a refused route never reaches the guest as an empty press");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_UNTIL MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_UNTIL mask that means nothing is refused");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_WHILE MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_WHILE mask that means nothing is refused");
+
+        sr_route_reset();               /* a bare pad script gets the same answer */
+        snprintf(body, sizeof body, "8600 %s 16\n", bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a bare pad script line whose mask means nothing is refused");
+    }
+    remove(RT_PATH);
+
+    /* The forms that were always legal still load and still reach the guest unchanged. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS 4000 16\n"
+             "PRESS 0x0008 8\n"
+             "PRESS FFFFFFFF 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "hex masks with and without a 0x prefix load");
+    expect(sr_route_step(0, sigA) == 0x4000u, "a bare hex mask still reaches the guest");
+    for (uint32_t v = 1; v < 16; v++)
+        expect(sr_route_step(v, sigA) == 0x4000u, "the named-width press is held");
+    expect(sr_route_step(16, sigA) == 0x0008u, "the next press starts with its own mask");
+    for (uint32_t v = 17; v < 24; v++)
+        expect(sr_route_step(v, sigA) == 0x0008u, "the 0x-prefixed mask is held for its width");
+    expect(sr_route_step(24, sigA) == 0xFFFFFFFFu, "a full-width mask is every button, not a truncation");
+    for (uint32_t v = 25; v < 28; v++)
+        expect(sr_route_step(v, sigA) == 0xFFFFFFFFu, "the full-width press is held for its width");
+    expect(sr_route_step(28, sigA) == 0u, "and released after it");
+    expect(sr_route_status() == RT_DONE, "a legal mask route completes");
+    remove(RT_PATH);
+
+    sr_route_reset();
+    rt_write("1 0x0008 8\n240 0008 8\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script with hex masks still loads");
+    expect(sr_route_status() == RT_LEGACY, "and keeps its original absolute-frame behaviour");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
     rt_write("1 0x0008 8\n240 0x0008 8\n8600 0x4000 16\n");
@@ -15435,6 +15641,88 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     remove(RT_PATH);
     sr_route_reset();
 }
+
+/* WAIT_NID: the step that lets a route gate on what the guest DOES.
+ *
+ * Every other gated step needs a screen signature, and a signature can only be recorded from
+ * a run that is already on that screen -- so the step that would reach a new screen is the one
+ * step that cannot be written. What the guest calls is observable from the first boot and is
+ * the same for every title. Pinned here: the step completes on the import and only on that
+ * import, an import that happened BEFORE the step began does not satisfy it, a name and a raw
+ * NID are the same step, an unknown name is refused at load, and a guest that never calls it
+ * fails the run loudly instead of waiting forever. */
+static void test_route_gates_on_a_guest_event_not_a_signature(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+    expect(open_nid != 0u, "the runtime's own NID table resolves sceIoOpen");
+    expect(sr_route_test_nid("0x109f50bc") == open_nid,
+           "a route may write the same import as raw hex");
+    expect(sr_route_test_nid("sceNotAnImport") == 0u,
+           "a name that is not an import does not resolve");
+
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "PRESS CROSS 8\n"
+             "WAIT_NID sceIoOpen 600\n"
+             "DELAY 2\n"
+             "END\n", hexA);
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that waits on an import loads");
+    expect(sr_route_step(0, sigA) == 0x4000u, "the press before the wait is held");
+    for (uint32_t v = 1; v < 8; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_step(8, sigA) == 0u, "and released after its width");
+
+    /* Another import is not the one being waited for. */
+    sr_route_test_import(0x11111111u);
+    expect(sr_route_step(9, sigA) == 0u, "an unrelated import does not complete the step");
+    expect(sr_route_status() == RT_RUNNING, "and the route is still waiting");
+
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(10, sigA) == 0u, "the waited-for import completes the step");
+    expect(sr_route_step(11, sigA) == 0u, "the step after it begins on the next vblank");
+    expect(sr_route_step(14, sigA) == 0u, "its DELAY is honoured");
+    expect(sr_route_status() == RT_DONE, "and the route completes");
+    remove(RT_PATH);
+
+    /* An import that already happened cannot satisfy a later step. Two waits for the SAME
+     * import in a row is the shape that can tell them apart: the first completes on a feed,
+     * and the second must still be waiting because that feed predates it. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "WAIT_NID sceIoOpen 20\n"
+             "WAIT_NID sceIoOpen 50\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "two waits for one import load");
+    expect(sr_route_step(0, sigA) == 0u, "the WAIT is satisfied by the screen");
+    expect(sr_route_status() == RT_RUNNING, "and the first import wait has begun");
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(1, sigA) == 0u, "the feed completes the first import wait");
+    for (uint32_t v = 2; v < 55; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_status() == RT_FAILED,
+           "a guest that never makes the import again fails the run instead of waiting forever");
+    remove(RT_PATH);
+
+    /* An unknown name is a load-time refusal, not a wait that can never succeed. */
+    sr_route_reset();
+    rt_write("WAIT_NID sceNotAnImport 600\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "an unknown import name is refused at load");
+    expect(sr_route_status() == RT_FAILED, "and the route fails rather than waiting");
+    sr_route_reset();
+    rt_write("WAIT_NID sceIoOpen\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "a WAIT_NID without a timeout is refused at load");
+    sr_route_reset();
+    remove(RT_PATH);
+}
+
 
 /* A press mask that names the wrong button cannot fail: the guest receives a bit the
  * screen ignores and the run looks exactly like a game that has frozen, which is how a
@@ -15513,6 +15801,7 @@ static void test_route_names_the_buttons_it_presses(void) {
     expect(sr_route_step(1, sigA) == (NK_PSP_BTN_HOME_BIT | NK_PSP_BTN_HOLD_BIT),
            "HOME+HOLD reaches the guest as both system bits");
     remove(RT_PATH);
+
 
     /* The legacy absolute-frame table takes names too: strtoul used to read "CROSS" as 0,
      * which is the same silent-nothing press one syntax layer down. */
@@ -16092,6 +16381,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();
@@ -16194,8 +16484,11 @@ int main(int argc, char **argv) {
     test_route_press_until_timeout_fails_loudly();
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
+    test_route_mask_refuses_what_it_cannot_mean();
     test_route_legacy_pad_script_is_unchanged();
     test_route_names_the_buttons_it_presses();
+    test_route_gates_on_a_guest_event_not_a_signature();
+
     test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();

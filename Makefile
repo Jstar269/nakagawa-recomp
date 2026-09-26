@@ -253,10 +253,34 @@ CHUNK_BYTES_ARG := --target-chunk-bytes=$(CHUNK_TARGET_BYTES)
 CHUNK_TARGET_ENTRY := --entry "CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)"
 endif
 
+# ---------------------------------------------------------------------------
+# BUILD IDENTITY: the source revision every commit-stamped artifact records --
+# the flight recorder's build.build_id (#532) and both PSP oracle records.
+#
+# `GIT` names the git executable, for a host that keeps it off PATH, and the
+# revision is resolved ONCE here. Every default below reads that one value, and
+# a caller that supplies the identity itself (a hosted job passing
+# SR_SOURCE_COMMIT=${{ github.sha }}) never reaches for git at all.
+#
+# The resolution runs through the interpreter this build already requires at
+# parse time (see the VULKAN_SDK discovery above) and never through a bare
+# `$(shell git ...)`: make spawns a missing program itself, so on a host without
+# git the old default logged `process_begin: CreateProcess(NULL, git
+# rev-parse HEAD, ...) failed` and then quietly built a binary with NO recorded
+# identity. The Windows runtime compile gate runs in an MSYS2 shell with no git
+# on PATH and hit exactly that. A host with no git now resolves an empty
+# identity and a clean log, which is the documented state for a source drop:
+# tools/flight_diff.py refuses an identity-less bundle fail closed, and it never
+# falls back to a clock.
+GIT ?= git
+ifndef NK_INFO_ONLY
+NK_GIT_REV_HEAD := $(strip $(shell $(PYTHON) -c "import shutil, subprocess, sys; exe = shutil.which(sys.argv[1]); print(subprocess.run([exe, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip() if exe else '')" "$(GIT)"))
+endif
+
 # Production-HLE PSP oracle stream. The target reuses hle_thread_selftest.exe, so the
 # binary_sha256 in its record is the hash of the executable that actually emits stdout.
 PSP_ORACLE_CASE          ?= callback-notify-check
-PSP_ORACLE_SOURCE_COMMIT ?= $(shell git rev-parse HEAD)
+PSP_ORACLE_SOURCE_COMMIT ?= $(NK_GIT_REV_HEAD)
 PSP_ORACLE_MODEL         ?= unknown
 PSP_ORACLE_FIRMWARE      ?= unknown
 PSP_ORACLE_OUTPUT        ?= $(BUILD_DIR)/psp_oracle_nakagawa.txt
@@ -660,7 +684,8 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 #   * SOURCE_DATE_EPOCH, when the build sets it, is honoured as-is (the
 #     reproducible-builds.org convention) and recorded as build.source_date_epoch.
 #   * The source commit is recorded as build.build_id, resolved exactly like
-#     PSP_ORACLE_SOURCE_COMMIT below (git rev-parse HEAD). A source drop without
+#     PSP_ORACLE_SOURCE_COMMIT below (one guarded $(GIT) rev-parse HEAD, or the
+#     identity the caller supplied). A source drop without
 #     git and without SOURCE_DATE_EPOCH records no identity and tools/flight_diff.py
 #     refuses such a bundle fail closed; it never falls back to a clock.
 # The runtime profile hash is deliberately NOT the identity here: it hashes
@@ -671,7 +696,7 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 # rebuilds that one object instead of every runtime object (see
 # FLIGHT_IDENTITY_STAMP below).
 ifndef NK_INFO_ONLY
-SR_SOURCE_COMMIT ?= $(shell git rev-parse HEAD)
+SR_SOURCE_COMMIT ?= $(NK_GIT_REV_HEAD)
 SR_SOURCE_COMMIT := $(strip $(SR_SOURCE_COMMIT))
 ifneq ($(strip $(SR_SOURCE_COMMIT)),)
 FLIGHT_IDENTITY_DEFS += -DSR_BUILD_ID=\"$(SR_SOURCE_COMMIT)\"
@@ -764,6 +789,7 @@ PUBLIC_TARGETS := \
 	domain-mode-selftest \
 	dispatch-isolation-selftest \
 	dispatch-isolation-selftest-one \
+	memory-watch-selftest \
 	asset-index-selftest \
 	fp-convert-selftest \
 	vfpu-tables-selftest \
@@ -868,6 +894,7 @@ HELP_DESCRIPTION_cpu-lle-selftest := run the LLE COP0/exception interpreter self
 HELP_DESCRIPTION_domain-mode-selftest := run the LLE domain-mode and import-seam selftest
 HELP_DESCRIPTION_dispatch-isolation-selftest := run dispatch isolation selftests
 HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation selftest
+HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
@@ -958,11 +985,12 @@ ifndef NK_TRUSTED_LEDGER
 	@exit 1
 endif
 	@echo "== readiness: base $(READINESS_BASE)"
+	@test -n "$(NK_GIT_REV_HEAD)" || { echo "readiness: FAIL -- no source revision: $(GIT) is unavailable or this is not a git checkout, and the provenance attestation compares a candidate revision. Readiness needs a git checkout; set GIT to a git executable if it is not on PATH."; exit 1; }
 	$(PYTHON) tools/policy_sync.py
 	$(PYTHON) tools/lint_docs.py
 	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate $(shell git rev-parse HEAD) --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
+	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate "$(NK_GIT_REV_HEAD)" --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
 	git diff --check $(READINESS_BASE)..HEAD
 	@echo "== readiness: control-file completeness"
 	$(PYTHON) tools/policy_sync.py --regen-export
@@ -1347,6 +1375,14 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# ge.c is the vblank hook for the recorder's trace window and store watch; without this
+# define those calls compile to flight_recorder.h's inert inline stubs.
+override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
+# A trace build compiles the runtime with the trace writer too. This must precede the
+# runtime profile hash so switching TRACE rebuilds the runtime objects.
+ifeq ($(TRACE),1)
+override CFLAGS += -DSR_INSTRUCTION_TRACE
+endif
 RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
@@ -1364,12 +1400,13 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
 RECOMP_OPT ?= -O0
 RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 TRACE ?= 0
 ifeq ($(TRACE),1)
-RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
+override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
 endif
 ifeq ($(PERF_AOT_INSTRUCTIONS),1)
-RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
+override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
 endif
 
 # Make the object flavour explicit. Switching TRACE forces only the generated
@@ -1460,7 +1497,7 @@ sdl3-check:
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= build/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
@@ -1995,6 +2032,12 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
+# memory-watch-selftest — exercise the opt-in shared AOT/interpreter store hook
+# against the source-owned synthetic guest in dispatch_isolation_selftest.c.
+memory-watch-selftest: export SR_WATCH = 0x00601000:4
+memory-watch-selftest: DISPATCH_ISO_CONFIG = generic
+memory-watch-selftest: dispatch-isolation-selftest-one
+
 # asset-index-selftest — host-neutral dynamic extracted-data index regression (issue #223).
 # The production Windows HLE supplies the path enumeration and wide I/O; this target proves the
 # shared ownership/growth/sort/lookup core with a synthetic long host path and no game input.
@@ -2009,7 +2052,7 @@ asset-index-selftest:
 gpu-coherence-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_coherence_selftest.exe \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_coherence_selftest.exe
 
@@ -2020,7 +2063,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
@@ -2040,7 +2083,7 @@ gpu-capture-selftest: shader-verify
 ge-replay: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
-		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
+		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 
 # selftest — compile and run the C++ reference interpreter unit tests.
@@ -2130,7 +2173,7 @@ psp-oracle-vfpu-build: $(PSP_VFPU_ORACLE_EXE)
 PSP_VFPU_ORACLE_OUT ?= $(BUILD_DIR)/vfpu_oracle/nakagawa.stdout.txt
 PSP_VFPU_ORACLE_MODEL ?= unknown
 PSP_VFPU_ORACLE_FIRMWARE ?= unknown
-PSP_VFPU_ORACLE_COMMIT ?= $(shell git rev-parse HEAD)
+PSP_VFPU_ORACLE_COMMIT ?= $(NK_GIT_REV_HEAD)
 
 psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 	$(PYTHON) -c "from pathlib import Path; Path(r'$(BUILD_DIR)/vfpu_oracle').mkdir(parents=True, exist_ok=True)"
