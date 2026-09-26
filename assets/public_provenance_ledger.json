@@ -422,7 +422,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7331c01265226a5dd99105d3616087b3448d6cd7119d1b2a9a0d3fdb2c50435c"
+      "sha256": "c11973cd95bb94414ac2615b710a222e36426fb4e7540eebe3c2a9897ea47ccd"
     },
     {
       "path": "assets/issue_routing.json",
@@ -3602,7 +3602,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f8406b8b0344d76c95a022ce881622efd20e00674082359949234ba7b4c2320"
+      "sha256": "6b6504feefec7289d937c11965d82d5c34ce23dd35a89554494a1e2980a84b0f"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -5239,7 +5239,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2e190326707f2884684da36e91dc122a5afad15b9e4133d4a21e82b2e712e23d"
+      "sha256": "6fec13f6bcfe39eccd6de1858b077b479c40c19085b30c556c497d119c2b0ca4"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -6840,7 +6840,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "705eb7374e419a21ed0e29c048b1fea483de24e4e057b9978f2a35e98378c96b"
+      "sha256": "0a1cbf2c56a04e6e9c11167818e14997a7407b2eb6c80041c7f1ff8449c7247d"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -6852,7 +6852,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9ae729dd0ccf86e03cbbb36baa2294a1ff7ef56722fd5a1f10d558f468b2fee6"
+      "sha256": "df4064a92876eab9d847132679518b854c6be2f8a428a21b9c0e21b062dd8924"
     },
     {
       "path": "tools/test_font_provisioning.py",
