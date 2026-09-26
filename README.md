@@ -17,6 +17,10 @@ v0.0.1 is the first public build. [`docs/RELEASE_NOTES_v0.0.1.md`](docs/RELEASE_
 - **Windows 11 x64 only.** Linux, macOS and Android player support is **in the works** ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329), [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)).
 - **No claim of retail playability.** No commercial PSP game is claimed playable from an ISO alone; see [`ISSUES.md`](ISSUES.md) and [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
 
+### Launch the v0.0.1 Windows package
+
+Unpack the complete archive and launch `bin\nakagawa_player.exe`; keep the adjacent `bin\SDL3.dll` beside it. `vulkan-1.dll` must be provided by the Windows graphics driver or a Vulkan runtime. The archive contains no game image or firmware files. Developer commands below apply to a source checkout; in the release archive, run them from its `source/` directory. Building a title package still requires the developer toolchain and a user-supplied unencrypted executable ([#296](https://github.com/Jstar269/nakagawa-recomp/issues/296)); one-click ISO-to-Play is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+
 ## Run it now: the source-owned showcase demos
 
 The showcase demos are the only game-like programs in this repository: two PSP programs written from source in C against PSPDEV/PSPSDK (`fixtures/showcase/`). They take the ordinary route — analyze the guest ELF, generate portable C, compile, validate, package — and the player discovers them automatically, so you can watch genuinely recompiled PSP code run without owning a disc.

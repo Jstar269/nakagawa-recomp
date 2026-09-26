@@ -480,13 +480,26 @@ int sr_vfpu_interp(CpuState *s, uint32_t op);
  * write, in generated code and in the interpreter alike, is followed by a check
  * that prints the first SR_NAN_TRAP_LIMIT of them (default 20) to stderr:
  *
- *   NAN_TRAP pc=0x00001234 op=add.s dst=f4 in=[1,2] out=[nan]
- *   NAN_TRAP pc=0x0000123c op=vrcp.s dst=v0 in=[0] out=[inf]
+ *   NAN_TRAP pc=0x00001234 op=add.s dst=f4 vbl=1180 in=[1,2] out=[nan]
+ *   NAN_TRAP pc=0x0000123c op=vrcp.s dst=v0 vbl=1180 in=[0] out=[inf]
  *
  * The check fires only when the result is non-finite AND every input was finite,
  * so an instruction that merely propagates an existing NaN is not reported: the
  * report names the origin, not the echo. It is a diagnostic and never a semantic
  * gate -- no result is altered on any path.
+ *
+ * `in=` lists EVERY operand the instruction consumed, in operand order, so a
+ * report can be read lane by lane: the scalar forms list their sources, the
+ * lane forms list their source vectors, vmmul lists the S rows then the T rows
+ * (side*side each), and vtfm/vhtfm lists the matrix lanes (side*side, row-major)
+ * then the vector lanes it multiplies by. A form that reported only part of its
+ * operands would classify a propagation as an origin, which is how a vtfm whose
+ * vector lane already carried a NaN was once reported as the instruction that
+ * made it.
+ *
+ * `vbl=` is the guest VBLANK counter -- the same counter the SR_GE_TRANSITION_TRACE
+ * stamps as its `frame` field, so a trap record and the draw that showed its
+ * effect can be placed in the same frame without inference.
  *
  * Without the define both macros expand to ((void)0): no call, no symbol, no
  * branch, no argument evaluated. tools/codegen.py only emits the checks at all
@@ -496,6 +509,10 @@ int sr_vfpu_interp(CpuState *s, uint32_t op);
  */
 #ifdef SR_NAN_TRAP
 #define SR_NAN_TRAP_DEFAULT_LIMIT 20
+/* The guest VBLANK count, for the report's `vbl=` field. hle.c keeps this as the
+ * mirror it hands to ge_set_frame(), so the number here is the same frame index
+ * the SR_GE_TRANSITION_TRACE records carry. */
+uint32_t sr_audio_vbl(void);
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin);
 void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
@@ -592,6 +609,8 @@ void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
  * reports before its delay slot. */
 int  sr_trace_open(const char *path, const char *target, uint32_t start_pc);
 void sr_trace_close(void);
+/* The SR_TRACE_PC address window over this trace is declared in flight_recorder.h and
+ * implemented in src/rt/flight_recorder.c, with the runtime's other opt-in diagnostics. */
 /* Throughput: the generated chunks emit an sr_begin/sr_end pair around *every* guest
  * instruction (~1.5M call sites total). Since those huge files must compile at -O0, the
  * release build removes the hooks in the preprocessor. TRACE=1 retains a predicted-false

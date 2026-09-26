@@ -82,28 +82,48 @@ mingw32-make --no-print-directory display-smoke
 
 ## Recreate the package
 
-Run the following after the native smoke and player build, from a clean candidate checkout on the exact integrated release commit. The public-safe export command filters the source with `assets/public_source_profile.json`; it must pass the maintainer-controlled publication inputs before the result can be called a release asset.
+Run the following after the native smoke and player build, from a clean candidate checkout on the exact integrated release commit. The public-safe export command filters the source with `assets/public_source_profile.json`; it must pass the maintainer-controlled publication inputs before the result can be called a release asset. The package retains the source tree under `source/`, so the player can resolve its BUILD PACKAGE CLI from the installed layout.
 
 ```powershell
 $Version = '0.0.1'
-$ArtifactRoot = Join-Path $env:TEMP "nakagawa-recomp-$Version"
+$CandidateSha = (git rev-parse --short=12 HEAD).Trim()
+$ArtifactRoot = Join-Path $env:TEMP "nakagawa-recomp-$Version-$CandidateSha"
+$TrustedLedger = $env:NAKAGAWA_TRUSTED_PUBLIC_LEDGER
 $Stage = Join-Path $ArtifactRoot "nakagawa-recomp-$Version-windows-x64"
+$ToolchainIdentity = Join-Path $ArtifactRoot 'toolchain.json'
+$Bin = Join-Path $Stage 'bin'
 $Source = Join-Path $Stage 'source'
+$PackageDocs = Join-Path $Stage 'docs'
 $Zip = Join-Path $ArtifactRoot "nakagawa-recomp-$Version-windows-x64.zip"
 
 if (Test-Path -LiteralPath $ArtifactRoot) {
-    Remove-Item -LiteralPath $ArtifactRoot -Recurse -Force
+    throw "Candidate output already exists; choose a new artifact directory: $ArtifactRoot"
 }
-New-Item -ItemType Directory -Path $Source -Force | Out-Null
-python tools/build_public_export.py --public-safe-profile --export-dir $Source --trusted-ledger assets/public_provenance_ledger.json
+if (-not $TrustedLedger -or -not (Test-Path -LiteralPath $TrustedLedger -PathType Leaf)) {
+    throw 'Set NAKAGAWA_TRUSTED_PUBLIC_LEDGER to the maintainer-supplied trusted public ledger copy.'
+}
+New-Item -ItemType Directory -Path $ArtifactRoot, $Source -Force | Out-Null
+python tools/record_toolchain.py --output $ToolchainIdentity
+python tools/build_public_export.py --public-safe-profile --export-dir $Source --trusted-ledger $TrustedLedger
 
-New-Item -ItemType Directory -Path (Join-Path $Stage 'bin') -Force | Out-Null
-Copy-Item build\nakagawa_player.exe (Join-Path $Stage 'bin')
-Copy-Item build\production-smoke\production_smoke.exe (Join-Path $Stage 'bin')
+New-Item -ItemType Directory -Path $Bin, $PackageDocs -Force | Out-Null
+Copy-Item build\nakagawa_player.exe, build\production-smoke\production_smoke.exe $Bin
+& .\copy_build_assets.ps1 -BuildDir $Bin
+if ($LASTEXITCODE -ne 0) { throw "copy_build_assets.ps1 failed with exit code $LASTEXITCODE" }
 Copy-Item LICENSE, NOTICE.md (Join-Path $Stage '.')
-Copy-Item docs\PREVIEW_RELEASE.md, docs\PREVIEW_RELEASE_NOTES.md (Join-Path $Stage 'docs')
+Copy-Item README.md (Join-Path $Stage '.')
+Copy-Item docs\PREVIEW_RELEASE.md, docs\SETUP.md, docs\SMOKE_TEST.md, docs\RELEASE_NOTES_v0.0.1.md $PackageDocs
+Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES') $Stage -Recurse
+Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES.txt'), (Join-Path $Bin 'SOURCE.txt'), (Join-Path $Bin 'RELINK.md') $Stage
 
-Get-ChildItem -LiteralPath $Stage -Recurse -File |
+python tools/generate_sbom.py --package-dir $Bin `
+    --spdx-out (Join-Path $Stage 'SBOM.spdx.json') `
+    --spdx3-out (Join-Path $Stage 'SBOM.spdx3.jsonld') `
+    --cyclonedx-out (Join-Path $Stage 'SBOM.cyclonedx.json')
+python tools/verify_sbom.py --observed-toolchain $ToolchainIdentity --spdx (Join-Path $Stage 'SBOM.spdx.json')
+
+Get-ChildItem -LiteralPath $Stage -Recurse -File -Force |
+    Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
     Sort-Object FullName |
     Get-FileHash -Algorithm SHA256 |
     ForEach-Object {
@@ -112,11 +132,14 @@ Get-ChildItem -LiteralPath $Stage -Recurse -File |
     } |
     Set-Content -LiteralPath (Join-Path $Stage 'SHA256SUMS.txt') -Encoding utf8NoBOM
 
-Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $Zip -Force
+# ZipFile includes hidden source-export files such as .github and .editorconfig.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $Stage, $Zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 Write-Output $Zip
 ```
 
-The package copies the native player and synthetic verification binary. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, SDL or Vulkan DLLs, local databases, or generated build output.
+The package contains the native player and synthetic verification binary under `bin/`, only the host runtime DLLs found by `copy_build_assets.ps1`, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 
@@ -143,9 +166,10 @@ The expected result is no output from the extension filter and no private-path m
 Additionally, both publication-audit legs must pass against the exact exported bytes to ensure export immutability (#293):
 
 ```powershell
-python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+python tools/publish_audit.py --candidate-root $Source --candidate-tree --public-scope --provenance-ledger $TrustedLedger
+python tools/publish_audit.py --candidate-root $Source --candidate-tree --public-scope --provenance-self-consistency
 ```
 
 ## Attribution boundary
 
-`NOTICE.md`, `THIRD_PARTY_LICENSES/`, `assets/release_manifest.json`, `assets/upstream/`, and the vendored ATRAC3+ license record the attribution and third-party notices for this preview. Any release that redistributes third-party components must carry their applicable notices.
+`NOTICE.md`, `THIRD_PARTY_LICENSES/`, `assets/release_manifest.json`, `assets/upstream/`, and the vendored ATRAC3+ license record attribution and third-party license data for the `v0.0.1` candidate. The packaged native binaries also require the generated `THIRD_PARTY_NOTICES` bundle and `RELINK.md` described above.
