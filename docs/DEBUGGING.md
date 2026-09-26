@@ -853,7 +853,7 @@ records.
 ### Range Watch Without Code Changes
 
 For a temporary range watch without editing the runtime's watch table, set
-`SR_WATCH=<address>:<length>`. The range is half-open and may be written in decimal or with a
+`SR_WATCH=<address>:<length>`. The range is half-open, `[address, address + length)`, and may be written in decimal or with a
 `0x` prefix. Each AOT or interpreter store that overlaps it is reported to stderr with its guest
 PC, starting address, value, width in bytes, and most recently delivered vblank:
 

@@ -774,6 +774,7 @@ PUBLIC_TARGETS := \
 	domain-mode-selftest \
 	dispatch-isolation-selftest \
 	dispatch-isolation-selftest-one \
+	memory-watch-selftest \
 	asset-index-selftest \
 	fp-convert-selftest \
 	vfpu-tables-selftest \
@@ -878,6 +879,7 @@ HELP_DESCRIPTION_cpu-lle-selftest := run the LLE COP0/exception interpreter self
 HELP_DESCRIPTION_domain-mode-selftest := run the LLE domain-mode and import-seam selftest
 HELP_DESCRIPTION_dispatch-isolation-selftest := run dispatch isolation selftests
 HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation selftest
+HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
@@ -1358,6 +1360,9 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# ge.c is the vblank hook for the recorder's trace window and store watch; without this
+# define those calls compile to flight_recorder.h's inert inline stubs.
+override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 # A trace build compiles the runtime with the trace writer too. This must precede the
 # runtime profile hash so switching TRACE rebuilds the runtime objects.
 ifeq ($(TRACE),1)
@@ -2032,7 +2037,7 @@ asset-index-selftest:
 gpu-coherence-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_coherence_selftest.exe \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_coherence_selftest.exe
 
@@ -2043,7 +2048,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
@@ -2063,7 +2068,7 @@ gpu-capture-selftest: shader-verify
 ge-replay: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
-		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/perf.c \
+		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 
 # selftest — compile and run the C++ reference interpreter unit tests.

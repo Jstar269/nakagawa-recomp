@@ -75,7 +75,7 @@ void sr_watch_configure(void) {
 
     const char *separator = strchr(spec, ':');
     if (!separator || separator == spec || separator[1] == '\0' || spec[0] == '-') {
-        fprintf(stderr, "SR_WATCH: expected ADDR:LEN with a nonzero length\n");
+        fprintf(stderr, "SR_WATCH: expected ADDR:LEN (a non-negative address and a nonzero length)\n");
         return;
     }
     errno = 0;
@@ -101,6 +101,9 @@ void sr_watch_configure(void) {
             (uint32_t)s_watch_start, length);
 }
 
+/* The vblank note and the match counter are plain diagnostics shared between the GE
+ * thread and the storing thread without synchronization: a report may carry the
+ * previous vblank, and the counter is exact only single-threaded (the selftest). */
 void sr_watch_note_vblank(uint32_t vblank) {
     s_watch_vblank = vblank;
 }

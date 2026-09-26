@@ -586,7 +586,7 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
     if instruction_trace:
         env["TRACE"] = "1"
         runtime_opt = env.get("RUNTIME_OPT", "-O0")
-        if "-DSR_INSTRUCTION_TRACE" not in runtime_opt.split():
+        if not any(flag.split("=", 1)[0] == "-DSR_INSTRUCTION_TRACE" for flag in runtime_opt.split()):
             env["RUNTIME_OPT"] = f"{runtime_opt} -DSR_INSTRUCTION_TRACE".strip()
     return env
 
