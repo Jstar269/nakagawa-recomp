@@ -298,7 +298,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f4be8d231a18549ee8678e6cdef2f277a6c51195306266ef3c0153083f304f70"
+      "sha256": "3882f471a0a7642093fb503c3e69b8691ab9ae62feecda167f55cf86c1b87d19"
     },
     {
       "path": "NOTICE.md",
@@ -422,19 +422,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0acd693ced5eb2a2beb34705d66f0e8e1455e10ad8fae33be9061805c35ee9cb"
-    },
-    {
-      "path": "assets/history_audit_reviewed.json",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "history-audit-reviewed-findings",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "96b2a70b6ca7e4440cd00f7de8d4702a0015bd5463e9f915afe4ca166dd6342a"
+      "sha256": "c11973cd95bb94414ac2615b710a222e36426fb4e7540eebe3c2a9897ea47ccd"
     },
     {
       "path": "assets/issue_routing.json",
@@ -475,7 +463,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "c99dca33ea039fcd0bcd573dc73ecf60fe4259dcf265c7667d8278285fab3ee2"
+      "sha256": "603b140fbb812853ae56dfa7671b9e41340dcb8375833f4dd5adf22c9c3c8e9f"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1138,7 +1126,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "afea1ff3f3233ef4751297adfcf88c8fcc660a63858bd839347d398cad6e8ff8"
+      "sha256": "ad9ee7863bd2c6bc8a9eddd953321bd848995110e1d8dfb66edc9648451cc356"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -3614,7 +3602,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "80002127f52316fa91e66c42e0c137c636d0e5a44aa3c226709cd90f4127eede"
+      "sha256": "6b6504feefec7289d937c11965d82d5c34ce23dd35a89554494a1e2980a84b0f"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -3626,7 +3614,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8f32b29b7c01f7c6b64553a55882b899a8392ae5ea125bc80452ea38fbaad948"
+      "sha256": "57b31f54f918e324f1d5b04435088f3ebf41cb1ee3d4ed54e52412c1c1ad2686"
     },
     {
       "path": "src/rt/fp_convert.h",
@@ -4052,7 +4040,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3a3f3abbc630e2c8f2d6bbb4ab5bbc3ae17948616d52115195f598b49c16298d"
+      "sha256": "ff952582043ba21ea82f87abf235c2b7fa6763a8defa19c77e82e9b8c794af34"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5251,7 +5239,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5d0d09611ef579603331538477affed622abd46842dba514f4fc055728987f88"
+      "sha256": "6fec13f6bcfe39eccd6de1858b077b479c40c19085b30c556c497d119c2b0ca4"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -5433,7 +5421,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "636a1b44f6539ac625cbfc216235fd8969acb67e7142f3ed42376d0acc19983b"
+      "sha256": "e989358313638d18becde655b87b9a191bb4ab2b02e4242d4d7aa2e8cdbf62f7"
     },
     {
       "path": "tools/hle_manifest.py",
@@ -6843,6 +6831,18 @@
       "sha256": "02ae49e9df461ce915e66b21187ef48bb5877efa96b19ec4671aaa08605c1539"
     },
     {
+      "path": "tools/test_flight_build_identity.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "flight-build-identity-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "0a1cbf2c56a04e6e9c11167818e14997a7407b2eb6c80041c7f1ff8449c7247d"
+    },
+    {
       "path": "tools/test_flight_diff.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6852,7 +6852,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7f8cc00499a2c3b202d48883c34f1b021387c4a6bb6e7e4614a121dcfdbfb580"
+      "sha256": "df4064a92876eab9d847132679518b854c6be2f8a428a21b9c0e21b062dd8924"
     },
     {
       "path": "tools/test_font_provisioning.py",
@@ -6991,15 +6991,12 @@
     },
     {
       "path": "tools/test_history_audit.py",
-      "classification": "project_authored_attested",
+      "classification": "synthetic_fixture",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "history-audit-tests",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b0006be4971c96172282f43303d5580237df7525bb5cdb2a44bdfc0b7c5a2aa8"
+      "sha256": "09f92255ce41bc132621bc55c9ec53dfea1eb19597bfce2827c4a50732a8ba07"
     },
     {
       "path": "tools/test_hle_manifest.py",

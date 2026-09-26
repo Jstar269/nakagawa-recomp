@@ -734,6 +734,7 @@
     "tools/test_extract_xb_gim.py",
     "tools/test_extract_xb_probe_fallback.py",
     "tools/test_extract_xb_security.py",
+    "tools/test_flight_build_identity.py",
     "tools/test_flight_diff.py",
     "tools/test_font_provisioning.py",
     "tools/test_fp_scalar_mutations.py",

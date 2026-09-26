@@ -19,7 +19,7 @@ enum {
     SR_FLIGHT_CLASS_FATAL = 1u << 5,
     SR_FLIGHT_CLASS_ALL = (1u << 6) - 1u,
     SR_FLIGHT_MAX_EVENTS = 4096u,
-    SR_FLIGHT_SCHEMA_VERSION = 2u
+    SR_FLIGHT_SCHEMA_VERSION = 3u
 };
 
 enum {
