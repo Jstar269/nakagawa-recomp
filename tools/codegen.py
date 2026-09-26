@@ -395,19 +395,29 @@ def _nanv(pc, op, vd, out, nout, a, na, b=None, nb=0):
             f'{a},{na},{b},{nb});')
 
 
-def _nan_matrix(pc, op, vd, out_exprs, in_exprs):
+def _nan_matrix(pc, op, vd, out_exprs, in_exprs, in_exprs2=()):
     """SR_NAN_TRAP check for a form whose operands are scattered v[] elements.
 
     The matrix forms (vmmul, vtfm) read and write raw physical registers instead
     of a lane array, so the results and the operands are gathered into arrays
-    first. Only emitted under --nan-trap.
+    first. `in_exprs2`, when given, is a SECOND operand group (vtfm's vector
+    lanes) with its own array and its own macro argument, so the report lists
+    every consumed lane instead of the matrix alone. Only emitted under
+    --nan-trap.
     """
     if not NAN_TRAP:
         return ""
     outs = " ".join(f"_ntout[{i}]={expr};" for i, expr in enumerate(out_exprs))
     ins = " ".join(f"_ntin[{i}]={expr};" for i, expr in enumerate(in_exprs))
-    return (f"{{ float _ntin[{len(in_exprs)}], _ntout[{len(out_exprs)}]; {ins} {outs} "
-            + _nanm(pc, op, vd, "_ntout", "_ntin", len(out_exprs), len(in_exprs))
+    if not in_exprs2:
+        return (f"{{ float _ntin[{len(in_exprs)}], _ntout[{len(out_exprs)}]; {ins} {outs} "
+                + _nanm(pc, op, vd, "_ntout", "_ntin", len(out_exprs), len(in_exprs))
+                + "}")
+    ins2 = " ".join(f"_ntin2[{i}]={expr};" for i, expr in enumerate(in_exprs2))
+    return (f"{{ float _ntin[{len(in_exprs)}], _ntout[{len(out_exprs)}],"
+            f" _ntin2[{len(in_exprs2)}]; {ins} {ins2} {outs} "
+            + _nanm(pc, op, vd, "_ntout", "_ntin", len(out_exprs), len(in_exprs),
+                    "_ntin2", len(in_exprs2))
             + "}")
 
 
@@ -421,16 +431,20 @@ _BINOP_NAME = {(0x18, 0): "vadd.s", (0x18, 1): "vsub.s", (0x18, 7): "vdiv.s",
                (0x19, 0): "vmul.s"}
 
 
-def _nanm(pc, op, vd, outs, ins, nout, nin):
+def _nanm(pc, op, vd, outs, ins, nout, nin, ins2=None, nin2=0):
     """SR_NAN_TRAP check for a form whose operands are scattered v[] elements.
 
     The matrix forms (vmmul, vtfm) read and write raw physical registers instead
-    of a lane array, so the operands are gathered into one array first. Only
-    emitted under --nan-trap.
+    of a lane array, so the operands are gathered into arrays first; a second
+    operand group (vtfm's vector) is passed as its own pair. Only emitted under
+    --nan-trap.
     """
     if not NAN_TRAP:
         return ""
-    return (f' SR_NAN_TRAP_V(0x{pc:08x}u,"{op}",{vd}u,{outs},{nout},{ins},{nin});')
+    if ins2 is None:
+        return f' SR_NAN_TRAP_V(0x{pc:08x}u,"{op}",{vd}u,{outs},{nout},{ins},{nin});'
+    return (f' SR_NAN_TRAP_V2(0x{pc:08x}u,"{op}",{vd}u,{outs},{nout},'
+            f'{ins},{nin},{ins2},{nin2});')
 
 def vreg_indices(reg, size):
     # Physical v[] indices for a VFPU vector register. size is lanes (1=single..4=quad).
@@ -1274,6 +1288,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             addr, "vtfm", vd,
             [f"_v{i}" for i in range(side)],
             [f"s->v[{mreg_index(vs, side, i, k)}]" for i in range(side) for k in range(side)],
+            [f"s->v[{ti[k]}]" for k in range(tn)],
         ) + " " + writes + _EAT + " }", None, 0
     if op == 0x19 and sub == 2:  # vscl
         scalar = vreg_indices(vt, 1)[0]

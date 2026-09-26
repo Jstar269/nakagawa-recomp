@@ -77,7 +77,38 @@ typedef struct {
     uint64_t terminal_sequence;
 } SrFlightSnapshot;
 
+/* ---- SR_TRACE_PC: an address window over the instruction trace ----
+ * The full trace is one line per guest instruction, which no run of any length
+ * can afford to write. SR_TRACE_PC=LO:HI keeps only the records whose guest pc
+ * is inside the window and adds the ABSOLUTE value of the registers SR_TRACE_V
+ * (VFPU) and SR_TRACE_F (FPU) name, because a window cannot reconstruct a value
+ * written before it. SR_TRACE_LIMIT stops the stream after that many records
+ * and disarms the gate, so the rest of the run executes uninstrumented. Every
+ * delivered vblank is marked, which places each record on the frame timeline.
+ *
+ * This is a diagnostic stream, not the byte-comparable oracle trace: a record is
+ * the canonical line the trace writer already rendered, followed by the absolute
+ * values. It is owned by the diagnostic recorder because every host of the
+ * runtime links that file -- the trace writer consults the window per guest
+ * instruction, and a per-event host (the GE's vblank tick) arms it. Nothing here
+ * is active unless SR_TRACE_PC names a window. The index list is one shared type
+ * in both branches below, so a host that does not link the recorder still
+ * compiles the trace writer against the same declaration. */
+#define SR_TRACE_WINDOW_MAX_INDEX 16u
+typedef struct {
+    unsigned vn, fn;                      /* how many absolute indices are named */
+    uint8_t v[SR_TRACE_WINDOW_MAX_INDEX]; /* VFPU indices, physical v[] order */
+    uint8_t f[SR_TRACE_WINDOW_MAX_INDEX]; /* FPU indices */
+} SrTraceWindowIndices;
+
 #if defined(SR_FLIGHT_RECORDER_LINKED) && !defined(SR_FLIGHT_RECORDER_STANDALONE)
+
+void sr_trace_window_configure(void);   /* lazy env probe; call from a per-vblank hook */
+void sr_trace_note_frame(uint32_t frame);
+int  sr_trace_window_armed(void);
+int  sr_trace_window_begin_instruction(uint32_t pc);  /* 0 when outside the window */
+const SrTraceWindowIndices *sr_trace_window_indices(void);
+void sr_trace_window_record(uint32_t pc, const char *text);
 
 void sr_flight_init(void);
 int sr_flight_class_enabled(uint32_t event_class);
@@ -112,6 +143,17 @@ void sr_flight_test_disable(void);
     } while (0)
 
 #else
+
+/* Not linked: the window stays disarmed and inert, so a host without the
+ * recorder behaves exactly as it did before the probe existed. */
+static inline void sr_trace_window_configure(void) {}
+static inline void sr_trace_note_frame(uint32_t frame) { (void)frame; }
+static inline int sr_trace_window_armed(void) { return 0; }
+static inline int sr_trace_window_begin_instruction(uint32_t pc) { (void)pc; return 0; }
+static inline const SrTraceWindowIndices *sr_trace_window_indices(void) { return 0; }
+static inline void sr_trace_window_record(uint32_t pc, const char *text) {
+    (void)pc; (void)text;
+}
 
 static inline void sr_flight_init(void) {}
 static inline int sr_flight_class_enabled(uint32_t event_class) {
