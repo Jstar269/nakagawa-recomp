@@ -106,9 +106,26 @@ static int write_launch_environment_probe(void) {
     if (!f) return 3;
     const char *iso = getenv("PSP_ISO");
     const char *unrelated = getenv("NK_LAUNCH_TEST_UNRELATED");
-    int ok = fprintf(f, "PSP_ISO=%s\nNK_LAUNCH_TEST_UNRELATED=%s\n",
+    const char *fps = getenv("SR_FPS_CAP");
+    const char *vsync = getenv("SR_VSYNC");
+    const char *scale = getenv("SR_RESOLUTION_SCALE");
+    const char *fullscreen = getenv("SR_FULLSCREEN");
+    const char *volume = getenv("SR_MASTER_VOLUME");
+    int ok = fprintf(f,
+                     "PSP_ISO=%s\n"
+                     "NK_LAUNCH_TEST_UNRELATED=%s\n"
+                     "SR_FPS_CAP=%s\n"
+                     "SR_VSYNC=%s\n"
+                     "SR_RESOLUTION_SCALE=%s\n"
+                     "SR_FULLSCREEN=%s\n"
+                     "SR_MASTER_VOLUME=%s\n",
                      iso ? iso : "<unset>",
-                     unrelated ? unrelated : "<unset>") >= 0;
+                     unrelated ? unrelated : "<unset>",
+                     fps ? fps : "<unset>",
+                     vsync ? vsync : "<unset>",
+                     scale ? scale : "<unset>",
+                     fullscreen ? fullscreen : "<unset>",
+                     volume ? volume : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     return ok ? 0 : 4;
 }
@@ -185,6 +202,16 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(session.staged_executable_checked);
     assert(ends_with(session.executable_path, "display-smoke") ||
            ends_with(session.executable_path, "display-smoke.exe"));
+    /* Prepare defaults: a caller that never configures the session must not
+       hand the runtime a muted or zeroed volume (#settings). */
+    assert(session.config.master_volume == 100);
+    /* Apply settings the way the player does (apply_settings_to_session)
+       before spawning, so every setting reaches the child environment. */
+    session.config.resolution_scale = 2;
+    session.config.fps_cap = 30;
+    session.config.vsync = false;
+    session.config.fullscreen = true;
+    session.config.master_volume = 55;
     assert(nk_launch_start(&session) == NK_OK);
 
     int child_exit = nk_launch_wait(&session, -1);
@@ -205,6 +232,13 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "PSP_ISO=\n") != NULL);
     assert(strstr(observed,
                   "NK_LAUNCH_TEST_UNRELATED=preserve-me\n") != NULL);
+    /* Every wired Settings value must reach the spawned child (#settings):
+       frame cap, vsync, render scale, fullscreen and master volume. */
+    assert(strstr(observed, "SR_FPS_CAP=30\n") != NULL);
+    assert(strstr(observed, "SR_VSYNC=0\n") != NULL);
+    assert(strstr(observed, "SR_RESOLUTION_SCALE=2\n") != NULL);
+    assert(strstr(observed, "SR_FULLSCREEN=1\n") != NULL);
+    assert(strstr(observed, "SR_MASTER_VOLUME=55\n") != NULL);
 
     restore_environment_value("PSP_ISO", old_iso, had_iso);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,

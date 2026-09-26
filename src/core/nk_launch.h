@@ -22,6 +22,8 @@ typedef struct {
     bool vsync;
     bool benchmark_mode;
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
+    int master_volume;    /* 0..100 host master gain; prepare_session defaults to 100 so a
+                             caller that never sets it keeps full volume, not silence */
 } NkRuntimeConfig;
 
 typedef struct {
