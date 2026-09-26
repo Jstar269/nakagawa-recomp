@@ -503,7 +503,7 @@ endif
 
 ifeq ($(OS),Windows_NT)
 PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
-PLAYER_EXTRA_LIBS   := -lshell32
+PLAYER_EXTRA_LIBS   := -lshell32 -lwinhttp -lbcrypt
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 # The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
 # must derive from the shared VULKAN_SDK resolution above (explicit override,
@@ -2175,7 +2175,7 @@ player-state-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c \
-		tests/native/test_player_state.c -o build/test_player_state$(EXE_EXT)
+		tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o build/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
@@ -2187,7 +2187,7 @@ package-builder-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
-		tests/native/test_package_builder.c -o build/test_package_builder$(EXE_EXT)
+		tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o build/test_package_builder$(EXE_EXT)
 
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
 # player itself builds rather than in the SDL-free native-core-tests set.

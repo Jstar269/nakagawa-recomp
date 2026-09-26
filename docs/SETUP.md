@@ -462,20 +462,24 @@ it needs all of the following:
   `<player exe>/../tools`, `<player exe>/../source/tools` (the v0.0.1 release
   layout), the working directory, and its parent. Running the player from the
   repository root or from `build/` finds it automatically.
-- `python`, `gcc`, and `mingw32-make` on `PATH` — the UCRT64 toolchain installed in
-  section 1. The spawned build inherits the player's `PATH`, so a tool your shell
-  cannot see is a tool the build cannot see either.
-- SDL3 headers/import library and Vulkan headers/loader import library from the
-  UCRT64 package set. The Makefile can use the MSYS2 `libvulkan-1.dll.a` import
-  archive; a separate Vulkan SDK is not needed for this consumer build.
+- `python`, `gcc`, and `mingw32-make` from either the current environment or the
+  player's per-user downloaded build tools. The player changes `PATH` only for
+  the build child; it never edits system `PATH` or the registry.
 - `powershell.exe`, which ships with Windows 11. The asset-copy step uses the
   built-in Windows PowerShell 5.1; PowerShell 7 remains the development baseline
   for the other repository scripts.
 
-Missing pieces are named on the error card instead of failing deep inside the build:
-`CLI_NOT_FOUND` lists every searched location and the `NK_INSTALL_ROOT` fix,
-`BUILD_TOOLCHAIN_MISSING` names the missing tool (`python`, `gcc`, or
-`mingw32-make`), and `PYTHON_NOT_FOUND` names the interpreter.
+When a pinned Windows prerequisite is missing, BUILD PACKAGE opens one consent
+card showing each component's name, version, source host, download size, and
+licence, plus the total. Nothing is downloaded until **DOWNLOAD** is selected;
+the answer applies only to that build. If CPython is missing, the native player
+first downloads the pinned embeddable archive and checks its HTTPS host, exact
+size, and SHA-256 before extracting it. The verified runtime then runs the
+Python fetcher for the remaining packages. A progress card shows the current
+component and received/total bytes. **CANCEL** removes partial downloads and
+staged extraction data. A successful install resumes BUILD PACKAGE
+automatically. Named error cards explain offline, redirect, size, hash, and disk
+errors and offer a retry.
 
 The pinned candidate download set is recorded in
 [`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
@@ -486,11 +490,18 @@ python.org's release page. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.
 
-The player does not yet bootstrap the Python runtime or show the prerequisite
-consent/progress flow. If a build prerequisite is missing, the card names that
-boundary and points to automatic build-prerequisite installation, in the works
-([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)); it does not
-download anything automatically today.
+Downloaded tools, verified archives, and extracted licence texts live under the
+current user's Nakagawa data folder in `prerequisites/`. **Settings → About &
+Licenses** lists installed components, versions, and licence identifiers and
+opens the notice folder. **Settings → Remove Downloaded Build Tools** removes
+that prerequisites folder after confirmation; it does not remove the game
+library, ISO files, saves, or built packages. The consent card marks unresolved
+`NOASSERTION` licence entries as under review in [#304](https://github.com/Jstar269/nakagawa-recomp/issues/304).
+
+This automatic prerequisite flow currently targets Windows x64 with the
+UCRT64 package set. Linux prerequisite installation is in the works
+([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)); the wider
+distribution and update contract remains tracked by [#324](https://github.com/Jstar269/nakagawa-recomp/issues/324).
 
 The player's UI typography loads `SDL3_ttf.dll` from beside the executable first,
 then from `PATH`; without it the built-in readable debug font is used. Placing

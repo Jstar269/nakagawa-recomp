@@ -188,6 +188,12 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 } else {
                     player_app_set_view(app, VIEW_SETTINGS);
                 }
+            } else if (app->active_view == VIEW_PREREQ_CONSENT ||
+                       app->active_view == VIEW_PREREQ_PROGRESS) {
+                player_app_prereq_cancel(app);
+            } else if (app->active_view == VIEW_PREREQ_ABOUT ||
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -301,6 +307,12 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 } else {
                     player_app_set_view(app, VIEW_SETTINGS);
                 }
+            } else if (app->active_view == VIEW_PREREQ_CONSENT ||
+                       app->active_view == VIEW_PREREQ_PROGRESS) {
+                player_app_prereq_cancel(app);
+            } else if (app->active_view == VIEW_PREREQ_ABOUT ||
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -936,6 +948,179 @@ static int stage_iso_synchronously(PlayerApp *app) {
 /* Bound on one headless --launch-index run. A guest that reaches its own exit
    ends the run sooner; this only caps a run that would otherwise wait forever. */
 #define NK_HEADLESS_LAUNCH_TIMEOUT_MS 120000
+
+static bool player_prerequisite_data_root(const PlayerApp *app,
+                                          char *out, size_t out_size) {
+    if (!app || !out || out_size == 0) return false;
+    if (app->runtime_root[0]) {
+        int n = snprintf(out, out_size, "%s", app->runtime_root);
+        return n > 0 && (size_t)n < out_size;
+    }
+    return nk_platform_get_app_data_dir(out, out_size);
+}
+
+static const char *player_prerequisite_display_name(const PlayerApp *app,
+                                                     const char *item_id) {
+    if (!app || !item_id) return item_id ? item_id : "";
+    for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+        const PackagePrerequisite *item = &app->prerequisites.items.items[i];
+        if (strcmp(item->id, item_id) == 0) return item->name;
+    }
+    return item_id;
+}
+
+static void player_start_prerequisite_operation(PlayerApp *app) {
+    if (!app || app->prerequisite_job_started || app->prerequisite_fetcher_started) return;
+    if (app->prerequisites.phase != PLAYER_PREREQ_BOOTSTRAP &&
+        app->prerequisites.phase != PLAYER_PREREQ_DOWNLOAD) return;
+
+    char data_root[NK_MAX_PATH];
+    if (!player_prerequisite_data_root(app, data_root, sizeof(data_root))) {
+        player_app_prereq_fail(app, "DATA_DIR_UNAVAILABLE",
+            "The per-user app-data folder is unavailable. Choose a writable Windows profile and retry.");
+        return;
+    }
+
+    if (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP) {
+        const PackagePrerequisite *python_item = NULL;
+        for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+            if (strcmp(app->prerequisites.items.items[i].id, "cpython-embed-amd64") == 0) {
+                python_item = &app->prerequisites.items.items[i];
+                break;
+            }
+        }
+        if (!python_item || !package_builder_bootstrap_python_start(
+                &app->bootstrap_session, python_item, data_root)) {
+            player_app_prereq_fail(app, "PYTHON_BOOTSTRAP_START_FAILED",
+                "The verified CPython bootstrap could not start. Check app-data permissions and retry.");
+            return;
+        }
+        app->prerequisite_job_started = true;
+        app->prerequisites.current_item[0] = '\0';
+        app->prerequisites.item_received_bytes = 0;
+        app->prerequisites.item_total_bytes = python_item->size_bytes;
+        app->prerequisites.total_received_bytes = 0;
+        return;
+    }
+
+    char python_path[NK_MAX_PATH];
+    char cli_path[NK_MAX_PATH];
+    if (!package_builder_find_python_in_root(data_root, python_path, sizeof(python_path))) {
+        player_app_prereq_fail(app, "PYTHON_NOT_FOUND",
+            "The verified CPython runtime is unavailable in app data. Retry the bootstrap download.");
+        return;
+    }
+    if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        player_app_prereq_fail(app, "CLI_NOT_FOUND",
+            "The packaged source/tools folder could not be located. Repair the release source folder, then retry.");
+        return;
+    }
+    char log_dir[NK_MAX_PATH];
+    int n = snprintf(log_dir, sizeof(log_dir), "%s%clogs", data_root,
+                     nk_platform_path_separator());
+    if (n < 0 || (size_t)n >= sizeof(log_dir) || !nk_platform_mkdir_p(log_dir)) {
+        player_app_prereq_fail(app, "DISK_FULL",
+            "The app-data log folder could not be created. Free disk space or check permissions, then retry.");
+        return;
+    }
+    NkResult result = package_builder_start_prerequisite_fetch(
+        &app->build_session, python_path, cli_path, data_root, log_dir,
+        app->prerequisite_bootstrap_ready);
+    if (result != NK_OK) {
+        player_app_prereq_fail(app,
+            app->build_session.failure_code[0] ? app->build_session.failure_code : "PREREQUISITE_FETCH_START_FAILED",
+            app->build_session.failure_boundary[0] ? app->build_session.failure_boundary :
+                "The verified prerequisite fetcher could not start. Check app-data permissions and retry.");
+        return;
+    }
+    app->prerequisite_fetcher_started = true;
+    app->prerequisites.current_item[0] = '\0';
+}
+
+static void player_update_prerequisite_operation(PlayerApp *app) {
+    if (!app) return;
+    if (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP &&
+        !app->prerequisite_job_started) {
+        if (app->prerequisites.cancel_requested) {
+            player_app_prereq_finish_cancel(app);
+        } else {
+            player_start_prerequisite_operation(app);
+        }
+    }
+    if (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP &&
+        app->prerequisite_job_started) {
+        if (app->prerequisites.cancel_requested) {
+            package_builder_bootstrap_python_cancel(&app->bootstrap_session);
+        }
+        uint64_t received = 0;
+        bool finished = false;
+        bool succeeded = false;
+        char code[48] = "";
+        char message[512] = "";
+        package_builder_bootstrap_python_poll(&app->bootstrap_session, &received,
+            &finished, &succeeded, code, sizeof(code), message, sizeof(message));
+        player_app_prereq_update_progress(app,
+            player_prerequisite_display_name(app, "cpython-embed-amd64"), received,
+            app->prerequisites.item_total_bytes, received,
+            app->prerequisites.total_bytes);
+        if (finished && app->prerequisite_job_started) {
+            package_builder_bootstrap_python_close(&app->bootstrap_session);
+            app->prerequisite_job_started = false;
+            if (succeeded) {
+                app->prerequisite_bootstrap_ready = true;
+                app->prerequisites.bootstrap_python = false;
+                app->prerequisites.phase = PLAYER_PREREQ_DOWNLOAD;
+                app->prerequisites.item_received_bytes = app->prerequisites.item_total_bytes;
+                app->prerequisites.total_received_bytes = app->prerequisites.item_total_bytes;
+            } else if (app->prerequisites.cancel_requested) {
+                player_app_prereq_finish_cancel(app);
+            } else {
+                player_app_prereq_fail(app, code[0] ? code : "PYTHON_BOOTSTRAP_FAILED",
+                    message[0] ? message : "The verified CPython runtime could not be installed. Check the connection and app-data space, then retry.");
+            }
+        }
+    }
+
+    if (app->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD &&
+        !app->prerequisite_fetcher_started) {
+        if (app->prerequisites.cancel_requested) {
+            player_app_prereq_finish_cancel(app);
+        } else {
+            player_start_prerequisite_operation(app);
+        }
+    }
+    if (app->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD &&
+        app->prerequisite_fetcher_started) {
+        if (app->prerequisites.cancel_requested && !app->prerequisite_cancel_sent) {
+            package_builder_request_prerequisite_cancel(&app->build_session,
+                app->build_session.cancel_file_path);
+            app->prerequisite_cancel_sent = true;
+        }
+        package_builder_poll(&app->build_session, SDL_GetTicks());
+        player_app_prereq_update_progress(app,
+            player_prerequisite_display_name(app, app->build_session.current_item_id),
+            app->build_session.item_received_bytes, app->build_session.item_total_bytes,
+            app->build_session.total_received_bytes, app->build_session.total_bytes);
+        if (!app->build_session.is_building) {
+            app->prerequisite_fetcher_started = false;
+            if (app->prerequisites.cancel_requested || app->build_session.is_cancelled ||
+                strcmp(app->build_session.failure_code, "INSTALL_CANCELLED") == 0) {
+                player_app_prereq_finish_cancel(app);
+            } else if (app->build_session.is_failed) {
+                player_app_prereq_fail(app,
+                    app->build_session.failure_code[0] ? app->build_session.failure_code : "PREREQUISITE_INSTALL_FAILED",
+                    app->build_session.failure_boundary[0] ? app->build_session.failure_boundary :
+                        "The verified build prerequisites could not be installed. Check the error and retry.");
+            } else if (app->build_session.is_complete &&
+                       app->build_session.prerequisite_install_complete) {
+                player_app_prereq_complete(app);
+            } else {
+                player_app_prereq_fail(app, "PREREQUISITE_INSTALL_FAILED",
+                    "The prerequisite fetcher exited before confirming a complete install. Retry the download.");
+            }
+        }
+    }
+}
 
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
@@ -1702,6 +1887,15 @@ int main(int argc, char *argv[]) {
             }
 #endif
         }
+        if (app.request_open_license_folder) {
+            app.request_open_license_folder = false;
+#if defined(_WIN32) || defined(_WIN64)
+            if (app.requested_open_path[0]) {
+                (void)ShellExecuteA(NULL, "open", app.requested_open_path,
+                                    NULL, NULL, SW_SHOWNORMAL);
+            }
+#endif
+        }
 
         /* Step 3 requests one worker; progress and completion return through
            SDL user events, so the UI thread never polls a job or performs ISO
@@ -1712,6 +1906,14 @@ int main(int argc, char *argv[]) {
         if (staging_job && app.wizard.is_extracting &&
             player_app_wizard_cancel_requested(&app)) {
             request_staging_cancel(staging_job);
+        }
+
+        player_update_prerequisite_operation(&app);
+        if (player_app_prereq_take_resume(&app)) {
+            int game_index = app.prerequisites.game_index;
+            if (!player_app_start_package_build(&app, game_index)) {
+                /* The state helper has already opened the actionable error card. */
+            }
         }
 
         /* Clamp keyboard/gamepad focus before rendering so activation can
@@ -1797,6 +1999,23 @@ int main(int argc, char *argv[]) {
 
     if (app.is_game_running) {
         player_app_stop_game(&app);
+    }
+
+    if (app.prerequisite_job_started) {
+        package_builder_bootstrap_python_cancel(&app.bootstrap_session);
+        package_builder_bootstrap_python_close(&app.bootstrap_session);
+        app.prerequisite_job_started = false;
+    }
+    if (app.prerequisite_fetcher_started) {
+        package_builder_request_prerequisite_cancel(&app.build_session,
+            app.build_session.cancel_file_path);
+        while (app.build_session.is_building) {
+            package_builder_poll(&app.build_session, SDL_GetTicks());
+            if (app.build_session.is_building) {
+                (void)nk_platform_wait_process(&app.build_session.process, 1000);
+            }
+        }
+        app.prerequisite_fetcher_started = false;
     }
 
     destroy_staging_job(&staging_job);
