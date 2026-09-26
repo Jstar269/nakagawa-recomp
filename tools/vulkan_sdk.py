@@ -36,6 +36,10 @@ def is_usable_vulkan_sdk(path: Path) -> bool:
     libraries = (
         root / "Lib" / "vulkan-1.lib",
         root / "lib" / "vulkan-1.lib",
+        # The project also supports the official MSYS2 UCRT64 loader package,
+        # whose GCC import archive uses MinGW's DLL-import naming convention.
+        root / "lib" / "libvulkan-1.dll.a",
+        root / "Lib" / "libvulkan-1.dll.a",
     )
     return any(candidate.is_file() for candidate in headers) and any(candidate.is_file() for candidate in libraries)
 

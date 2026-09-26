@@ -844,7 +844,7 @@ try {
         if (-not $OracleName) {
             $OracleName = ([System.IO.Path]::GetFileNameWithoutExtension($Route)) -replace '^route_', ''
         }
-        if (-not (Test-SafeComponentName -Name $OracleName -Label "OracleName")) {
+        if (-not (Test-SafeComponentName -Name $OracleName)) {
             return $false
         }
         $outDir = Join-Path $script:LogDir "oracle_$OracleName"

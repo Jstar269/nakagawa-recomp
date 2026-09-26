@@ -28,6 +28,11 @@ from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E4
 _CHECKS_MODULE = nk_doctor_checks
 
 
+# Scripts the CONSUMER package build runs. They target the Windows PowerShell
+# that ships with Windows (5.1) so a clean machine needs no PowerShell 7.
+CONSUMER_BUILD_POWERSHELL = {"copy_build_assets.ps1": "5.1"}
+
+
 class ElfValidationTests(unittest.TestCase):
     def test_valid_mips_elf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -554,6 +559,10 @@ class EnvironmentContractTests(unittest.TestCase):
                 self.assertEqual(result.status, "FAIL")
 
     def test_powershell_floor_is_pinned_to_the_documented_minimum(self) -> None:
+        # The consumer build step runs under the Windows PowerShell 5.1 that
+        # ships with Windows, so a clean machine needs no PowerShell 7 install
+        # (tools/test_build_truth.py pins the Makefile side of this); every other
+        # script keeps the documented floor.
         # Issue #337: one floor, four surfaces. The static feature inventory
         # proves no tracked .ps1 needs anything above $IsWindows (6.0); the
         # enforced value is the oldest still-supported line, pinned here so the
@@ -572,10 +581,11 @@ class EnvironmentContractTests(unittest.TestCase):
             "tools/test_manager_safety.ps1", "tools/test_visual_oracle.ps1",
             "tools/title_manager_plan.ps1", "tools/vulkan_sdk.ps1",
         ))):
+            want = CONSUMER_BUILD_POWERSHELL.get(script.name, floor)
             self.assertIn(
-                f"#requires -Version {floor}",
+                f"#requires -Version {want}",
                 script.read_text(encoding="utf-8-sig"),
-                f"{script.relative_to(ROOT)} does not declare '#requires -Version {floor}'",
+                f"{script.relative_to(ROOT)} does not declare '#requires -Version {want}'",
             )
 
     def test_windows_11_requires_workstation_product_type_and_build_floor(self) -> None:
@@ -675,12 +685,13 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "tools" / "title_manager_plan.ps1",
             ROOT / "tools" / "vulkan_sdk.ps1",
         ):
-            self.assertIn(
-                f"#requires -Version {_CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT}",
-                script.read_text(encoding="utf-8-sig"),
-                script.name,
-            )
-        self.assertIn("pwsh -NoProfile", self.makefile)
+            want = CONSUMER_BUILD_POWERSHELL.get(
+                script.name, _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
+            self.assertIn(f"#requires -Version {want}",
+                          script.read_text(encoding="utf-8-sig"), script.name)
+        # The build step's host is a variable (built-in Windows PowerShell by
+        # default), never a hard-coded interpreter name.
+        self.assertIn("$(POWERSHELL) -NoProfile", self.makefile)
         self.assertNotIn("powershell -NoProfile", self.makefile)
         for action in ("Doctor", "Build", "Rebuild", "Play", "Verify", "Manager"):
             self.assertIn(f'"{action}"', self.frontend)
@@ -744,7 +755,9 @@ class SimpleFrontEndTests(unittest.TestCase):
         self.assertEqual(discovered_scripts, expected_scripts)
         for script in discovered_scripts:
             content = script.read_text(encoding="utf-8-sig")
-            expected_header = f"#requires -Version {_CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT}"
+            want = CONSUMER_BUILD_POWERSHELL.get(
+                script.name, _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
+            expected_header = f"#requires -Version {want}"
             self.assertIn(
                 expected_header,
                 content,

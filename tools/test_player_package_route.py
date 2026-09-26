@@ -53,6 +53,11 @@ from test_iso_parity import (  # noqa: E402
     create_test_iso_with_executables,
 )
 
+SHOWCASE_FIXTURE_DIR = ROOT / "fixtures" / "showcase"
+if str(SHOWCASE_FIXTURE_DIR) not in sys.path:
+    sys.path.insert(0, str(SHOWCASE_FIXTURE_DIR))
+from showcase import DEMOS as SHOWCASE_DEMOS, make_icon_png, write_iso  # noqa: E402
+
 # Short enough to keep the hosted run quick, long enough that the guest really
 # presents frames. The guest loops this many times, one vblank wait each.
 FRAMES = 8
@@ -282,6 +287,50 @@ class TestPlayerPackageRoute(unittest.TestCase):
             cwd=ROOT, env=environment, capture_output=True, text=True,
             timeout=LAUNCH_TIMEOUT_MS / 1000,  # subprocess.run takes seconds
         )
+
+    def test_release_package_layout_finds_public_cli(self):
+        self.skip_if_toolchain_unavailable()
+        package = self.root / "release-package"
+        install_root = package / "bin"
+        cli = package / "source" / "tools" / "nk_cli.py"
+        cli.parent.mkdir(parents=True)
+        install_root.mkdir()
+        cli.write_text("# source-owned test fixture\n", encoding="utf-8")
+
+        completed = subprocess.run(
+            [str(self.harness), "--find-cli", str(install_root)],
+            cwd=package, capture_output=True, text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("PACKAGE_BUILDER_CLI status=PASS", completed.stdout)
+        discovered = completed.stdout.partition("path=")[2].strip()
+        self.assertEqual(Path(discovered).resolve(), cli.resolve())
+
+    def test_source_owned_showcase_iso_without_companion_assets_stages(self):
+        self.skip_if_toolchain_unavailable()
+        demo = next(item for item in SHOWCASE_DEMOS if item["disc_id"] == "TEST00007")
+        executable = align_executable((self.fixture_dir / "guest.prx").read_bytes())
+        iso_path = self.root / "showcase-without-xbdata.iso"
+        write_iso(
+            iso_path,
+            "TEST00007",
+            "Nakagawa 3D Showcase",
+            make_icon_png(demo["palette"]),
+            executable,
+            b"Source-owned synthetic notice\n",
+        )
+
+        environment = os.environ.copy()
+        environment["LOCALAPPDATA"] = str(self.local_appdata)
+        environment["APPDATA"] = str(self.root / "appdata")
+        environment["USERPROFILE"] = str(self.root / "userprofile")
+        completed = subprocess.run(
+            [str(self.player), f"--iso={iso_path}", "--stage-only"],
+            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("STAGING_RESULT status=PASS", completed.stdout)
 
     def test_build_validates_and_launches_through_the_player(self):
         self.skip_if_toolchain_unavailable()
