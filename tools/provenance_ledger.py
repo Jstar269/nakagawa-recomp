@@ -90,11 +90,13 @@ from dataclasses import dataclass
 
 try:
     from .nk_core.git_isolation import isolated_git_env
+    from .public_export import build_control_document as _build_control_document
     from .public_export import build_document as _build_export_document
     from .public_export import write_document as _write_json_document
     from .publication_policy import load_policy as _load_publication_policy
 except ImportError:
     from nk_core.git_isolation import isolated_git_env
+    from public_export import build_control_document as _build_control_document
     from public_export import build_document as _build_export_document
     from public_export import write_document as _write_json_document
     from publication_policy import load_policy as _load_publication_policy
@@ -1326,7 +1328,10 @@ def _refresh_export_bytes(
         provenance_ledger=ledger_bytes,
         manifest=manifest,
     )
-    return _canonical_json_bytes(document)
+    # Only the policy-derived control form is written; the tree-wide digests and
+    # the commit id are recomputed at verification time.  See
+    # public_export.build_control_document.
+    return _canonical_json_bytes(_build_control_document(document))
 
 
 def refresh_reviewed(

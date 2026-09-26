@@ -39,11 +39,32 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from public_export import (  # noqa: E402
+    EXPORT_CONTROL_OMITTED_FIELDS, build_control_document, build_document, index_files,
+)
+
+
+def assert_committed_control(case: unittest.TestCase, export: dict) -> None:
+    """The committed ``PUBLIC_EXPORT.json`` is a policy-derived control.
+
+    It deliberately carries no tree-wide digest, no file count, and no commit
+    id.  Those describe one instant of the whole tree, and committing them is
+    what made every unrelated merge conflict with every open pull request.  The
+    publication audit and the trusted attestation recompute all of them from
+    the exact bytes and refuse a declared value that disagrees, so a committed
+    control cannot go stale in a way that hides anything.
+    """
+    for field in EXPORT_CONTROL_OMITTED_FIELDS:
+        case.assertNotIn(field, export, f"{field} must not be committed")
+    case.assertIn("policy_sha256", export)
+    case.assertIn("policy_version", export)
+    case.assertIn("excluded_paths", export)
+    case.assertIn("tree_derived_fields", export)
+
 from build_public_export import public_safe_excluded_paths  # noqa: E402
 from nk_core.git_isolation import isolated_git_env, run_git  # noqa: E402
 import provenance_ledger  # noqa: E402
 import publication_policy  # noqa: E402
-from public_export import build_document  # noqa: E402
 LEDGER = ROOT / "docs" / "provenance" / "IMPLEMENTATION_PROVENANCE.json"
 PUBLIC_LEDGER = ROOT / "assets" / "public_provenance_ledger.json"
 REFRESH_TOOL = ROOT / "tools" / "provenance_ledger.py"
@@ -994,10 +1015,13 @@ class ProvenanceRefreshTests(unittest.TestCase):
         self.assertEqual(refreshed["refresh"]["refreshed_paths"], ["src/rt/existing.c"])
 
         export = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
-        self.assertEqual(export["candidate_tree"], refreshed["refresh"]["candidate_tree"])
-        self.assertEqual(export["provenance_ledger_sha256"], hashlib.sha256(
-            (fixture.repo / "assets/public_provenance_ledger.json").read_bytes()
-        ).hexdigest())
+        # The candidate tree and the ledger digest are recomputed at
+        # verification time; committing either would put one more line in the
+        # every-merge-rewrites-it category. The refresh block in the ledger
+        # still names the tree it attested, and the audit below re-derives the
+        # ledger digest from the exact bytes.
+        assert_committed_control(self, export)
+        self.assertNotIn("candidate_tree", export)
 
         self.assertEqual(fixture.audit("--provenance-self-consistency").returncode, 0)
         trusted_refreshed = fixture.tmp / "trusted-refreshed.json"
@@ -1316,7 +1340,7 @@ class ProvenanceRefreshTests(unittest.TestCase):
         refreshed = json.loads((fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
         self.assertIn("entries", refreshed)
         exported = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
-        self.assertIn("included_content_sha256", exported)
+        assert_committed_control(self, exported)
 
 
 class TrustedAdmissionTests(unittest.TestCase):
@@ -1383,8 +1407,7 @@ class TrustedAdmissionTests(unittest.TestCase):
         self.assertNotIn("refresh", refreshed, "admission output must not masquerade as a refresh")
 
         export = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
-        self.assertEqual(export["provenance_ledger_sha256"], hashlib.sha256(
-            (fixture.repo / "assets/public_provenance_ledger.json").read_bytes()).hexdigest())
+        assert_committed_control(self, export)
         policy = json.loads((fixture.repo / "assets/public_source_profile.json").read_text(encoding="utf-8"))
         self.assertIn(self.NEW_DOC, policy["include_paths"])
 
@@ -1884,7 +1907,7 @@ class TrustedAdmissionTests(unittest.TestCase):
         self.assertIn("entries", refreshed)
         self.assertIn("admission", refreshed)
         exported = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
-        self.assertIn("included_content_sha256", exported)
+        assert_committed_control(self, exported)
 
     def test_stale_trusted_baseline_ledger_fails_closed(self) -> None:
         fixture = _RefreshFixture(self)
@@ -2073,13 +2096,35 @@ class SelfReferentialEntryTests(unittest.TestCase):
         document the ledger's own bytes depend on.
         """
         export = json.loads((ROOT / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
-        self.assertIn("provenance_ledger_sha256", export)
+        # The committed control no longer hashes the ledger blob at all, so the
+        # circularity exemption is unnecessary rather than merely permitted.
+        # What it must still do is exclude itself from its own content digest,
+        # and that exclusion is what the recomputation reads.
+        self.assertIn("PUBLIC_EXPORT.json", export["digest_excludes"])
+
+        # The generator's control for this tree is the shape the repository
+        # commits. The committed file may still carry the tree-derived fields
+        # until a maintainer regenerates it -- that is the pending refresh, not
+        # a defect -- but nothing else may differ from the control, so the file
+        # can only ever be the control plus the fields being removed.
+        policy = publication_policy.load_policy(ROOT / "assets/public_source_profile.json")
+        files = index_files(ROOT)
         ledger_bytes = (ROOT / "assets" / "public_provenance_ledger.json").read_bytes()
-        self.assertEqual(
-            export["provenance_ledger_sha256"],
-            hashlib.sha256(ledger_bytes).hexdigest(),
-            "the export must hash the ledger's real bytes; if this drifts the "
-            "circularity above is no longer the reason the digests are omitted",
+        control = build_control_document(
+            build_document(
+                policy, files,
+                provenance_ledger=ledger_bytes,
+                manifest=(ROOT / "assets/release_manifest.json").read_bytes()
+                if (ROOT / "assets/release_manifest.json").is_file() else None,
+            )
+        )
+        for field in EXPORT_CONTROL_OMITTED_FIELDS:
+            self.assertNotIn(field, control, f"the generated control must omit {field}")
+        extra = set(export) - set(control)
+        self.assertTrue(
+            extra <= set(EXPORT_CONTROL_OMITTED_FIELDS),
+            f"the committed export differs from the generated control in "
+            f"{sorted(extra)}, which is not a pending-regeneration field",
         )
 
 
@@ -2407,8 +2452,7 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         self.assertNotIn("admission", refreshed)
         # The export is regenerated from the blessed candidate policy bytes.
         export = json.loads((fixture.repo / "PUBLIC_EXPORT.json").read_text(encoding="utf-8"))
-        self.assertEqual(export["provenance_ledger_sha256"], hashlib.sha256(
-            (fixture.repo / "assets/public_provenance_ledger.json").read_bytes()).hexdigest())
+        assert_committed_control(self, export)
 
         self._commit_outputs(fixture)
         shutil.copy2(fixture.repo / "assets/public_source_profile.json", fixture.trusted_policy)
