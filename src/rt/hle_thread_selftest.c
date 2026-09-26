@@ -420,6 +420,20 @@ void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+/* Display-source service-cadence attribution (perf.c owns the real counters; the
+ * selftest needs only the symbols to link, and reads the phase tag directly). */
+void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (void)periods; }
+void sr_perf_vblank_coalesced(void) {}
+void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
+void sr_perf_phase_report(int force) { (void)force; }
+int sr_rt_phase;
+uint32_t sr_rt_nid;
+uint32_t (*sr_rt_pc_fn)(void);
+uint32_t (*sr_rt_uid_fn)(void);
+const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
+    "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
+};
 int sr_perf_aot_active;
 void sr_perf_aot_begin(uint32_t pc) { (void)pc; }
 void sr_perf_aot_end(void) {}
@@ -2297,6 +2311,8 @@ static void reset_fixture(void) {
     s_dispatch_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_pending_vblanks = 0;          /* owed VBLANK episodes */
+    s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_count = 0;
@@ -3157,17 +3173,19 @@ static void test_display_queries_do_not_progress_display(void) {
 }
 
 /* Guest-visible VCOUNT advances by elapsed display periods at scheduler
- * source-latch boundaries, decoupled from VBLANK service -- it is not a count
- * of delivered/serviced VBLANK episodes and is not described as strictly
- * free-running.  A provisional PSP observation corroborates the service-
- * independence direction, but it does not establish the runtime's exact rate;
- * this checked-in regression is HOST_TESTED source-contract evidence.
+ * source-latch boundaries, and the serviced VBLANK event is a COUNT of those
+ * periods rather than one coalesced bit.
  *
- * This is the public failing-before regression for that boundary, exercised
- * through the production scheduler_latch_due_events / scheduler_service_pending
- * path (not HST, not the hardware probe).  For each N the source deadline is
- * advanced across exactly N periods before service; VCOUNT must reflect V+N,
- * while delivered episodes stay at most one. */
+ * The two used to be deliberately split: VCOUNT advanced by the elapsed period
+ * count while delivery collapsed to a single pending bit.  That split is what
+ * made a vblank-paced title observe fewer VBLANK episodes than display periods
+ * (measured 55.0 Hz against a 59.94 Hz source) with an exactly-correct VCOUNT.
+ * The hardware does not split them: the PSP's IF/IE pair is a level that is
+ * re-asserted for every edge that arrives while the CPU is still in the previous
+ * handler, so a guest that spends N periods inside one stretch with no service
+ * point is owed N handler episodes.  These are the production
+ * scheduler_latch_due_events / scheduler_service_pending path (not HST, not the
+ * hardware probe); HOST_TESTED source-contract evidence. */
 static void test_vcount_tracks_elapsed_source_periods(void) {
     enum {
         NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
@@ -3182,6 +3200,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
 
@@ -3201,21 +3220,24 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         snprintf(msg, sizeof msg, "N=%u: no delivery before the eligible service phase", N);
         expect(s_vbl_count == 0u, msg);
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "a burst of periods coalesces into one pending source bit");
+               "a burst of periods still raises the source bit");
+        expect(s_pending_vblanks == N,
+               "a burst of periods is owed one serviced episode each");
 
-        /* Service once: one delivered episode, VCOUNT unchanged. */
+        /* Service once: the whole burst is delivered, VCOUNT unchanged. */
         scheduler_service_pending();
-        snprintf(msg, sizeof msg, "N=%u: one serviced episode regardless of the burst", N);
-        expect(s_vbl_count == 1u, msg);
+        snprintf(msg, sizeof msg, "N=%u: one serviced episode per elapsed period", N);
+        expect(s_vbl_count == N, msg);
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + N,
                "service does not re-advance guest VCOUNT");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) == 0u,
-               "service clears the coalesced source bit");
+               "service clears the source bit");
+        expect(s_pending_vblanks == 0u, "service clears the owed episode count");
     }
 
-    /* Pending bit already set before the latch: the latch must not manufacture
-     * a second episode; VCOUNT still advances by the crossed periods. */
+    /* Pending bit already set before the latch: the burst still adds its own
+     * episodes; VCOUNT advances by the crossed periods. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3224,6 +3246,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3237,11 +3260,12 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "a pre-set pending bit still lets VCOUNT track the crossed periods");
         expect(s_vbl_count == 0u, "a pre-set pending bit adds no delivery before service");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "a pre-set pending bit still coalesces to one episode");
+        expect(s_vbl_count == 3u,
+               "a pre-set pending bit adds no episode beyond the three crossed periods");
     }
 
     /* Multiple deadline-latch calls before service: each latch contributes its
-     * own period burst to VCOUNT and the delivery stays one episode. */
+     * own period burst and every period is still owed an episode. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3250,6 +3274,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3264,9 +3289,11 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "multiple latches accumulate VCOUNT (2 + 3 periods)");
         expect(s_vbl_count == 0u, "no delivery yet across multiple latches");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "multiple latches still coalesce into one pending source");
+               "multiple latches still raise the source bit");
+        expect(s_pending_vblanks == 5u,
+               "multiple latches accumulate one owed episode per elapsed period");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "one delivery after multiple latches");
+        expect(s_vbl_count == 5u, "every accumulated period is delivered after multiple latches");
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 5u,
                "service leaves the accumulated VCOUNT alone");
