@@ -197,7 +197,7 @@ class TestPackageRuntimeDependencies(unittest.TestCase):
                 "SDL3_DIR": str(provider), "SDL3_DLL": "",
                 "VULKAN_SDK": str(provider),
             }):
-                with patch("nk_cli.os.name", "nt"):
+                with patch("nk_cli._windows_host", return_value=True):
                     nk_cli._stage_runtime_assets(package)
             self.assertEqual((package / "SDL3.dll").read_bytes(), runtime.read_bytes())
             self.assertEqual((package / "libiconv-2.dll").read_bytes(), iconv.read_bytes())
@@ -219,7 +219,7 @@ class TestPackageRuntimeDependencies(unittest.TestCase):
                 "SDL3_DIR": str(provider), "SDL3_DLL": "",
                 "VULKAN_SDK": str(root / "missing-sdk"),
             }):
-                with patch("nk_cli.os.name", "nt"), patch("nk_cli.shutil.which", return_value=None):
+                with patch("nk_cli._windows_host", return_value=True), patch("nk_cli.shutil.which", return_value=None):
                     with self.assertRaisesRegex(nk_cli.PackageBuildError, "vulkan-1.dll"):
                         nk_cli._stage_runtime_assets(package)
 

@@ -2341,18 +2341,28 @@ int main(int argc, char **argv) {
 #endif
         nk_ps_set_env("PATH", "");
 
+#if defined(_WIN32) || defined(_WIN64)
         assert(player_app_start_package_build(capp, 0));
         assert(capp->active_view == VIEW_PREREQ_CONSENT);
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
         assert(capp->prerequisites.item_count == 26);
         assert(capp->prerequisites.total_bytes == UINT64_C(89547599));
         assert(capp->build_session.is_building == false);
-
-        /* Consent cancellation has no side effects. The next attempt records
-           consent for this build only and reaches the progress card. */
+        /* Consent cancellation has no side effects. */
         player_app_prereq_cancel(capp);
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
         assert(capp->active_view == VIEW_LIBRARY);
+#else
+        /* Automatic installation is Windows x64 only for now: other hosts are
+           refused with the tracking issue, and nothing is downloaded. */
+        assert(!player_app_start_package_build(capp, 0));
+        assert(strstr(capp->last_error.message, "#306") != NULL);
+        assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
+#endif
+        assert(capp->build_session.is_building == false);
+
+        /* The next attempt records consent for this build only and reaches
+           the progress card. */
         assert(player_app_prereq_begin(capp, 0, true, true));
         player_app_prereq_accept(capp, true);
         assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);

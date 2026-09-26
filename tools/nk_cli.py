@@ -554,6 +554,12 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
     return env
 
 
+def _windows_host() -> bool:
+    """True when packages must carry the Windows runtime DLLs (a test seam:
+    patching os.name itself would make pathlib build WindowsPath objects)."""
+    return os.name == "nt"
+
+
 def _find_sdl3_runtime_dll() -> Path | None:
     candidates: list[Path] = []
     configured_dll = os.environ.get("SDL3_DLL")
@@ -592,7 +598,7 @@ def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
         shutil.copytree(vfpu_source, package_dir / "assets" / "vfpu", dirs_exist_ok=True)
-    if os.name == "nt" and not (package_dir / "SDL3.dll").is_file():
+    if _windows_host() and not (package_dir / "SDL3.dll").is_file():
         found = _find_sdl3_runtime_dll()
         if found is None:
             raise PackageBuildError(
@@ -600,7 +606,7 @@ def _stage_runtime_assets(package_dir: Path) -> None:
                 "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
             )
         shutil.copyfile(found, package_dir / "SDL3.dll")
-    if os.name == "nt" and not (package_dir / "libiconv-2.dll").is_file():
+    if _windows_host() and not (package_dir / "libiconv-2.dll").is_file():
         found = _find_configured_runtime_dll("libiconv-2.dll")
         if found is None:
             raise PackageBuildError(
@@ -608,7 +614,7 @@ def _stage_runtime_assets(package_dir: Path) -> None:
                 "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
             )
         shutil.copyfile(found, package_dir / "libiconv-2.dll")
-    if os.name == "nt" and not (package_dir / "vulkan-1.dll").is_file():
+    if _windows_host() and not (package_dir / "vulkan-1.dll").is_file():
         found = _find_configured_runtime_dll("vulkan-1.dll")
         if found is None:
             raise PackageBuildError(
