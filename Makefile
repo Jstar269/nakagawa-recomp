@@ -611,6 +611,44 @@ PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Isrc/core -Wall -Wextra -Werror=format
 override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 
+# Reproducible build identity for the flight recorder's build block
+# (src/rt/flight_recorder.c, assets/flight_recorder_schema.json). The old
+# __DATE__/__TIME__ stamp was the one project-owned difference between two
+# builds of the same package from identical inputs; it is gone. The identity is
+# transported the way this Makefile already passes build identity into the
+# compile: a -D define (compare -DSR_BUILD_DIR above).
+#   * SOURCE_DATE_EPOCH, when the build sets it, is honoured as-is (the
+#     reproducible-builds.org convention) and recorded as build.source_date_epoch.
+#   * The source commit is recorded as build.build_id, resolved exactly like
+#     PSP_ORACLE_SOURCE_COMMIT below (git rev-parse HEAD). A source drop without
+#     git and without SOURCE_DATE_EPOCH records no identity and tools/flight_diff.py
+#     refuses such a bundle fail closed; it never falls back to a clock.
+# The runtime profile hash is deliberately NOT the identity here: it hashes
+# CFLAGS, which carries -DSR_BUILD_DIR and the SDK paths, so it varies with the
+# output root and would reintroduce per-root variation into every binary. The
+# identity defines are kept out of the global CFLAGS (and so out of
+# RUNTIME_PROFILE_HASH): only flight_recorder.o embeds them, so a new commit
+# rebuilds that one object instead of every runtime object (see
+# FLIGHT_IDENTITY_STAMP below).
+ifndef NK_INFO_ONLY
+SR_SOURCE_COMMIT ?= $(shell git rev-parse HEAD)
+SR_SOURCE_COMMIT := $(strip $(SR_SOURCE_COMMIT))
+ifneq ($(strip $(SR_SOURCE_COMMIT)),)
+FLIGHT_IDENTITY_DEFS += -DSR_BUILD_ID=\"$(SR_SOURCE_COMMIT)\"
+endif
+ifneq ($(strip $(SOURCE_DATE_EPOCH)),)
+# Transported through the environment (see the guest-input transport above) so
+# no operator value reaches a command interpreter as syntax. Fail closed on a
+# non-decimal value: flight_recorder.c emits it as a JSON number.
+export SOURCE_DATE_EPOCH
+SR_SOURCE_DATE_EPOCH := $(shell $(PYTHON) -c "import os; v = os.environ.get('SOURCE_DATE_EPOCH', ''); print(v if v.isdigit() else '')")
+ifeq ($(strip $(SR_SOURCE_DATE_EPOCH)),)
+$(error SOURCE_DATE_EPOCH must be a decimal Unix timestamp (reproducible-builds.org), got "$(SOURCE_DATE_EPOCH)")
+endif
+FLIGHT_IDENTITY_DEFS += -DSR_SOURCE_DATE_EPOCH=$(SR_SOURCE_DATE_EPOCH)
+endif
+endif
+
 # Public targets are listed once so `make help` and phony-target behaviour cannot
 # drift apart.  FORCE is intentionally separate: it is an implementation detail,
 # not an entry-point a contributor should discover by accident.
@@ -619,6 +657,8 @@ PUBLIC_TARGETS := \
 	check \
 	test \
 	native-core-tests \
+	player-ui-tests \
+	player-ui-regressions \
 	fuzz-parsers \
 	readiness \
 	provenance-refresh \
@@ -731,6 +771,8 @@ HELP_DESCRIPTION_runtime-objects := build runtime and decoder objects
 HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
 HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
 HELP_DESCRIPTION_player := build the native player
+HELP_DESCRIPTION_player-ui-tests := build and run native player UI tests (needs SDL3)
+HELP_DESCRIPTION_player-ui-regressions := run scripted native player UI event and recovery flows (needs SDL3)
 HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objects
 HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
 HELP_DESCRIPTION_production-smoke-staged := run the production smoke from a staging directory outside the build tree
@@ -1302,6 +1344,21 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 
 portable-core-objects: $(PORTABLE_CORE_OBJS)
 
+# Only the flight recorder embeds the reproducible build identity. A stamp named
+# after the identity makes flight_recorder.o rebuild when the commit or
+# SOURCE_DATE_EPOCH changes, without touching the other runtime objects.
+FLIGHT_IDENTITY_STAMP := $(BUILD_DIR)/.flight-identity-$(or $(SR_SOURCE_COMMIT),none)-$(or $(SR_SOURCE_DATE_EPOCH),none)
+$(FLIGHT_IDENTITY_STAMP):
+	@$(PYTHON) -c "from pathlib import Path; p = Path(r'$@'); p.parent.mkdir(parents=True, exist_ok=True); [s.unlink() for s in p.parent.glob('.flight-identity-*') if s != p]; p.touch()"
+
+# Explicit rules (not target-specific variables, which would also leak into the
+# runtime-profile stamp prerequisite and record a different CFLAGS than it hashes).
+$(BUILD_DIR)/flight_recorder.o: src/rt/flight_recorder.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) $(FLIGHT_IDENTITY_STAMP)
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(DEPFLAGS) -c $< -o $@
+
+$(PORTABLE_CORE_DIR)/flight_recorder.o: src/rt/flight_recorder.c src/rt/recomp.h $(FLIGHT_IDENTITY_STAMP)
+	$(CC) $(PORTABLE_CORE_CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(DEPFLAGS) -c $< -o $@
+
 atrac3p-objects: $(ATRAC3P_OBJS)
 
 # A clear player-target failure when no usable SDK resolved (see the Windows
@@ -1321,6 +1378,7 @@ sdl3-check:
 	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
+PLAYER_UI_TEST_EXE ?= build/nakagawa_player_ui_test$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
@@ -1333,6 +1391,16 @@ $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_setting
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 player: $(PLAYER_EXE)
+
+$(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
+
+$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+
+.PHONY: player-ui-regressions
+player-ui-regressions: $(PLAYER_UI_TEST_EXE)
+	NAKAGAWA_PLAYER_UI_TEST_EXE="$(PLAYER_UI_TEST_EXE)" $(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
@@ -2054,6 +2122,14 @@ package-builder-test-bin:
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
 		tests/native/test_package_builder.c -o build/test_package_builder$(EXE_EXT)
+
+# Player UI tests link SDL3 (software renderer, no window), so they run where the
+# player itself builds rather than in the SDL-free native-core-tests set.
+player-ui-tests:
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
+		-o build/test_ui_clip$(EXE_EXT)
+	./build/test_ui_clip$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt src/rt/pgf_public.c \

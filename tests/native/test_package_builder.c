@@ -1,6 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* Strict -std=c99 hides nanosleep and clock_gettime behind the feature-test
+   macro, exactly as tests/native/argv_echo_helper.c does. */
+#if !defined(_WIN32) && !defined(_WIN64)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "package_builder.h"
 #include "nk_platform.h"
 
@@ -8,6 +14,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 static void test_progress_line_parsing(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 1: progress JSON parsing\n");
@@ -170,7 +182,102 @@ static void test_session_cancellation(void) {
     assert(strcmp(session.current_stage_name, "cancelled") == 0);
 }
 
-int main(void) {
+/* Bounded wait for a real package build (#509). The child's own exit status is
+   the answer; this only caps a build that never ends. */
+#define ROUTE_BUILD_TIMEOUT_MS 900000
+#define ROUTE_POLL_INTERVAL_MS 50
+
+static uint64_t route_now_ms(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)(now.tv_nsec / 1000000);
+#endif
+}
+
+static void route_pause_ms(int ms) {
+#if defined(_WIN32) || defined(_WIN64)
+    Sleep((DWORD)ms);
+#else
+    struct timespec request;
+    request.tv_sec = ms / 1000;
+    request.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&request, NULL);
+#endif
+}
+
+/* Drive the BUILD PACKAGE action the way the player does: discover the
+ * interpreter and the CLI through the player's own lookups, start the build
+ * through the player's own session, and report the state the UI would show.
+ * Nothing here is stubbed -- nk_cli.py build-package runs the production
+ * analysis, codegen and compile. */
+static int run_build_package_route(const char *install_root,
+                                   const char *user_data_root,
+                                   const char *disc_id,
+                                   const char *log_dir) {
+    char python_path[NK_MAX_PATH];
+    if (!package_builder_find_python(python_path, sizeof(python_path))) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=python-not-found\n");
+        return 2;
+    }
+    char cli_path[NK_MAX_PATH];
+    if (!package_builder_find_cli(install_root, cli_path, sizeof(cli_path))) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=cli-not-found\n");
+        return 2;
+    }
+    printf("PACKAGE_BUILD_ROUTE python=%s\n", python_path);
+    printf("PACKAGE_BUILD_ROUTE cli=%s\n", cli_path);
+
+    PackageBuildSession session;
+    package_builder_init_session(&session, disc_id, "Player Package Route");
+    if (package_builder_start(&session, python_path, cli_path, user_data_root, log_dir) != NK_OK) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=spawn-failed\n");
+        printf("PACKAGE_BUILD_ROUTE boundary=%s\n", session.failure_boundary);
+        return 2;
+    }
+
+    uint64_t deadline = route_now_ms() + ROUTE_BUILD_TIMEOUT_MS;
+    while (session.is_building && route_now_ms() < deadline) {
+        package_builder_poll(&session, route_now_ms());
+        if (session.is_building) route_pause_ms(ROUTE_POLL_INTERVAL_MS);
+    }
+    if (session.is_building) {
+        package_builder_cancel(&session);
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=timeout boundary=package build did not finish in %d ms\n",
+               ROUTE_BUILD_TIMEOUT_MS);
+        return 3;
+    }
+
+    for (int i = 0; i < session.output_line_count; i++) {
+        printf("PACKAGE_BUILD_OUTPUT %s\n", package_builder_get_output_line(&session, i));
+    }
+    printf("PACKAGE_BUILD_ROUTE stage=%s complete=%d failed=%d exit=%d\n",
+           session.current_stage_name, session.is_complete ? 1 : 0,
+           session.is_failed ? 1 : 0, session.exit_code);
+    if (session.failure_boundary[0]) {
+        printf("PACKAGE_BUILD_ROUTE boundary=%s\n", session.failure_boundary);
+    }
+    printf("PACKAGE_BUILD_ROUTE log=%s\n", session.log_file_path);
+    printf("PACKAGE_BUILD_ROUTE progress=%s\n", session.progress_file_path);
+
+    if (session.is_failed) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL\n");
+        return 1;
+    }
+    if (!session.is_complete) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=incomplete\n");
+        return 1;
+    }
+    printf("PACKAGE_BUILD_ROUTE status=PASS\n");
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc == 6 && strcmp(argv[1], "--build-package") == 0) {
+        return run_build_package_route(argv[2], argv[3], argv[4], argv[5]);
+    }
     test_progress_line_parsing();
     test_state_machine_transitions();
     test_output_line_circular_buffer();

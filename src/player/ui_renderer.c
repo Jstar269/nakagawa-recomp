@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "ui_renderer.h"
+#include "ui_clip.h"
 #include "iso_reader.h"
 #include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
@@ -1008,8 +1009,21 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
     return y;
 }
 
+static SDL_FRect s_last_status_badge;
+static bool s_last_status_badge_valid;
+
+bool ui_last_status_badge_rect(SDL_FRect *out_rect) {
+    if (!s_last_status_badge_valid || !out_rect) return false;
+    *out_rect = s_last_status_badge;
+    return true;
+}
+
+static float badge_width(const char *label) {
+    return ui_font_text_width(label, 1.0f) + 16.0f;
+}
+
 static void draw_badge(SDL_Renderer *ren, float x, float y, const char *label, SDL_Color badge_color) {
-    float len = ui_font_text_width(label, 1.0f) + 16.0f;
+    float len = badge_width(label);
     SDL_Color bg = { (Uint8)(badge_color.r / 4), (Uint8)(badge_color.g / 4), (Uint8)(badge_color.b / 4), 255 };
     draw_rounded_fill(ren, x, y, len, 24.0f, 12.0f, bg);
     draw_rounded_outline(ren, x, y, len, 24.0f, 12.0f, badge_color);
@@ -1248,27 +1262,34 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     if (hero_tex_entry) {
         ui_load_pic1_if_needed(ren, hero_tex_entry, game->iso_path);
         if (hero_tex_entry->pic1_tex) {
-            SDL_Rect prev_clip;
-            bool had_clip = SDL_GetRenderClipRect(ren, &prev_clip);
+            UiClipState saved_clip = ui_clip_save(ren);
             SDL_Rect hero_clip = { (int)hero_x + 1, (int)hero_y + 1, (int)hero_w - 2, (int)hero_h - 2 };
             SDL_SetRenderClipRect(ren, &hero_clip);
             SDL_SetTextureAlphaMod(hero_tex_entry->pic1_tex, 40);
             SDL_FRect dst = { hero_x, hero_y, hero_w, hero_h };
             SDL_RenderTexture(ren, hero_tex_entry->pic1_tex, NULL, &dst);
             draw_filled_rect(ren, hero_x, hero_y, hero_w, hero_h, (SDL_Color){ 12, 15, 18, 120 });
-            SDL_SetRenderClipRect(ren, had_clip ? &prev_clip : NULL);
+            ui_clip_restore(ren, &saved_clip);
         }
     }
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
 
-    /* Status Pills: a successful staging transaction is distinct from runtime
-     * preparation. The card must expose that useful intermediate state without
-     * claiming that a recompiled child is already available. */
+    /* Staged assets still need a runtime unless the same readiness predicate
+       used by PLAY NOW can resolve one. Keep that boundary visible while the
+       primary action below remains BUILD PACKAGE when the package is missing. */
+    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
+        app, game, NULL, NULL, 0);
+    bool package_ready = player_app_game_has_runtime(app, game);
+    bool runtime_required = game->assets_staged && !package_ready &&
+                            package_status == NK_RUNTIME_PACKAGE_MISSING;
     const char *card_status = game->is_experimental ? "EXPERIMENTAL"
-        : ((game->assets_staged && !game->is_prepared)
-            ? "ASSETS STAGED" : status_label(game->status));
+        : (runtime_required ? "RUNTIME REQUIRED"
+            : ((game->assets_staged && !game->is_prepared)
+                ? "ASSETS STAGED" : status_label(game->status)));
+    s_last_status_badge = (SDL_FRect){ hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f };
+    s_last_status_badge_valid = true;
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
-               game->is_experimental ? COLOR_AMBER : COLOR_EMERALD);
+               (game->is_experimental || runtime_required) ? COLOR_AMBER : COLOR_EMERALD);
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
@@ -1416,9 +1437,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     float btn_y = hero_y + hero_h - 62.0f;
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-        app, game, NULL, NULL, 0);
-    bool package_ready = player_app_game_has_runtime(app, game);
     if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);
@@ -2850,6 +2868,10 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float btn_y = card_y + card_h - 58.0f;
     if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
         player_app_set_view(app, app->last_error.return_view);
+        if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+            strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
+            app->request_file_picker = true;
+        }
     }
 }
 
@@ -3299,6 +3321,7 @@ int ui_focus_count(const PlayerApp *app) {
 /* --- Main Frame Render Function --- */
 void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *input) {
     if (!renderer || !app) return;
+    s_last_status_badge_valid = false;
 
     /* Clamp focus before drawing so a resize or library change can never
      * leave the ring on a control that no longer exists. */

@@ -180,6 +180,11 @@ typedef struct {
     int showcase_count;
     bool is_game_running;
     uint64_t launch_time_ms;
+    /* Launch the child without a window. PLAY NOW always requests the window;
+       this is the launcher's own headless default, reached only when a caller
+       asks for it explicitly, so a host with no display can still prove the
+       launch path end to end. */
+    bool launch_headless;
 
     /* Set by the renderer when a control asks for the host file dialog. The
        renderer has no SDL_Window and must stay free of platform dialog calls,
@@ -288,6 +293,17 @@ void player_app_stop_game(PlayerApp *app);
  * spawning a child. */
 void player_app_apply_settings_to_session(const PlayerSettings *settings,
                                           NkRuntimeConfig *config);
+
+/* Advance the running-game session state machine one tick at `now_ms`.
+ *
+ * Returns true when this tick observed the child's exit and finalized the
+ * session. A child that exits before 500 ms of wall time is reported through
+ * the structured RUNTIME_PREMATURE_EXIT error; a later non-zero exit becomes
+ * RUNTIME_ERROR_EXIT. Either way the session's process handles are released
+ * and is_game_running is false before returning, so a subsequent launch
+ * starts from clean state. Pure state logic (no SDL): the caller supplies the
+ * clock so tests can drive classification deterministically. */
+bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms);
 
 /* Commit the inspected, successfully staged title to the persistent library
  * and enter PLAYER_VIEW_READY_LIBRARY. Runtime readiness remains separate:

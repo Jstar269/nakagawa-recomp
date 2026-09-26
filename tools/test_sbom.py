@@ -208,7 +208,7 @@ class TestSBOMTooling(unittest.TestCase):
 
 
 class TestPythonArtifactHashVerification(unittest.TestCase):
-    METADATA_PATH = generate_sbom.ROOT / "assets" / "pypi_tool_metadata_2026-09-24.json"
+    METADATA_PATH = generate_sbom.ROOT / "assets" / "pypi_tool_metadata_2026-09-25.json"
     COMPILEDB_WHEEL_HASH = "4c07cbb37b105951218e52e00fc4a8211fafc5f7eb7821d0a33c4225d7b28ecf"
     OLD_RUFF_HASH = "7f9c8f2b3c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f"
 
@@ -228,12 +228,12 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         packages = generate_sbom.parse_python_lockfile(
             generate_sbom.ROOT / "tools" / "requirements-lock.txt")
         metadata = self._metadata()
-        self.assertEqual(metadata["retrieved_utc"], "2026-09-24")
+        self.assertEqual(metadata["retrieved_utc"], "2026-09-25")
         self.assertEqual(
             [source["url"] for source in metadata["sources"]],
             [
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
-                "https://pypi.org/pypi/ruff/0.16.0/json",
+                "https://pypi.org/pypi/ruff/0.16.8/json",
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/bashlex/0.18/json",
             ],
@@ -274,7 +274,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("malformed SHA-256 hash", str(ctx.exception))
 
     def test_old_sequential_ruff_hash_fails_as_unmatched(self):
-        text = f"ruff==0.16.0 --hash=sha256:{self.OLD_RUFF_HASH}\n"
+        text = f"ruff==0.16.8 --hash=sha256:{self.OLD_RUFF_HASH}\n"
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             self._parse(text)
         self.assertIn("matches no trusted artifact", str(ctx.exception))
