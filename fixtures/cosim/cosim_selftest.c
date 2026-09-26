@@ -751,7 +751,7 @@ static int compare_windows(const CosimCase *test, const CosimLane *a, const Cosi
 static int check_pc_contract(const CosimCase *test, const CosimLane *aot,
                              const CosimLane *interp) {
     int failed = 0;
-    char detail[384];
+    char detail[768];
 
     if (aot->termination != COSIM_TERM_AOT_HOST_RETURN) {
         snprintf(detail, sizeof detail,
