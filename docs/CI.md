@@ -76,6 +76,14 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+The Linux `native_tools` job also builds SDL3 from its pinned 3.4.8 release commit, installs
+Vulkan development headers, and downloads the PSPDEV archive identified by
+[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its SHA-256 before use. It
+then runs `make CC=gcc showcase-linux`, which builds and boots the two source-owned showcase
+packages with dummy SDL video and audio drivers. This is Linux runtime build-and-boot evidence
+for those fixtures; it does not establish general consumer-title compatibility or PSP hardware
+acceptance.
+
 ## Local readiness before opening a pull request
 
 Discover the available build and verification surfaces first:

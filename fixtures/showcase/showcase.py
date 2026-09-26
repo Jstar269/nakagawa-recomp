@@ -244,7 +244,7 @@ def _build_prx(demo: dict[str, object], out_dir: Path) -> Path:
     host_source = _host_path(source_dir.resolve())
     command = (
         "export PSPDEV=/usr/local/pspdev; export PATH=\"$PSPDEV/bin:$PATH\"; "
-        f"make -B -f '{makefile}' -C '{host_out}' VPATH='{host_source}' "
+        f"make -B -f '{makefile}' -C '{host_out}' CC=psp-gcc VPATH='{host_source}' "
         f"TARGET='{demo['target']}'"
     )
     result = subprocess.run(_toolchain_shell(command), cwd=ROOT, text=True, check=False)

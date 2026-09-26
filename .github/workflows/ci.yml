@@ -235,7 +235,7 @@ jobs:
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -250,7 +250,64 @@ jobs:
       - name: Install native test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mipsel-linux-gnu
+          sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
+            git libvulkan-dev ninja-build pkg-config
+
+      - name: Build pinned SDL3 for headless Linux runtime
+        # Build the pinned SDL release directly so CI uses the documented version.
+        run: |
+          SDL3_COMMIT=d9d5536704d585616d4db3c8ba3c4ff6fc2757e1
+          git init "$RUNNER_TEMP/SDL"
+          git -C "$RUNNER_TEMP/SDL" remote add origin https://github.com/libsdl-org/SDL.git
+          git -C "$RUNNER_TEMP/SDL" fetch --depth 1 origin "$SDL3_COMMIT"
+          git -C "$RUNNER_TEMP/SDL" checkout --detach FETCH_HEAD
+          cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+            -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_VULKAN=ON
+          cmake --build "$RUNNER_TEMP/SDL/build" --parallel 2
+          sudo cmake --install "$RUNNER_TEMP/SDL/build"
+          sudo ldconfig
+          pkg-config --modversion sdl3
+
+      - name: Install PSPDEV from the checked-in lock
+        run: |
+          read -r PSPDEV_URL PSPDEV_SHA256 < <(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          lock = json.loads(Path("assets/upstream/pspdev.lock.json").read_text())
+          evidence = json.loads(Path("assets/upstream/pspdev.evidence.json").read_text())
+          distribution = lock["distribution"]
+          archive = evidence["archive"]
+          if distribution["release"] != evidence["release"]:
+              raise SystemExit("PSPDEV release disagrees with its evidence")
+          expected = distribution["archive_sha256"]
+          if archive["local_sha256"] != expected or archive["github_asset_digest"] != "sha256:" + expected:
+              raise SystemExit("PSPDEV archive digest disagrees with the checked-in lock")
+          print(archive["download_url"], expected)
+          PY
+          )
+          echo "PSPDEV_URL=$PSPDEV_URL" >> "$GITHUB_ENV"
+          echo "PSPDEV_SHA256=$PSPDEV_SHA256" >> "$GITHUB_ENV"
+          archive="$RUNNER_TEMP/pspdev.tar.gz"
+          curl --fail --location --retry 3 "$PSPDEV_URL" --output "$archive"
+          printf '%s  %s\n' "$PSPDEV_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/pspdev-unpacked"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/pspdev-unpacked"
+          psp_gcc=$(find "$RUNNER_TEMP/pspdev-unpacked" -path '*/bin/psp-gcc' -print -quit)
+          if [[ -z "$psp_gcc" ]]; then
+            echo "locked PSPDEV archive did not contain bin/psp-gcc" >&2
+            exit 1
+          fi
+          psp_root=${psp_gcc%/bin/psp-gcc}
+          test -x "$psp_root/bin/psp-prxgen"
+          sudo mkdir -p /usr/local/pspdev
+          sudo cp -a "$psp_root"/. /usr/local/pspdev/
+          test -x /usr/local/pspdev/bin/psp-gcc
+          test -x /usr/local/pspdev/bin/psp-prxgen
+          echo "/usr/local/pspdev/bin" >> "$GITHUB_PATH"
+          echo "PSPDEV=/usr/local/pspdev" >> "$GITHUB_ENV"
 
       - name: Run import-coverage and fake-success audit gate
         # Public gate for issue #71: manifest extraction from src/rt/hle.c,
@@ -266,6 +323,9 @@ jobs:
 
       - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
         run: make CC=gcc native-core-tests
+
+      - name: Build and run the Linux showcase headlessly
+        run: make CC=gcc showcase-linux
 
       - name: Run selftest (C++ interpreter unit tests under UBSan)
         run: |
