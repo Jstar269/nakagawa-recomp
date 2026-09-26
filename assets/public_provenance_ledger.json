@@ -481,7 +481,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e606c870e826da412b1e80810e1643054d1f0024e5046e81d9712d733d9ebbfd"
+      "sha256": "19dadbe3f0e3202df61a88e9c95322f6c4a29f0310186951a312704b4cc778c6"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -7725,6 +7725,18 @@
       "sha256": "5cdd94a96dd817bf38f5722c1f2c647ca98f93383c966f974441f3a983c6f43e"
     },
     {
+      "path": "tools/test_player_package_determinism.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "player-package-determinism-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f354ef88607427ae31f9ef482a4f565fc593f88bd49f5db81c14ebb6a200a0b8"
+    },
+    {
       "path": "tools/test_player_package_route.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -7734,7 +7746,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5cbf34a7bbe83f26e6b028a1223ef2a66463539e85a081dee32d970ea06559f"
+      "sha256": "4e4008c91392e4280235562ea7867b5dcb006ea25322a04db7f51b37a89b6ce3"
     },
     {
       "path": "tools/test_portability_inventory.py",
