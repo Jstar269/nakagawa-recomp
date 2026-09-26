@@ -53,15 +53,17 @@ static uint32_t consumer_reads_sdk_version(void) {
     return sr_sdkver_get(&s_sdk_version);
 }
 
-/* The registered SetCompiledSdkVersion firmware-variant NIDs and the SDK
- * version each firmware family would report. tools/test_sdkver_c.py
- * cross-checks this NID list against the extracted hle.c manifest, so a
- * variant added to the runtime without joining the shared state fails there. */
+/* Registered NIDs paired with distinct test arguments. These values exercise
+ * retention of guest A0; they are not PSP hardware measurements. The routing
+ * test cross-checks this NID list against hle.c, so a variant added without
+ * joining the shared state fails there. */
 static const struct { uint32_t nid; uint32_t version; } k_variants[] = {
     { 0x7591C7DBu, 0x06060010u },  /* sceKernelSetCompiledSdkVersion */
     { 0x35669D4Cu, 0x06020010u },  /* sceKernelSetCompiledSdkVersion600_602 */
     { 0x91DE343Cu, 0x05050010u },  /* sceKernelSetCompiledSdkVersion500_505 */
     { 0x1B4217BCu, 0x06050010u },  /* sceKernelSetCompiledSdkVersion603_605 */
+    { 0xEBD5C3E6u, 0xA3950001u },  /* sceKernelSetCompiledSdkVersion395 */
+    { 0x358CA1BBu, 0xA6060002u },  /* sceKernelSetCompiledSdkVersion606 */
 };
 
 static void test_initial_state_is_default(void) {

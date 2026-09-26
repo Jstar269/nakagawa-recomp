@@ -126,6 +126,18 @@ class TestSdkVersionRegistrationRouting(unittest.TestCase):
         self.assertEqual(by_nid[0x1B4217BC]["handler"], STATEFUL_HANDLER)
         self.assertEqual([w for w in meta.WAIVERS if w["nid"] == 0x1B4217BC], [])
 
+    def test_title_sdk_variants_share_the_stateful_handler(self):
+        by_nid = {int(r["nid"], 16): r for r in sdk_variant_registrations()}
+        expected = {
+            0xEBD5C3E6: "sceKernelSetCompiledSdkVersion395",
+            0x358CA1BB: "sceKernelSetCompiledSdkVersion606",
+        }
+        for nid, name in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                self.assertIn(nid, by_nid)
+                self.assertEqual(by_nid[nid]["name"], name)
+                self.assertEqual(by_nid[nid]["handler"], STATEFUL_HANDLER)
+
 
 class TestHleSdkVersionWiring(unittest.TestCase):
     def test_handler_uses_the_shared_state_helper(self):

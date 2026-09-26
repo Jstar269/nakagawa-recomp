@@ -570,6 +570,12 @@
     "name": "sceKernelSetCompiledSdkVersion600_602",
     "status": "complete"
   },
+  "0x358ca1bb": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion606",
+    "status": "complete"
+  },
   "0x35dbd746": {
     "classification": "dedicated",
     "handler": "h_IoWaitAsyncCB",
@@ -2302,6 +2308,12 @@
     "handler": "h_PowerSetClockFrequency350",
     "name": "scePowerSetClockFrequency350",
     "status": "unreviewed"
+  },
+  "0xebd5c3e6": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion395",
+    "status": "complete"
   },
   "0xec0a693f": {
     "classification": "dedicated",
