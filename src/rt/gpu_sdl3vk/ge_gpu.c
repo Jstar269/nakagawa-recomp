@@ -52,7 +52,9 @@
  *    pre-batch destination — the standard shader-blend hazard, same as PPSSPP.
  *  - Approximated (no software fallback): partial-byte write masks (>= 0x80 disables
  *    the channel), lines/points (1px quads, not DDA).
- *  - Render scale (SR_GPU_SCALE=1..4, default 1): targets/depth/snapshot images are
+ *  - Render scale (default 1): SR_RESOLUTION_SCALE carries the player's Settings >
+ *    Internal Render Resolution choice (1..4); SR_GPU_SCALE overrides it as an
+ *    explicit diagnostic (sr_parse_render_scale in ge_gpu.h). Targets/depth/snapshot images are
  *    allocated at scale x the 512x272 canvas and the viewport/scissor scale with them;
  *    vertices map through the same NDC transform, so higher scales are pure
  *    magnification of the PSP raster grid. Guest VRAM traffic stays at native
@@ -3856,12 +3858,8 @@ int gegpu_init(void) {
             if (value == 0) s_xfer_ring_bytes = 0;
             else if (value <= 65536) s_xfer_ring_bytes = (VkDeviceSize)value << 10;
         }
-        const char *sc = getenv("SR_GPU_SCALE");
-        if (sc && sc[0]) {
-            s_scale = atoi(sc);
-            if (s_scale < 1) s_scale = 1;
-            if (s_scale > MAX_SCALE) s_scale = MAX_SCALE;
-        }
+        s_scale = sr_parse_render_scale(getenv("SR_GPU_SCALE"),
+                                        getenv("SR_RESOLUTION_SCALE"), MAX_SCALE);
         if (s_scale > 1)
             fprintf(stderr, "gegpu: render scale %dx (%ux%u internal)\n", s_scale, SCL_W, SCL_H);
     }

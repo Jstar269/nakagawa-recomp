@@ -469,6 +469,85 @@ float sr_vfpu_exp2(float x);
 #define SR_VFPU_STATE   2
 int sr_vfpu_interp(CpuState *s, uint32_t op);
 
+/* ---- SR_NAN_TRAP: opt-in NaN/Inf origin diagnostic (issue #69) -------------
+ *
+ * A guest instruction that turns all-finite operands into a NaN or an Inf is the
+ * place where this implementation and PSP hardware can disagree: the Allegrex
+ * FPU/VFPU kernels return a finite value for arguments the host evaluates the
+ * other way (0/0, rcp(0), sqrt of a negative, an overflowing intermediate), and
+ * everything downstream -- here the skeletal animation math that fills the GE
+ * BONE matrices -- is then finite. Under -DSR_NAN_TRAP every FPU and VFPU result
+ * write, in generated code and in the interpreter alike, is followed by a check
+ * that prints the first SR_NAN_TRAP_LIMIT of them (default 20) to stderr:
+ *
+ *   NAN_TRAP pc=0x00001234 op=add.s dst=f4 in=[1,2] out=[nan]
+ *   NAN_TRAP pc=0x0000123c op=vrcp.s dst=v0 in=[0] out=[inf]
+ *
+ * The check fires only when the result is non-finite AND every input was finite,
+ * so an instruction that merely propagates an existing NaN is not reported: the
+ * report names the origin, not the echo. It is a diagnostic and never a semantic
+ * gate -- no result is altered on any path.
+ *
+ * Without the define both macros expand to ((void)0): no call, no symbol, no
+ * branch, no argument evaluated. tools/codegen.py only emits the checks at all
+ * when it is run with --nan-trap, so a default build's generated C is unchanged
+ * byte for byte. Build the two halves together: `make NAN_TRAP=1` passes
+ * --nan-trap to codegen AND -DSR_NAN_TRAP to every translation unit.
+ */
+#ifdef SR_NAN_TRAP
+#define SR_NAN_TRAP_DEFAULT_LIMIT 20
+void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
+                      float out, const float *in, int nin);
+void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
+                        const float *out, int nout,
+                        const float *in1, int nin1,
+                        const float *in2, int nin2);
+/* One scalar result, as a standalone statement after the destination has
+ * already been written. Inputs are supplied as a braced list of values, which
+ * the macro packs into a compound literal for the call; because they are read
+ * after the store, only use this where the operands were sampled into locals
+ * first. */
+#define SR_NAN_TRAP_F(PC, OP, FD, OUT, ...) \
+    sr_nan_trap_note((PC), (OP), (FD), (OUT), \
+                     (const float[]){__VA_ARGS__}, \
+                     (int)(sizeof((const float[]){__VA_ARGS__}) / sizeof(float)))
+/* One scalar result AND its destination store, for hand-written C that has not
+ * already sampled its operands. The source register indices are separate
+ * parameters (one macro per source count) so the operand list cannot be split
+ * across macro arguments; they are read BEFORE the store, so a destination that
+ * aliases a source still reports what the instruction actually consumed. Without
+ * the define these expand to the plain assignment and to nothing else, which is
+ * why an untrapped interpreter object stays byte-identical. Requires the
+ * CpuState pointer to be named `s`. */
+#define SR_NAN_TRAP_STORE_F1(PC, OP, FD, S0, EXPR)                      \
+    do {                                                                \
+        const float _ntr_in[1] = { s->f[S0] };                          \
+        const float _ntr_res = (EXPR);                                   \
+        sr_nan_trap_note((PC), (OP), (FD), _ntr_res, _ntr_in, 1);       \
+        s->f[FD] = _ntr_res;                                            \
+    } while (0)
+#define SR_NAN_TRAP_STORE_F2(PC, OP, FD, S0, S1, EXPR)                  \
+    do {                                                                \
+        const float _ntr_in[2] = { s->f[S0], s->f[S1] };                \
+        const float _ntr_res = (EXPR);                                   \
+        sr_nan_trap_note((PC), (OP), (FD), _ntr_res, _ntr_in, 2);       \
+        s->f[FD] = _ntr_res;                                            \
+    } while (0)
+/* One vector result with one source vector. */
+#define SR_NAN_TRAP_V(PC, OP, VD, OUT, NOUT, IN, NIN) \
+    sr_nan_trap_note_v((PC), (OP), (VD), (OUT), (NOUT), (IN), (NIN), \
+                       (const float *)0, 0)
+/* One vector result with two source vectors (the usual binary VFPU shape). */
+#define SR_NAN_TRAP_V2(PC, OP, VD, OUT, NOUT, IN1, NIN1, IN2, NIN2) \
+    sr_nan_trap_note_v((PC), (OP), (VD), (OUT), (NOUT), (IN1), (NIN1), (IN2), (NIN2))
+#else
+#define SR_NAN_TRAP_F(PC, OP, FD, OUT, ...) ((void)0)
+#define SR_NAN_TRAP_STORE_F1(PC, OP, FD, S0, EXPR) s->f[FD] = (EXPR)
+#define SR_NAN_TRAP_STORE_F2(PC, OP, FD, S0, S1, EXPR) s->f[FD] = (EXPR)
+#define SR_NAN_TRAP_V(PC, OP, VD, OUT, NOUT, IN, NIN) ((void)0)
+#define SR_NAN_TRAP_V2(PC, OP, VD, OUT, NOUT, IN1, NIN1, IN2, NIN2) ((void)0)
+#endif
+
 /* Codegen tags a per-instruction VFPU fallback address and sends it through dispatch().
  * The tag is outside the PSP physical arena; dispatch reads the original word at the low
  * address and invokes sr_vfpu_interp without changing CpuState's ABI/layout. */

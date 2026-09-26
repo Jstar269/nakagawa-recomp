@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 """Visual-oracle runner guarantees.
@@ -31,6 +31,74 @@ HLE = ROOT / "src" / "rt" / "hle.c"
 
 def _powershell() -> str | None:
     return shutil.which("pwsh")
+
+
+def _paren_list(text: str, open_at: int) -> str:
+    """Return the contents of the (...) whose opening paren is at `open_at`."""
+    depth = 0
+    i = open_at
+    quote = ""
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == quote:
+                quote = ""
+        elif c in "\"'":
+            quote = c
+        elif c == "#":
+            i = text.find("\n", i)
+            if i < 0:
+                break
+            continue
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_at + 1 : i]
+        i += 1
+    return ""
+
+
+def _declared_parameters(source: str) -> dict[str, set[str]]:
+    """Map every PowerShell function in `source` to the parameters its param() block declares."""
+    declared: dict[str, set[str]] = {}
+    for match in re.finditer(r"^function\s+([A-Za-z][\w-]*)", source, re.M):
+        name = match.group(1)
+        end = source.find("\n}\n", match.end())
+        body = source[match.end() : end if end > 0 else len(source)]
+        open_at = re.search(r"(?m)^[ \t]*param[ \t]*\(", body)
+        if not open_at:
+            declared[name] = set()
+            continue
+        params: set[str] = set()
+        for argument in _paren_list(body, body.index("(", open_at.start())).split(","):
+            names = re.findall(r"\$(\w+)", re.sub(r"\[[^\]]*\]", "", argument))
+            params.update(names)
+        declared[name] = params
+    return declared
+
+
+def _call_segments(source: str, names: set[str]) -> list[tuple[str, str]]:
+    """Yield (helper name, argument text) for every `Helper -Argument` call in `source`."""
+    segments: list[tuple[str, str]] = []
+    for match in re.finditer(r"\b(" + "|".join(sorted(map(re.escape, names))) + r")\b", source):
+        text = match.end()
+        while True:
+            newline = source.find("\n", text)
+            line = source[text : newline if newline >= 0 else len(source)]
+            segments.append((match.group(1), line))
+            if not line.rstrip().endswith("`") or newline < 0:
+                break
+            text = newline + 1
+    return segments
+
+
+def _named_arguments(segment: str) -> set[str]:
+    """Return the -Named arguments in one call segment, ignoring strings and comments."""
+    line = re.sub(r"#.*$", "", segment, flags=re.M)
+    line = re.sub(r"\"[^\"]*\"|'[^']*'", " ", line)
+    return set(re.findall(r"(?<![\w-])-([A-Za-z]\w*)\s*:?\s", line))
 
 
 class VisualOracleBehaviorTests(unittest.TestCase):
@@ -107,6 +175,27 @@ class VisualOracleContractTests(unittest.TestCase):
             "Start-Process",
             oracle,
             "the oracle must go through the engine runner, not launch its own runner",
+        )
+
+    def test_manager_binds_only_declared_helper_parameters(self) -> None:
+        # A helper called with a parameter it does not declare is a runtime parameter-binding
+        # error, not a validation failure: PowerShell aborts the whole script, so the action
+        # dies on its first call with a message that names neither the caller nor the action.
+        # -Action VisualOracle shipped that way since #196, which left the only scripted-input
+        # route in the product unusable.
+        declared = _declared_parameters(self.support)
+        self.assertIn("Test-SafeComponentName", declared)
+        unknown = [
+            f"{name} -{param}"
+            for name, segment in _call_segments(self.manager, set(declared))
+            for param in _named_arguments(segment)
+            if param not in declared[name]
+        ]
+        self.assertEqual(
+            [],
+            unknown,
+            "nk_manager.ps1 binds parameters its tools/nk_safety.ps1 helpers do not declare: "
+            + ", ".join(sorted(set(unknown))),
         )
 
     def test_save_state_can_be_held_still_across_runs(self) -> None:
