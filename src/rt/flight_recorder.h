@@ -89,8 +89,8 @@ typedef struct {
  * This is a diagnostic stream, not the byte-comparable oracle trace: a record is
  * the canonical line the trace writer already rendered, followed by the absolute
  * values. It is owned by the diagnostic recorder because every host of the
- * runtime links that file -- the trace writer consults the window per guest
- * instruction, and a per-event host (the GE's vblank tick) arms it. Nothing here
+ * runtime links that file -- the host probes the window before guest execution,
+ * and the GE's vblank tick marks the frame timeline. Nothing here
  * is active unless SR_TRACE_PC names a window. The index list is one shared type
  * in both branches below, so a host that does not link the recorder still
  * compiles the trace writer against the same declaration. */
@@ -103,12 +103,27 @@ typedef struct {
 
 #if defined(SR_FLIGHT_RECORDER_LINKED) && !defined(SR_FLIGHT_RECORDER_STANDALONE)
 
-void sr_trace_window_configure(void);   /* lazy env probe; call from a per-vblank hook */
+void sr_trace_window_configure(void);   /* lazy env probe; host start and vblank hooks */
 void sr_trace_note_frame(uint32_t frame);
 int  sr_trace_window_armed(void);
 int  sr_trace_window_begin_instruction(uint32_t pc);  /* 0 when outside the window */
 const SrTraceWindowIndices *sr_trace_window_indices(void);
 void sr_trace_window_record(uint32_t pc, const char *text);
+
+/* ---- SR_WATCH: guest stores intersecting one address range ----
+ * SR_WATCH=ADDR:LEN is probed once during runtime initialization. Store helpers
+ * check the exported flag before entering the recorder, so the disabled path
+ * adds only a predicted-false branch and no diagnostic call. */
+extern int g_sr_watch_enabled;
+#define SR_WATCH_ACTIVE() (g_sr_watch_enabled)
+void sr_watch_configure(void);
+void sr_watch_note_vblank(uint32_t vblank);
+void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, uint32_t width);
+uint64_t sr_watch_match_count(void);
+#define SR_WATCH_STORE_IF_ARMED(pc, addr, value, width) do { \
+    if (__builtin_expect(g_sr_watch_enabled, 0)) \
+        sr_watch_store((pc), (addr), (value), (width)); \
+} while (0)
 
 void sr_flight_init(void);
 int sr_flight_class_enabled(uint32_t event_class);
@@ -154,6 +169,14 @@ static inline const SrTraceWindowIndices *sr_trace_window_indices(void) { return
 static inline void sr_trace_window_record(uint32_t pc, const char *text) {
     (void)pc; (void)text;
 }
+#define SR_WATCH_STORE_IF_ARMED(pc, addr, value, width) ((void)0)
+#define SR_WATCH_ACTIVE() 0
+static inline void sr_watch_configure(void) {}
+static inline void sr_watch_note_vblank(uint32_t vblank) { (void)vblank; }
+static inline void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, uint32_t width) {
+    (void)pc; (void)addr; (void)value; (void)width;
+}
+static inline uint64_t sr_watch_match_count(void) { return 0u; }
 
 static inline void sr_flight_init(void) {}
 static inline int sr_flight_class_enabled(uint32_t event_class) {

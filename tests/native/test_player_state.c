@@ -2270,6 +2270,24 @@ int main(int argc, char **argv) {
         test_rmdir(user_root);
         test_rmdir(scratch);
     }
+    /* 20b. A crafted disc controls module directory names; only plain names
+       may be written under the private per-title folder. */
+    {
+        assert(player_module_name_is_safe("MODULE.PRX"));
+        assert(player_module_name_is_safe("libfont_hv.prx"));
+        assert(player_module_name_is_safe("a-b.1.elf"));
+        assert(!player_module_name_is_safe(""));
+        assert(!player_module_name_is_safe("..\\..\\evil.prx"));
+        assert(!player_module_name_is_safe("../evil.prx"));
+        assert(!player_module_name_is_safe("a/b.prx"));
+        assert(!player_module_name_is_safe("C:evil.prx"));
+        assert(!player_module_name_is_safe(".hidden.prx"));
+        assert(!player_module_name_is_safe("CON.prx"));
+        assert(!player_module_name_is_safe("lpt1.prx"));
+        assert(!player_module_name_is_safe("trailing."));
+        assert(!player_module_name_is_safe("space name.prx"));
+        assert(player_module_name_is_safe("CONSOLE.prx"));
+    }
     /* 21. Host discovery: build preflight cards and the SDL3_ttf search order. */
     printf("[PLAYER_STATE_TEST] Subtest 21: build preflight cards and SDL3_ttf search order\n");
     fflush(stdout);

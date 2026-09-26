@@ -163,7 +163,10 @@ def _import_model(elf):
         name_ptr, nidData, firstSym = rebase(name_ptr), rebase(nidData), rebase(firstSym)
         if numFuncs > 0 and nidData == 0:
             raise ValueError(f"import entry at 0x{pos:08x}: {numFuncs} functions but null NID table pointer")
-        libname = _read_guest_cstr(elf, name_ptr) if name_ptr else "(null)"
+        # A zero-function window claims no import stubs, so its library name is
+        # never used by the codegen map. Some stripped retail inputs leave this
+        # optional pointer stale; do not dereference it for an empty window.
+        libname = _read_guest_cstr(elf, name_ptr) if name_ptr and numFuncs else "(null)"
         windows.append((libname, numFuncs, nidData, firstSym))
         step = size * 4
         if step <= 0 or pos + step > 0xFFFFFFFF:

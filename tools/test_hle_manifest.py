@@ -351,8 +351,11 @@ class LiveManifestTests(unittest.TestCase):
         for r in sdk_variants:
             self.assertEqual(r["handler"], "h_SetCompiledSdkVersion", r["name"])
             self.assertEqual(r["classification"], "dedicated", r["name"])
-        for nid in (0x7591C7DB, 0x35669D4C, 0x1B4217BC):
+        for nid in (0x7591C7DB, 0x35669D4C, 0x1B4217BC, 0x91DE343C):
             self.assertEqual(self.regs[nid]["handler"], "h_SetCompiledSdkVersion")
+        self.assertEqual(
+            self.regs[0x91DE343C]["name"], "sceKernelSetCompiledSdkVersion500_505"
+        )
         self.assertEqual(
             self.regs[0x1B4217BC]["name"], "sceKernelSetCompiledSdkVersion603_605"
         )

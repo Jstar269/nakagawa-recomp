@@ -194,3 +194,10 @@ waivers were retired in the same change. The alias rule and canonical-name
 map in `tools/hle_registry_meta.py` remain, so a regression of either fix
 fails the gate; `tools/test_sdkver_c.py` additionally executes the
 retained-state contract (`src/rt/sdkver_selftest.c`).
+
+## SDK-version NID variants
+
+The 3.95 (`0xebd5c3e6`) and 6.06 (`0x358ca1bb`) imports use the same
+`sceKernelSetCompiledSdkVersion` contract: save the guest-supplied SDK version
+and return success. Both route to `h_SetCompiledSdkVersion`; the routing test
+and retained-state selftest cover the aliases.

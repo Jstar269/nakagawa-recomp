@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import struct
 import tempfile
 import unittest
 
@@ -21,7 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from analyze import Elf
 import imports
-from import_fixtures import INTERLEAVED_NIDS, INTERLEAVED_SHAPE, build_interleaved_import_elf
+from import_fixtures import (
+    BASE_VADDR,
+    DATA_FILE_OFF,
+    INTERLEAVED_NIDS,
+    INTERLEAVED_SHAPE,
+    build_interleaved_import_elf,
+)
 
 
 class CodegenImportCompatibilityTests(unittest.TestCase):
@@ -48,6 +55,22 @@ class CodegenImportCompatibilityTests(unittest.TestCase):
             build_interleaved_import_elf(INTERLEAVED_SHAPE, INTERLEAVED_NIDS)
         )
         self.assertFalse(any("unreferenced tail" in finding for finding in findings))
+
+    def test_zero_function_window_does_not_read_unused_library_name(self) -> None:
+        nid = 0x11000001
+        blob = bytearray(build_interleaved_import_elf(
+            [("UnusedLibrary", 0, 0), ("SynthAlpha", 0, 1)], [nid]
+        ))
+        elf = Elf(bytes(blob), base=0)
+        module_info = elf.sec(".rodata.sceModuleInfo")
+        header = elf.read_at_vaddr(module_info["addr"], 52)
+        libstub = struct.unpack("<I", header[44:48])[0]
+        name_pointer_offset = DATA_FILE_OFF + (libstub - BASE_VADDR)
+        struct.pack_into("<I", blob, name_pointer_offset, 0x00100000)
+
+        stubs, _findings = self._parse(bytes(blob))
+
+        self.assertEqual(list(stubs.values()), [("SynthAlpha", nid)])
 
 
 if __name__ == "__main__":
