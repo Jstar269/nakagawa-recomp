@@ -384,8 +384,7 @@ static SrGuestInterpResult execute_noncontrol(
                                      sr_fpu_mul_s(s->f[fs], s->f[ft], s->fcr31));
             }
         } else if (fmt == 0x10u && funct == 0x24u) {   /* cvt.w.s */
-            const float a = s->f[fs];
-            s->fi[fd] = sr_fpu_to_word(a, funct, s->fcr31);
+            s->fi[fd] = sr_fpu_to_word(s->f[fs], funct, s->fcr31);
         } else {
             set_fault(fault, pc, opcode, pc, 1);
             return SR_GUEST_INTERP_UNSUPPORTED;
