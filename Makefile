@@ -655,9 +655,11 @@ endif
 PUBLIC_TARGETS := \
 	help \
 	check \
+	contrib-check \
 	test \
 	native-core-tests \
 	player-ui-tests \
+	player-ui-regressions \
 	fuzz-parsers \
 	readiness \
 	provenance-refresh \
@@ -757,6 +759,7 @@ INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settin
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
 HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
+HELP_DESCRIPTION_contrib-check := run only the local gates that apply to your changed files
 HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
 HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
@@ -771,6 +774,7 @@ HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
 HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
 HELP_DESCRIPTION_player := build the native player
 HELP_DESCRIPTION_player-ui-tests := build and run native player UI tests (needs SDL3)
+HELP_DESCRIPTION_player-ui-regressions := run scripted native player UI event and recovery flows (needs SDL3)
 HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objects
 HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
 HELP_DESCRIPTION_production-smoke-staged := run the production smoke from a staging directory outside the build tree
@@ -943,6 +947,45 @@ ifndef NK_TRUSTED_LEDGER
 else
 	$(PYTHON) tools/provenance_refresh.py --trusted-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
 endif
+
+# The contributor fast path: one command, only the gates that apply to the
+# files this branch changed against origin/main, finished in minutes.
+#
+# It is a subset of `check`, never a substitute: `check` and `readiness` remain
+# the authoritative gates, and CI still runs the hosted matrix. What it removes
+# is the reason a contributor gives up -- being told to run the whole native and
+# tooling suite to find out whether a one-line documentation change is well
+# formed.
+#
+# Path routing is tools/ci_paths.py, the same classifier the hosted workflow
+# uses, so the local selection cannot drift from the hosted one. The gates it
+# runs are the ones a contributor can actually clear: Ruff, the Python test
+# modules matching the changed tools/, a strict C compile of the changed C, and
+# markdownlint plus the documentation-freshness lint for changed Markdown.
+#
+# The publication audit's provenance self-consistency leg compares the working
+# tree with the checked-in ledger, which only a maintainer holding the private
+# trusted ledger can regenerate. Those findings are printed as MAINTAINER-SIDE
+# and do not fail this target; every other publication finding does. Nothing is
+# suppressed -- both lists are always shown.
+#
+#   mingw32-make contrib-check              # Windows
+#   make contrib-check                      # Linux
+#   CONTRIB_BASE=origin/main contrib-check  # explicit base
+#
+# Reports PASS, FAIL, SKIP (tool not installed) or NOT_RUN (surface untouched)
+# per gate. A skipped gate is never reported as a pass.
+CONTRIB_BASE ?= origin/main
+
+# The sub-gates run in the same interpreter as this script by default. Set
+# CONTRIB_PYTHON in the environment when the repository's default python is not
+# the one holding ruff and the project dependencies -- which is the normal case
+# on Windows, where MSYS2's python precedes the CPython the project uses. It is
+# an environment variable rather than a make variable because an interpreter
+# path usually contains a space, and the rest of this Makefile expands
+# $(PYTHON) unquoted.
+contrib-check:
+	CONTRIB_PYTHON="$${CONTRIB_PYTHON:-$(PYTHON)}" $(PYTHON) tools/contrib_check.py --base "$(CONTRIB_BASE)"
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
@@ -1376,6 +1419,7 @@ sdl3-check:
 	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
 PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
+PLAYER_UI_TEST_EXE ?= build/nakagawa_player_ui_test$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
@@ -1388,6 +1432,16 @@ $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_setting
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 player: $(PLAYER_EXE)
+
+$(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
+
+$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+
+.PHONY: player-ui-regressions
+player-ui-regressions: $(PLAYER_UI_TEST_EXE)
+	NAKAGAWA_PLAYER_UI_TEST_EXE="$(PLAYER_UI_TEST_EXE)" $(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
