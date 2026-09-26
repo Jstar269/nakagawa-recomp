@@ -3340,7 +3340,10 @@ uint32_t ge_run_list(uint32_t addr, int resume) {
     }
     uint64_t profile_started = ge_cpu_profile_begin();
     unsigned long t0 = wall_ms();
+    const int rt_phase_saved = sr_rt_phase;
+    sr_rt_phase = SR_RT_PHASE_GE;
     uint32_t next_addr = ge_run_list_inner(addr, resume);
+    sr_rt_phase = rt_phase_saved;
     if (perf_started) sr_perf_ge_cpu(perf_started);
     if (sr_perf_enabled && s_cpu_profile) {
         uint64_t transform_after = s_cpu_profile_stats.primitive_profile_phase[GE_PRIM_PROFILE_TRANSFORM].ns;
