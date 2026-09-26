@@ -117,21 +117,24 @@ static void sync_sdl_input(void) {
 }
 #endif
 
-/* PSP button bits (sceCtrl): SELECT 0x1, START 0x8, UP 0x10, RIGHT 0x20, DOWN 0x40, LEFT 0x80,
- * LTRIG 0x100, RTRIG 0x200, TRIANGLE 0x1000, CIRCLE 0x2000, CROSS 0x4000, SQUARE 0x8000. */
+/* PSP button bits (sceCtrl), named in src/core/nk_input_profile.h: SELECT 0x1, START 0x8,
+ * UP 0x10, RIGHT 0x20, DOWN 0x40, LEFT 0x80, LTRIG 0x100, RTRIG 0x200, TRIANGLE 0x1000,
+ * CIRCLE 0x2000, CROSS 0x4000, SQUARE 0x8000. One table, shared with the scripted-input
+ * route language (src/rt/hle.c), so a live press and a scripted press cannot disagree. */
 #ifdef _WIN32
 static uint32_t read_keys(void) {
     uint32_t b = 0;
     #define K(vk,bit) do { if (GetAsyncKeyState(vk) & 0x8000) b |= (bit); } while (0)
-    K(VK_RETURN, 0x0008);              /* Enter  -> START  */
-    K(VK_RSHIFT, 0x0001); K(VK_LSHIFT, 0x0001); /* Shift -> SELECT */
-    K('X', 0x4000);                    /* X -> CROSS   (confirm) */
-    K('Z', 0x2000);                    /* Z -> CIRCLE  (back)    */
-    K('A', 0x8000);                    /* A -> SQUARE  */
-    K('S', 0x1000);                    /* S -> TRIANGLE */
-    K('Q', 0x0100);                    /* Q -> L */
-    K('W', 0x0200);                    /* W -> R */
-    K(VK_UP, 0x0010); K(VK_DOWN, 0x0040); K(VK_LEFT, 0x0080); K(VK_RIGHT, 0x0020);
+    K(VK_RETURN, NK_PSP_BTN_START_BIT);         /* Enter  -> START  */
+    K(VK_RSHIFT, NK_PSP_BTN_SELECT_BIT); K(VK_LSHIFT, NK_PSP_BTN_SELECT_BIT); /* Shift -> SELECT */
+    K('X', NK_PSP_BTN_CROSS_BIT);               /* X -> CROSS   (confirm) */
+    K('Z', NK_PSP_BTN_CIRCLE_BIT);              /* Z -> CIRCLE  (back)    */
+    K('A', NK_PSP_BTN_SQUARE_BIT);              /* A -> SQUARE  */
+    K('S', NK_PSP_BTN_TRIANGLE_BIT);            /* S -> TRIANGLE */
+    K('Q', NK_PSP_BTN_LTRIGGER_BIT);            /* Q -> L */
+    K('W', NK_PSP_BTN_RTRIGGER_BIT);            /* W -> R */
+    K(VK_UP, NK_PSP_BTN_UP_BIT); K(VK_DOWN, NK_PSP_BTN_DOWN_BIT);
+    K(VK_LEFT, NK_PSP_BTN_LEFT_BIT); K(VK_RIGHT, NK_PSP_BTN_RIGHT_BIT);
     #undef K
     return b;
 }

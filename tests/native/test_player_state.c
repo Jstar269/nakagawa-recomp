@@ -19,6 +19,7 @@
  * save, which is the whole point of the assertion.
  */
 
+/* Feature-test macro first: POSIX tests use setenv, fchmod, and fileno. */
 #if !defined(_WIN32) && !defined(_WIN64)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -38,11 +39,41 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #define test_rmdir _rmdir
+#define nk_ps_chdir _chdir
+#define nk_ps_getcwd _getcwd
 #else
 #include <sys/stat.h>
 #include <unistd.h>
 #define test_rmdir rmdir
+#define nk_ps_chdir chdir
+#define nk_ps_getcwd getcwd
 #endif
+
+/* Set (value non-NULL) or clear (value NULL) a process environment variable
+ * for the duration of a probe, restored by the caller. */
+static void nk_ps_set_env(const char *key, const char *value) {
+    size_t len = strlen(key) + (value ? strlen(value) : 0) + 2;
+    char *pair = (char *)malloc(len);
+    assert(pair != NULL);
+    if (value) snprintf(pair, len, "%s=%s", key, value);
+    else snprintf(pair, len, "%s=", key);
+#if defined(_WIN32) || defined(_WIN64)
+    /* _putenv may retain the pointer, so the string outlives this call. */
+    _putenv(pair);
+#else
+    if (value) setenv(key, value, 1); /* setenv copies */
+    else unsetenv(key);
+    free(pair);
+#endif
+}
+
+/* Copy an environment value out before any mutation invalidates getenv's pointer. */
+static void nk_ps_copy_env(const char *key, char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    const char *live = getenv(key);
+    if (live && live[0]) snprintf(out, out_size, "%s", live);
+}
 
 static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name) {
     memset(entry, 0, sizeof(*entry));
@@ -951,6 +982,10 @@ int main(int argc, char **argv) {
     assert(settings->settings.resolution_scale == 4);
     player_app_cycle_resolution_scale(settings, -1);
     assert(settings->settings.resolution_scale == 2);
+    /* 8x is no longer offered: the GPU rasterizer caps at 4x, so the setter
+       refuses it instead of letting the UI claim an unsupported preset. */
+    player_app_set_resolution_scale(settings, 8);
+    assert(settings->settings.resolution_scale == 2);
 
     player_app_set_fps_cap(settings, 30);
     assert(settings->settings.fps_cap == 30);
@@ -984,6 +1019,37 @@ int main(int argc, char **argv) {
     player_app_adjust_volume(settings, -2000);
     assert(settings->settings.master_volume == 0);
     free(settings);
+
+    /* 9b. The launch-relevant settings map onto the session's runtime config;
+     * reduce_motion is launcher-UI state and must not leak into the child. */
+    printf("[PLAYER_STATE_TEST] Subtest 9b: settings apply to the launch session\n");
+    fflush(stdout);
+    {
+        PlayerSettings applied;
+        memset(&applied, 0, sizeof(applied));
+        player_app_settings_init_default(&applied);
+        applied.resolution_scale = 2;
+        applied.fps_cap = 30;
+        applied.vsync = false;
+        applied.fullscreen = true;
+        applied.master_volume = 55;
+        applied.reduce_motion = true;
+
+        NkRuntimeConfig cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.gui_mode = true;
+        player_app_apply_settings_to_session(&applied, &cfg);
+        assert(cfg.resolution_scale == 2);
+        assert(cfg.fps_cap == 30);
+        assert(cfg.vsync == false);
+        assert(cfg.fullscreen == true);
+        assert(cfg.master_volume == 55);
+        assert(cfg.gui_mode == true);   /* untouched by the mapping */
+        /* NULL arguments are safe no-ops. */
+        player_app_apply_settings_to_session(NULL, &cfg);
+        player_app_apply_settings_to_session(&applied, NULL);
+        assert(cfg.master_volume == 55);
+    }
 
     /* 10. Focus clamps into range so keyboard/gamepad activation can never
      * target a control the view no longer draws. */
@@ -1104,7 +1170,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 14);
+        assert(player_app_focus_count(stops) == 13); /* 8x preset not offered */
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
         assert(player_app_focus_count(stops) == 22);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
@@ -1628,7 +1694,7 @@ int main(int argc, char **argv) {
         PlayerApp *s_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(s_app != NULL);
         player_app_settings_init_default(&s_app->settings);
-        assert(s_app->settings.resolution_scale == 4);
+        assert(s_app->settings.resolution_scale == 1);
         assert(s_app->settings.fps_cap == 60);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
@@ -1659,7 +1725,7 @@ int main(int argc, char **argv) {
         /* Corrupt JSON file resets to defaults and produces notice */
         write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
-        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == 60);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
@@ -1670,13 +1736,21 @@ int main(int argc, char **argv) {
         /* Unknown / unsupported schema version resets to defaults and produces notice */
         write_text_file(test_settings_path, "{\"schema_version\": 999, \"resolution_scale\": 8}");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
-        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == 60);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
         assert(s_app2->settings.reduce_motion == false);
         assert(s_app2->settings.master_volume == 80);
         assert(strstr(s_app2->settings_notice, "Unsupported settings schema version") != NULL);
+
+        /* A legacy persisted 8x preset is refused at load: the GPU rasterizer
+           caps at 4x, so it falls back to the default instead of pretending. */
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"resolution_scale\": 8}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.resolution_scale == 1);
+        assert(s_app2->settings_notice[0] == '\0');
 
         remove(test_settings_path);
         free(s_app);
@@ -2184,6 +2258,95 @@ int main(int argc, char **argv) {
         test_rmdir(packages_dir);
         test_rmdir(user_root);
         test_rmdir(scratch);
+    }
+    /* 21. Host discovery: build preflight cards and the SDL3_ttf search order. */
+    printf("[PLAYER_STATE_TEST] Subtest 21: build preflight cards and SDL3_ttf search order\n");
+    fflush(stdout);
+    {
+        /* 21a: SDL3_ttf candidates put the executable folder first, then the
+           platform loader's bare names (PATH on Windows). */
+        char with_dir[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        char without_dir[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        char trailing[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        int n_with = player_app_ttf_library_candidates("C:/rel/bin", with_dir,
+                                                       PLAYER_APP_TTF_MAX_CANDIDATES);
+        int n_without = player_app_ttf_library_candidates(NULL, without_dir,
+                                                          PLAYER_APP_TTF_MAX_CANDIDATES);
+        int n_trailing = player_app_ttf_library_candidates("C:/rel/bin/", trailing,
+                                                           PLAYER_APP_TTF_MAX_CANDIDATES);
+        assert(n_with == n_without + 1);
+        assert(n_with >= 2);
+        assert(strstr(with_dir[0], "C:/rel/bin") != NULL);
+        assert(strstr(with_dir[0], "SDL3_ttf") != NULL);
+        assert(strcmp(with_dir[1], without_dir[0]) == 0);
+        assert(strchr(with_dir[n_with - 1], '/') == NULL);
+        assert(strchr(with_dir[n_with - 1], '\\') == NULL);
+        assert(n_trailing == n_with);
+        assert(strcmp(trailing[0], with_dir[0]) == 0);
+
+        /* 21b/21c: the two discovery cards a release user can hit. */
+        PlayerApp *capp = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(capp != NULL);
+        nk_library_init(&capp->library);
+        player_app_populate_sample_games(capp);
+        assert(capp->game_count > 0);
+
+        char saved_cwd[NK_MAX_PATH];
+        assert(nk_ps_getcwd(saved_cwd, sizeof(saved_cwd)) != NULL);
+        char probe[NK_MAX_PATH + 64];
+        assert(nk_platform_get_path(NK_PATH_CACHE, probe, sizeof(probe)));
+        size_t probe_len = strlen(probe);
+        snprintf(probe + probe_len, sizeof(probe) - probe_len, "%ccli_card_probe",
+                 nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(probe));
+
+        char prior_override[1024];
+        nk_ps_copy_env("NK_INSTALL_ROOT", prior_override, sizeof(prior_override));
+        nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+        assert(nk_ps_chdir(probe) == 0);
+        snprintf(capp->install_root, sizeof(capp->install_root), "%.*s",
+                 (int)sizeof(capp->install_root) - 1, probe);
+
+        /* CLI_NOT_FOUND: the card must name NK_INSTALL_ROOT and the checkout fix. */
+        assert(!player_app_start_package_build(capp, 0));
+        assert(capp->active_view == VIEW_ERROR);
+        assert(strcmp(capp->last_error.error_code, "CLI_NOT_FOUND") == 0);
+        assert(strstr(capp->last_error.message, "NK_INSTALL_ROOT") != NULL);
+        assert(strstr(capp->last_error.message, "source checkout") != NULL);
+        assert(strstr(capp->last_error.message, "nk_cli.py") != NULL);
+
+        /* 21c: back in the checkout, an empty PATH trips the toolchain gate
+           before any child process is spawned. PYTHON is pinned to a file that
+           exists so the interpreter leg is never the reported failure. */
+        assert(nk_ps_chdir(saved_cwd) == 0);
+        snprintf(capp->install_root, sizeof(capp->install_root), "%s", saved_cwd);
+        char prior_path[32768];
+        char prior_python[1024];
+        nk_ps_copy_env("PATH", prior_path, sizeof(prior_path));
+        nk_ps_copy_env("PYTHON", prior_python, sizeof(prior_python));
+#if defined(_WIN32) || defined(_WIN64)
+        nk_ps_set_env("PYTHON", "C:/Windows/notepad.exe");
+#else
+        nk_ps_set_env("PYTHON", "/bin/sh");
+#endif
+        nk_ps_set_env("PATH", "");
+
+        assert(!player_app_start_package_build(capp, 0));
+        assert(strcmp(capp->last_error.error_code, "BUILD_TOOLCHAIN_MISSING") == 0);
+        assert(strstr(capp->last_error.message, "gcc") != NULL);
+        assert(strstr(capp->last_error.message, "BUILD_TOOLCHAIN_MISSING") != NULL);
+        assert(strstr(capp->last_error.message, "in the works (#324)") != NULL);
+        assert(capp->build_session.is_building == false);
+
+        /* Restore the process environment before any later probe. */
+        if (prior_path[0]) nk_ps_set_env("PATH", prior_path);
+        else nk_ps_set_env("PATH", "");
+        if (prior_python[0]) nk_ps_set_env("PYTHON", prior_python);
+        else nk_ps_set_env("PYTHON", NULL);
+        if (prior_override[0]) nk_ps_set_env("NK_INSTALL_ROOT", prior_override);
+        else nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+
+        free(capp);
     }
 
     free(app);
