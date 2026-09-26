@@ -306,6 +306,14 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
 | `END` | Route complete |
 
+A mask is hex digits, with an optional `0x` prefix and at most eight of them. Anything else
+refuses the file at load, naming the line and the token, in `PRESS`, `PRESS_UNTIL`,
+`PRESS_WHILE` and the legacy `frame mask width` row alike. That refusal is the whole point:
+the parser used to coerce a mask it could not read to **zero**, so a route that asked for a
+button by a name the file format never defined pressed nothing at all while the run carried
+on — indistinguishable, from outside, from a game that had frozen. A press that is never
+delivered must be a load-time error, not a mystery.
+
 `#` starts a comment. A screen is "observed" by a coarse signature of the presented
 framebuffer: the frame is split into `cols x rows` cells and each cell contributes its mean
 R, G and B; a screen matches when the mean absolute difference from a recorded signature is
@@ -490,6 +498,35 @@ pacing was added to fix). A faster route is worthless if it is not the same rout
 `tools/nk_safety.ps1` holds the helpers whose failure modes are silent (bounded wait,
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
+
+#### Judging a long run
+
+One run of any length is only evidence if something states what "healthy" meant.
+`tools/soak_audit.py` takes the three artifacts a run already produces — `logs/perf.csv`
+(one row per wall second), `logs/stderr_run.log`, and a process-metrics CSV of
+`working_set_kb` / `private_bytes_kb` / `handles` sampled on a timer — and answers one
+question per assertion with a number:
+
+```powershell
+python tools/soak_audit.py --perf logs/perf.csv --proc proc.csv --stderr logs/stderr_run.log --audio
+```
+
+| Check | Fails on |
+| --- | --- |
+| `presenting` | fewer than `--min-presenting` of the seconds after the first presented one, or a gap longer than `--max-stall-s` |
+| `cadence` | vblank Hz below `--min-hz` at the 5th percentile of the last `--cadence-tail-s` presenting seconds |
+| `memory_working_set`, `memory_private`, `handles` | growth above `--max-growth-pct` after `--warmup-s` samples, **peak** included so a spike that shrinks back still fails |
+| `audio` | dropped frames or failed callback puts; the no-host-audio backend's underruns/overruns above `--max-underruns` |
+| `route` | a route program that ran without reporting `ROUTE_OK` |
+| `fatal` | `FATAL`, `ROUTE_FAIL`, `UNRESOLVED_DISPATCH`, watchdog or access-violation markers |
+
+Output is one `SOAK_CHECK:` line per assertion plus a `SOAK_AUDIT:` verdict line, and the exit
+status is non-zero if any assertion failed. Two rules keep it honest: an input it was not
+given reports `SKIP` with the reason rather than passing, and a quantity the runtime does not
+publish is reported as absent. Queue depth and per-push audio drift are in neither audio
+backend's telemetry, so the audio line says `queue_depth=n/a` rather than deriving one from
+push counts. The seconds before the guest owns its first frame are the runtime's own index
+scan: they are excluded from `presenting` and never counted as a stall.
 
 ### Filesystem & I/O (→ SR_DBG_FS)
 
