@@ -1703,6 +1703,7 @@ static size_t seal_type2_psp(uint8_t *out, size_t cap, const uint8_t *payload,
     put32le(hdr_tail, 1u); /* KIRK_MODE_CMD1 */
     put32le(hdr_tail + 0x10, (uint32_t)payload_len);
     put32le(hdr_tail + 0x14, (uint32_t)data_offset);
+    memset(metadata, 0, sizeof(metadata)); /* all 16 bytes enter the CMAC-covered header */
     put32le(metadata, (uint32_t)payload_len);
     put32le(metadata + 4u, (uint32_t)data_offset);
 
