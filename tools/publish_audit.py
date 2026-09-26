@@ -90,6 +90,7 @@ FORBIDDEN_PREFIXES = (
     "cache/",
     "docs/opengrip_ref/",
     "fs/",
+    "keys/",
     "logs/",
     "memstick/",
     "opengrip_ref/",
@@ -136,6 +137,23 @@ SPDX_PROVENANCE_SOURCE_EXTENSIONS = SOURCE_EXTENSIONS | {
 SPDX_PROVENANCE_SOURCE_NAMES = frozenset({"CMakeLists.txt", "Makefile"})
 KEY_NAME = re.compile(r"(?:kirk|amctrl|pgd|key|vkey|seed|iv|secret|token)", re.IGNORECASE)
 HEX_16_BYTES = re.compile(r"^[0-9a-fA-F]{32}$")
+#: Local-only KeyStore files (issue #295) can never be committed or packaged.
+KEY_FILE_NAME = re.compile(
+    r"keystore|keyfile|key[_-]file|key[_-]store|psp[_-]keys?|kirk[_-]keys?|"
+    r"^keys\.(?:json|txt|bin|dat)$|\.(?:key|keys)$",
+    re.IGNORECASE,
+)
+#: The name class only applies to data-shaped suffixes; source and prose
+#: files (for example an engine file named nk_psp_keystore.c) may carry the
+#: vocabulary without being a key file.
+KEY_FILE_DATA_SUFFIXES = {
+    "", ".json", ".txt", ".bin", ".dat", ".cfg", ".conf", ".ini",
+    ".key", ".keys", ".pem",
+}
+#: Every loadable KeyStore names this format; a tracked copy carries key material.
+KEYSTORE_CONTENT_MARKER = "nakagawa-psp-keystore"
+#: Source and prose files may legitimately name the KeyStore format itself.
+KEYSTORE_MARKER_TEXT_EXEMPT = {".c", ".h", ".py", ".md"}
 
 WINDOWS_USER_PATH = re.compile(
     r"[a-zA-Z]:\\(?:" + r"Us" + r"ers|Documents and Settings)\\[^\s\\/]+",
@@ -910,6 +928,11 @@ def _forbidden_path(path: str) -> str | None:
     name = PurePosixPath(normalized).name
     if name == "reference_hashes.json":
         return "game-derived hash manifest"
+    if (
+        PurePosixPath(name).suffix.lower() in KEY_FILE_DATA_SUFFIXES
+        and KEY_FILE_NAME.search(name)
+    ):
+        return "local-only key file (issue #295)"
     if name in ("vfpu_words.txt", "vfpu_words_local.txt", "nidseq_mine.txt", "pgd_keys.txt"):
         return "private/game-derived data artifact"
     if re.fullmatch(r"EBOOT\.BIN\.dec(?:\..+)?", name, re.IGNORECASE):
@@ -919,6 +942,18 @@ def _forbidden_path(path: str) -> str | None:
     if PurePosixPath(normalized).suffix.lower() in FORBIDDEN_EXTENSIONS:
         return f"prohibited extension {PurePosixPath(normalized).suffix}"
     return None
+
+
+def is_keystore_content(rel: str, text: str | None) -> bool:
+    """True when the bytes look like a local-only KeyStore (issue #295).
+
+    Every loadable KeyStore carries the format marker, so a tracked copy
+    under any name would ship key material.  Source and prose files may
+    name the format without carrying keys, so they stay exempt.
+    """
+    if not text or KEYSTORE_CONTENT_MARKER not in text:
+        return False
+    return PurePosixPath(rel).suffix.lower() not in KEYSTORE_MARKER_TEXT_EXEMPT
 
 
 def _magic_kind(path_or_bytes: Path | bytes | None, path: str = "") -> str | None:
@@ -2565,6 +2600,12 @@ def audit_entries_with_semantics(
             if PurePosixPath(rel).suffix.lower() in {".c", ".h", ".py", ".json"}:
                 for line in private_key_assignment_lines(text_str, filename=rel):
                     entry_findings.append(Finding("PRIVATE_KEY", rel, f"direct 16-byte key literal at line {line}"))
+
+            if is_keystore_content(rel, text_str):
+                entry_findings.append(Finding(
+                    "KEYFILE_CONTENT", rel,
+                    "local-only KeyStore content (issue #295); key files must never be tracked or packaged",
+                ))
 
             if (
                 WINDOWS_USER_PATH.search(text_str)

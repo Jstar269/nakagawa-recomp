@@ -1713,8 +1713,8 @@ class TestProductStatusCopy(unittest.TestCase):
     clean-room public PGF reader landed in #474, closing #349, so wizard,
     checklist and completion-manifest text that still described those as
     missing was a false product claim. Boundaries that really are unavailable
-    stay named with their tracking issue: automatic executable decryption and
-    PGD-protected data (#295).
+    stay named with their tracking issue: PGD-protected data and no-keyfile
+    executable decryption (#295).
     """
 
     def _source(self, relative: str) -> str:
@@ -1722,7 +1722,7 @@ class TestProductStatusCopy(unittest.TestCase):
 
     def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
         ui = self._source("src/player/ui_renderer.c")
-        self.assertIn("does not decrypt encrypted executables (#295). It builds runtime ", ui)
+        self.assertIn("decrypts encrypted executables with a local key file (#295). It builds runtime ", ui)
         self.assertIn("packages from the library (#296/#297). Verify also lists font (#300)", ui)
         self.assertNotIn("or create runtime packages", ui)
         self.assertNotIn("Runtime package is missing (#296/#297)", ui)

@@ -14,6 +14,7 @@ import struct
 from typing import Dict, Optional, Sequence
 
 import title_manifest
+from .decrypt_boundary import BoundaryOutcome, decrypt_bytes_to, key_file_path
 from .title_registry import TitleRegistry, get_default_registry
 from .types import IsoMetadata
 
@@ -828,6 +829,7 @@ def inspect_compatibility_preflight(
     directory_error: str | None = None
     sfo_entry: tuple[int, int] | None = None
     cfw_loader_detected = False
+    eboot_entry: tuple[int, int] | None = None
     try:
         with path.open("rb") as stream:
             sfo_entry = _lookup_iso_file(stream, size_bytes, ("PSP_GAME", "PARAM.SFO"))
@@ -901,6 +903,39 @@ def inspect_compatibility_preflight(
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
+    # Built-in decryption boundary (issue #295): when the user keeps a local
+    # key file in the private user data, unwrap the disc's encrypted
+    # executable through the production boundary and continue to the
+    # analyzer.  Nothing is ever written next to the ISO or the repository.
+    boundary_outcome: BoundaryOutcome | None = None
+    key_hint = key_file_path(root)
+    if (
+        directory_error is None
+        and eboot_kind in user_decryptable_kinds
+        and module_dir is not None
+        and decrypted_elf is None
+        and eboot_entry is not None
+        and key_hint.is_file()
+    ):
+        lba, extent_size = eboot_entry
+        try:
+            with path.open("rb") as stream:
+                blob = _read_iso_extent(stream, size_bytes, lba, extent_size, 0, extent_size)
+            boundary_outcome = decrypt_bytes_to(
+                blob, module_dir / "EBOOT.elf", user_data_root=root
+            )
+        except (OSError, IsoInspectionError) as exc:
+            boundary_outcome = BoundaryOutcome("failed", str(exc), str(key_hint))
+        if boundary_outcome.status == "ok":
+            decrypted_elf = module_dir / "EBOOT.elf"
+            decrypted_elf_kind = _classify_decrypted_elf_file(decrypted_elf)
+            if decrypted_elf_kind != "PLAIN_MIPS_ELF32":
+                boundary_outcome = BoundaryOutcome(
+                    "failed", "boundary output is not a usable MIPS ELF32",
+                    str(key_hint),
+                )
+                decrypted_elf = None
+                decrypted_elf_kind = "MISSING"
     if (
         not cfw_loader_detected
         and
@@ -958,11 +993,21 @@ def inspect_compatibility_preflight(
             "issues": [],
         }
     elif selected == "EBOOT.elf" and decrypted_elf is not None:
-        executable_check = {
-            "code": "EXECUTABLE", "status": "OK",
-            "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
-            "issues": [],
-        }
+        if boundary_outcome is not None and boundary_outcome.status == "ok":
+            executable_check = {
+                "code": "EXECUTABLE", "status": "OK",
+                "message": (
+                    f"The built-in decryption boundary produced a usable MIPS ELF32 at "
+                    f"{decrypted_elf} and it is selected for analysis."
+                ),
+                "issues": [],
+            }
+        else:
+            executable_check = {
+                "code": "EXECUTABLE", "status": "OK",
+                "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+                "issues": [],
+            }
     elif eboot_kind in user_decryptable_kinds and decrypted_elf is not None:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
@@ -973,12 +1018,27 @@ def inspect_compatibility_preflight(
             ),
             "issues": [295],
         }
+    elif (
+        eboot_kind in user_decryptable_kinds
+        and boundary_outcome is not None
+        and boundary_outcome.status == "failed"
+    ):
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                f"Encrypted executable: the built-in decryption boundary failed "
+                f"({boundary_outcome.detail}); supply decrypted modules at {module_dir} (#295). "
+                f"Check the local key file at {boundary_outcome.key_path}."
+            ),
+            "issues": [295],
+        }
     elif eboot_kind in user_decryptable_kinds and module_dir is not None:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
                 f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
-                "Automatic decryption is in the works."
+                f"Automatic decryption is in the works; to enable the built-in boundary, "
+                f"supply a local key file at {key_hint}."
             ),
             "issues": [295],
         }
@@ -1108,6 +1168,16 @@ def inspect_compatibility_preflight(
         ),
         "modified_dump_cfw_loader": cfw_loader_detected,
         "boot_fallback": fallback,
+        "key_file": str(key_hint),
+        "built_in_boundary": (
+            {
+                "status": boundary_outcome.status,
+                "detail": boundary_outcome.detail,
+                "key_file": boundary_outcome.key_path,
+            }
+            if boundary_outcome is not None
+            else None
+        ),
         "executables": executables,
         "checks": checks,
     }
