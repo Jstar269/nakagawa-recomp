@@ -126,8 +126,13 @@ typedef struct {
     size_t issue_count;
 } PlayerPreflightCheck;
 
+/* One slot per code the player's builder can emit (DISC_SFO, EXECUTABLE,
+ * EXPERIMENTAL, GUEST_MODULES, RUNTIME_PACKAGE, SYSTEM_FONTS, AUDIO_OUTPUT: 7)
+ * plus headroom, so adding a check never silently displaces another. */
+#define PLAYER_PREFLIGHT_MAX_CHECKS 10
+
 typedef struct {
-    PlayerPreflightCheck checks[7];
+    PlayerPreflightCheck checks[PLAYER_PREFLIGHT_MAX_CHECKS];
     size_t count;
 } PlayerCompatibilityPreflight;
 
