@@ -1201,7 +1201,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5bf4e1c1a191f10c2631ca48d62ecb4e99927bcb1d119f9e9e138c0535a304a2"
+      "sha256": "4686904edbaacc1946d16dbfc523cdb9bceb98a76a04061496f9c60c26f97f70"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2675,7 +2675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df3f05c4522b235245d9f2d97e265d3023ddfd6e023d0b30938f003f610713ab"
+      "sha256": "41b2610f35e3f2e0733cd1ce7a8eb54b3861a25e15097e7fd515bae0ca7e5cad"
     },
     {
       "path": "src/player/package_builder.h",
