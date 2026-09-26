@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from dataclasses import replace
 import hashlib
 import importlib.util
 import json
@@ -39,6 +40,7 @@ from test_iso_parity import (  # noqa: E402
     create_test_iso_with_executables,
 )
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
+from nk_core.types import TitleProfile  # noqa: E402
 
 
 SPEC = importlib.util.spec_from_file_location("production_smoke_generator", GENERATOR_PATH)
@@ -95,6 +97,33 @@ def build_synthetic_original_elf() -> bytes:
     executable[module_info + 4:module_info + 4 + len(module_name)] = module_name
     struct.pack_into("<I", executable, module_info + 32, 4)
     return bytes(executable)
+
+
+def build_synthetic_iso_elf() -> bytes:
+    """Build a linked ELF that the ISO preflight accepts as EBOOT.BIN."""
+    executable, _stub = build_synthetic_import_prx(b"sceSynthetic", 0x08804000)
+    executable = bytearray(executable)
+    struct.pack_into("<H", executable, 16, 2)
+    struct.pack_into("<I", executable, 24, 0x08804000)
+    phoff = struct.unpack_from("<I", executable, 28)[0]
+    struct.pack_into("<II", executable, phoff + 8, 0x08804000, 0x08804000)
+    struct.pack_into("<I", executable, phoff + 28, 0x100)
+    shoff = struct.unpack_from("<I", executable, 32)[0]
+    shentsize, shnum = struct.unpack_from("<HH", executable, 46)
+    for section_index in range(1, shnum - 1):
+        address_offset = shoff + section_index * shentsize + 12
+        section_address = struct.unpack_from("<I", executable, address_offset)[0]
+        struct.pack_into("<I", executable, address_offset, 0x08804000 + section_address)
+    return bytes(executable)
+
+
+def build_synthetic_decrypted_prx() -> bytes:
+    """Build a small source-owned ELF module for decrypted-PRX intake tests."""
+    module, _stub = build_synthetic_import_prx(b"sceSynthetic", 0)
+    module = bytearray(module)
+    phoff = struct.unpack_from("<I", module, 28)[0]
+    struct.pack_into("<I", module, phoff + 28, 0x100)
+    return bytes(module)
 
 
 class TestProductionSmoke(unittest.TestCase):
@@ -1257,10 +1286,19 @@ class TestSanitizedBringup(unittest.TestCase):
     def _run_module_fixture(
         self, iso_path: Path, work_root: Path, *,
         user_decrypted_eboot: bytes | None = None,
+        user_decrypted_modules: dict[str, bytes] | None = None,
+        catalog_manifest: dict | None = None,
         forbid_iso_executable: bool = False,
     ):
         work_dir = work_root / "work"
         report_path = work_root / "bringup.json"
+        if user_decrypted_modules:
+            decrypted_dir = (
+                work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
+            )
+            decrypted_dir.mkdir(parents=True, exist_ok=True)
+            for name, module_bytes in user_decrypted_modules.items():
+                (decrypted_dir / name).write_bytes(module_bytes)
         if user_decrypted_eboot is not None:
             decrypted_dir = (
                 work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
@@ -1306,6 +1344,26 @@ class TestSanitizedBringup(unittest.TestCase):
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 0, "", "")
         with contextlib.ExitStack() as stack:
+            if catalog_manifest is not None:
+                inspect_iso = nk_cli.inspect_iso
+
+                def inspect_catalog_iso(path):
+                    metadata = inspect_iso(path)
+                    profile = TitleProfile(
+                        id=catalog_manifest["id"],
+                        name=catalog_manifest.get("game_name", catalog_manifest["display_name"]),
+                        disc_ids=[metadata.disc_id],
+                        regions=[metadata.region],
+                    )
+                    return replace(metadata, matched_profile=profile)
+
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "inspect_iso", side_effect=inspect_catalog_iso
+                ))
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "_find_public_manifest",
+                    return_value=(self.root / "synthetic-manifest.json", catalog_manifest),
+                ))
             stack.enter_context(mock.patch.object(
                 nk_cli.subprocess, "run", return_value=completed
             ))
@@ -1328,23 +1386,8 @@ class TestSanitizedBringup(unittest.TestCase):
     def test_multi_module_iso_gets_provisional_non_overlapping_bindings(self):
         work_root = self.root / "multi-module-case"
         work_root.mkdir(parents=True)
-        module_bytes, _module_stub = build_synthetic_import_prx(b"sceSynthetic", 0)
-        module_bytes = bytearray(module_bytes)
-        module_phoff = struct.unpack_from("<I", module_bytes, 28)[0]
-        struct.pack_into("<I", module_bytes, module_phoff + 28, 0x100)
-        main_bytes, _main_stub = build_synthetic_import_prx(b"sceSynthetic", 0x08804000)
-        main_bytes = bytearray(main_bytes)
-        struct.pack_into("<H", main_bytes, 16, 2)
-        struct.pack_into("<I", main_bytes, 24, 0x08804000)
-        main_phoff = struct.unpack_from("<I", main_bytes, 28)[0]
-        struct.pack_into("<II", main_bytes, main_phoff + 8, 0x08804000, 0x08804000)
-        struct.pack_into("<I", main_bytes, main_phoff + 28, 0x100)
-        main_shoff = struct.unpack_from("<I", main_bytes, 32)[0]
-        main_shentsize, main_shnum = struct.unpack_from("<HH", main_bytes, 46)
-        for section_index in range(1, main_shnum - 1):
-            address_offset = main_shoff + section_index * main_shentsize + 12
-            section_address = struct.unpack_from("<I", main_bytes, address_offset)[0]
-            struct.pack_into("<I", main_bytes, address_offset, 0x08804000 + section_address)
+        module_bytes = build_synthetic_decrypted_prx()
+        main_bytes = build_synthetic_iso_elf()
         iso_path = work_root / "multi-module.iso"
         create_test_iso_with_modules(
             iso_path,
@@ -1543,6 +1586,116 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["issue_numbers"], [285, 295, 308])
         self.assertEqual(report["counts"]["modules"], 2)
         self.assertEqual(report["counts"]["encrypted_modules"], 1)
+        nk_cli.validate_bringup_report(report)
+
+    def test_user_decrypted_prx_replaces_encrypted_iso_module(self):
+        work_root = self.root / "decrypted-module-case"
+        work_root.mkdir(parents=True)
+        module_bytes = build_synthetic_decrypted_prx()
+        main_bytes = build_synthetic_iso_elf()
+        iso_path = work_root / "encrypted-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            bytes(main_bytes),
+            sysdir_modules={"encrypted.prx": build_psp_container()},
+            usrdir_modules={"plain.elf": bytes(module_bytes)},
+            disc_id="ULUS99998",
+            title="Synthetic Decrypted Module",
+        )
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_modules={"encrypted.prx": bytes(module_bytes)},
+        )
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(report["counts"]["modules"], 2)
+        self.assertEqual(report["counts"]["encrypted_modules"], 1)
+        module_stage = next(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998")
+            .glob("module-stage-*"),
+        )
+        self.assertEqual((module_stage / "encrypted.prx").read_bytes(), bytes(module_bytes))
+        profile = json.loads(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998" / "profile.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual([module["name"] for module in profile["manifest"]["modules"]],
+                         ["encrypted.prx", "plain.elf"])
+        nk_cli.validate_bringup_report(report)
+
+    def test_invalid_user_decrypted_prx_stays_at_crypto_boundary(self):
+        work_root = self.root / "invalid-decrypted-module-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "encrypted-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_plain_mips_elf(e_type=2),
+            sysdir_modules={"encrypted.prx": build_psp_container()},
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Invalid Decrypted Module",
+        )
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_modules={"encrypted.prx": build_psp_container()},
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "prepare_import")
+        self.assertEqual(report["failure_class"], "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertEqual(report["issue_numbers"], [285, 295, 308])
+        nk_cli.validate_bringup_report(report)
+
+    def test_catalog_bringup_stages_user_decrypted_prx(self):
+        work_root = self.root / "catalog-decrypted-module-case"
+        work_root.mkdir(parents=True)
+        module_bytes = build_synthetic_decrypted_prx()
+        main_bytes = build_synthetic_iso_elf()
+        iso_path = work_root / "catalog-encrypted-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            bytes(main_bytes),
+            sysdir_modules={"encrypted.prx": build_psp_container()},
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Catalog Decrypted Module",
+        )
+        catalog_manifest = nk_cli.title_manifest.load_manifest(
+            ROOT / "assets" / "titles" / "synthetic-title2.json"
+        )
+        catalog_manifest["executable"]["base"] = 0x08804000
+        catalog_manifest["executable"]["entry"] = 0x08804000
+        catalog_manifest["modules"] = [{
+            "name": "encrypted.prx",
+            "load_address": 0x08810000,
+            "required": True,
+            "role": "guest-prx",
+            "guest_path": "disc0:/PSP_GAME/SYSDIR/encrypted.prx",
+        }]
+        catalog_manifest = nk_cli.title_manifest.validate_manifest(catalog_manifest)
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_modules={"encrypted.prx": bytes(module_bytes)},
+            catalog_manifest=catalog_manifest,
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "codegen")
+        self.assertEqual(report["failure_class"], "CODEGEN_FAILED")
+        self.assertEqual(report["stages"]["prepare_import"]["status"], "PASS")
+        staged_module = (
+            work_root / "work" / "user-data" / "cache" / "bringup" /
+            "ULUS99998" / "modules" / "encrypted.prx"
+        )
+        self.assertEqual(staged_module.read_bytes(), bytes(module_bytes))
         nk_cli.validate_bringup_report(report)
 
     def test_each_stage_failure_is_named_in_the_report(self):
