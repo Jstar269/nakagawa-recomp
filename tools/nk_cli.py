@@ -633,6 +633,8 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
             "STALE_CODE_POLICY", environment.get("SR_STALE_POLICY", "")
         ),
         "chunk_target_bytes": environment.get("CHUNK_TARGET_BYTES", ""),
+        # The planner writes this into the package's cache metadata, so the key must carry it too.
+        "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }
 
 
@@ -678,9 +680,6 @@ def _current_package_cache_key(
     }
     environment = _runtime_build_environment()
     options = _package_codegen_options(manifest, environment)
-    options["planner_sha256"] = package_cache.sha256_file(
-        ROOT / "tools" / "title_codegen_plan.py"
-    )
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
         codegen_options=options,
