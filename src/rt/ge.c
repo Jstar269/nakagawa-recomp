@@ -736,7 +736,8 @@ static struct {
     unsigned long fog0, fogfull, texa0;         /* full-fog pixels, no-fog pixels, alpha==0 texels */
     unsigned long skin, bonew;                  /* skinned (weighted) 3D prims, bone matrix writes */
     unsigned long deg3d;                        /* zero-area 3D triangles (zeroed/missing vertex data) */
-    unsigned long nonfinite;                    /* triangles dropped for a non-finite clip/screen position */
+    unsigned long nonfinite;                    /* primitives dropped for a non-finite position */
+    unsigned long gpuprim;                      /* primitives the GPU backend took (SR_GPU_GE) */
     unsigned long line3d;                       /* 3D line segments submitted (wireframe map etc.) */
 } s_stat;
 
@@ -973,8 +974,8 @@ void ge_set_frame(uint32_t frame) {
         s_wall_last = now;
         s_ge_ms_acc = 0;
         fprintf(stderr,
-            "GESTAT+ f=%u blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu nonfinite=%lu zrange=%lu zr=[%u,%u] fmt=%u zbp=0x%08x fb=[0x%08x:%lu 0x%08x:%lu 0x%08x:%lu 0x%08x:%lu]\n",
-            frame, s_stat.blk3d, s_stat.skin, s_stat.bonew, s_stat.deg3d, s_stat.line3d, s_stat.nonfinite,
+            "GESTAT+ f=%u blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu nonfinite=%lu gpuprim=%lu zrange=%lu zr=[%u,%u] fmt=%u zbp=0x%08x fb=[0x%08x:%lu 0x%08x:%lu 0x%08x:%lu 0x%08x:%lu]\n",
+            frame, s_stat.blk3d, s_stat.skin, s_stat.bonew, s_stat.deg3d, s_stat.line3d, s_stat.nonfinite, s_stat.gpuprim,
             s_stat.zrange, ge.minz, ge.maxz, ge.fbfmt, ge.zbp,
             s_stat.fbs[0], s_stat.fbn[0], s_stat.fbs[1], s_stat.fbn[1],
             s_stat.fbs[2], s_stat.fbn[2], s_stat.fbs[3], s_stat.fbn[3]);
@@ -1681,7 +1682,31 @@ static void who_init(void) {
     if (wp) sscanf(wp, "%d,%d", &s_who_x, &s_who_y);
 }
 
+/* Fail closed on a non-finite vertex at the ONE point every rasterized primitive passes
+ * (ge_vtx_finite, the same predicate the Vulkan capture seam applies, so the two GE paths
+ * cannot disagree). Transform mode already carries the stronger upstream verdict CVtx::nf
+ * (clip position, projected screen position and lit colour) and drops before it gets here;
+ * this gate covers what that verdict cannot see:
+ *   - THROUGH mode, where load_vtx reads raw screen coordinates straight out of guest VRAM
+ *     with no finiteness test at all - a game that writes a NaN float into a through vertex
+ *     previously reached both rasterizers unchecked;
+ *   - patch/spline tessellation, whose control-point evaluation writes the position
+ *     straight into a Vtx;
+ *   - a clip-created vertex whose interpolation overflowed.
+ * A NaN here is fatal to the rasterizer: the acceptance tests all compare false against it
+ * and the edge functions become unbounded, and on the GPU a NaN gl_Position has an
+ * undefined fixed-function clipper verdict. Returns 1 (and counts the dropped primitive)
+ * when any of the given vertices is non-finite; pass NULL for the unused corners. */
+static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
+    if ((!a || ge_vtx_finite(a)) && (!b || ge_vtx_finite(b)) && (!c || ge_vtx_finite(c)))
+        return 0;
+    s_stat.nonfinite++;
+    s_stat.nearclip++;
+    return 1;
+}
+
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
+    if (vtx_nonfinite(A, B, C)) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
      * depth, shading, blending on the GPU); if it declines it has already flushed, so the
      * software path below stays correctly ordered against prior GPU work. */
@@ -1689,7 +1714,8 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->tri(A, B, C, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
 
     float area=(B->x-A->x)*(C->y-A->y)-(C->x-A->x)*(B->y-A->y);
@@ -1855,11 +1881,13 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
 
 /* Line rasterizer (DDA), used for prim types 1/2 in both modes. */
 static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
+    if (vtx_nonfinite(A, B, NULL)) return;
     if (s_gpu && s_gpu->line) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->line(A, B, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
     float dx=B->x-A->x, dy=B->y-A->y;
     float len=fmaxf(fabsf(dx),fabsf(dy));
@@ -1895,11 +1923,13 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
 }
 
 static void draw_point_vtx(const Vtx *A, int persp) {
+    if (vtx_nonfinite(A, NULL, NULL)) return;
     if (s_gpu && s_gpu->point) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->point(A, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
     if (!zrange_ok(A->z, persp)) { if (s_stat_on > 0) s_stat.zrange++; return; }
     int textured = ge.tex_enable && !ge.clear && ge.tex_addr;
@@ -2453,11 +2483,13 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
 /* Rasterise a sprite (axis-aligned rect from two corner vertices). Used by both modes;
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
 static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
+    if (vtx_nonfinite(p0, p1, NULL)) return;
     if (s_gpu && s_gpu->sprite) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->sprite(p0, p1, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
 
     int xa=(int)fminf(p0->x,p1->x), xb=(int)fmaxf(p0->x,p1->x);
@@ -2584,15 +2616,28 @@ static void patch_eval(const ModelVtx *cp,int row_stride,const PatchWeight *wu,
     if(ge.patch_facing&1){m->nx=-m->nx;m->ny=-m->ny;m->nz=-m->nz;}
 }
 
-static void model_to_through(const ModelVtx *m,Vtx *v){
+/* Patch/spline tessellation has no CVtx::nf verdict to consult in through mode (the
+ * control-point evaluation writes the screen position straight into a Vtx), so the
+ * fail-closed non-finite rule is applied here with the same predicate the GPU capture
+ * seam uses (ge_vtx_finite): every acceptance test around this code compares false
+ * against NaN, so a non-finite position would otherwise reach BOTH rasterizers as an
+ * unbounded primitive. */
+static int model_to_through(const ModelVtx *m,Vtx *v){
+    if(!(isfinite(m->x)&&isfinite(m->y)&&isfinite(m->z))){
+        s_stat.nonfinite++;s_stat.nearclip++;return 0;
+    }
     v->x=m->x;v->y=m->y;v->z=m->z;v->rw=1;v->u=m->u;v->v=m->v;v->fog=1;
     v->r=m->r;v->g=m->g;v->b=m->b;v->a=m->a;
+    return 1;
 }
 
 static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const ModelVtx *c,int through){
-    if(through){Vtx x,y,z;model_to_through(a,&x);model_to_through(b,&y);model_to_through(c,&z);raster_tri(&x,&y,&z,0);return;}
+    if(through){Vtx x,y,z;if(!model_to_through(a,&x)||!model_to_through(b,&y)||!model_to_through(c,&z))return;raster_tri(&x,&y,&z,0);return;}
     CVtx cv[3],cl[4];transform_model_vtx_clip(a,&cv[0]);transform_model_vtx_clip(b,&cv[1]);transform_model_vtx_clip(c,&cv[2]);
     if(ge.cull_enable&&!ge.clear&&(ge.cull&1)==0){CVtx t=cv[0];cv[0]=cv[1];cv[1]=t;}
+    /* Non-finite first, exactly as the triangle path above: a NaN clip position, screen
+     * position or lit colour passes every test below. */
+    if(cv[0].nf||cv[1].nf||cv[2].nf){s_stat.nonfinite++;s_stat.nearclip++;return;}
     if(cv[0].oor||cv[1].oor||cv[2].oor||(cv[0].cw<0&&cv[1].cw<0&&cv[2].cw<0))return;
     int zp=cv[0].ozp+cv[1].ozp+cv[2].ozp,zn=cv[0].ozn+cv[1].ozn+cv[2].ozn;
     if((!ge.depth_clip&&zp+zn>0)||zp>=3||zn>=3)return;
@@ -2601,14 +2646,15 @@ static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const Mode
         Vtx x,y,z;project_cvtx(&cv[0],&x);project_cvtx(&cv[1],&y);project_cvtx(&cv[2],&z);raster_tri(&x,&y,&z,1);
     }else{
         int n=clip_poly_near(cv,3,cl);Vtx p[4];int bad[4]={1,1,1,1};
-        for(int i=0;i<n&&i<4;i++){bad[i]=cl[i].cw<=NEAR_W||clip_vtx_out_of_range(&cl[i]);if(!bad[i])project_cvtx(&cl[i],&p[i]);}
+        for(int i=0;i<n&&i<4;i++){bad[i]=cl[i].nf||cl[i].cw<=NEAR_W||clip_vtx_out_of_range(&cl[i]);if(!bad[i])project_cvtx(&cl[i],&p[i]);}
         for(int i=2;i<n&&i<4;i++)if(!bad[0]&&!bad[i-1]&&!bad[i])raster_tri(&p[0],&p[i-1],&p[i],1);
     }
 }
 
 static void submit_model_line(const ModelVtx *a,const ModelVtx *b,int through){
-    if(through){Vtx x,y;model_to_through(a,&x);model_to_through(b,&y);draw_line_vtx(&x,&y,0);return;}
+    if(through){Vtx x,y;if(!model_to_through(a,&x)||!model_to_through(b,&y))return;draw_line_vtx(&x,&y,0);return;}
     CVtx x,y;transform_model_vtx_clip(a,&x);transform_model_vtx_clip(b,&y);
+    if(x.nf||y.nf){s_stat.nonfinite++;s_stat.nearclip++;return;}
     if(x.oor||y.oor||(x.cw<0&&y.cw<0))return;
     float dx=clip_d_nearz(&x),dy=clip_d_nearz(&y);
     if(dx<0&&dy<0)return;
@@ -2619,8 +2665,10 @@ static void submit_model_line(const ModelVtx *a,const ModelVtx *b,int through){
 }
 
 static void submit_model_point(const ModelVtx *a,int through){
-    if(through){Vtx v;model_to_through(a,&v);draw_point_vtx(&v,0);return;}
-    CVtx c;transform_model_vtx_clip(a,&c);if(c.cw<=NEAR_W||c.oor||(!ge.depth_clip&&(c.ozp||c.ozn)))return;
+    if(through){Vtx v;if(!model_to_through(a,&v))return;draw_point_vtx(&v,0);return;}
+    CVtx c;transform_model_vtx_clip(a,&c);
+    if(c.nf){s_stat.nonfinite++;s_stat.nearclip++;return;}
+    if(c.cw<=NEAR_W||c.oor||(!ge.depth_clip&&(c.ozp||c.ozn)))return;
     Vtx v;project_cvtx(&c,&v);draw_point_vtx(&v,1);
 }
 
@@ -3244,7 +3292,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                     int bad[4];
                     uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
                     for (int k = 0; k < m && k < 4; k++) {
-                        bad[k] = (cl[k].cw <= NEAR_W) || clip_vtx_out_of_range(&cl[k]);
+                        bad[k] = cl[k].nf || (cl[k].cw <= NEAR_W) || clip_vtx_out_of_range(&cl[k]);
                         if (!bad[k]) project_cvtx(&cl[k], &p[k]);
                     }
                     if (assembly_started)

@@ -59,10 +59,15 @@ proposals. Each claim covers only the exact fixture named:
   No public PSP documentation states a result, and PPSSPP's software GE was not
   usable as an oracle for the cell either (its screen acceptance and its
   bounding-box minimum/maximum both compare false against NaN, so no culling
-  verdict is implied by its source either). `src/rt/ge.c` therefore fails
-  closed: the primitive is dropped and counted (`GESTAT+ ... nonfinite=`, and
-  `drop-nonfinite` in the per-draw `TRIDRW+` line) instead of being rasterized
-  from a host `(int)NaN` conversion. A hardware capture through the existing
+  verdict is implied by its source either). Both rasterizer paths therefore
+  fail closed: `src/rt/ge.c` drops the primitive and counts it (`GESTAT+ ...
+  nonfinite=`, and `drop-nonfinite` in the per-draw `TRIDRW+` line) instead of
+  rasterizing it from a host `(int)NaN` conversion, and the Vulkan rasterizer
+  (`src/rt/gpu_sdl3vk/ge_gpu.c`) applies the same rule at its capture seam
+  (`GEGPU stats: ... nonfinite=`) instead of handing a NaN `gl_Position` to the
+  fixed-function clipper, whose verdict for NaN is undefined. The two share one
+  predicate (`ge_vtx_finite` in `src/rt/ge_shared.h`) so they cannot disagree.
+  A hardware capture through the existing
   Loop B probe — one triangle with a NaN bone matrix and one with a NaN vertex
   normal, read back through `sceGuGetMemoryStick`/`sceGuFinish` into a host
   framebuffer hash — would settle whether the hardware culls, clamps or
