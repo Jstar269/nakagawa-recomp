@@ -699,10 +699,9 @@ queue to be ahead of — absence of a measurement, never a zero. Because a
 drift number nobody can parse is the same as no drift number,
 `tools/test_soak_audit.py` reads all three format strings out of their C sources and feeds
 them to the audit's own patterns, so renaming a field in C fails a test instead of a soak.
-`mingw32-make audio-mix-selftest` and `mingw32-make audio-selftest` check the arithmetic the
-mixers publish it from, and the HLE selftest's
-`test_audio_drift_window_reports_the_pacing_value` covers the window the runtime's own line
-prints.
+`mingw32-make audio-selftest` checks the arithmetic the per-channel mixer publishes it from,
+and the HLE selftest's `test_audio_drift_window_reports_the_pacing_value` covers the window the
+runtime's own line prints.
 
 The seconds before the guest owns its first frame are the runtime's own index
 scan: they are excluded from `presenting` and never counted as a stall.

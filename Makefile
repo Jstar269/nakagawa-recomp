@@ -754,7 +754,6 @@ PUBLIC_TARGETS := \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	audio-selftest \
-	audio-mix-selftest \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
 	gpu-snapsync-selftest \
@@ -859,7 +858,6 @@ HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_audio-selftest := run the SDL3 host audio output selftest
-HELP_DESCRIPTION_audio-mix-selftest := run the SDL3 audio mixer drift telemetry selftest
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
@@ -1813,14 +1811,6 @@ audio-selftest:
 		src/rt/audio_unavailable.c src/rt/perf.c -lSDL3 -lm \
 		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
-
-# The mixing backend's SR_AUDIOSTAT drift telemetry is pure cursor arithmetic, so its
-# selftest needs no device: it checks the lead numbers the window line publishes.
-audio-mix-selftest:
-	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
-		src/rt/audio.c -lSDL3 -lm \
-		-o $(BUILD_DIR)/audio_mix_selftest$(EXE_EXT)
-	$(BUILD_DIR)/audio_mix_selftest$(EXE_EXT)
 
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST \
