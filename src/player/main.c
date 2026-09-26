@@ -188,6 +188,12 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 } else {
                     player_app_set_view(app, VIEW_SETTINGS);
                 }
+            } else if (app->active_view == VIEW_PREREQ_CONSENT ||
+                       app->active_view == VIEW_PREREQ_PROGRESS) {
+                player_app_prereq_cancel(app);
+            } else if (app->active_view == VIEW_PREREQ_ABOUT ||
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -301,6 +307,12 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 } else {
                     player_app_set_view(app, VIEW_SETTINGS);
                 }
+            } else if (app->active_view == VIEW_PREREQ_CONSENT ||
+                       app->active_view == VIEW_PREREQ_PROGRESS) {
+                player_app_prereq_cancel(app);
+            } else if (app->active_view == VIEW_PREREQ_ABOUT ||
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -336,6 +348,57 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
 }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+enum {
+    PLAYER_UI_TEST_ACTION_WAIT_MS = -20260926,
+    PLAYER_UI_TEST_ACTION_WAIT_VIEW = -20260927,
+    PLAYER_UI_TEST_ACTION_ASSERT_CONSENT = -20260928,
+    PLAYER_UI_TEST_ACTION_ASSERT_VIEW = -20260929,
+    PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING = -20260930
+};
+
+static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
+    static const struct { const char *name; PlayerView view; } views[] = {
+        { "library", VIEW_LIBRARY }, { "ready_library", PLAYER_VIEW_READY_LIBRARY },
+        { "supported", VIEW_SUPPORTED_TITLE }, { "experimental", VIEW_EXPERIMENTAL_TITLE },
+        { "unsupported", VIEW_UNSUPPORTED_TITLE }, { "settings", VIEW_SETTINGS },
+        { "building_package", VIEW_BUILDING_PACKAGE }, { "error", VIEW_ERROR },
+        { "prereq_consent", VIEW_PREREQ_CONSENT },
+        { "prereq_progress", VIEW_PREREQ_PROGRESS },
+        { "prereq_about", VIEW_PREREQ_ABOUT },
+        { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS }
+    };
+    if (!names || !names[0] || !mask) return false;
+    uint32_t parsed_mask = 0;
+    char *name = names;
+    while (name) {
+        char *next = strchr(name, '|');
+        if (next) *next++ = '\0';
+        if (!name[0]) return false;
+        bool found = false;
+        for (size_t i = 0; i < sizeof(views) / sizeof(views[0]); i++) {
+            if (strcmp(name, views[i].name) == 0) {
+                if ((unsigned)views[i].view >= 32) return false;
+                parsed_mask |= UINT32_C(1) << (unsigned)views[i].view;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+        name = next;
+    }
+    *mask = parsed_mask;
+    return parsed_mask != 0;
+}
+
+static bool player_ui_test_parse_positive_u64(const char *text, uint64_t *value) {
+    if (!text || !text[0] || text[0] == '-' || !value) return false;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(text, &end, 10);
+    if (end == text || !end || *end != '\0' || parsed == 0) return false;
+    *value = (uint64_t)parsed;
+    return true;
+}
+
 static int player_ui_test_next_event(const char *script, size_t *cursor,
                                     SDL_Event *event) {
     if (!script || !cursor || !event) return -1;
@@ -354,6 +417,59 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
 
     if (strcmp(token, "QUIT") == 0) {
         event->type = SDL_EVENT_QUIT;
+        return 1;
+    }
+    if (strncmp(token, "WAIT_MS=", 8) == 0) {
+        uint64_t duration = 0;
+        if (!player_ui_test_parse_positive_u64(token + 8, &duration) ||
+            duration > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_MS;
+        event->user.windowID = (Uint32)duration;
+        return 1;
+    }
+    if (strncmp(token, "WAIT_VIEW=", 10) == 0) {
+        char *comma = strchr(token + 10, ',');
+        if (!comma) return -1;
+        *comma = '\0';
+        uint32_t target_mask = 0;
+        uint64_t timeout = 0;
+        if (!player_ui_test_parse_views(token + 10, &target_mask) ||
+            !player_ui_test_parse_positive_u64(comma + 1, &timeout) ||
+            timeout > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_VIEW;
+        event->user.windowID = target_mask;
+        event->user.timestamp = timeout;
+        return 1;
+    }
+    if (strncmp(token, "ASSERT_VIEW=", 12) == 0) {
+        uint32_t target_mask = 0;
+        if (!player_ui_test_parse_views(token + 12, &target_mask) ||
+            (target_mask & (target_mask - 1)) != 0) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_VIEW;
+        event->user.windowID = target_mask;
+        return 1;
+    }
+    if (strcmp(token, "ASSERT_GAME_RUNNING") == 0) {
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING;
+        return 1;
+    }
+    if (strncmp(token, "ASSERT_CONSENT=", 15) == 0) {
+        char *comma = strchr(token + 15, ',');
+        if (!comma) return -1;
+        *comma = '\0';
+        uint64_t item_count = 0;
+        uint64_t total_bytes = 0;
+        if (!player_ui_test_parse_positive_u64(token + 15, &item_count) ||
+            item_count > PACKAGE_BUILDER_MAX_PREREQUISITES ||
+            !player_ui_test_parse_positive_u64(comma + 1, &total_bytes)) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_CONSENT;
+        event->user.windowID = (Uint32)item_count;
+        event->user.timestamp = total_bytes;
         return 1;
     }
     if (strncmp(token, "DROP_FILE=", 10) == 0) {
@@ -432,6 +548,10 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case PLAYER_VIEW_READY_LIBRARY: return "ready_library";
     case VIEW_CONTROLLER_SETTINGS: return "controller";
     case VIEW_BUILDING_PACKAGE: return "building_package";
+    case VIEW_PREREQ_CONSENT: return "prereq_consent";
+    case VIEW_PREREQ_PROGRESS: return "prereq_progress";
+    case VIEW_PREREQ_ABOUT: return "prereq_about";
+    case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
     default: return "unknown";
     }
 }
@@ -475,16 +595,23 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     }
     SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
     bool badge_valid = ui_last_status_badge_rect(&badge);
-    printf("[PLAYER_UI_TEST] frame=%d view=%s selected=%d focus=%d focus_count=%d wizard_step=%s "
+    printf("[PLAYER_UI_TEST] frame=%d ticks_ms=%llu view=%s "
+           "selected=%d selected_disc=%s selected_title_id=%s "
+           "focus=%d focus_count=%d wizard_step=%s "
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
-           "selected_runtime=%d selected_package_status=%d games=%d build_stage=%d "
+           "selected_runtime=%d selected_package_status=%d games=%d "
+           "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx\n",
-           frame_number, player_ui_test_view_name(app->active_view),
-           app->selected_game_index, app->focus_index, ui_focus_count(app),
+           frame_number, (unsigned long long)SDL_GetTicks(),
+           player_ui_test_view_name(app->active_view),
+           app->selected_game_index,
+           selected ? selected->disc_id : "NONE",
+           selected ? selected->title_id : "NONE",
+           app->focus_index, ui_focus_count(app),
            player_ui_test_wizard_step_name(app->wizard.step),
            app->wizard.font_confirmed ? 1 : 0,
            app->wizard.is_extracting ? 1 : 0, app->wizard.extraction_percent,
@@ -506,11 +633,28 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            selected && selected->assets_staged ? 1 : 0,
            selected && player_app_game_has_runtime(app, selected) ? 1 : 0,
            (int)package_status, app->game_count,
+           app->prerequisites.items.count,
+           (unsigned long long)app->prerequisites.total_bytes,
+           app->is_game_running ? 1 : 0,
            (int)app->build_session.current_stage,
            badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
            badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
            running ? 1 : 0,
            (unsigned long long)player_ui_test_frame_hash(renderer));
+
+    static bool consent_items_reported = false;
+    if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
+        printf("[PLAYER_UI_TEST] consent items=%zu total_bytes=%llu ids=",
+               app->prerequisites.items.count,
+               (unsigned long long)app->prerequisites.total_bytes);
+        for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+            printf("%s%s", i ? "," : "", app->prerequisites.items.items[i].id);
+        }
+        printf("\n");
+        consent_items_reported = true;
+    } else if (app->active_view != VIEW_PREREQ_CONSENT) {
+        consent_items_reported = false;
+    }
 }
 #endif
 
@@ -937,6 +1081,179 @@ static int stage_iso_synchronously(PlayerApp *app) {
    ends the run sooner; this only caps a run that would otherwise wait forever. */
 #define NK_HEADLESS_LAUNCH_TIMEOUT_MS 120000
 
+static bool player_prerequisite_data_root(const PlayerApp *app,
+                                          char *out, size_t out_size) {
+    if (!app || !out || out_size == 0) return false;
+    if (app->runtime_root[0]) {
+        int n = snprintf(out, out_size, "%s", app->runtime_root);
+        return n > 0 && (size_t)n < out_size;
+    }
+    return nk_platform_get_app_data_dir(out, out_size);
+}
+
+static const char *player_prerequisite_display_name(const PlayerApp *app,
+                                                     const char *item_id) {
+    if (!app || !item_id) return item_id ? item_id : "";
+    for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+        const PackagePrerequisite *item = &app->prerequisites.items.items[i];
+        if (strcmp(item->id, item_id) == 0) return item->name;
+    }
+    return item_id;
+}
+
+static void player_start_prerequisite_operation(PlayerApp *app) {
+    if (!app || app->prerequisite_job_started || app->prerequisite_fetcher_started) return;
+    if (app->prerequisites.phase != PLAYER_PREREQ_BOOTSTRAP &&
+        app->prerequisites.phase != PLAYER_PREREQ_DOWNLOAD) return;
+
+    char data_root[NK_MAX_PATH];
+    if (!player_prerequisite_data_root(app, data_root, sizeof(data_root))) {
+        player_app_prereq_fail(app, "DATA_DIR_UNAVAILABLE",
+            "The per-user app-data folder is unavailable. Choose a writable Windows profile and retry.");
+        return;
+    }
+
+    if (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP) {
+        const PackagePrerequisite *python_item = NULL;
+        for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+            if (strcmp(app->prerequisites.items.items[i].id, "cpython-embed-amd64") == 0) {
+                python_item = &app->prerequisites.items.items[i];
+                break;
+            }
+        }
+        if (!python_item || !package_builder_bootstrap_python_start(
+                &app->bootstrap_session, python_item, data_root)) {
+            player_app_prereq_fail(app, "PYTHON_BOOTSTRAP_START_FAILED",
+                "The verified CPython bootstrap could not start. Check app-data permissions and retry.");
+            return;
+        }
+        app->prerequisite_job_started = true;
+        app->prerequisites.current_item[0] = '\0';
+        app->prerequisites.item_received_bytes = 0;
+        app->prerequisites.item_total_bytes = python_item->size_bytes;
+        app->prerequisites.total_received_bytes = 0;
+        return;
+    }
+
+    char python_path[NK_MAX_PATH];
+    char cli_path[NK_MAX_PATH];
+    if (!package_builder_find_python_in_root(data_root, python_path, sizeof(python_path))) {
+        player_app_prereq_fail(app, "PYTHON_NOT_FOUND",
+            "The verified CPython runtime is unavailable in app data. Retry the bootstrap download.");
+        return;
+    }
+    if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        player_app_prereq_fail(app, "CLI_NOT_FOUND",
+            "The packaged source/tools folder could not be located. Repair the release source folder, then retry.");
+        return;
+    }
+    char log_dir[NK_MAX_PATH];
+    int n = snprintf(log_dir, sizeof(log_dir), "%s%clogs", data_root,
+                     nk_platform_path_separator());
+    if (n < 0 || (size_t)n >= sizeof(log_dir) || !nk_platform_mkdir_p(log_dir)) {
+        player_app_prereq_fail(app, "DISK_FULL",
+            "The app-data log folder could not be created. Free disk space or check permissions, then retry.");
+        return;
+    }
+    NkResult result = package_builder_start_prerequisite_fetch(
+        &app->build_session, python_path, cli_path, data_root, log_dir,
+        app->prerequisite_bootstrap_ready);
+    if (result != NK_OK) {
+        player_app_prereq_fail(app,
+            app->build_session.failure_code[0] ? app->build_session.failure_code : "PREREQUISITE_FETCH_START_FAILED",
+            app->build_session.failure_boundary[0] ? app->build_session.failure_boundary :
+                "The verified prerequisite fetcher could not start. Check app-data permissions and retry.");
+        return;
+    }
+    app->prerequisite_fetcher_started = true;
+    app->prerequisites.current_item[0] = '\0';
+}
+
+static void player_update_prerequisite_operation(PlayerApp *app) {
+    if (!app) return;
+    if (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP &&
+        !app->prerequisite_job_started) {
+        if (app->prerequisites.cancel_requested) {
+            player_app_prereq_finish_cancel(app);
+        } else {
+            player_start_prerequisite_operation(app);
+        }
+    }
+    if (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP &&
+        app->prerequisite_job_started) {
+        if (app->prerequisites.cancel_requested) {
+            package_builder_bootstrap_python_cancel(&app->bootstrap_session);
+        }
+        uint64_t received = 0;
+        bool finished = false;
+        bool succeeded = false;
+        char code[48] = "";
+        char message[512] = "";
+        package_builder_bootstrap_python_poll(&app->bootstrap_session, &received,
+            &finished, &succeeded, code, sizeof(code), message, sizeof(message));
+        player_app_prereq_update_progress(app,
+            player_prerequisite_display_name(app, "cpython-embed-amd64"), received,
+            app->prerequisites.item_total_bytes, received,
+            app->prerequisites.total_bytes);
+        if (finished && app->prerequisite_job_started) {
+            package_builder_bootstrap_python_close(&app->bootstrap_session);
+            app->prerequisite_job_started = false;
+            if (succeeded) {
+                app->prerequisite_bootstrap_ready = true;
+                app->prerequisites.bootstrap_python = false;
+                app->prerequisites.phase = PLAYER_PREREQ_DOWNLOAD;
+                app->prerequisites.item_received_bytes = app->prerequisites.item_total_bytes;
+                app->prerequisites.total_received_bytes = app->prerequisites.item_total_bytes;
+            } else if (app->prerequisites.cancel_requested) {
+                player_app_prereq_finish_cancel(app);
+            } else {
+                player_app_prereq_fail(app, code[0] ? code : "PYTHON_BOOTSTRAP_FAILED",
+                    message[0] ? message : "The verified CPython runtime could not be installed. Check the connection and app-data space, then retry.");
+            }
+        }
+    }
+
+    if (app->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD &&
+        !app->prerequisite_fetcher_started) {
+        if (app->prerequisites.cancel_requested) {
+            player_app_prereq_finish_cancel(app);
+        } else {
+            player_start_prerequisite_operation(app);
+        }
+    }
+    if (app->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD &&
+        app->prerequisite_fetcher_started) {
+        if (app->prerequisites.cancel_requested && !app->prerequisite_cancel_sent) {
+            package_builder_request_prerequisite_cancel(&app->build_session,
+                app->build_session.cancel_file_path);
+            app->prerequisite_cancel_sent = true;
+        }
+        package_builder_poll(&app->build_session, SDL_GetTicks());
+        player_app_prereq_update_progress(app,
+            player_prerequisite_display_name(app, app->build_session.current_item_id),
+            app->build_session.item_received_bytes, app->build_session.item_total_bytes,
+            app->build_session.total_received_bytes, app->build_session.total_bytes);
+        if (!app->build_session.is_building) {
+            app->prerequisite_fetcher_started = false;
+            if (app->prerequisites.cancel_requested || app->build_session.is_cancelled ||
+                strcmp(app->build_session.failure_code, "INSTALL_CANCELLED") == 0) {
+                player_app_prereq_finish_cancel(app);
+            } else if (app->build_session.is_failed) {
+                player_app_prereq_fail(app,
+                    app->build_session.failure_code[0] ? app->build_session.failure_code : "PREREQUISITE_INSTALL_FAILED",
+                    app->build_session.failure_boundary[0] ? app->build_session.failure_boundary :
+                        "The verified build prerequisites could not be installed. Check the error and retry.");
+            } else if (app->build_session.is_complete &&
+                       app->build_session.prerequisite_install_complete) {
+                player_app_prereq_complete(app);
+            } else {
+                player_app_prereq_fail(app, "PREREQUISITE_INSTALL_FAILED",
+                    "The prerequisite fetcher exited before confirming a complete install. Retry the download.");
+            }
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
     SetConsoleOutputCP(CP_UTF8);
@@ -973,6 +1290,10 @@ int main(int argc, char *argv[]) {
     bool ui_test_quit_queued = false;
     size_t ui_test_event_cursor = 0;
     int ui_test_frame = 0;
+    bool ui_test_waiting_for_time = false;
+    bool ui_test_waiting_for_view = false;
+    uint64_t ui_test_wait_deadline = 0;
+    uint32_t ui_test_wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
 #endif
     bool launch_now = false;
     bool stage_initial_iso = false;
@@ -1045,6 +1366,10 @@ int main(int argc, char *argv[]) {
             test_view = "wizard";
         }
     }
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_mode) setvbuf(stdout, NULL, _IONBF, 0);
+#endif
 
     /* A --view= run is an explicit test or capture invocation, so it gets the
        fixture too. --empty wins regardless of argument order. */
@@ -1592,24 +1917,103 @@ int main(int argc, char *argv[]) {
 #endif
     while (running && !app.should_quit) {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (ui_test_mode && !ui_test_quit_queued) {
+        if (ui_test_mode) {
+            uint64_t ui_test_now = SDL_GetTicks();
+            bool ui_test_block_script = false;
+            if (ui_test_waiting_for_view) {
+                uint32_t current_view_mask = (unsigned)app.active_view < 32
+                    ? UINT32_C(1) << (unsigned)app.active_view : 0;
+                if (ui_test_wait_view_mask & current_view_mask) {
+                    printf("[PLAYER_UI_TEST] wait_view actual=%s result=PASS\n",
+                           player_ui_test_view_name(app.active_view));
+                    ui_test_waiting_for_view = false;
+                } else if (ui_test_now >= ui_test_wait_deadline) {
+                    fprintf(stderr, "[PLAYER_UI_TEST] wait_view result=FAIL actual=%s\n",
+                            player_ui_test_view_name(app.active_view));
+                    ui_test_failed = true;
+                    ui_test_quit_queued = true;
+                    running = false;
+                } else {
+                    ui_test_block_script = true;
+                }
+            }
+            if (ui_test_waiting_for_time) {
+                if (ui_test_now >= ui_test_wait_deadline) {
+                    printf("[PLAYER_UI_TEST] wait_ms result=PASS\n");
+                    ui_test_waiting_for_time = false;
+                } else {
+                    ui_test_block_script = true;
+                }
+            }
+            if (!ui_test_block_script && !ui_test_quit_queued && running) {
             SDL_Event scripted_event;
             int next_event = player_ui_test_next_event(
                 ui_test_events, &ui_test_event_cursor, &scripted_event);
             if (next_event > 0) {
-                if (scripted_event.type == SDL_EVENT_DROP_FILE) {
-                    ui_test_drop_data = (char *)scripted_event.drop.data;
-                }
-                if (!SDL_PushEvent(&scripted_event)) {
-                    if (ui_test_drop_data) {
-                        SDL_free(ui_test_drop_data);
-                        ui_test_drop_data = NULL;
+                if (scripted_event.type == SDL_EVENT_USER &&
+                    scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_MS) {
+                    ui_test_wait_deadline = ui_test_now + scripted_event.user.windowID;
+                    ui_test_waiting_for_time = true;
+                    printf("[PLAYER_UI_TEST] wait_ms=%u started\n",
+                           scripted_event.user.windowID);
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_VIEW) {
+                    ui_test_wait_view_mask = scripted_event.user.windowID;
+                    ui_test_wait_deadline = ui_test_now + scripted_event.user.timestamp;
+                    ui_test_waiting_for_view = true;
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_CONSENT) {
+                    bool matches = app.active_view == VIEW_PREREQ_CONSENT &&
+                        app.prerequisites.items.count == scripted_event.user.windowID &&
+                        app.prerequisites.total_bytes == scripted_event.user.timestamp;
+                    printf("[PLAYER_UI_TEST] assert_consent result=%s items=%zu expected_items=%u "
+                           "total_bytes=%llu expected_bytes=%llu\n",
+                           matches ? "PASS" : "FAIL",
+                           app.prerequisites.items.count, scripted_event.user.windowID,
+                           (unsigned long long)app.prerequisites.total_bytes,
+                           (unsigned long long)scripted_event.user.timestamp);
+                    if (!matches) {
+                        ui_test_failed = true;
+                        ui_test_quit_queued = true;
+                        running = false;
                     }
-                    ui_test_failed = true;
-                    running = false;
-                    fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
-                } else if (scripted_event.type == SDL_EVENT_QUIT) {
-                    ui_test_quit_queued = true;
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_VIEW) {
+                    uint32_t current_view_mask = (unsigned)app.active_view < 32
+                        ? UINT32_C(1) << (unsigned)app.active_view : 0;
+                    bool matches = (scripted_event.user.windowID & current_view_mask) != 0;
+                    printf("[PLAYER_UI_TEST] assert_view result=%s actual=%s\n",
+                           matches ? "PASS" : "FAIL",
+                           player_ui_test_view_name(app.active_view));
+                    if (!matches) {
+                        ui_test_failed = true;
+                        ui_test_quit_queued = true;
+                        running = false;
+                    }
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING) {
+                    printf("[PLAYER_UI_TEST] assert_game_running result=%s\n",
+                           app.is_game_running ? "PASS" : "FAIL");
+                    if (!app.is_game_running) {
+                        ui_test_failed = true;
+                        ui_test_quit_queued = true;
+                        running = false;
+                    }
+                } else {
+                    if (scripted_event.type == SDL_EVENT_DROP_FILE) {
+                        ui_test_drop_data = (char *)scripted_event.drop.data;
+                    }
+                    if (!SDL_PushEvent(&scripted_event)) {
+                        if (ui_test_drop_data) {
+                            SDL_free(ui_test_drop_data);
+                            ui_test_drop_data = NULL;
+                        }
+                        ui_test_failed = true;
+                        running = false;
+                        fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
+                    } else if (scripted_event.type == SDL_EVENT_QUIT) {
+                        ui_test_quit_queued = true;
+                    }
                 }
             } else if (next_event == 0) {
                 memset(&scripted_event, 0, sizeof(scripted_event));
@@ -1626,6 +2030,7 @@ int main(int argc, char *argv[]) {
                 running = false;
                 fprintf(stderr, "[PLAYER_UI_TEST] Invalid synthetic event script near byte %llu.\n",
                         (unsigned long long)ui_test_event_cursor);
+            }
             }
         }
 #endif
@@ -1702,6 +2107,15 @@ int main(int argc, char *argv[]) {
             }
 #endif
         }
+        if (app.request_open_license_folder) {
+            app.request_open_license_folder = false;
+#if defined(_WIN32) || defined(_WIN64)
+            if (app.requested_open_path[0]) {
+                (void)ShellExecuteA(NULL, "open", app.requested_open_path,
+                                    NULL, NULL, SW_SHOWNORMAL);
+            }
+#endif
+        }
 
         /* Step 3 requests one worker; progress and completion return through
            SDL user events, so the UI thread never polls a job or performs ISO
@@ -1712,6 +2126,14 @@ int main(int argc, char *argv[]) {
         if (staging_job && app.wizard.is_extracting &&
             player_app_wizard_cancel_requested(&app)) {
             request_staging_cancel(staging_job);
+        }
+
+        player_update_prerequisite_operation(&app);
+        if (player_app_prereq_take_resume(&app)) {
+            int game_index = app.prerequisites.game_index;
+            if (!player_app_start_package_build(&app, game_index)) {
+                /* The state helper has already opened the actionable error card. */
+            }
         }
 
         /* Clamp keyboard/gamepad focus before rendering so activation can
@@ -1797,6 +2219,23 @@ int main(int argc, char *argv[]) {
 
     if (app.is_game_running) {
         player_app_stop_game(&app);
+    }
+
+    if (app.prerequisite_job_started) {
+        package_builder_bootstrap_python_cancel(&app.bootstrap_session);
+        package_builder_bootstrap_python_close(&app.bootstrap_session);
+        app.prerequisite_job_started = false;
+    }
+    if (app.prerequisite_fetcher_started) {
+        package_builder_request_prerequisite_cancel(&app.build_session,
+            app.build_session.cancel_file_path);
+        while (app.build_session.is_building) {
+            package_builder_poll(&app.build_session, SDL_GetTicks());
+            if (app.build_session.is_building) {
+                (void)nk_platform_wait_process(&app.build_session.process, 1000);
+            }
+        }
+        app.prerequisite_fetcher_started = false;
     }
 
     destroy_staging_job(&staging_job);

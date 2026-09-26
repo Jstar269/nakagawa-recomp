@@ -28,6 +28,16 @@ static const char *player_runtime_root(const PlayerApp *app) {
     return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
 }
 
+static bool player_app_data_root(const PlayerApp *app, char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (app && app->runtime_root[0]) {
+        int n = snprintf(out, out_size, "%s", app->runtime_root);
+        return n > 0 && (size_t)n < out_size;
+    }
+    return nk_platform_get_app_data_dir(out, out_size);
+}
+
 bool player_game_is_showcase(const GameRecord *game) {
     return game && strncmp(game->title_id, "showcase-", 9) == 0;
 }
@@ -325,7 +335,14 @@ int player_app_focus_count(const PlayerApp *app) {
                 return count < 1 ? 1 : count;
             }
         case VIEW_BUILDING_PACKAGE:
+        case VIEW_PREREQ_PROGRESS:
             return 1;
+        case VIEW_PREREQ_CONSENT:
+            return 2;
+        case VIEW_PREREQ_ABOUT:
+            return app->prerequisites.item_count > 0 ? 2 : 1;
+        case VIEW_CONFIRM_REMOVE_TOOLS:
+            return 2;
         case VIEW_INSPECTING:
             return 1;
         case VIEW_SUPPORTED_TITLE:
@@ -337,9 +354,10 @@ int player_app_focus_count(const PlayerApp *app) {
             return 1;
         case VIEW_SETTINGS:
             /* Resolution (3) + frame cap (3) + display toggles (3: vsync,
-             * fullscreen, reduce-motion) + volume stepper (2) + controller settings (1) + close (1),
-             * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
-            return 13;
+             * fullscreen, reduce-motion) + volume stepper (2) + controller settings (1) +
+             * notices and remove-tools controls (2) + close (1), in draw order. The 8x
+             * preset is not offered (GPU scale caps at 4x). */
+            return 15;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -1024,17 +1042,6 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
 
-    char python_path[NK_MAX_PATH];
-    bool have_python = package_builder_find_python(python_path, sizeof(python_path));
-    if (!have_python) {
-        player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
-                             "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
-                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.\n"
-                             "Automatic build-prerequisite installation is in the works (#324).",
-                             "Return to Library", VIEW_LIBRARY);
-        return false;
-    }
-
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
         char cli_guidance[512];
@@ -1046,33 +1053,66 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         return false;
     }
 
-    /* Toolchain preflight: fail here with the missing tool named instead of
-     * deep inside the build when gcc or mingw32-make is not on PATH. */
-    char gcc_path[NK_MAX_PATH];
-    char make_path[NK_MAX_PATH];
-    bool have_gcc = package_builder_find_tool("gcc", gcc_path, sizeof(gcc_path));
-    bool have_make = package_builder_find_tool("mingw32-make", make_path, sizeof(make_path));
-    char missing_tool[32];
-    char missing_message[512];
-    if (package_builder_toolchain_missing(have_python, have_gcc, have_make,
-                                          missing_tool, sizeof(missing_tool),
-                                          missing_message, sizeof(missing_message))) {
-        player_app_set_error(app, "BUILD_TOOLCHAIN_MISSING", "Build Toolchain Missing",
-                             missing_message,
-                             "Return to Library", VIEW_LIBRARY);
-        return false;
-    }
-
-    /* Build into the same per-user root that package validation reads. */
+    /* Keep downloaded tools and packages under the same app-data root, while
+       still allowing a caller to supply an isolated user-data root. */
     char user_data_root[NK_MAX_PATH];
     if (app->runtime_root[0]) {
         snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
     } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             "The per-user data directory is unavailable, so there is nowhere to build the package.",
+                             "The per-user data directory is unavailable, so there is nowhere to build the package or install its tools.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
+
+    /* Toolchain preflight: fail here with the missing tool named instead of
+     * deep inside the build when gcc or mingw32-make is not on PATH. */
+    char gcc_path[NK_MAX_PATH];
+    char make_path[NK_MAX_PATH];
+    char python_path[NK_MAX_PATH];
+    bool have_python = package_builder_find_python_in_root(user_data_root,
+                                                            python_path, sizeof(python_path));
+    bool have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
+                                                       gcc_path, sizeof(gcc_path));
+    bool have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
+                                                        make_path, sizeof(make_path));
+    bool missing_toolchain = !have_gcc || !have_make;
+    if (!have_python || missing_toolchain) {
+#if !defined(_WIN32) && !defined(_WIN64)
+        player_app_set_error(app, "PREREQUISITE_PLATFORM_UNSUPPORTED",
+                             "Build Tools Not Available on This Platform",
+                             "Automatic prerequisite installation currently supports Windows x64 with UCRT64. Linux build-tool installation is in the works (#306).",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+#else
+        PackagePrerequisiteList list;
+        char manifest_error[512];
+        if (!package_builder_load_prerequisites(cli_path, &list,
+                                                manifest_error, sizeof(manifest_error))) {
+            player_app_set_error(app, "PREREQUISITE_MANIFEST_INVALID",
+                                 "Pinned Build Tools Could Not Be Loaded",
+                                 manifest_error,
+                                 "Return to Library", VIEW_LIBRARY);
+            return false;
+        }
+        if (!player_app_prereq_begin(app, game_index, !have_python,
+                                     missing_toolchain)) return false;
+        app->prerequisites.items = list;
+        app->prerequisites.item_count = (int)list.count;
+        app->prerequisites.total_bytes = list.total_bytes;
+        app->prerequisites.bootstrap_python = !have_python;
+        return true;
+#endif
+    }
+
+    if (!have_python) {
+        player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
+                             "Python 3.14 was not found and the pinned bootstrap is unavailable.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    /* Build into the same per-user root that package validation reads. */
     char log_dir[NK_MAX_PATH];
     snprintf(log_dir, sizeof(log_dir), "%.490s%clogs", user_data_root, nk_platform_path_separator());
     nk_platform_mkdir_p(log_dir);
@@ -1092,6 +1132,181 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 void player_app_cancel_package_build(PlayerApp *app) {
     if (!app) return;
     package_builder_cancel(&app->build_session);
+}
+
+bool player_app_prereq_begin(PlayerApp *app, int game_index,
+                             bool python_missing, bool toolchain_missing) {
+    if (!app || game_index < 0 || game_index >= app->game_count ||
+        (!python_missing && !toolchain_missing)) return false;
+    memset(&app->prerequisites, 0, sizeof(app->prerequisites));
+    app->prerequisites.phase = PLAYER_PREREQ_CONSENT;
+    app->prerequisites.game_index = game_index;
+    app->prerequisites.bootstrap_python = python_missing;
+    app->prerequisite_job_started = false;
+    app->prerequisite_fetcher_started = false;
+    app->prerequisite_bootstrap_ready = false;
+    app->prerequisite_cancel_sent = false;
+    app->active_view = VIEW_PREREQ_CONSENT;
+    app->focus_index = 0;
+    return true;
+}
+
+void player_app_prereq_accept(PlayerApp *app, bool bootstrap_python) {
+    if (!app || app->prerequisites.phase != PLAYER_PREREQ_CONSENT) return;
+    app->prerequisite_cancel_sent = false;
+    app->prerequisites.phase = bootstrap_python
+        ? PLAYER_PREREQ_BOOTSTRAP : PLAYER_PREREQ_DOWNLOAD;
+    app->active_view = VIEW_PREREQ_PROGRESS;
+    app->focus_index = 0;
+}
+
+void player_app_prereq_update_progress(PlayerApp *app, const char *item,
+                                       uint64_t item_received,
+                                       uint64_t item_total,
+                                       uint64_t total_received,
+                                       uint64_t total_bytes) {
+    if (!app || (app->prerequisites.phase != PLAYER_PREREQ_BOOTSTRAP &&
+                 app->prerequisites.phase != PLAYER_PREREQ_DOWNLOAD)) return;
+    snprintf(app->prerequisites.current_item, sizeof(app->prerequisites.current_item),
+             "%s", item ? item : "");
+    app->prerequisites.item_total_bytes = item_total;
+    app->prerequisites.item_received_bytes = item_received > item_total
+        ? item_total : item_received;
+    app->prerequisites.total_bytes = total_bytes;
+    app->prerequisites.total_received_bytes = total_received > total_bytes
+        ? total_bytes : total_received;
+}
+
+void player_app_prereq_complete(PlayerApp *app) {
+    if (!app || (app->prerequisites.phase != PLAYER_PREREQ_BOOTSTRAP &&
+                 app->prerequisites.phase != PLAYER_PREREQ_DOWNLOAD)) return;
+    app->prerequisites.phase = PLAYER_PREREQ_INSTALLED;
+    app->prerequisites.resume_build_pending = true;
+    app->prerequisite_job_started = false;
+    app->prerequisite_fetcher_started = false;
+    app->prerequisite_bootstrap_ready = false;
+    app->prerequisite_cancel_sent = false;
+    app->active_view = VIEW_LIBRARY;
+}
+
+void player_app_prereq_fail(PlayerApp *app, const char *code,
+                            const char *message) {
+    if (!app) return;
+    snprintf(app->prerequisites.error_code, sizeof(app->prerequisites.error_code),
+             "%s", code && code[0] ? code : "PREREQUISITE_INSTALL_FAILED");
+    snprintf(app->prerequisites.error_message, sizeof(app->prerequisites.error_message),
+             "%s", message && message[0] ? message :
+             "The prerequisite could not be installed. Check the connection and free disk space, then retry.");
+    app->prerequisites.phase = PLAYER_PREREQ_FAILED;
+    player_app_set_error(app, app->prerequisites.error_code,
+                         "Build Prerequisite Could Not Be Installed",
+                         app->prerequisites.error_message,
+                         "Retry Download", VIEW_PREREQ_CONSENT);
+}
+
+void player_app_prereq_retry(PlayerApp *app) {
+    if (!app || app->prerequisites.phase != PLAYER_PREREQ_FAILED ||
+        app->last_error.return_view != VIEW_PREREQ_CONSENT) return;
+    app->prerequisites.phase = PLAYER_PREREQ_CONSENT;
+    app->prerequisites.cancel_requested = false;
+    app->prerequisite_cancel_sent = false;
+    player_app_set_view(app, VIEW_PREREQ_CONSENT);
+}
+
+void player_app_prereq_cancel(PlayerApp *app) {
+    if (!app) return;
+    app->prerequisites.cancel_requested = true;
+    app->prerequisites.resume_build_pending = false;
+    if (app->prerequisites.phase == PLAYER_PREREQ_CONSENT) {
+        player_app_prereq_finish_cancel(app);
+    }
+}
+
+void player_app_prereq_finish_cancel(PlayerApp *app) {
+    if (!app) return;
+    app->prerequisites.cancel_requested = false;
+    app->prerequisites.resume_build_pending = false;
+    app->prerequisites.phase = PLAYER_PREREQ_CANCELLED;
+    app->prerequisite_job_started = false;
+    app->prerequisite_fetcher_started = false;
+    app->prerequisite_bootstrap_ready = false;
+    app->prerequisite_cancel_sent = false;
+    app->active_view = VIEW_LIBRARY;
+    app->focus_index = 0;
+}
+
+bool player_app_prereq_take_resume(PlayerApp *app) {
+    if (!app || !app->prerequisites.resume_build_pending) return false;
+    app->prerequisites.resume_build_pending = false;
+    return true;
+}
+
+bool player_app_open_prerequisite_about(PlayerApp *app) {
+    if (!app) return false;
+    char data_root[NK_MAX_PATH];
+    char cli_path[NK_MAX_PATH];
+    char error[512];
+    PackagePrerequisiteList list;
+    if (!player_app_data_root(app, data_root, sizeof(data_root))) {
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+                             "The app-data directory is unavailable, so installed build tools cannot be inspected.",
+                             "Return to Settings", VIEW_SETTINGS);
+        return false;
+    }
+    if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
+                             "The packaged source/tools folder could not be located, so the prerequisite manifest is unavailable.",
+                             "Return to Settings", VIEW_SETTINGS);
+        return false;
+    }
+    if (!package_builder_load_prerequisites(cli_path, &list, error, sizeof(error))) {
+        player_app_set_error(app, "PREREQUISITE_MANIFEST_INVALID",
+                             "Pinned Build Tools Could Not Be Loaded", error,
+                             "Return to Settings", VIEW_SETTINGS);
+        return false;
+    }
+    package_builder_mark_prerequisites_installed(&list, data_root);
+    app->prerequisites.items = list;
+    app->prerequisites.item_count = 0;
+    for (size_t i = 0; i < list.count; i++) {
+        if (list.items[i].installed) app->prerequisites.item_count++;
+    }
+    app->requested_open_path[0] = '\0';
+    player_app_set_view(app, VIEW_PREREQ_ABOUT);
+    return true;
+}
+
+void player_app_remove_prerequisites(PlayerApp *app) {
+    if (!app) return;
+    if (app->prerequisite_job_started || app->prerequisite_fetcher_started ||
+        app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP ||
+        app->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD) {
+        player_app_set_error(app, "TOOLS_IN_USE", "Build Tools Are In Use",
+                             "Wait for the prerequisite operation to finish or cancel it before removing downloaded tools.",
+                             "Return to Settings", VIEW_SETTINGS);
+        return;
+    }
+    char data_root[NK_MAX_PATH];
+    char code[48];
+    char message[512];
+    if (!player_app_data_root(app, data_root, sizeof(data_root))) {
+        snprintf(code, sizeof(code), "DATA_DIR_UNAVAILABLE");
+        snprintf(message, sizeof(message), "The app-data directory is unavailable. No files were removed.");
+    } else if (package_builder_remove_downloaded_tools(data_root, code, sizeof(code),
+                                                       message, sizeof(message))) {
+        for (size_t i = 0; i < app->prerequisites.items.count; i++)
+            app->prerequisites.items.items[i].installed = false;
+        app->prerequisites.item_count = 0;
+        app->prerequisites.phase = PLAYER_PREREQ_IDLE;
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Downloaded build tools removed from app data.");
+        player_app_set_view(app, VIEW_SETTINGS);
+        return;
+    }
+    player_app_set_error(app, code[0] ? code : "TOOLS_REMOVE_FAILED",
+                         "Downloaded Build Tools Could Not Be Removed",
+                         message[0] ? message : "Close applications using the tools and retry.",
+                         "Return to Settings", VIEW_SETTINGS);
 }
 
 void player_app_set_build_error(

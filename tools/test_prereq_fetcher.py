@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -101,6 +102,38 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertEqual(result["python-test"]["sha256"], item["sha256"])
         self.assertTrue((install_root / "installed.json").is_file())
 
+    def test_msys2_libstdcxx_artifact_id_allows_plus_characters(self) -> None:
+        item = self.item()
+        item["id"] = "mingw-w64-ucrt-x86_64-libstdc++"
+        result = install_items({"artifacts": [item]}, self.root, allow_http=True)
+        self.assertEqual(result[item["id"]]["sha256"], item["sha256"])
+
+    def test_current_cpython_fetcher_does_not_replace_its_running_runtime(self) -> None:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("python.exe", b"archive runtime\n")
+            archive.writestr("libcrypto-3.dll", b"archive crypto\n")
+            archive.writestr("LICENSE.txt", "Python license text\n")
+        _PayloadHandler.payload = stream.getvalue()
+        item = self.item(payload=_PayloadHandler.payload)
+        item["id"] = "cpython-embed-amd64"
+        item["filename"] = "python-3.14-embed-amd64.zip"
+        python_root = self.root / "prerequisites" / "python"
+        python_root.mkdir(parents=True)
+        running_python = python_root / "python.exe"
+        running_python.write_bytes(b"running bootstrap runtime\n")
+        running_crypto = python_root / "libcrypto-3.dll"
+        running_crypto.write_bytes(b"loaded OpenSSL library\n")
+
+        with patch.object(sys, "executable", str(running_python)):
+            records = install_items({"artifacts": [item]}, self.root, allow_http=True)
+
+        self.assertEqual(running_python.read_bytes(), b"running bootstrap runtime\n")
+        self.assertEqual(running_crypto.read_bytes(), b"loaded OpenSSL library\n")
+        self.assertEqual(records[item["id"]]["sha256"], item["sha256"])
+        notice = self.root / "prerequisites" / "notices" / item["id"] / "LICENSE.txt"
+        self.assertTrue(notice.is_file())
+
     def test_hash_mismatch_fails_closed(self) -> None:
         item = self.item()
         item["sha256"] = "0" * 64
@@ -131,6 +164,65 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertEqual(destination.read_bytes(), _PayloadHandler.payload)
         self.assertEqual(_PayloadHandler.requests, 2)
         self.assertFalse((self.root / "payload.zip.part").exists())
+
+    def test_valid_cached_archive_reports_completed_progress_without_network(self) -> None:
+        item = self.item()
+        destination = download_verified_item(item, self.root / "payload.zip", allow_http=True)
+        first_request_count = _PayloadHandler.requests
+        progress: list[tuple[str, int, int]] = []
+        cached = download_verified_item(
+            item, destination,
+            progress=lambda item_id, received, expected:
+                progress.append((item_id, received, expected)),
+            allow_http=True,
+        )
+        self.assertEqual(cached, destination)
+        self.assertEqual(_PayloadHandler.requests, first_request_count)
+        self.assertEqual(progress, [(item["id"], item["size_bytes"], item["size_bytes"])])
+
+    def test_cancel_during_transfer_discards_partial_archive(self) -> None:
+        item = self.item()
+
+        def cancel_after_chunk(_item_id: str, _received: int, _expected: int) -> None:
+            raise PrerequisiteFetchError("INSTALL_CANCELLED: download cancelled by the user.")
+
+        with self.assertRaisesRegex(PrerequisiteFetchError, "INSTALL_CANCELLED"):
+            download_verified_item(item, self.root / "cancelled.zip", progress=cancel_after_chunk,
+                                   allow_http=True)
+        self.assertFalse((self.root / "cancelled.zip").exists())
+        self.assertFalse((self.root / "cancelled.zip.part").exists())
+
+    def test_cancel_before_install_leaves_no_component_files(self) -> None:
+        item = self.item()
+        with self.assertRaisesRegex(PrerequisiteFetchError, "INSTALL_CANCELLED"):
+            install_items({"artifacts": [item]}, self.root, allow_http=True,
+                          cancelled=lambda: True)
+        install_root = self.root / "prerequisites"
+        self.assertFalse((install_root / "python" / "python314" / "python.exe").exists())
+        self.assertFalse((install_root / "installed.json").exists())
+
+    def test_cancel_during_extraction_discards_staged_component(self) -> None:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("python314/LICENSE.txt", "Python license text\n")
+            archive.writestr("python314/python.exe", b"synthetic fixture\n" * 12000)
+        _PayloadHandler.payload = stream.getvalue()
+        item = self.item()
+        cancel_checks = 0
+
+        def cancel_during_copy() -> bool:
+            nonlocal cancel_checks
+            cancel_checks += 1
+            return cancel_checks >= 7
+
+        with self.assertRaisesRegex(PrerequisiteFetchError, "INSTALL_CANCELLED"):
+            install_items({"artifacts": [item]}, self.root, allow_http=True,
+                          cancelled=cancel_during_copy)
+        install_root = self.root / "prerequisites"
+        self.assertFalse((install_root / "python" / "python314" / "python.exe").exists())
+        self.assertFalse((install_root / "installed.json").exists())
+        staging_root = install_root / ".staging"
+        self.assertTrue(not staging_root.exists() or not any(staging_root.iterdir()))
 
     def test_offline_failure_names_network_boundary(self) -> None:
         self.server.shutdown()

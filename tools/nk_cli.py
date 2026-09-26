@@ -22,15 +22,25 @@ import sys
 import tempfile
 import time
 
-from nk_core import (
+
+def _ensure_cli_module_path() -> None:
+    """Expose sibling modules when running under Python's embeddable distribution."""
+    tools_directory = str(Path(__file__).resolve().parent)
+    if tools_directory not in sys.path:
+        sys.path.insert(0, tools_directory)
+
+
+_ensure_cli_module_path()
+
+from nk_core import (  # noqa: E402
     PreparationEngine,
     ProgressEvent,
     RuntimeLauncher,
     inspect_iso,
 )
-from nk_core import package_cache
-from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key_file_path
-from nk_core.iso_inspect import (
+from nk_core import package_cache  # noqa: E402
+from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key_file_path  # noqa: E402
+from nk_core.iso_inspect import (  # noqa: E402
     MAX_EXECUTABLE_BYTES,
     IsoInspectionError,
     IsoDirectoryEntry,
@@ -45,7 +55,7 @@ from nk_core.iso_inspect import (
     plan_provisional_module_bindings,
     write_experimental_profile,
 )
-import title_manifest
+import title_manifest  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -581,8 +591,20 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
     env = os.environ.copy()
     if os.name == "nt":
         ucrt_bin = Path("C:/msys64/ucrt64/bin")
-        if ucrt_bin.is_dir():
+        if not shutil.which("gcc", path=env.get("PATH", "")) and ucrt_bin.is_dir():
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
+        python_bin = str(Path(sys.executable).resolve().parent)
+        path_parts = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+        normalized_python_bin = os.path.normcase(os.path.abspath(python_bin))
+        path_parts = [
+            part for part in path_parts
+            if os.path.normcase(os.path.abspath(part)) != normalized_python_bin
+        ]
+        python_index = (
+            1 if path_parts and shutil.which("gcc", path=path_parts[0]) else 0
+        )
+        path_parts.insert(python_index, python_bin)
+        env["PATH"] = os.pathsep.join(path_parts)
     if instruction_trace:
         env["TRACE"] = "1"
         runtime_opt = env.get("RUNTIME_OPT", "-O0")
@@ -591,17 +613,74 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
     return env
 
 
+def _windows_host() -> bool:
+    """True when packages must carry the Windows runtime DLLs (a test seam:
+    patching os.name itself would make pathlib build WindowsPath objects)."""
+    return os.name == "nt"
+
+
+def _find_sdl3_runtime_dll() -> Path | None:
+    candidates: list[Path] = []
+    configured_dll = os.environ.get("SDL3_DLL")
+    if configured_dll:
+        candidates.append(Path(configured_dll))
+    configured_root = os.environ.get("SDL3_DIR") or os.environ.get("SDL3_PATH")
+    if configured_root:
+        root = Path(configured_root)
+        candidates.extend((root / "bin" / "SDL3.dll", root / "lib" / "SDL3.dll",
+                           root / "SDL3.dll"))
+    gcc = shutil.which("gcc")
+    if gcc:
+        candidates.append(Path(gcc).resolve().parent / "SDL3.dll")
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def _find_configured_runtime_dll(filename: str) -> Path | None:
+    candidates: list[Path] = []
+    configured_dll = os.environ.get("SDL3_DLL")
+    if configured_dll:
+        candidates.append(Path(configured_dll).parent / filename)
+    for variable in ("VULKAN_SDK", "VK_SDK_PATH", "SDL3_DIR", "SDL3_PATH"):
+        configured_root = os.environ.get(variable)
+        if configured_root:
+            root = Path(configured_root)
+            candidates.extend((root / "Bin" / filename,
+                               root / "bin" / filename,
+                               root / filename))
+    gcc = shutil.which("gcc")
+    if gcc:
+        candidates.append(Path(gcc).resolve().parent / filename)
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
 def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
         shutil.copytree(vfpu_source, package_dir / "assets" / "vfpu", dirs_exist_ok=True)
-    if os.name == "nt" and not (package_dir / "SDL3.dll").is_file():
-        candidates = [Path(os.environ["SDL3_DLL"])] if os.environ.get("SDL3_DLL") else []
-        candidates.extend((Path("C:/msys64/ucrt64/bin/SDL3.dll"),))
-        found = next((path for path in candidates if path.is_file()), None)
+    if _windows_host() and not (package_dir / "SDL3.dll").is_file():
+        found = _find_sdl3_runtime_dll()
         if found is None:
-            raise PackageBuildError("SDL3.dll was not bundled in the package and could not be resolved; install the SDL3 runtime used by #296.")
+            raise PackageBuildError(
+                "SDL3.dll was not bundled in the package and could not be resolved from "
+                "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
+            )
         shutil.copyfile(found, package_dir / "SDL3.dll")
+    if _windows_host() and not (package_dir / "libiconv-2.dll").is_file():
+        found = _find_configured_runtime_dll("libiconv-2.dll")
+        if found is None:
+            raise PackageBuildError(
+                "libiconv-2.dll, required by the packaged SDL3 runtime, could not be resolved from "
+                "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
+            )
+        shutil.copyfile(found, package_dir / "libiconv-2.dll")
+    if _windows_host() and not (package_dir / "vulkan-1.dll").is_file():
+        found = _find_configured_runtime_dll("vulkan-1.dll")
+        if found is None:
+            raise PackageBuildError(
+                "vulkan-1.dll was not bundled in the package and could not be resolved from "
+                "VULKAN_SDK, SDL3_DIR, or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
+            )
+        shutil.copyfile(found, package_dir / "vulkan-1.dll")
 
 
 def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:
