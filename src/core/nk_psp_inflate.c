@@ -761,7 +761,15 @@ int nk_psp_inflate(const uint8_t *src, size_t srclen, uint8_t **out,
             }
         }
     } else if (mode == 1) {
-        /* zlib (RFC 1950). */
+        /* zlib (RFC 1950): a 2-byte header, the deflate stream, then a
+         * 4-byte adler32 trailer.  Anything shorter cannot be a zlib
+         * stream, so it is rejected before the header flags (src[3]) and
+         * the trailer are read. */
+        if (srclen < 6u) {
+            set_err(err, err_len, "inflate: truncated zlib stream");
+            free(o.data);
+            return NK_INFLATE_ERR_TRUNCATED;
+        }
         b.pos = 2u;
         if ((src[3] & 0x20u) != 0u) {
             set_err(err, err_len,

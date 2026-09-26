@@ -25,9 +25,12 @@
  * per-file licence header; the repository's LICENSE.TXT is the GNU GPL
  * version 3 (its Readme states "Licensed under GPLv3"), so this port is
  * labelled GPL-3.0-only.
- * Modified for this project: this notice, C99 sign-compare fix, and
+ * Modified for this project: this notice, C99 sign-compare fix,
  * fail-closed output bounds checks on the copy path (a malformed stream
- * now stops instead of writing past the output buffer).
+ * now stops instead of writing past the output buffer), and fail-closed
+ * input bounds (every bit fetch is bounded by the caller's declared input
+ * length, and the distance code class is bounds-checked against the
+ * probability table).  Upstream read the input cursor without a limit.
  */
 
 #include <stdint.h>
@@ -75,14 +78,34 @@ typedef int32_t s32;
  */
 
 /*
+ * Fail-closed input cursor: the arithmetic decoder reads a variable number
+ * of bytes decided by the stream itself, so every fetch is bounded by the
+ * caller's declared input length and a fetch past the end is sticky.
+ */
+typedef struct {
+    u8 *cur;
+    u8 *end;
+    int overrun;
+} KleIn;
+
+static int kle_next(KleIn *in)
+{
+    if (in->cur >= in->end) {
+        in->overrun = 1;
+        return 0;
+    }
+    return *in->cur++;
+}
+
+/*
  * Read one bit using arithmetic coding, with a given (updated) probability and its associated decay/bonus.
  */
-int read_bit(u32 *inputVal, u32 *range, u8 *probPtr, u8 **inBuf, u32 decay, u32 bonus)
+static int read_bit(u32 *inputVal, u32 *range, u8 *probPtr, KleIn *in, u32 decay, u32 bonus)
 {
     u32 bound;
     u8 prob = *probPtr;
     if ((*range >> 24) == 0) {
-        *inputVal = (*inputVal << 8) + *((*inBuf)++);
+        *inputVal = (*inputVal << 8) + (u32)kle_next(in);
         bound = *range * prob;
         *range <<= 8;
     } else {
@@ -104,10 +127,10 @@ int read_bit(u32 *inputVal, u32 *range, u8 *probPtr, u8 **inBuf, u32 decay, u32 
 /*
  * Same as above, but with balanced probability 1/2.
  */
-int read_bit_uniform(u32 *inputVal, u32 *range, u8 **inBuf)
+static int read_bit_uniform(u32 *inputVal, u32 *range, KleIn *in)
 {
     if (*range >> 24 == 0) {
-        *inputVal = (*inputVal << 8) + *((*inBuf)++);
+        *inputVal = (*inputVal << 8) + (u32)kle_next(in);
         *range = *range << 7;
     } else {
         *range = *range >> 1;
@@ -123,7 +146,7 @@ int read_bit_uniform(u32 *inputVal, u32 *range, u8 **inBuf)
 /*
  * Same as above, but without normalizing the range.
  */
-int read_bit_uniform_nonormal(u32 *inputVal, u32 *range)
+static int read_bit_uniform_nonormal(u32 *inputVal, u32 *range)
 {
     *range >>= 1;
     if (*inputVal >= *range) {
@@ -137,7 +160,7 @@ int read_bit_uniform_nonormal(u32 *inputVal, u32 *range)
 /*
  * Output a raw byte by reading 8 bits using arithmetic coding.
  */
-void output_raw(u32 *inputVal, u32 *range, u8 *probs, u8 **inBuf, u32 *curByte, u8 *curOut, u8 shift)
+static void output_raw(u32 *inputVal, u32 *range, u8 *probs, KleIn *in, u32 *curByte, u8 *curOut, u8 shift)
 {
     u32 mask = (((size_t)curOut & 7) << 8) | (*curByte & 0xFF);
     u8 *curProbs = &probs[((mask >> shift) & 7) * 255] - 1;
@@ -145,14 +168,14 @@ void output_raw(u32 *inputVal, u32 *range, u8 *probs, u8 **inBuf, u32 *curByte, 
     while (*curByte < 0x100) {
         u8 *curProb = &curProbs[*curByte];
         *curByte <<= 1;
-        if (read_bit(inputVal, range, curProb, inBuf, 3, 31)) {
+        if (read_bit(inputVal, range, curProb, in, 3, 31)) {
             *curByte |= 1;
         }
     }
     *curOut = *curByte & 0xff;
 }
 
-int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
+int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, int inSize, void **end, int isKl4e)
 {
     u8 litProbs[2040];
     u8 copyDistBitsProbs[304];
@@ -166,23 +189,31 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
     u32 copyDist, copyCount;
     u8 *curCopyDistBitsProbs;
     u32 inputVal;
-    if (outBuf == NULL || inBuf == NULL || outSize < 1) {
+    KleIn in;
+    if (outBuf == NULL || inBuf == NULL || outSize < 1 || inSize < 5) {
         return 0x80000104; // SCE_ERROR_INVALID_SIZE
     }
+    in.cur = inBuf;
+    in.end = inBuf + inSize;
+    in.overrun = 0;
     inputVal = (inBuf[1] << 24) | (inBuf[2] << 16) | (inBuf[3] << 8) | inBuf[4];
     // Handle the direct copy case (if the file is actually not compressed).
     if (inBuf[0] & 0x80) {
-        inBuf += 5;
         u8 *dataEnd = outBuf + inputVal;
         if (dataEnd >= outEnd) {
             return 0x80000104; // SCE_ERROR_INVALID_SIZE
         }
-        while (curOut < dataEnd) {
-            *(curOut++) = *(inBuf++);
+        // Fail closed: the declared copy length must fit the input we were given.
+        if (inputVal > (u32)(in.end - (inBuf + 5))) {
+            return 0x80000104; // SCE_ERROR_INVALID_SIZE
         }
-        inBuf--;
+        in.cur = inBuf + 5;
+        while (curOut < dataEnd) {
+            *(curOut++) = *(in.cur++);
+        }
+        in.cur--;
         if (end != NULL) {
-            *end = inBuf;
+            *end = in.cur;
         }
         return curOut - outBuf;
     }
@@ -197,18 +228,23 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
     /* Shift used to determine if the probabilities should be determined more by the
      * output's byte alignment or by the previous byte. */
     u8 shift = inBuf[0] & 0x7;
-    inBuf += 5;
+    in.cur = inBuf + 5;
     // Read a literal directly.
-    output_raw(&inputVal, &range, litProbs, &inBuf, &curByte, curOut, shift);
+    output_raw(&inputVal, &range, litProbs, &in, &curByte, curOut, shift);
     while (1) {
+        // Fail closed: a bit fetch past the end of the declared input means
+        // the stream is truncated, whatever the probabilities decoded so far.
+        if (in.overrun) {
+            return 0x80000104; // SCE_ERROR_INVALID_SIZE
+        }
         curOut++;
         // If we read a 0, read a literal.
-        if (read_bit(&inputVal, &range, curCopyCountBitsProbs, &inBuf, 4, 15) == 0) {
+        if (read_bit(&inputVal, &range, curCopyCountBitsProbs, &in, 4, 15) == 0) {
             curCopyCountBitsProbs = max(curCopyCountBitsProbs - 1, copyCountBitsProbs);
             if (curOut == outEnd) {
                 return 0x80000104; // SCE_ERROR_INVALID_SIZE
             }
-            output_raw(&inputVal, &range, litProbs, &inBuf, &curByte, curOut, shift);
+            output_raw(&inputVal, &range, litProbs, &in, &curByte, curOut, shift);
             continue;
         }
         // Otherwise, first find the number of bits used in the 'length' code.
@@ -216,7 +252,7 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
         s32 copyCountBits = -1;
         while (copyCountBits < 6) {
             curCopyCountBitsProbs += 8;
-            if (!read_bit(&inputVal, &range, curCopyCountBitsProbs, &inBuf, 4, 15)) {
+            if (!read_bit(&inputVal, &range, curCopyCountBitsProbs, &in, 4, 15)) {
                 break;
             }
             copyCountBits++;
@@ -228,11 +264,11 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
             if (copyCountBits < 3) {
                 copyCount = 1;
             } else {
-                copyCount = 2 + read_bit(&inputVal, &range, probs + 24, &inBuf, 3, 31);
+                copyCount = 2 + read_bit(&inputVal, &range, probs + 24, &in, 3, 31);
                 if (copyCountBits > 3) {
-                    copyCount = (copyCount << 1) | read_bit(&inputVal, &range, probs + 24, &inBuf, 3, 31);
+                    copyCount = (copyCount << 1) | read_bit(&inputVal, &range, probs + 24, &in, 3, 31);
                     if (copyCountBits > 4) {
-                        copyCount = (copyCount << 1) | read_bit_uniform(&inputVal, &range, &inBuf);
+                        copyCount = (copyCount << 1) | read_bit_uniform(&inputVal, &range, &in);
                     }
                     for (s32 i = 5; i < copyCountBits; i++) {
                         copyCount = (copyCount << 1) | read_bit_uniform_nonormal(&inputVal, &range);
@@ -240,7 +276,7 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
                 }
             }
             copyCount = copyCount << 1;
-            if (read_bit(&inputVal, &range, probs, &inBuf, 3, 31)) {
+            if (read_bit(&inputVal, &range, probs, &in, 3, 31)) {
                 copyCount |= 1;
                 if (copyCountBits <= 0) {
                     powLimit = isKl4e ? 256 : 128;
@@ -253,14 +289,17 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
                 }
             }
             if (copyCountBits > 0) {
-                copyCount = (copyCount << 1) | read_bit(&inputVal, &range, probs + 8, &inBuf, 3, 31);
+                copyCount = (copyCount << 1) | read_bit(&inputVal, &range, probs + 8, &in, 3, 31);
                 if (copyCountBits != 1) {
                     copyCount = copyCount << 1;
-                    if (read_bit(&inputVal, &range, probs + 16, &inBuf, 3, 31)) {
+                    if (read_bit(&inputVal, &range, probs + 16, &in, 3, 31)) {
                         copyCount = copyCount + 1;
                         if (copyCount == 0xFF) {
+                            if (in.overrun) {
+                                return 0x80000104; // SCE_ERROR_INVALID_SIZE
+                            }
                             if (end != NULL) {
-                                *end = inBuf;
+                                *end = in.cur;
                             }
                             return curOut - outBuf;
                         }
@@ -281,7 +320,7 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
             u8 *curProb = curCopyDistBitsProbs + (curPow - 7);
             curPow <<= 1;
             copyDistBits = curPow - powLimit;
-            if (!read_bit(&inputVal, &range, curProb, &inBuf, 3, 31)) {
+            if (!read_bit(&inputVal, &range, curProb, &in, 3, 31)) {
                 if (copyDistBits >= 0) {
                     if (copyDistBits != 0) {
                         copyDistBits -= 8;
@@ -302,16 +341,22 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
         }
         if (!skip) {
             // Find out the distance itself.
+            // Fail closed: copyDistBits indexes copyDistProbs[0..3], and a
+            // stream that drives the distance class past the table would
+            // otherwise read and update probability bytes out of bounds.
+            if (copyDistBits < 0 || copyDistBits + 3 >= (s32)sizeof(copyDistProbs)) {
+                return 0x80000108; // SCE_ERROR_INVALID_FORMAT
+            }
             u8 *curProbs = &copyDistProbs[copyDistBits];
             s32 readBits = copyDistBits / 8;
             if (readBits < 3) {
                 copyDist = 1;
             } else {
-                copyDist = 2 + read_bit(&inputVal, &range, curProbs + 3, &inBuf, 3, 31);
+                copyDist = 2 + read_bit(&inputVal, &range, curProbs + 3, &in, 3, 31);
                 if (readBits > 3) {
-                    copyDist = (copyDist << 1) | read_bit(&inputVal, &range, curProbs + 3, &inBuf, 3, 31);
+                    copyDist = (copyDist << 1) | read_bit(&inputVal, &range, curProbs + 3, &in, 3, 31);
                     if (readBits > 4) {
-                        copyDist = (copyDist << 1) | read_bit_uniform(&inputVal, &range, &inBuf);
+                        copyDist = (copyDist << 1) | read_bit_uniform(&inputVal, &range, &in);
                         readBits--;
                     }
                     while (readBits > 4) {
@@ -322,7 +367,7 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
                 }
             }
             copyDist = copyDist << 1;
-            if (read_bit(&inputVal, &range, curProbs, &inBuf, 3, 31)) {
+            if (read_bit(&inputVal, &range, curProbs, &in, 3, 31)) {
                 if (readBits > 0) {
                     copyDist = copyDist + 1;
                 }
@@ -333,7 +378,7 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
             }
             if (readBits > 0) {
                 copyDist = copyDist << 1;
-                if (read_bit(&inputVal, &range, curProbs + 1, &inBuf, 3, 31)) {
+                if (read_bit(&inputVal, &range, curProbs + 1, &in, 3, 31)) {
                     if (readBits != 1) {
                         copyDist = copyDist + 1;
                     }
@@ -344,7 +389,7 @@ int decompress_kle(u8 *outBuf, int outSize, u8 *inBuf, void **end, int isKl4e)
                 }
                 if (readBits != 1) {
                     copyDist = copyDist << 1;
-                    if (!read_bit(&inputVal, &range, curProbs + 2, &inBuf, 3, 31)) {
+                    if (!read_bit(&inputVal, &range, curProbs + 2, &in, 3, 31)) {
                         copyDist = copyDist - 1;
                     }
                 }

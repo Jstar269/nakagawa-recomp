@@ -280,9 +280,11 @@ static int decompress_payload(NkPspCtx *ctx, const uint8_t *payload,
                 return nk_psp_fail(ctx, NK_PSP_ERR_INTERNAL, NULL,
                                    "out of memory decompressing payload");
             }
+            /* The magic is 4 bytes; the stream may not read past the
+             * decrypted payload we actually have. */
             rc = decompress_kle(d, (int)elf_size,
-                                (uint8_t *)(void *)(payload + 4), &end,
-                                is_kl4e);
+                                (uint8_t *)(void *)(payload + 4),
+                                (int)(payload_size - 4u), &end, is_kl4e);
             if (rc <= 0) {
                 free(d);
                 return nk_psp_fail(ctx, NK_PSP_ERR_DECOMPRESS, NULL,
