@@ -785,6 +785,7 @@
     "tools/test_package_notices.py",
     "tools/test_padscript_from_log.py",
     "tools/test_parse_fuzz.py",
+    "tools/test_player_package_route.py",
     "tools/test_platform_ladder.py",
     "tools/test_perf_summary_diff.py",
     "tools/test_portability_inventory.py",
