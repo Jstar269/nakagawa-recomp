@@ -32,6 +32,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -466,6 +467,32 @@ def synthetic_entries(tag: int = SYNTH_TAG, code: int = SYNTH_CODE) -> dict:
     }, tag_key
 
 
+# Distinct obviously-synthetic tags so several sealed modules can be keyed
+# independently within one disc fixture (still no retail meaning, no real keys).
+SYNTH_TAG_ALPHA = 0x5EED2952
+SYNTH_TAG_BETA = 0x5EED2953
+
+
+def multi_tag_entries(tags: list[int], code: int = SYNTH_CODE) -> dict:
+    """A clearly-fake key set covering several synthetic containers at once."""
+    entries, _tag_key = synthetic_entries(tags[0], code)
+    for tag in tags[1:]:
+        entries[f"prx.tag.0x{tag:08X}"] = {"code": code, "key": os.urandom(16).hex()}
+    return entries
+
+
+def seal_with_entries(payload: bytes, tag: int, entries: dict, *, compressed: bool = False) -> bytes:
+    """Seal ``payload`` with the per-run fake keys already in ``entries``."""
+    tag_entry = entries[f"prx.tag.0x{tag:08X}"]
+    return seal_type2_psp(
+        payload, tag,
+        bytes.fromhex(tag_entry["key"]),
+        bytes.fromhex(entries["kirk.cmd1.key"]),
+        bytes.fromhex(entries[f"kirk.keyvault.{SYNTH_CODE}"]),
+        compressed=compressed, elf_size=len(payload),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test harness
 # ---------------------------------------------------------------------------
@@ -773,6 +800,218 @@ class TestPreflightIntegration(unittest.TestCase):
         self.assertIn("supply decrypted modules at", executable["message"])
         self.assertFalse((user_root / "titles" / "TEST00001" / "decrypted" /
                           "EBOOT.elf").exists())
+
+
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestDiscModuleBoundary(unittest.TestCase):
+    """Issue #295 module acceptance: the disc's own encrypted PRX modules are
+    unwrapped by the same production boundary into the same private per-title
+    folder as the executable, one module at a time, fail closed per module."""
+
+    @classmethod
+    def setUpClass(cls):
+        from tools.test_iso_parity import create_test_iso_with_modules
+
+        cls.create_iso_modules = staticmethod(create_test_iso_with_modules)
+        cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_modules_"))
+        cls.exe = build_tool()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _preflight(self, iso: Path, user_root: Path):
+        from tools.nk_core.iso_inspect import (
+            inspect_compatibility_preflight,
+            inspect_iso,
+        )
+        metadata = inspect_iso(iso)
+        return inspect_compatibility_preflight(
+            iso, metadata=metadata, runtime_root=user_root
+        )
+
+    def _module_report(self, report: dict) -> dict:
+        # A tree without the module boundary reports nothing; fail with a
+        # readable assertion instead of a bare KeyError.
+        return report.get("module_decryption") or {
+            "results": [], "ready": -1, "total": -1, "module_dir": None,
+        }
+
+    def _module_check(self, report: dict):
+        return next(
+            (check for check in report["checks"] if check["code"] == "GUEST_MODULES"),
+            {"status": "MISSING_CHECK", "message": ""},
+        )
+
+    def test_synthetic_disc_decrypts_eboot_and_modules_end_to_end(self):
+        entries = multi_tag_entries([SYNTH_TAG, SYNTH_TAG_ALPHA, SYNTH_TAG_BETA])
+        eboot_plain = tiny_elf(b"NK-EBOOT")
+        alpha_plain = tiny_elf(b"NK-ALPHA")
+        beta_plain = tiny_elf(b"NK-BETA")
+        case_dir = self.tmp / "case-end-to-end"
+        case_dir.mkdir()
+        iso = case_dir / "disc_modules.iso"
+        self.create_iso_modules(
+            iso,
+            seal_with_entries(eboot_plain, SYNTH_TAG, entries),
+            sysdir_modules={
+                "alpha.prx": seal_with_entries(alpha_plain, SYNTH_TAG_ALPHA, entries),
+                "beta.prx": seal_with_entries(beta_plain, SYNTH_TAG_BETA, entries),
+            },
+            usrdir_modules={},
+            disc_id="TEST00001",
+            title="Synthetic Module Disc",
+        )
+        user_root = self.tmp / "modules-user"
+        write_keyfile(user_root / "keys" / "psp-keyfile.json", entries)
+        report = self._preflight(iso, user_root)
+        executable = next(check for check in report["checks"]
+                          if check["code"] == "EXECUTABLE")
+        self.assertEqual(executable["status"], "OK", executable["message"])
+        decrypted = user_root / "titles" / "TEST00001" / "decrypted"
+        self.assertEqual((decrypted / "EBOOT.elf").read_bytes(), eboot_plain)
+        self.assertEqual((decrypted / "alpha.prx").read_bytes(), alpha_plain)
+        self.assertEqual((decrypted / "beta.prx").read_bytes(), beta_plain)
+        module_report = self._module_report(report)
+        self.assertEqual((module_report["ready"], module_report["total"]), (2, 2))
+        self.assertEqual(
+            {result["name"]: result["status"] for result in module_report["results"]},
+            {"alpha.prx": "decrypted", "beta.prx": "decrypted"},
+        )
+        check = self._module_check(report)
+        self.assertEqual(check["status"], "OK", check["message"])
+        self.assertIn("2 of 2 ready", check["message"])
+        self.assertNotIn("nk_decrypt", check["message"])
+        # Decrypted bytes live only under the private per-user data folder,
+        # never next to the ISO.
+        self.assertEqual(sorted(path.name for path in iso.parent.iterdir()), [iso.name])
+
+    def test_user_supplied_plain_module_wins_and_plain_disc_module_is_skipped(self):
+        entries = multi_tag_entries([SYNTH_TAG, SYNTH_TAG_ALPHA, SYNTH_TAG_BETA])
+        eboot_plain = tiny_elf(b"NK-EBOOT")
+        alpha_plain = tiny_elf(b"NK-ALPHA")
+        beta_plain = tiny_elf(b"NK-BETA")
+        gamma_plain = tiny_elf(b"NK-GAMMA")
+        case_dir = self.tmp / "case-user-wins"
+        case_dir.mkdir()
+        iso = case_dir / "disc_user_wins.iso"
+        self.create_iso_modules(
+            iso,
+            seal_with_entries(eboot_plain, SYNTH_TAG, entries),
+            sysdir_modules={
+                "alpha.prx": seal_with_entries(alpha_plain, SYNTH_TAG_ALPHA, entries),
+                "beta.prx": seal_with_entries(beta_plain, SYNTH_TAG_BETA, entries),
+            },
+            usrdir_modules={"gamma.prx": gamma_plain},
+            disc_id="TEST00001",
+            title="Synthetic Module Disc",
+        )
+        user_root = self.tmp / "userwins-user"
+        write_keyfile(user_root / "keys" / "psp-keyfile.json", entries)
+        decrypted = user_root / "titles" / "TEST00001" / "decrypted"
+        decrypted.mkdir(parents=True)
+        user_alpha = tiny_elf(b"USER-ALPHA")
+        (decrypted / "alpha.prx").write_bytes(user_alpha)
+        report = self._preflight(iso, user_root)
+        # A user-supplied plain module always wins: it is never overwritten.
+        self.assertEqual((decrypted / "alpha.prx").read_bytes(), user_alpha)
+        self.assertEqual((decrypted / "beta.prx").read_bytes(), beta_plain)
+        module_report = self._module_report(report)
+        self.assertEqual((module_report["ready"], module_report["total"]), (3, 3))
+        by_name = {result["name"]: result for result in module_report["results"]}
+        self.assertEqual(by_name["alpha.prx"]["status"], "skipped")
+        self.assertEqual(by_name["alpha.prx"]["reason"], "user-supplied")
+        self.assertEqual(by_name["beta.prx"]["status"], "decrypted")
+        self.assertEqual(by_name["gamma.prx"]["status"], "skipped")
+        self.assertEqual(by_name["gamma.prx"]["reason"], "plain")
+
+    def test_missing_key_entry_fails_closed_naming_that_entry(self):
+        alpha_entry = f"prx.tag.0x{SYNTH_TAG_ALPHA:08X}"
+        entries = multi_tag_entries([SYNTH_TAG, SYNTH_TAG_ALPHA, SYNTH_TAG_BETA])
+        eboot_plain = tiny_elf(b"NK-EBOOT")
+        alpha_plain = tiny_elf(b"NK-ALPHA")
+        beta_plain = tiny_elf(b"NK-BETA")
+        case_dir = self.tmp / "case-missing-entry"
+        case_dir.mkdir()
+        iso = case_dir / "disc_missing_entry.iso"
+        self.create_iso_modules(
+            iso,
+            seal_with_entries(eboot_plain, SYNTH_TAG, entries),
+            sysdir_modules={
+                "alpha.prx": seal_with_entries(alpha_plain, SYNTH_TAG_ALPHA, entries),
+                "beta.prx": seal_with_entries(beta_plain, SYNTH_TAG_BETA, entries),
+            },
+            usrdir_modules={},
+            disc_id="TEST00001",
+            title="Synthetic Module Disc",
+        )
+        entries.pop(alpha_entry)  # the exact entry alpha needs is missing
+        user_root = self.tmp / "missing-entry-user"
+        write_keyfile(user_root / "keys" / "psp-keyfile.json", entries)
+        report = self._preflight(iso, user_root)
+        decrypted = user_root / "titles" / "TEST00001" / "decrypted"
+        # Every other module still succeeds; the failing one fails closed and
+        # names the exact missing key entry.
+        self.assertEqual((decrypted / "EBOOT.elf").read_bytes(), eboot_plain)
+        self.assertEqual((decrypted / "beta.prx").read_bytes(), beta_plain)
+        self.assertFalse((decrypted / "alpha.prx").exists())
+        module_report = self._module_report(report)
+        self.assertEqual((module_report["ready"], module_report["total"]), (1, 2))
+        by_name = {result["name"]: result for result in module_report["results"]}
+        self.assertEqual(by_name["beta.prx"]["status"], "decrypted")
+        self.assertEqual(by_name["alpha.prx"]["status"], "failed")
+        self.assertIn("MISSING_KEY_ENTRY", by_name["alpha.prx"]["detail"])
+        self.assertIn(alpha_entry, by_name["alpha.prx"]["detail"])
+        check = self._module_check(report)
+        self.assertIn("1 of 2 ready", check["message"])
+        self.assertIn(alpha_entry, check["message"])
+
+    def test_interrupted_boundary_run_leaves_no_partial_module(self):
+        import tools.nk_core.decrypt_boundary as decrypt_boundary
+
+        entries = multi_tag_entries([SYNTH_TAG, SYNTH_TAG_ALPHA, SYNTH_TAG_BETA])
+        eboot_plain = tiny_elf(b"NK-EBOOT")
+        case_dir = self.tmp / "case-interrupted"
+        case_dir.mkdir()
+        iso = case_dir / "disc_interrupted.iso"
+        self.create_iso_modules(
+            iso,
+            seal_with_entries(eboot_plain, SYNTH_TAG, entries),
+            sysdir_modules={
+                "alpha.prx": seal_with_entries(tiny_elf(b"NK-ALPHA"), SYNTH_TAG_ALPHA, entries),
+                "beta.prx": seal_with_entries(tiny_elf(b"NK-BETA"), SYNTH_TAG_BETA, entries),
+            },
+            usrdir_modules={},
+            disc_id="TEST00001",
+            title="Synthetic Module Disc",
+        )
+        user_root = self.tmp / "interrupted-user"
+        write_keyfile(user_root / "keys" / "psp-keyfile.json", entries)
+        real_run = subprocess.run
+
+        def interrupted_run(command, *args, **kwargs):
+            argv0 = Path(str(command[0]))
+            if argv0.name.startswith("nk_decrypt") and command[1] == "decrypt":
+                out = Path(command[command.index("--out") + 1])
+                out.write_bytes(b"\x7fELF half-written output")
+                raise subprocess.TimeoutExpired(
+                    command, decrypt_boundary.BOUNDARY_TIMEOUT_SECONDS
+                )
+            return real_run(command, *args, **kwargs)
+
+        with mock.patch.object(decrypt_boundary.subprocess, "run",
+                               side_effect=interrupted_run):
+            report = self._preflight(iso, user_root)
+        folder = user_root / "titles" / "TEST00001" / "decrypted"
+        leftovers = sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
+        self.assertEqual(leftovers, [])
+        cache = user_root / "cache" / "decrypted"
+        staged = sorted(path.name for path in cache.glob("*")) if cache.is_dir() else []
+        self.assertEqual(staged, [])
+        module_report = self._module_report(report)
+        self.assertEqual(module_report["ready"], 0)
+        for result in module_report["results"]:
+            self.assertEqual(result["status"], "failed", result)
 
 
 if __name__ == "__main__":

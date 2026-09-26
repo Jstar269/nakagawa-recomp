@@ -126,8 +126,13 @@ typedef struct {
     size_t issue_count;
 } PlayerPreflightCheck;
 
+/* One slot per code the player's builder can emit (DISC_SFO, EXECUTABLE,
+ * EXPERIMENTAL, GUEST_MODULES, RUNTIME_PACKAGE, SYSTEM_FONTS, AUDIO_OUTPUT: 7)
+ * plus headroom, so adding a check never silently displaces another. */
+#define PLAYER_PREFLIGHT_MAX_CHECKS 10
+
 typedef struct {
-    PlayerPreflightCheck checks[6];
+    PlayerPreflightCheck checks[PLAYER_PREFLIGHT_MAX_CHECKS];
     size_t count;
 } PlayerCompatibilityPreflight;
 
@@ -241,6 +246,9 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
  * bare-name search (PATH on Windows). Pure: no filesystem or loader calls. */
 int player_app_ttf_library_candidates(const char *exe_dir,
                                       char out[][MAX_PATH_LEN], int max_out);
+/* True when a disc directory entry name is safe to write under the private
+ * per-title folder (the tooling's FILENAME_RE and WINDOWS_RESERVED rules). */
+bool player_module_name_is_safe(const char *name);
 bool player_game_is_showcase(const GameRecord *game);
 void player_app_set_runtime_root(PlayerApp *app, const char *root);
 NkRuntimePackageStatus player_app_validate_runtime_package(

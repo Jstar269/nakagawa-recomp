@@ -61,6 +61,8 @@ def _run_boundary(key_path: Path, source: Path, destination: Path) -> BoundaryOu
             timeout=BOUNDARY_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
+        # An interrupted run must never leave a half-written staged module.
+        out_tmp.unlink(missing_ok=True)
         return BoundaryOutcome("failed", f"boundary run failed: {exc}", str(key_path))
     if proc.returncode != 0 or not out_tmp.is_file():
         out_tmp.unlink(missing_ok=True)
@@ -73,7 +75,12 @@ def _run_boundary(key_path: Path, source: Path, destination: Path) -> BoundaryOu
         return BoundaryOutcome("failed", detail, str(key_path))
     if os.name != "nt":
         out_tmp.chmod(0o600)
-    os.replace(out_tmp, destination)
+    try:
+        os.replace(out_tmp, destination)
+    except OSError as exc:
+        out_tmp.unlink(missing_ok=True)
+        return BoundaryOutcome("failed", f"staged output could not be moved into place: {exc}",
+                               str(key_path))
     return BoundaryOutcome("ok", "", str(key_path))
 
 
