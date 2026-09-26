@@ -633,6 +633,8 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
             "STALE_CODE_POLICY", environment.get("SR_STALE_POLICY", "")
         ),
         "chunk_target_bytes": environment.get("CHUNK_TARGET_BYTES", ""),
+        # The planner writes this into the package's cache metadata, so the key must carry it too.
+        "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }
 
 
@@ -1520,7 +1522,7 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         "is_experimental": is_experimental,
     })
     _write_private_file(library_path, json.dumps({"schema_version": 1, "games": games},
-                                                sort_keys=True, separators=(",", ":")).encode("utf-8"))
+                                                separators=(",", ":")).encode("utf-8"))
 
 
 def _write_experimental_module_bindings(profile_path: Path, profile: dict,
