@@ -1447,8 +1447,22 @@ def _write_bringup_report(report: dict, path: Path) -> None:
 
 
 def _bringup_human_summary(report: dict) -> str:
+    uses_cfw_original = any(
+        check.get("code") == "MODIFIED_DUMP_CFW_LOADER"
+        and check.get("status") == "IN_PROGRESS"
+        for check in report.get("preflight_checks", [])
+    )
+    cfw_prefix = (
+        "Custom-firmware-patched dump: using the original executable EBOOT.OLD "
+        "through the supplied decrypted EBOOT.elf; the EBOOT.BIN loader and patch "
+        "modules are excluded. Broader CFW dump support is in the works (#308). "
+        if uses_cfw_original else ""
+    )
     if report["failure_class"] == "NONE":
-        return f"Bring-up reached {report['reached_stage']}; launch {report['exit_classification'].lower()}."
+        return (
+            f"{cfw_prefix}Bring-up reached {report['reached_stage']}; launch "
+            f"{report['exit_classification'].lower()}."
+        )
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
         return (
             "Bring-up stopped at inspect: this disc image was modified by a custom-firmware "
@@ -1496,7 +1510,10 @@ def _bringup_human_summary(report: dict) -> str:
             detail = f" (runtime emitted no diagnostic; exit code {report['process_exit_code']})"
         elif kind == "OTHER":
             detail = f" (runtime output did not match a known boundary; exit code {report['process_exit_code']})"
-    return f"Bring-up stopped at {report['reached_stage']}: {report['failure_class']}{detail}{suffix}."
+    return (
+        f"{cfw_prefix}Bring-up stopped at {report['reached_stage']}: "
+        f"{report['failure_class']}{detail}{suffix}."
+    )
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
