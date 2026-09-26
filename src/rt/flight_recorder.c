@@ -60,6 +60,67 @@ static uint32_t s_tw_lo, s_tw_hi;
 static SrTraceWindowIndices s_tw_indices;
 static unsigned long s_tw_limit, s_tw_count;
 
+static int s_watch_configured;
+static uint64_t s_watch_start;
+static uint64_t s_watch_end;
+static uint32_t s_watch_vblank;
+static uint64_t s_watch_matches;
+int g_sr_watch_enabled;
+
+void sr_watch_configure(void) {
+    if (s_watch_configured) return;
+    s_watch_configured = 1;
+    const char *spec = getenv("SR_WATCH");
+    if (!spec || !spec[0]) return;
+
+    const char *separator = strchr(spec, ':');
+    if (!separator || separator == spec || separator[1] == '\0' || spec[0] == '-') {
+        fprintf(stderr, "SR_WATCH: expected ADDR:LEN (a non-negative address and a nonzero length)\n");
+        return;
+    }
+    errno = 0;
+    char *addr_end = NULL;
+    unsigned long long start = strtoull(spec, &addr_end, 0);
+    if (errno != 0 || addr_end != separator || start > UINT32_MAX) {
+        fprintf(stderr, "SR_WATCH: invalid address in ADDR:LEN\n");
+        return;
+    }
+    errno = 0;
+    char *len_end = NULL;
+    unsigned long long length = strtoull(separator + 1, &len_end, 0);
+    if (errno != 0 || len_end == separator + 1 || *len_end != '\0' || length == 0u ||
+        length > (UINT32_MAX + 1ULL) - start) {
+        fprintf(stderr, "SR_WATCH: invalid length in ADDR:LEN\n");
+        return;
+    }
+
+    s_watch_start = (uint64_t)start;
+    s_watch_end = s_watch_start + (uint64_t)length;
+    g_sr_watch_enabled = 1;
+    fprintf(stderr, "SR_WATCH: armed addr=0x%08x len=0x%llx\n",
+            (uint32_t)s_watch_start, length);
+}
+
+/* The vblank note and the match counter are plain diagnostics shared between the GE
+ * thread and the storing thread without synchronization: a report may carry the
+ * previous vblank, and the counter is exact only single-threaded (the selftest). */
+void sr_watch_note_vblank(uint32_t vblank) {
+    s_watch_vblank = vblank;
+}
+
+void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, uint32_t width) {
+    if (!g_sr_watch_enabled || width == 0u) return;
+    const uint64_t store_start = (uint64_t)addr;
+    const uint64_t store_end = store_start + (uint64_t)width;
+    if (store_start >= s_watch_end || store_end <= s_watch_start) return;
+    s_watch_matches++;
+    fprintf(stderr,
+            "SR_WATCH: pc=0x%08x addr=0x%08x val=0x%08x width=%u vblank=%u\n",
+            pc, addr, value, width, s_watch_vblank);
+}
+
+uint64_t sr_watch_match_count(void) { return s_watch_matches; }
+
 static void sr_trace_window_list(const char *text, uint8_t *out, unsigned *count) {
     *count = 0;
     if (!text || !text[0]) return;
@@ -229,6 +290,7 @@ static void register_exit(void) {
 }
 
 void sr_flight_init(void) {
+    sr_watch_configure();
     if (s_flight_init_state == 2) return;
     if (s_flight_init_state == 1) return;
     s_flight_init_state = 1;

@@ -585,6 +585,9 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
     if instruction_trace:
         env["TRACE"] = "1"
+        runtime_opt = env.get("RUNTIME_OPT", "-O0")
+        if not any(flag.split("=", 1)[0] == "-DSR_INSTRUCTION_TRACE" for flag in runtime_opt.split()):
+            env["RUNTIME_OPT"] = f"{runtime_opt} -DSR_INSTRUCTION_TRACE".strip()
     return env
 
 
@@ -650,6 +653,7 @@ def _current_package_cache_key(
     psp_header: Path | None,
     *,
     public_safe: bool | None = None,
+    instruction_trace: bool = False,
 ) -> dict:
     if public_safe is None:
         public_safe = not _has_private_backends()
@@ -678,7 +682,7 @@ def _current_package_cache_key(
             if psp_header is not None else None
         ),
     }
-    environment = _runtime_build_environment()
+    environment = _runtime_build_environment(instruction_trace=instruction_trace)
     options = _package_codegen_options(manifest, environment)
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
@@ -951,6 +955,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             module_dir,
             cached_header,
             public_safe=public_safe,
+            instruction_trace=bool(getattr(args, "instruction_trace", False)),
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
         decision = package_cache.compare_cache_keys(previous_key, cache_key)
@@ -1449,8 +1454,22 @@ def _write_bringup_report(report: dict, path: Path) -> None:
 
 
 def _bringup_human_summary(report: dict) -> str:
+    uses_cfw_original = any(
+        check.get("code") == "MODIFIED_DUMP_CFW_LOADER"
+        and check.get("status") == "IN_PROGRESS"
+        for check in report.get("preflight_checks", [])
+    )
+    cfw_prefix = (
+        "Custom-firmware-patched dump: using the original executable EBOOT.OLD "
+        "through the supplied decrypted EBOOT.elf; the EBOOT.BIN loader and patch "
+        "modules are excluded. Broader CFW dump support is in the works (#308). "
+        if uses_cfw_original else ""
+    )
     if report["failure_class"] == "NONE":
-        return f"Bring-up reached {report['reached_stage']}; launch {report['exit_classification'].lower()}."
+        return (
+            f"{cfw_prefix}Bring-up reached {report['reached_stage']}; launch "
+            f"{report['exit_classification'].lower()}."
+        )
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
         return (
             "Bring-up stopped at inspect: this disc image was modified by a custom-firmware "
@@ -1498,7 +1517,10 @@ def _bringup_human_summary(report: dict) -> str:
             detail = f" (runtime emitted no diagnostic; exit code {report['process_exit_code']})"
         elif kind == "OTHER":
             detail = f" (runtime output did not match a known boundary; exit code {report['process_exit_code']})"
-    return f"Bring-up stopped at {report['reached_stage']}: {report['failure_class']}{detail}{suffix}."
+    return (
+        f"{cfw_prefix}Bring-up stopped at {report['reached_stage']}: "
+        f"{report['failure_class']}{detail}{suffix}."
+    )
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,

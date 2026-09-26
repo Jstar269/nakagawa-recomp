@@ -1293,10 +1293,10 @@ def inspect_compatibility_preflight(
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
-                "This disc image was modified by a custom-firmware patch. The game "
-                "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
-                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
-                "This boundary is in the works (#308)."
+                "Custom-firmware-patched dump detected; EBOOT.OLD is the game executable "
+                "but is still encrypted. Supply its decrypted form at "
+                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake is "
+                "in the works (#308)."
             ),
             "issues": [308],
         }
@@ -1462,14 +1462,16 @@ def inspect_compatibility_preflight(
             "code": "MODIFIED_DUMP_CFW_LOADER",
             "status": "IN_PROGRESS" if selected == "EBOOT.elf" else "UNSUPPORTED",
             "message": (
-                "A custom-firmware patch loader was detected; EBOOT.OLD is the game "
-                "executable. The supplied decrypted EBOOT.elf is selected for analysis, "
-                "and patch modules are excluded. CFW dump support is in the works (#308)."
+                "Custom-firmware-patched dump: using the original executable; EBOOT.OLD "
+                "is the game executable selected through the supplied decrypted EBOOT.elf. "
+                "The EBOOT.BIN loader and "
+                "custom-firmware patch modules are excluded. Broader CFW dump support "
+                "is in the works (#308)."
                 if selected == "EBOOT.elf"
-                else "A custom-firmware patch loader was detected. EBOOT.OLD is the game "
-                     "executable (encrypted); supply its decrypted executable at "
-                     "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean "
-                     "dump (#308)."
+                else "Custom-firmware-patched dump detected; EBOOT.OLD is the game "
+                     "executable but is still encrypted. Supply its decrypted form at "
+                     "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake "
+                     "is in the works (#308)."
             ),
             "issues": [308],
         })
