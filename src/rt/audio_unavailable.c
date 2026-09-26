@@ -53,6 +53,14 @@ static int s_reported_unavailable = 0;
 static int s_reported_init = 0;
 static int s_cleanup_registered = 0;
 
+/* SR_AUDIOSTAT gate, matching the other backend: the queue/drift fields are diagnostics and
+ * must not change the default output of a public build. */
+static int audio_stat_on(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SR_AUDIOSTAT") != NULL;
+    return on;
+}
+
 static void sr_audio_cleanup(void) {
     if (s_audio_state == AUDIO_STATE_ACTIVE) {
         for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
@@ -236,6 +244,37 @@ int sr_audio_queued(int ch) {
     return bytes / 4;
 }
 
+/* SR_AUDIOSTAT: the value the blocking output paces against, and the drift it is accumulating.
+ * `worst` is the largest per-channel sr_audio_queued() in this backend -- the lead the slowest
+ * channel carries -- and `lead_ms` is every channel's un-consumed audio in milliseconds.
+ * The arithmetic is separated from the device query so it can be checked exactly, with no
+ * device and no race against the driver draining the queue as it is read. */
+static void audio_lead_from(const int *queued_frames, int channels, int *worst, long *lead_ms) {
+    uint64_t lead = 0;
+    int q = 0;
+    for (int i = 0; i < channels; i++) {
+        int frames = queued_frames[i] > 0 ? queued_frames[i] : 0;
+        if (frames > q) q = frames;
+        lead += (uint64_t)frames;
+    }
+    *worst = q;
+    *lead_ms = (long)(lead / (SR_AUDIO_SAMPLE_RATE / 1000u));
+}
+
+static void audio_lead(int *worst, long *lead_ms) {
+    /* Without a device there is no queue to be ahead of, so both stay -1 ("not measured")
+     * rather than a zero that would read as "no drift". */
+    *worst = -1;
+    *lead_ms = -1;
+    if (s_audio_state != AUDIO_STATE_ACTIVE) return;
+    int queued[SR_AUDIO_CHANNELS];
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        int bytes = SDL_GetAudioStreamQueued(s_streams[i]);
+        queued[i] = bytes > 0 ? bytes / 4 : 0;
+    }
+    audio_lead_from(queued, SR_AUDIO_CHANNELS, worst, lead_ms);
+}
+
 void sr_audio_dump_stats(void) {
     if (s_audio_state == AUDIO_STATE_UNINITIALIZED) {
         sr_audio_init();
@@ -249,14 +288,21 @@ void sr_audio_dump_stats(void) {
     const char *driver = (s_audio_state == AUDIO_STATE_ACTIVE) ? SDL_GetCurrentAudioDriver() : NULL;
     const char *state_str = (s_audio_state == AUDIO_STATE_ACTIVE) ? "active" :
                             (s_audio_state == AUDIO_STATE_NULL) ? "null" : "unavailable";
-    fprintf(stderr, "AUDIOSTAT_HOST: state=%s driver=%s pushed=%llu underruns=%llu overruns=%llu backpressure=%llu peak_q=%u\n",
+    /* SR_AUDIOSTAT: the value the blocking output paces against, and the drift it is
+     * accumulating (see audio_lead). */
+    long lead_ms = -1;
+    int worst = -1;
+    if (audio_stat_on()) audio_lead(&worst, &lead_ms);
+    fprintf(stderr, "AUDIOSTAT_HOST: state=%s driver=%s pushed=%llu underruns=%llu overruns=%llu "
+                    "backpressure=%llu peak_q=%u queued=%d lead_ms=%ld\n",
             state_str,
             driver ? driver : "none",
             (unsigned long long)s_stats.total_pushed_frames,
             (unsigned long long)s_stats.underrun_events,
             (unsigned long long)s_stats.overrun_events,
             (unsigned long long)s_stats.backpressure_events,
-            (unsigned)peak);
+            (unsigned)peak, worst, lead_ms);
+    fflush(stderr);
 }
 
 int sr_audio_is_active(void) {
@@ -322,6 +368,32 @@ static void test_dummy_mixer_handoff(void) {
     sr_audio_push(0, tone, 128, 0x8000, 0x8000);
     assert(s_stats.underrun_events >= 1);
 
+    /* SR_AUDIOSTAT drift telemetry: the published worst-channel lead is the value the
+     * blocking output paces against, and the drift is every channel's un-consumed audio. */
+    int worst = -2;
+    long lead_ms = -2;
+    audio_lead_from((const int[SR_AUDIO_CHANNELS]){0}, SR_AUDIO_CHANNELS, &worst, &lead_ms);
+    assert(worst == 0);
+    assert(lead_ms == 0);
+
+    const int led[] = { 4410, 0, 0, 2205, 0, 0, 0, 0, 8820 };
+    audio_lead_from(led, SR_AUDIO_CHANNELS, &worst, &lead_ms);
+    assert(worst == 8820);
+    assert(lead_ms == 350);
+    assert(worst == led[8]);
+
+    /* A negative reading from the device is not a negative lead. */
+    const int odd[] = { -1, -100, 0 };
+    audio_lead_from(odd, 3, &worst, &lead_ms);
+    assert(worst == 0);
+    assert(lead_ms == 0);
+
+    /* With the device draining in real time the exact value races, but the published number
+     * is still one of this backend's own sr_audio_queued() readings and never exceeds it. */
+    audio_lead(&worst, &lead_ms);
+    assert(worst >= 0);
+    assert(worst >= sr_audio_queued(0));
+
     sr_audio_dump_stats();
     printf("test_dummy_mixer_handoff: PASS\n");
 }
@@ -334,6 +406,13 @@ static void test_no_device_path(void) {
     assert(rc == -1);
     assert(s_audio_state == AUDIO_STATE_UNAVAILABLE);
     assert(sr_audio_queued(0) == -1);
+
+    /* No device means no queue, so drift is not measurable: -1, never 0. */
+    int worst = 0;
+    long lead_ms = 0;
+    audio_lead(&worst, &lead_ms);
+    assert(worst == -1);
+    assert(lead_ms == -1);
 
     /* Push must fail-closed safely without crash */
     int16_t dummy[128 * 2] = {0};

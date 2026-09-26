@@ -163,6 +163,10 @@ extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *imm
                                         uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
 extern void sr_hle_test_audio_reset(void);
+extern void sr_hle_test_audio_lead_reset(void);
+extern void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued);
+extern unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                                   unsigned long *noqueue, long *last_ms);
 extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
@@ -2601,6 +2605,54 @@ static void test_audio_regular_contract_safety(void) {
            "a negative queue report ends the wait instead of looping");
     expect(s_audio_queue_calls == 1u,
            "the negative queue sentinel takes the open-loop path after one query");
+}
+
+/* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
+ *
+ * A push count cannot tell a guest that submits what it consumes from one that submits twice
+ * as much: both push frames, and only the queue depth separates them. So the runtime reads
+ * sr_audio_queued() where the blocking output paces against it and publishes the deepest lead
+ * any channel carried in each window. What is pinned here is the contract a reader of the
+ * telemetry depends on: the window's peak is the worst channel, not the last; a window in
+ * which every output had no host queue reports -1 rather than a drift of zero; and the
+ * accumulator resets when a window closes, so the next window starts from nothing. */
+static void test_audio_drift_window_reports_the_pacing_value(void) {
+    int peak = -1;
+    uint32_t peak_ch = 0xffffffffu;
+    unsigned long noqueue = 0, outputs = 0;
+    long last_ms = 0;
+
+    sr_hle_test_audio_lead_reset();
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "a fresh drift window has counted no outputs");
+    expect(last_ms == -1L, "and has published no milliseconds, not zero");
+
+    sr_hle_test_audio_lead_feed(10u, 0, 4410);
+    sr_hle_test_audio_lead_feed(20u, 3, 8820);
+    sr_hle_test_audio_lead_feed(30u, 8, 2205);
+    outputs = sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms);
+    expect(outputs == 3u, "every output in the window is counted");
+    expect(peak == 8820, "the window publishes the deepest lead, not the last reading");
+    expect(peak_ch == 3u, "and the channel that was carrying it");
+
+    /* One window is 300 delivered vblanks; crossing it prints what it saw and resets. */
+    sr_hle_test_audio_lead_feed(300u, 0, 4410);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the window that crosses the boundary starts the next one empty");
+    expect(last_ms == 200L, "the window printed its own peak, 8820 frames as 200 ms");
+    expect(peak == 0, "and the peak resets with it");
+    expect(noqueue == 0u, "as does the count of outputs with no queue");
+    (void)outputs;
+
+    /* No host queue anywhere in a window is absence of a measurement, never a zero drift. */
+    sr_hle_test_audio_lead_reset();
+    sr_hle_test_audio_lead_feed(10u, 0, -1);
+    sr_hle_test_audio_lead_feed(20u, 0, -1);
+    sr_hle_test_audio_lead_feed(300u, 0, -1);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the all-unmeasured window closed and reset like any other");
+    expect(last_ms == -1L, "a window with no host queue reports -1 ms, not 0");
+    sr_hle_test_audio_lead_reset();
 }
 
 static uint64_t selftest_guest_u64(uint32_t addr) {
@@ -16176,6 +16228,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();

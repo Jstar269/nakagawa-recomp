@@ -14,6 +14,7 @@ number, so a reader never has to trust a summary sentence.
     memory       working set / private bytes growth after warm-up
     handles      handle-count growth after warm-up
     audio        underruns / overruns / pushed frames from the runtime's own counters
+    audio_drift  queue depth over time: bounded, and not accumulating across the run
     route        ROUTE_OK present when a route program was loaded
     fatal        FATAL / ROUTE_FAIL / watchdog / access-violation markers
 
@@ -53,6 +54,7 @@ FATAL_PATTERNS = (
 AUDIOSTAT_HOST = re.compile(
     r"AUDIOSTAT_HOST:\s+state=(\S+)\s+driver=(\S+)\s+pushed=(\d+)\s+underruns=(\d+)\s+"
     r"overruns=(\d+)\s+backpressure=(\d+)\s+peak_q=(\d+)"
+    r"(?:\s+queued=(-?\d+)\s+lead_ms=(-?\d+))?"
 )
 AUDIOSTAT_PUSH = re.compile(
     r"AUDIOSTAT_PUSH:\s+ch=(\d+)\s+calls=(\d+)\s+nonzero_calls=(\d+)\s+frames=(\d+)\s+"
@@ -62,8 +64,17 @@ AUDIOSTAT_CB = re.compile(
     r"AUDIOSTAT_CB:\s+calls=(\d+)\s+frames=(\d+)\s+nonzero_frames=(\d+)\s+"
     r"silent_frames=(\d+)\s+peak=(\d+)\s+put_fail=(\d+)\s+play=(\d+)"
 )
+# The drift telemetry, in every form the runtime prints it: the queue depth the blocking
+# output paces against, and the un-consumed audio in milliseconds. The runtime prints the
+# per-window pair itself (AUDIOSTAT_LEAD, in whichever build's mixer is linked) and each host
+# mixer prints its own; a build may have any subset. A value of -1 means there was no host
+# queue to be ahead of, which is absence of a measurement and never a zero.
+AUDIOSTAT_DRIFT = re.compile(
+    r"AUDIOSTAT_(?:LEAD|WIN|HOST):[^\n]*?queued=(-?\d+)\s+lead_ms=(-?\d+)"
+)
 AUDIOSTAT_WIN = re.compile(
     r"AUDIOSTAT_WIN:\s+vbl=(\d+)\s+frames=(\d+)\s+nonzero=(\d+)\s+duty=(\d+)%\s+pushed_total=(\d+)"
+    r"(?:\s+queued=(-?\d+)\s+lead_ms=(-?\d+))?"
 )
 ROUTE_OK = re.compile(r"ROUTE_OK: (\d+) steps completed by vblank (\d+)")
 
@@ -239,15 +250,26 @@ def check_route(report: Report, text: str) -> None:
     report.add("route", None, "no route program in this run")
 
 
-def check_audio(report: Report, text: str, max_underruns: int) -> None:
+def lead_series(text: str) -> list[int]:
+    """The un-consumed audio, in milliseconds, in the order the run reported it.
+
+    Every emitter contributes to one series, whichever mixer a build links, and the readings
+    keep the order they appear in the log. -1 readings are dropped: they mean the backend had
+    no host queue to be ahead of, and a window of pure absence is not a drift of zero.
+    """
+    return [int(ms) for _q, ms in AUDIOSTAT_DRIFT.findall(text) if int(ms) >= 0]
+
+
+def check_audio(report: Report, text: str, max_underruns: int, max_drift_ms: int,
+                max_drift_net_ms: int) -> None:
     """Judge the audio chain from the run's own counters.
 
     Two backends print here and they do not print the same thing, so the audit reads both
     rather than assuming one: the host audio backend emits a per-window duty line and
     end-of-run push/callback totals, while the no-host-audio backend emits a single host
-    line carrying the underrun counters. Queue depth and per-push drift are NOT in either
-    set, so they are reported as absent rather than guessed at (a drift number invented from
-    push counts would be a measurement nobody took).
+    line carrying the underrun counters. Both publish the same drift pair behind
+    SR_AUDIOSTAT: the queue depth the blocking output paces against, and the total
+    un-consumed audio in milliseconds.
     """
     host = AUDIOSTAT_HOST.findall(text)
     pushes = AUDIOSTAT_PUSH.findall(text)
@@ -276,11 +298,51 @@ def check_audio(report: Report, text: str, max_underruns: int) -> None:
         parts.append(f"windows={len(duty)} duty_mean={sum(duty) / len(duty):.1f}%")
         parts.append(f"silent_windows_after_first={silent}")
     if host:
-        state, driver, pushed, _, _, back, peak = host[-1]
+        state, driver, pushed, _, _, back, peak = host[-1][:7]
         parts.insert(0, f"state={state} driver={driver} pushed={pushed} peak_q={peak}")
     else:
-        parts.insert(0, "queue_depth=n/a (not in this backend's telemetry)")
+        parts.insert(0, "underrun_counters=n/a (not in this backend's telemetry)")
     report.add("audio", ok, " ".join(parts))
+
+    check_audio_drift(report, text, max_drift_ms, max_drift_net_ms)
+
+
+def check_audio_drift(report: Report, text: str, max_drift_ms: int,
+                      max_drift_net_ms: int) -> None:
+    """Assert the audio chain is not drifting, from the run's own queue readings.
+
+    Two failures matter and neither is visible in a push count. A queue that reaches the
+    ring's capacity ends in a clamp, where real guest audio is dropped; a queue that only
+    ever grows is drift, which a consumer hears as lag building over minutes even while
+    nothing is dropped. So the check is bounded (never above ``--max-drift-ms``) and
+    non-accumulating (the end of the run is not meaningfully ahead of where it started), and
+    a series that rises at every single window is called out by name.
+    """
+    series = lead_series(text)
+    queued = [int(q) for q, _ms in AUDIOSTAT_DRIFT.findall(text) if int(q) >= 0]
+    if not series:
+        report.add("audio_drift", None,
+                   "no queue depth in this run's telemetry (run with SR_AUDIOSTAT=1 on a "
+                   "backend that has host audio)")
+        return
+    peak = max(series)
+    net = series[-1] - series[0]
+    rising = all(b >= a for a, b in zip(series, series[1:], strict=False))
+    reasons = []
+    if peak > max_drift_ms:
+        reasons.append(f"peak_lead={peak}ms > {max_drift_ms}ms")
+    if net > max_drift_net_ms:
+        reasons.append(f"net_growth={net}ms > {max_drift_net_ms}ms")
+    if rising and net > 0:
+        reasons.append(f"lead rose at every one of {len(series)} windows")
+    detail = (f"samples={len(series)} lead_start_ms={series[0]} lead_end_ms={series[-1]} "
+              f"lead_peak_ms={peak} lead_net_ms={net} lead_median_ms={sorted(series)[len(series) // 2]} "
+              f"queue_peak_frames={max(queued) if queued else 'n/a'} "
+              f"max_drift_ms={max_drift_ms} max_drift_net_ms={max_drift_net_ms}")
+    if reasons:
+        report.add("audio_drift", False, detail + " failed=" + "; ".join(reasons))
+    else:
+        report.add("audio_drift", True, detail)
 
 
 def check_fatal(report: Report, text: str) -> None:
@@ -316,11 +378,14 @@ def audit(args: argparse.Namespace) -> Report:
         check_fatal(report, text)
         check_route(report, text)
         if args.audio:
-            check_audio(report, text, args.max_underruns)
+            check_audio(report, text, args.max_underruns, args.max_drift_ms,
+                        args.max_drift_net_ms)
         else:
-            report.add("audio", None, "not judged (pass --audio to read the run's own counters)")
+            for name in ("audio", "audio_drift"):
+                report.add(name, None,
+                           "not judged (pass --audio to read the run's own counters)")
     else:
-        for name in ("fatal", "route", "audio"):
+        for name in ("fatal", "route", "audio", "audio_drift"):
             report.add(name, None, "no stderr log given")
     return report
 
@@ -339,6 +404,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--warmup-s", type=int, default=3,
                     help="process samples ignored before the growth baseline")
     ap.add_argument("--max-underruns", type=int, default=0)
+    ap.add_argument("--max-drift-ms", type=int, default=500,
+                    help="largest un-consumed audio the run's own queue reading may reach")
+    ap.add_argument("--max-drift-net-ms", type=int, default=250,
+                    help="how far the queue may end up ahead of where it started")
     ap.add_argument("--audio", action="store_true", help="judge the audio counters")
     ap.add_argument("--json", action="store_true", help="also print the report as JSON")
     args = ap.parse_args(argv)

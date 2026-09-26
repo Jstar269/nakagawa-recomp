@@ -199,7 +199,7 @@ class SoakAuditTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("SOAK_CHECK: audio PASS", out)
         self.assertIn("underruns=n/a", out)
-        self.assertIn("queue_depth=n/a", out)
+        self.assertIn("underrun_counters=n/a", out)
         self.assertIn("dropped_frames=0", out)
         self.assertIn("windows=3", out)
         self.assertIn("silent_windows_after_first=0", out)
@@ -232,6 +232,153 @@ class SoakAuditTests(unittest.TestCase):
         code, out = self._run("--stderr", stderr)
         self.assertEqual(code, 0, out)
         self.assertIn("SOAK_CHECK: audio SKIP not judged", out)
+        self.assertIn("SOAK_CHECK: audio_drift SKIP not judged", out)
+
+    # -- audio drift --------------------------------------------------------
+    @staticmethod
+    def _win(vbl: int, lead_ms: int, queued: int = 4410) -> str:
+        return (f"AUDIOSTAT_WIN: vbl={vbl} frames=220500 nonzero=33043 duty=14% "
+                f"pushed_total=409344 queued={queued} lead_ms={lead_ms}\n")
+
+    def test_a_bounded_queue_passes_the_drift_check(self) -> None:
+        """A queue that rises and falls inside the bound is a working pacing loop."""
+        log = self._write("drift_ok.log", "".join([
+            self._win(327, 40), self._win(627, 120), self._win(927, 60), self._win(1227, 90)]))
+        code, out = self._run("--stderr", log, "--audio")
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: audio_drift PASS", out)
+        self.assertIn("lead_peak_ms=120", out)
+        self.assertIn("lead_net_ms=50", out)
+        self.assertIn("queue_peak_frames=4410", out)
+
+    def test_a_queue_that_only_grows_fails_as_drift(self) -> None:
+        log = self._write("drift_grow.log", "".join([
+            self._win(327, 10), self._win(627, 60), self._win(927, 180), self._win(1227, 400)]))
+        code, out = self._run("--stderr", log, "--audio")
+        self.assertEqual(code, 1, out)
+        self.assertIn("SOAK_CHECK: audio_drift FAIL", out)
+        self.assertIn("rose at every one of 4 windows", out)
+
+    def test_a_queue_past_the_bound_fails_even_without_growth(self) -> None:
+        log = self._write("drift_peak.log", "".join([
+            self._win(327, 400), self._win(627, 420), self._win(927, 380)]))
+        code, out = self._run("--stderr", log, "--audio", "--max-drift-ms", "400")
+        self.assertEqual(code, 1, out)
+        self.assertIn("peak_lead=420ms > 400ms", out)
+
+    def test_net_growth_is_judged_against_its_own_flag(self) -> None:
+        log = self._write("drift_net.log", "".join([
+            self._win(327, 20), self._win(627, 40), self._win(927, 35), self._win(1227, 80)]))
+        self.assertEqual(self._run("--stderr", log, "--audio")[0], 0)
+        code, out = self._run("--stderr", log, "--audio", "--max-drift-net-ms", "10")
+        self.assertEqual(code, 1, out)
+        self.assertIn("net_growth=60ms > 10ms", out)
+
+    def test_a_missing_queue_reading_skips_the_drift_check(self) -> None:
+        """No queue depth is absence of a measurement, never a passing zero."""
+        log = self._write("drift_absent.log",
+                          "AUDIOSTAT_HOST: state=unavailable driver=none pushed=0 underruns=0 "
+                          "overruns=0 backpressure=0 peak_q=0 queued=-1 lead_ms=-1\n")
+        code, out = self._run("--stderr", log, "--audio")
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: audio_drift SKIP", out)
+
+        old = self._write("drift_old.log",
+                          "AUDIOSTAT_HOST: state=active driver=wasapi pushed=1000 underruns=0 "
+                          "overruns=0 backpressure=0 peak_q=1024\n")
+        code, out = self._run("--stderr", old, "--audio")
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: audio_drift SKIP", out)
+
+    def test_the_per_channel_backends_single_figure_is_judged(self) -> None:
+        log = self._write("host_drift.log",
+                          "AUDIOSTAT_HOST: state=active driver=wasapi pushed=1000 underruns=0 "
+                          "overruns=0 backpressure=3 peak_q=1024 queued=4410 lead_ms=100\n")
+        code, out = self._run("--stderr", log, "--audio")
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: audio_drift PASS", out)
+        self.assertIn("samples=1", out)
+        self.assertIn("lead_peak_ms=100", out)
+
+    def test_both_backends_emit_the_fields_this_parser_reads(self) -> None:
+        """The emitters' own format strings, not a copy of them.
+
+        A drift number nobody can parse is the same as no drift number, so the format each
+        backend prints is read out of its source and fed to this module's patterns. Renaming a
+        field in C without teaching the audit fails here rather than in a soak.
+        """
+        sys.path.insert(0, str(ROOT / "tools"))
+        import soak_audit
+
+        mix = (ROOT / "src" / "rt" / "audio.c").read_text(encoding="utf-8")
+        per_ch = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
+
+        win_fmt = self._format_for(mix, "AUDIOSTAT_WIN: vbl=%u frames=%lu")
+        self.assertIn("queued=%d", win_fmt)
+        self.assertIn("lead_ms=%ld", win_fmt)
+        line = self._as_python_format(win_fmt) % (327, 220500, 33043, 14, 409344, 4410, 100)
+        self.assertRegex(line, soak_audit.AUDIOSTAT_WIN)
+        self.assertEqual(soak_audit.lead_series(line), [100])
+
+        host_fmt = self._format_for(per_ch, "AUDIOSTAT_HOST: state=%s driver=%s pushed=%llu")
+        self.assertIn("queued=%d", host_fmt)
+        self.assertIn("lead_ms=%ld", host_fmt)
+        host_line = self._as_python_format(host_fmt) % ("active", "wasapi", 1000, 0, 0, 3,
+                                                        1024, 4410, 100)
+        self.assertRegex(host_line, soak_audit.AUDIOSTAT_HOST)
+        self.assertEqual(soak_audit.lead_series(host_line), [100])
+
+    def test_the_runtime_s_own_drift_line_is_read_too(self) -> None:
+        """AUDIOSTAT_LEAD is the one emitter every build links, mixer or not."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        import soak_audit
+
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        fmt = self._format_for(hle, "AUDIOSTAT_LEAD: vbl=%u ch=%u outputs=%lu")
+        self.assertIn("queued=%d", fmt)
+        self.assertIn("lead_ms=%ld", fmt)
+        line = self._as_python_format(fmt) % (300, 3, 12, 8820, 200)
+        self.assertEqual(soak_audit.lead_series(line), [200])
+        unmeasured = self._as_python_format(fmt) % (600, 0, 9, -1, -1)
+        self.assertEqual(soak_audit.lead_series(unmeasured), [])
+        mixed = line + self._as_python_format(fmt) % (900, 0, 9, -1, -1) + unmeasured
+        self.assertEqual(soak_audit.lead_series(mixed), [200],
+                         "an unmeasured window is dropped, the measured ones keep their order")
+
+    @staticmethod
+    def _as_python_format(fmt: str) -> str:
+        """A C printf format in the subset Python's % operator understands.
+
+        Only the conversions these two lines use appear: %s, %u, %d, %ld, %llu and %%. A
+        literal %% is parked first, so narrowing %lu to %d cannot turn it into a conversion;
+        it is restored as %%, which is how both formats spell a literal percent sign.
+        """
+        parked = fmt.replace("%%", "\\x00")
+        for c in ("%llu", "%lu", "%ld"):
+            parked = parked.replace(c, "%d")
+        return parked.replace("\\x00", "%%")
+
+    @staticmethod
+    def _format_for(source: str, marker: str) -> str:
+        """The printf format a C source uses for the telemetry line containing ``marker``.
+
+        A C format is written as adjacent string literals, so the pieces are joined from the
+        literal that opens before the marker through every literal that follows it in the same
+        call. The marker may name only part of the first literal.
+        """
+        at = source.index(marker)
+        literal = source.rindex('"', 0, at)
+        parts: list[str] = []
+        while True:
+            end = source.index('"', literal + 1)
+            parts.append(source[literal + 1:end])
+            rest = source[end + 1:]
+            stripped = rest.lstrip()
+            if stripped.startswith('"'):
+                literal = end + 1 + (len(rest) - len(stripped))
+                continue
+            break
+        return "".join(parts)
 
     # -- inputs -------------------------------------------------------------
     def test_missing_inputs_skip_with_a_reason_and_never_pass_silently(self) -> None:

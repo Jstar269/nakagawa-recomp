@@ -10072,6 +10072,81 @@ static uint32_t audio_frames_to_us(uint32_t ch, uint32_t frames) {
     return us ? us : 1u;
 }
 
+/* SR_AUDIOSTAT: the audio drift the guest actually felt, read where it is felt.
+ *
+ * sr_audio_queued() is the value the blocking output below paces against -- the audio the
+ * host mixer still owes the guest -- so it is also the honest place to measure drift. Counting
+ * pushed frames cannot: a guest that submits exactly what it consumes and one that submits
+ * twice as much both push frames, and only the queue depth tells them apart. A queue that only
+ * grows is drift a consumer hears as lag building over minutes while nothing is dropped; once
+ * it reaches the mixer's capacity the push clamps and real guest audio is lost. Neither is
+ * visible in the end-of-run totals, so the reading is windowed (LEAD_WINDOW_VBLANK vblanks,
+ * about five seconds) and printed as AUDIOSTAT_LEAD, which gives a long run a series instead
+ * of a single end figure.
+ *
+ * The line is backend-neutral on purpose: the two host mixers are separate translation units
+ * with separate telemetry, and neither is in every build, but this code is. `queued` is the
+ * deepest lead any channel carried in the window and `lead_ms` is that lead in milliseconds
+ * of audio; both are -1 when every output in the window had no host queue at all, which is
+ * absence of a measurement and must never read as a drift of zero. */
+#define LEAD_WINDOW_VBLANK 300u
+#define LEAD_FRAMES_PER_MS  (44100u / 1000u)
+static uint32_t s_lead_last_vbl;
+static unsigned long s_lead_outputs, s_lead_noqueue;
+static int s_lead_peak;
+static uint32_t s_lead_peak_ch;
+static long s_lead_last_ms;
+
+static void audio_lead_note(uint32_t vbl, int ch, int queued) {
+    s_lead_outputs++;
+    if (queued < 0) {
+        s_lead_noqueue++;
+    } else if (queued > s_lead_peak) {
+        s_lead_peak = queued;
+        s_lead_peak_ch = (uint32_t)(ch < 0 ? 0 : ch);
+    }
+    if (vbl < s_lead_last_vbl) return;                  /* no window across a vcount reset */
+    if (vbl - s_lead_last_vbl < LEAD_WINDOW_VBLANK) return;
+    s_lead_last_vbl = vbl;
+    int measured = s_lead_noqueue < s_lead_outputs;     /* some output saw a real queue */
+    s_lead_last_ms = measured ? (long)s_lead_peak / (long)LEAD_FRAMES_PER_MS : -1L;
+    fprintf(stderr, "AUDIOSTAT_LEAD: vbl=%u ch=%u outputs=%lu queued=%d lead_ms=%ld\n",
+            vbl, s_lead_peak_ch, s_lead_outputs, measured ? s_lead_peak : -1, s_lead_last_ms);
+    s_lead_outputs = s_lead_noqueue = 0;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0;
+}
+
+static void audio_note_lead(int ch, int queued) {
+    extern uint32_t sr_audio_vbl(void);   /* defined later in this file */
+    if (!audio_stat_on()) return;
+    audio_lead_note(sr_audio_vbl(), ch, queued);
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only view of the drift window, so the selftest can assert what the
+ * AUDIOSTAT_LEAD line would say without capturing stderr: feed a reading, read the
+ * window's own accumulator back, and read the milliseconds the line printed. */
+void sr_hle_test_audio_lead_reset(void) {
+    s_lead_last_vbl = 0;
+    s_lead_outputs = s_lead_noqueue = 0;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0;
+    s_lead_last_ms = -1L;
+}
+void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued) {
+    audio_lead_note(vbl, ch, queued);
+}
+unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                            unsigned long *noqueue, long *last_ms) {
+    *peak = s_lead_peak;
+    *peak_ch = s_lead_peak_ch;
+    *noqueue = s_lead_noqueue;
+    *last_ms = s_lead_last_ms;
+    return s_lead_outputs;
+}
+#endif
+
 /* SR_AUDIOSTAT: buffer identity per channel. Proving the buffer sceAudioOutput2
  * receives is the same one __sceSasCore wrote is what links the two stages; the
  * addresses are guest-side and the game double-buffers, so record a small set. */
@@ -10168,6 +10243,7 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
      * contracts (<= 65536 frames), so 2u * n cannot wrap. */
     while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
         sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - 2u * n));
+    audio_note_lead((int)ch, q);
     return n;
 }
 static uint32_t h_AudioOutputBlocking(CpuState *s) {

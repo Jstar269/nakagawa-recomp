@@ -568,15 +568,47 @@ python tools/soak_audit.py --perf logs/perf.csv --proc proc.csv --stderr logs/st
 | `cadence` | vblank Hz below `--min-hz` at the 5th percentile of the last `--cadence-tail-s` presenting seconds |
 | `memory_working_set`, `memory_private`, `handles` | growth above `--max-growth-pct` after `--warmup-s` samples, **peak** included so a spike that shrinks back still fails |
 | `audio` | dropped frames or failed callback puts; the no-host-audio backend's underruns/overruns above `--max-underruns` |
+| `audio_drift` | un-consumed audio above `--max-drift-ms` at any point, the queue ending more than `--max-drift-net-ms` ahead of where it started, or a queue that rose at every single window |
 | `route` | a route program that ran without reporting `ROUTE_OK` |
 | `fatal` | `FATAL`, `ROUTE_FAIL`, `UNRESOLVED_DISPATCH`, watchdog or access-violation markers |
 
 Output is one `SOAK_CHECK:` line per assertion plus a `SOAK_AUDIT:` verdict line, and the exit
 status is non-zero if any assertion failed. Two rules keep it honest: an input it was not
 given reports `SKIP` with the reason rather than passing, and a quantity the runtime does not
-publish is reported as absent. Queue depth and per-push audio drift are in neither audio
-backend's telemetry, so the audio line says `queue_depth=n/a` rather than deriving one from
-push counts. The seconds before the guest owns its first frame are the runtime's own index
+publish is reported as absent.
+
+**Audio drift** is the one that was unmeasurable until the telemetry published it. The runtime
+reads `sr_audio_queued()` — the queue depth the blocking output paces against — in
+`src/rt/hle.c`, in the same place it computes the delay from it, and prints one reading per
+300 delivered vblanks (about five seconds) behind `SR_AUDIOSTAT`:
+
+```text
+AUDIOSTAT_LEAD: vbl=9300 ch=8 outputs=268 queued=8820 lead_ms=200
+```
+
+Each host mixer prints the same pair in its own end-of-run or per-window line
+(`AUDIOSTAT_WIN` from the mixing backend, `AUDIOSTAT_HOST` from the per-channel one), so a
+build has whichever its mixer provides plus the runtime's own:
+
+```text
+AUDIOSTAT_WIN: vbl=927 frames=220500 nonzero=89565 duty=40% pushed_total=622848 queued=4410 lead_ms=12
+AUDIOSTAT_HOST: state=active driver=wasapi pushed=9841152 ... peak_q=22050 queued=4410 lead_ms=100
+```
+
+`lead_ms` is the number that matters over a long run: a queue that only grows is drift, which
+is audible as lag building over minutes even while nothing is dropped, and once it reaches the
+ring's capacity the push clamps and real guest audio is lost. `queued` is the deepest lead any
+channel carried, not the last reading, and `-1` in either field means the backend had no host
+queue to be ahead of — absence of a measurement, never a zero. Because a
+drift number nobody can parse is the same as no drift number,
+`tools/test_soak_audit.py` reads all three format strings out of their C sources and feeds
+them to the audit's own patterns, so renaming a field in C fails a test instead of a soak.
+`mingw32-make audio-mix-selftest` and `mingw32-make audio-selftest` check the arithmetic the
+mixers publish it from, and the HLE selftest's
+`test_audio_drift_window_reports_the_pacing_value` covers the window the runtime's own line
+prints.
+
+The seconds before the guest owns its first frame are the runtime's own index
 scan: they are excluded from `presenting` and never counted as a stall.
 
 ### Filesystem & I/O (→ SR_DBG_FS)
