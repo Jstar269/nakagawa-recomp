@@ -105,9 +105,11 @@ with explicit target and unbuilt boundaries.
   runtime PSP module (PRX) loader for clean-room rewrite unit G3.
 - [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
   PGF reader for clean-room rewrite unit G4. The public reader built from it
-  landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs;
-  the remaining composite-glyph and spec-variant boundaries are named in that
-  specification's §4.
+  landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs,
+  including composite row-order-3 glyphs and the supported revision and
+  shadow-map variants ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521));
+  the remaining composite, revision, and hardware-confirmation boundaries are
+  named in that specification's §4.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
