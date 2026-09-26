@@ -168,7 +168,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "113765048ea257567e371fc9b6410b49cd8b6985ebe241e78da76ccda8772fc6"
+      "sha256": "d9e658ed670fb8fdeb4be9e1ab57ef11cb338d03e7aa703e949ca0bb15efe5a9"
     },
     {
       "path": ".github/workflows/provenance-attestation.yml",
@@ -207,7 +207,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8804de70bcabc3f08a07b25402c4221c845cc29752ad17aa3cf1f73ae65dfcff"
+      "sha256": "ae06d8c563869d76bc38925d132a45594e3c30fc2a1f19b5a6b13a2568c8953b"
     },
     {
       "path": "AGENTS.md",
@@ -6354,7 +6354,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2315eb8f8cadd5c5af2cd6b4d3ca36ce88ad8c9286ce602780d8601ef75626e"
+      "sha256": "41183179b0981e5e57132181a9a653c368bac8b7396f1390409600e0bb1a1c65"
     },
     {
       "path": "tools/run_perf_benchmarks.py",
