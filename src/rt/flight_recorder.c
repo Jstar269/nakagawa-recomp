@@ -19,6 +19,30 @@
 #define SR_FLIGHT_COMPILER "other"
 #endif
 
+/* Reproducible build identity. The bundle's build block used to stamp __DATE__
+ * and __TIME__, which made two compiles of identical inputs differ in the
+ * compile clock -- the one project-owned source of variation between two builds
+ * of the same package. The build now forwards a stable identity instead (the
+ * Makefile passes these alongside -DSR_BUILD_DIR): SR_SOURCE_DATE_EPOCH, the
+ * reproducible-builds.org epoch, and SR_BUILD_ID, the source commit. Neither is
+ * a clock reading, so binaries stay byte-for-byte reproducible. A compile that
+ * forwards neither records nulls, and tools/flight_diff.py refuses such a
+ * bundle fail closed rather than accepting a clock stamp.
+ */
+#define SR_FLIGHT_STRINGIFY_RAW(text) #text
+#define SR_FLIGHT_STRINGIFY(text) SR_FLIGHT_STRINGIFY_RAW(text)
+
+#if defined(SR_SOURCE_DATE_EPOCH)
+static const char s_flight_source_date_epoch[] = SR_FLIGHT_STRINGIFY(SR_SOURCE_DATE_EPOCH);
+#else
+static const char s_flight_source_date_epoch[] = "";
+#endif
+#if defined(SR_BUILD_ID)
+static const char s_flight_build_id[] = SR_BUILD_ID;
+#else
+static const char s_flight_build_id[] = "";
+#endif
+
 typedef struct {
     uint32_t mask;
     const char *name;
@@ -321,6 +345,33 @@ int sr_flight_event_at(uint32_t index, SrFlightEvent *out) {
     return 1;
 }
 
+/* A build identity is emitted only in a shape the schema can express: a decimal
+ * Unix timestamp for source_date_epoch and hex digits for build_id. Anything
+ * else (a hand-compile with a malformed -D) is recorded as null with a visible
+ * diagnostic, never as a value that would corrupt the evidence bundle.
+ */
+static int decimal_epoch_text(const char *text) {
+    size_t length;
+    if (!text || !*text) return 0;
+    length = strlen(text);
+    if (length > 20u) return 0;
+    for (const char *p = text; *p; ++p) {
+        if (*p < '0' || *p > '9') return 0;
+    }
+    return 1;
+}
+
+static int hex_identity_text(const char *text) {
+    size_t length;
+    if (!text) return 0;
+    length = strlen(text);
+    if (length < 7u || length > 64u) return 0;
+    for (const char *p = text; *p; ++p) {
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) return 0;
+    }
+    return 1;
+}
+
 static int write_enabled_classes(FILE *file, uint32_t classes) {
     int wrote = 0;
     if (fputc('[', file) == EOF) return 0;
@@ -350,12 +401,36 @@ static int write_bundle(int reason) {
         return 0;
     }
     int ok = 1;
+    const char *epoch_json = "null";
+    const char *build_id_json = "null";
+    char build_id_buffer[80];
+    if (s_flight_source_date_epoch[0]) {
+        if (decimal_epoch_text(s_flight_source_date_epoch)) {
+            epoch_json = s_flight_source_date_epoch;
+        } else {
+            fprintf(stderr, "SR_FLIGHT: SR_SOURCE_DATE_EPOCH is not a decimal Unix timestamp; "
+                            "recording source_date_epoch null\n");
+        }
+    }
+    if (s_flight_build_id[0]) {
+        if (hex_identity_text(s_flight_build_id)) {
+            int length = snprintf(build_id_buffer, sizeof(build_id_buffer), "\"%s\"",
+                                  s_flight_build_id);
+            if (length >= 0 && (size_t)length < sizeof(build_id_buffer)) {
+                build_id_json = build_id_buffer;
+            }
+        } else {
+            fprintf(stderr, "SR_FLIGHT: SR_BUILD_ID is not a hex build identity; "
+                            "recording build_id null\n");
+        }
+    }
     ok = ok && fprintf(file, "{\n  \"schema_version\": %u,\n", SR_FLIGHT_SCHEMA_VERSION) >= 0;
     ok = ok && fprintf(file, "  \"runtime\": {\"name\": \"nakagawa-recomp\", \"cpu_state_abi\": 2},\n") >= 0;
     ok = ok && fprintf(file,
-                       "  \"build\": {\"compiler\": \"%s\", \"compiled_date\": \"%s\", "
-                       "\"compiled_time\": \"%s\", \"pointer_bits\": %u},\n",
-                       SR_FLIGHT_COMPILER, __DATE__, __TIME__, (unsigned)(sizeof(void *) * 8u)) >= 0;
+                       "  \"build\": {\"compiler\": \"%s\", \"source_date_epoch\": %s, "
+                       "\"build_id\": %s, \"pointer_bits\": %u},\n",
+                       SR_FLIGHT_COMPILER, epoch_json, build_id_json,
+                       (unsigned)(sizeof(void *) * 8u)) >= 0;
     ok = ok && fputs("  \"recorder\": {\"enabled_classes\": ", file) != EOF;
     ok = ok && write_enabled_classes(file, s_flight_classes);
     ok = ok && fprintf(file,

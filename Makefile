@@ -611,6 +611,44 @@ PORTABLE_CORE_OBJS := $(patsubst src/rt/%.c,$(PORTABLE_CORE_DIR)/%.o,$(PORTABLE_
 PORTABLE_CORE_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O0 -fno-strict-aliasing -Isrc/rt -Isrc/core -Wall -Wextra -Werror=format
 override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 
+# Reproducible build identity for the flight recorder's build block
+# (src/rt/flight_recorder.c, assets/flight_recorder_schema.json). The old
+# __DATE__/__TIME__ stamp was the one project-owned difference between two
+# builds of the same package from identical inputs; it is gone. The identity is
+# transported the way this Makefile already passes build identity into the
+# compile: a -D define (compare -DSR_BUILD_DIR above).
+#   * SOURCE_DATE_EPOCH, when the build sets it, is honoured as-is (the
+#     reproducible-builds.org convention) and recorded as build.source_date_epoch.
+#   * The source commit is recorded as build.build_id, resolved exactly like
+#     PSP_ORACLE_SOURCE_COMMIT below (git rev-parse HEAD). A source drop without
+#     git and without SOURCE_DATE_EPOCH records no identity and tools/flight_diff.py
+#     refuses such a bundle fail closed; it never falls back to a clock.
+# The runtime profile hash is deliberately NOT the identity here: it hashes
+# CFLAGS, which carries -DSR_BUILD_DIR and the SDK paths, so it varies with the
+# output root and would reintroduce per-root variation into every binary. The
+# identity defines are kept out of the global CFLAGS (and so out of
+# RUNTIME_PROFILE_HASH): only flight_recorder.o embeds them, so a new commit
+# rebuilds that one object instead of every runtime object (see
+# FLIGHT_IDENTITY_STAMP below).
+ifndef NK_INFO_ONLY
+SR_SOURCE_COMMIT ?= $(shell git rev-parse HEAD)
+SR_SOURCE_COMMIT := $(strip $(SR_SOURCE_COMMIT))
+ifneq ($(strip $(SR_SOURCE_COMMIT)),)
+FLIGHT_IDENTITY_DEFS += -DSR_BUILD_ID=\"$(SR_SOURCE_COMMIT)\"
+endif
+ifneq ($(strip $(SOURCE_DATE_EPOCH)),)
+# Transported through the environment (see the guest-input transport above) so
+# no operator value reaches a command interpreter as syntax. Fail closed on a
+# non-decimal value: flight_recorder.c emits it as a JSON number.
+export SOURCE_DATE_EPOCH
+SR_SOURCE_DATE_EPOCH := $(shell $(PYTHON) -c "import os; v = os.environ.get('SOURCE_DATE_EPOCH', ''); print(v if v.isdigit() else '')")
+ifeq ($(strip $(SR_SOURCE_DATE_EPOCH)),)
+$(error SOURCE_DATE_EPOCH must be a decimal Unix timestamp (reproducible-builds.org), got "$(SOURCE_DATE_EPOCH)")
+endif
+FLIGHT_IDENTITY_DEFS += -DSR_SOURCE_DATE_EPOCH=$(SR_SOURCE_DATE_EPOCH)
+endif
+endif
+
 # Public targets are listed once so `make help` and phony-target behaviour cannot
 # drift apart.  FORCE is intentionally separate: it is an implementation detail,
 # not an entry-point a contributor should discover by accident.
@@ -1303,6 +1341,21 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 	$(CC) $(PORTABLE_CORE_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 portable-core-objects: $(PORTABLE_CORE_OBJS)
+
+# Only the flight recorder embeds the reproducible build identity. A stamp named
+# after the identity makes flight_recorder.o rebuild when the commit or
+# SOURCE_DATE_EPOCH changes, without touching the other runtime objects.
+FLIGHT_IDENTITY_STAMP := $(BUILD_DIR)/.flight-identity-$(or $(SR_SOURCE_COMMIT),none)-$(or $(SR_SOURCE_DATE_EPOCH),none)
+$(FLIGHT_IDENTITY_STAMP):
+	@$(PYTHON) -c "from pathlib import Path; p = Path(r'$@'); p.parent.mkdir(parents=True, exist_ok=True); [s.unlink() for s in p.parent.glob('.flight-identity-*') if s != p]; p.touch()"
+
+# Explicit rules (not target-specific variables, which would also leak into the
+# runtime-profile stamp prerequisite and record a different CFLAGS than it hashes).
+$(BUILD_DIR)/flight_recorder.o: src/rt/flight_recorder.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP) $(FLIGHT_IDENTITY_STAMP)
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(DEPFLAGS) -c $< -o $@
+
+$(PORTABLE_CORE_DIR)/flight_recorder.o: src/rt/flight_recorder.c src/rt/recomp.h $(FLIGHT_IDENTITY_STAMP)
+	$(CC) $(PORTABLE_CORE_CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(DEPFLAGS) -c $< -o $@
 
 atrac3p-objects: $(ATRAC3P_OBJS)
 

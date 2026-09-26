@@ -135,6 +135,11 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
     version = bundle["schema_version"]
     if any(event["schema_version"] != version for event in bundle["events"]):
         _fail("$.events", "event schema versions must match the bundle")
+    build = bundle["build"]
+    if (version >= 3 and build.get("source_date_epoch") is None
+            and build.get("build_id") is None):
+        _fail("$.build", "bundle must record a reproducible build identity "
+                         "(source_date_epoch or build_id); a clock stamp is never recorded")
     recorder = bundle["recorder"]
     events = bundle["events"]
     if recorder["recorded"] != len(events) + recorder["dropped"]:

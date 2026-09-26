@@ -20,20 +20,30 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit", terminal_sequence=None):
+def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit",
+                terminal_sequence=None, version=1):
     if recorded is None:
         recorded = len(events) + dropped
     if terminal_sequence is None:
         terminal_sequence = events[-1]["sequence"] if events else 0
-    return {
-        "schema_version": 1,
-        "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
-        "build": {
+    if version >= 3:
+        build = {
+            "compiler": "gcc",
+            "source_date_epoch": 1758742400,
+            "build_id": "0123456789abcdef0123456789abcdef01234567",
+            "pointer_bits": 64,
+        }
+    else:
+        build = {
             "compiler": "gcc",
             "compiled_date": "Sep 24 2026",
             "compiled_time": "12:34:56",
             "pointer_bits": 64,
-        },
+        }
+    return {
+        "schema_version": version,
+        "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
+        "build": build,
         "recorder": {
             "enabled_classes": ["hle", "unsupported", "sched", "prx", "fault", "fatal"],
             "limit": 4,
@@ -55,9 +65,9 @@ def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit", ter
     }
 
 
-def event(sequence, event_class, kind=1, arg0=0, arg1=0, arg2=0, arg3=0):
+def event(sequence, event_class, kind=1, arg0=0, arg1=0, arg2=0, arg3=0, version=1):
     return {
-        "schema_version": 1,
+        "schema_version": version,
         "sequence": sequence,
         "class": event_class,
         "kind": kind,
@@ -122,6 +132,52 @@ class FlightBundleTests(unittest.TestCase):
     def test_sanitizer_rejects_path_string_even_in_allowed_shape(self):
         bundle = make_bundle([event(1, "hle")])
         bundle["build"]["compiled_date"] = "C:/private/trace.txt"
+        with self.assertRaises(flight_diff.FlightDiffError):
+            flight_diff.validate_bundle(bundle)
+
+    def test_sanitizer_rejects_path_string_in_build_id(self):
+        bundle = make_bundle([event(1, "sched", version=3)], version=3)
+        bundle["build"]["build_id"] = "C:/private/trace.txt"
+        with self.assertRaises(flight_diff.FlightDiffError):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_v2_clock_stamp_bundle_is_still_readable(self):
+        bundle = make_bundle([event(1, "sched", version=2)], version=2)
+        flight_diff.validate_bundle(bundle)
+
+    def test_schema_v3_records_reproducible_build_identity(self):
+        bundle = make_bundle([event(1, "hle", arg0=0x1234, version=3)], version=3)
+        bundle["events"][0]["arguments"] = [0, 0, 0, 0]
+        bundle["events"][0]["return_value"] = None
+        self.assertEqual(bundle["build"]["source_date_epoch"], 1758742400)
+        self.assertEqual(
+            bundle["build"]["build_id"],
+            "0123456789abcdef0123456789abcdef01234567",
+        )
+        flight_diff.validate_bundle(bundle)
+
+    def test_schema_v3_rejects_compiled_clock_fields(self):
+        bundle = make_bundle([event(1, "sched", version=3)], version=3)
+        bundle["build"]["compiled_date"] = "Sep 24 2026"
+        with self.assertRaises(flight_diff.FlightDiffError):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_v1_rejects_reproducible_identity_fields(self):
+        bundle = make_bundle([event(1, "sched")])
+        bundle["build"]["source_date_epoch"] = 1758742400
+        with self.assertRaises(flight_diff.FlightDiffError):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_v3_requires_a_reproducible_identity(self):
+        bundle = make_bundle([event(1, "sched", version=3)], version=3)
+        bundle["build"]["source_date_epoch"] = None
+        bundle["build"]["build_id"] = None
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "reproducible build identity"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_v3_rejects_out_of_range_epoch(self):
+        bundle = make_bundle([event(1, "sched", version=3)], version=3)
+        bundle["build"]["source_date_epoch"] = -1
         with self.assertRaises(flight_diff.FlightDiffError):
             flight_diff.validate_bundle(bundle)
 
