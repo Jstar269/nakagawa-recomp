@@ -277,6 +277,7 @@ static int s_stats = 0;
 static int s_tex_shadow_enabled = 1;
 static size_t s_tex_shadow_bytes;
 static unsigned long s_cnt_submit = 0, s_cnt_tri = 0, s_cnt_spr = 0, s_cnt_line = 0;
+static unsigned long s_cnt_nonfinite = 0;
 static uint64_t s_cnt_batches = 0, s_cnt_verts = 0;
 unsigned long s_cnt_present_gpu = 0;
 
@@ -1135,12 +1136,12 @@ static void stats_emit(int final) {
     if (!final && now - last_ms < 5000) return;
     last_ms = now;
     fprintf(stderr, "GEGPU stats: submits=%lu batches=%llu verts=%llu avg_batches=%.2f "
-            "tris=%lu spr=%lu lines=%lu rtt=%lu snap=%lu "
+            "tris=%lu spr=%lu lines=%lu nonfinite=%lu rtt=%lu snap=%lu "
             "present[gpu=%lu cpu=%lu] upload=%lu readback=%lu texup=%lu dirty=%lu xferblit=%lu pipes=%d texs=%d "
             "shadow[invalidations=%llu checks=%llu hits=%llu misses=%llu bytes=%llu avoided=%llu required=%llu] final=%d\n",
             s_cnt_submit, (unsigned long long)s_cnt_batches, (unsigned long long)s_cnt_verts,
             s_cnt_submit ? (double)s_cnt_batches / (double)s_cnt_submit : 0.0,
-            s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_rtt, s_cnt_snap,
+            s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_nonfinite, s_cnt_rtt, s_cnt_snap,
             s_cnt_present_gpu, s_cnt_present_cpu, s_cnt_upload, s_cnt_readback, s_cnt_texup,
             s_cnt_dirty, s_cnt_xferblit, s_pipe_n, s_tex_n,
             (unsigned long long)s_cnt_tex_invalidations,
@@ -2500,9 +2501,31 @@ static int software_fallback_begin(int force) {
 
 /* ---- primitive hooks ---------------------------------------------------------------------- */
 
+/* Fail closed on a non-finite vertex, with the SAME rule the software rasterizer applies
+ * (ge_vtx_finite in ge_shared.h, applied in ge.c before the capture seam). A NaN screen
+ * position or clip-w becomes a NaN gl_Position here, and a NaN gl_Position has an
+ * UNDEFINED fixed-function clipper verdict on Vulkan: the primitive is not reliably
+ * clipped away, so the rasterizer can cover an unbounded area - the spikes/garbage a
+ * non-finite skinned vertex produces. ge.c normally drops such a vertex before the seam
+ * (its CVtx::nf verdict is stronger: it also sees the clip position and the lit colour);
+ * this is the same verdict enforced on the Vulkan side, so the two GE paths cannot
+ * disagree and a future caller that reaches the seam unchecked still fails closed.
+ * The drop is counted like ge.c's GESTAT nonfinite= and the primitive is reported as
+ * TAKEN (return 1), so the software rasterizer does not then draw what we just rejected. */
+/* Two different 1s: hook_finite() returns 1 when every vertex is finite (accept); a
+ * hook returns 1 when it TOOK the primitive, which includes rejecting a non-finite one
+ * so the software rasterizer does not draw it either. */
+static int hook_finite(const GeVtx *const *v, int n) {
+    for (int i = 0; i < n; i++)
+        if (!ge_vtx_finite(v[i])) { s_cnt_nonfinite++; return 0; }
+    return 1;
+}
+
 static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
+    { const GeVtx *vv[3] = { A, B, C };
+      if (!hook_finite(vv, 3)) return cpu_profile_hook_leave(1); }
     if (software_fallback_begin(0)) return cpu_profile_hook_leave(0);
     static int nocull = -1;
     if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
@@ -2530,6 +2553,8 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
 static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
+    { const GeVtx *vv[2] = { p0, p1 };
+      if (!hook_finite(vv, 2)) return cpu_profile_hook_leave(1); }
     if (software_fallback_begin(0)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);
@@ -2578,6 +2603,8 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
 static int hook_line(const GeVtx *A, const GeVtx *B, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
+    { const GeVtx *vv[2] = { A, B };
+      if (!hook_finite(vv, 2)) return cpu_profile_hook_leave(1); }
     if (software_fallback_begin(1)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);              /* sprite semantics: no culling */
@@ -2612,6 +2639,8 @@ static int hook_line(const GeVtx *A, const GeVtx *B, int persp) {
 static int hook_point(const GeVtx *A, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
+    { const GeVtx *vv[1] = { A };
+      if (!hook_finite(vv, 1)) return cpu_profile_hook_leave(1); }
     if (software_fallback_begin(1)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);

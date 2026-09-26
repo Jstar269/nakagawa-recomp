@@ -10072,6 +10072,81 @@ static uint32_t audio_frames_to_us(uint32_t ch, uint32_t frames) {
     return us ? us : 1u;
 }
 
+/* SR_AUDIOSTAT: the audio drift the guest actually felt, read where it is felt.
+ *
+ * sr_audio_queued() is the value the blocking output below paces against -- the audio the
+ * host mixer still owes the guest -- so it is also the honest place to measure drift. Counting
+ * pushed frames cannot: a guest that submits exactly what it consumes and one that submits
+ * twice as much both push frames, and only the queue depth tells them apart. A queue that only
+ * grows is drift a consumer hears as lag building over minutes while nothing is dropped; once
+ * it reaches the mixer's capacity the push clamps and real guest audio is lost. Neither is
+ * visible in the end-of-run totals, so the reading is windowed (LEAD_WINDOW_VBLANK vblanks,
+ * about five seconds) and printed as AUDIOSTAT_LEAD, which gives a long run a series instead
+ * of a single end figure.
+ *
+ * The line is backend-neutral on purpose: the two host mixers are separate translation units
+ * with separate telemetry, and neither is in every build, but this code is. `queued` is the
+ * deepest lead any channel carried in the window and `lead_ms` is that lead in milliseconds
+ * of audio; both are -1 when every output in the window had no host queue at all, which is
+ * absence of a measurement and must never read as a drift of zero. */
+#define LEAD_WINDOW_VBLANK 300u
+#define LEAD_FRAMES_PER_MS  (44100u / 1000u)
+static uint32_t s_lead_last_vbl;
+static unsigned long s_lead_outputs, s_lead_noqueue;
+static int s_lead_peak;
+static uint32_t s_lead_peak_ch;
+static long s_lead_last_ms;
+
+static void audio_lead_note(uint32_t vbl, int ch, int queued) {
+    s_lead_outputs++;
+    if (queued < 0) {
+        s_lead_noqueue++;
+    } else if (queued > s_lead_peak) {
+        s_lead_peak = queued;
+        s_lead_peak_ch = (uint32_t)(ch < 0 ? 0 : ch);
+    }
+    if (vbl < s_lead_last_vbl) return;                  /* no window across a vcount reset */
+    if (vbl - s_lead_last_vbl < LEAD_WINDOW_VBLANK) return;
+    s_lead_last_vbl = vbl;
+    int measured = s_lead_noqueue < s_lead_outputs;     /* some output saw a real queue */
+    s_lead_last_ms = measured ? (long)s_lead_peak / (long)LEAD_FRAMES_PER_MS : -1L;
+    fprintf(stderr, "AUDIOSTAT_LEAD: vbl=%u ch=%u outputs=%lu queued=%d lead_ms=%ld\n",
+            vbl, s_lead_peak_ch, s_lead_outputs, measured ? s_lead_peak : -1, s_lead_last_ms);
+    s_lead_outputs = s_lead_noqueue = 0;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0;
+}
+
+static void audio_note_lead(int ch, int queued) {
+    extern uint32_t sr_audio_vbl(void);   /* defined later in this file */
+    if (!audio_stat_on()) return;
+    audio_lead_note(sr_audio_vbl(), ch, queued);
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only view of the drift window, so the selftest can assert what the
+ * AUDIOSTAT_LEAD line would say without capturing stderr: feed a reading, read the
+ * window's own accumulator back, and read the milliseconds the line printed. */
+void sr_hle_test_audio_lead_reset(void) {
+    s_lead_last_vbl = 0;
+    s_lead_outputs = s_lead_noqueue = 0;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0;
+    s_lead_last_ms = -1L;
+}
+void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued) {
+    audio_lead_note(vbl, ch, queued);
+}
+unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                            unsigned long *noqueue, long *last_ms) {
+    *peak = s_lead_peak;
+    *peak_ch = s_lead_peak_ch;
+    *noqueue = s_lead_noqueue;
+    *last_ms = s_lead_last_ms;
+    return s_lead_outputs;
+}
+#endif
+
 /* SR_AUDIOSTAT: buffer identity per channel. Proving the buffer sceAudioOutput2
  * receives is the same one __sceSasCore wrote is what links the two stages; the
  * addresses are guest-side and the game double-buffers, so record a small set. */
@@ -10168,6 +10243,7 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
      * contracts (<= 65536 frames), so 2u * n cannot wrap. */
     while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
         sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - 2u * n));
+    audio_note_lead((int)ch, q);
     return n;
 }
 static uint32_t h_AudioOutputBlocking(CpuState *s) {
@@ -10334,7 +10410,7 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 #define ROUTE_FAIL_EXIT  86
 
 enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
-       ROUTE_OP_WHILE, ROUTE_OP_END };
+       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
 /* One named screen. Parts of a screen legitimately vary between otherwise identical
@@ -10384,6 +10460,50 @@ static int      s_route_have_attempt;
 static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
 static int      s_route_nlegacy;
 static int      s_route_loaded;
+
+/* WAIT_NID: gate a step on a guest-visible EVENT rather than on what a screen looks like.
+ *
+ * A screen signature has to be recorded from a run that is already on that screen, and until
+ * a route can reach a screen it cannot record one: the step before any checkpoint is the one
+ * that needs a screen nobody has a signature for. What the guest does, on the other hand, is
+ * observable from the first boot -- a module load, a savedata status poll, a display mode
+ * change -- and it is the same for every title, so a route file can name it and the runtime
+ * stays title-neutral.
+ *
+ * sr_syscall() is the single point every guest import passes through, so the observation is
+ * one store there and one compare here. The ring holds the most recent dispatches; a step
+ * matches only an entry newer than the moment the step began, so an event that already
+ * happened cannot satisfy a later step. Set when the running step is a WAIT_NID, so a build
+ * with no route pays one predictable branch per import. */
+#define ROUTE_NID_RING 64
+static uint32_t s_route_nid_ring[ROUTE_NID_RING];
+static unsigned long s_route_nid_pos;      /* total dispatches observed, ever */
+static int      s_route_watch_nid;         /* a running WAIT_NID step wants the ring */
+static unsigned long s_route_nid_start;    /* dispatch count when that step began */
+
+/* The one place the ring is written, so the dispatcher's gate and the selftest's feed are
+ * the same code. */
+static void route_note_nid(uint32_t nid) {
+    s_route_nid_ring[s_route_nid_pos % ROUTE_NID_RING] = nid;
+    s_route_nid_pos++;
+}
+
+/* Has the guest called `nid` since the running step began? */
+static int route_nid_since(uint32_t nid) {
+    unsigned long seen = s_route_nid_pos - s_route_nid_start;
+    if (seen > ROUTE_NID_RING) seen = ROUTE_NID_RING;
+    for (unsigned long i = 0; i < seen; i++) {
+        unsigned long idx = s_route_nid_pos - 1 - i;
+        if (s_route_nid_ring[idx % ROUTE_NID_RING] == nid) return 1;
+    }
+    return 0;
+}
+
+static void route_nid_watch(int on) {
+    s_route_watch_nid = on;
+    s_route_nid_start = s_route_nid_pos;
+}
+
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
@@ -10450,19 +10570,28 @@ static int route_casecmp(const char *a, const char *b) {
  * or without the 0x prefix the legacy table accepts) or one or more button names joined by
  * '+'. A token is read as hex only when every one of its characters is a hex digit, because
  * several names begin with one (CROSS, CIRCLE) and a prefix test would swallow them whole.
- * Returns 0 on success, -1 for anything else, so an unknown button fails the route at load
- * instead of pressing nothing for the rest of the run. */
+ * The hex form is bounded: at most 8 digits and at least one, because `strtoul` reports
+ * neither a value too wide for the mask nor a bare "0x", and both would arrive as a
+ * different mask than the route asked for.
+ * Returns 0 on success, -1 for anything else, so an unreadable token -- an unknown button
+ * included -- fails the route at load instead of pressing nothing for the rest of the run.
+ * "The press never arrived" is indistinguishable from a hang from outside
+ * (docs/DEBUGGING.md, "A press that arrives and is ignored"). */
 static int route_parse_mask(const char *tok, uint32_t *out) {
-    if (tok[0] == 0) return -1;
+    if (!tok || !tok[0]) return -1;
     const char *digits = (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) ? tok + 2 : tok;
     int all_hex = digits[0] != 0;
     for (const char *p = digits; *p; p++)
         if (route_hex_nib((unsigned char)*p) < 0) { all_hex = 0; break; }
     if (all_hex) {
-        char *end = NULL;
-        unsigned long v = strtoul(tok, &end, 16);
-        if (!end || *end != 0) return -1;
-        *out = (uint32_t)v;
+        int n = 0;
+        uint32_t v = 0;
+        for (const char *p = digits; *p; p++, n++) {
+            if (n >= 8) return -1;              /* wider than the mask: refuse, do not truncate */
+            v = (v << 4) | (uint32_t)route_hex_nib((unsigned char)*p);
+        }
+        if (n == 0) return -1;                  /* a bare "0x" names no button */
+        *out = v;
         return 0;
     }
     uint32_t mask = 0;
@@ -10472,7 +10601,7 @@ static int route_parse_mask(const char *tok, uint32_t *out) {
         int n = 0;
         while (p[n] && p[n] != '+' && n < (int)sizeof name - 1) { name[n] = p[n]; n++; }
         name[n] = 0;
-        if (n == 0) return -1;
+        if (n == 0 || (size_t)n >= sizeof name) return -1;
         int found = -1;
         for (int i = 0; i < ROUTE_NBTN; i++)
             if (route_casecmp(name, s_route_btn[i].name) == 0) { found = i; break; }
@@ -10483,6 +10612,16 @@ static int route_parse_mask(const char *tok, uint32_t *out) {
     }
     *out = mask;
     return 0;
+}
+
+/* An import named as the runtime names it, or as raw hex. The hex form exists so a route
+ * never depends on a name being in the table: the NID is the guest-visible fact, the name is
+ * a convenience. */
+static int route_nid_from_token(const char *tok, uint32_t *out) {
+    if (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) return route_parse_mask(tok, out);
+    for (size_t i = 0; i < sr_nid_table_count; i++)
+        if (strcmp(sr_nid_table[i].name, tok) == 0) { *out = sr_nid_table[i].nid; return 0; }
+    return -1;
 }
 
 /* What a mask presses, in words. Printed once per press step at load so any run's own
@@ -10783,6 +10922,25 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             if (st.b < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS width must be >= 1\n", path, lineno); return -1; }
+        } else if (strcmp(tok, "WAIT_NID") == 0) {
+            st.op = ROUTE_OP_NID;
+            char *nid = strtok(NULL, " \t\r\n"), *to = strtok(NULL, " \t\r\n");
+            if (!nid || !to) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID <import|0xNID> <timeout>\n", path, lineno);
+                return -1;
+            }
+            if (route_nid_from_token(nid, &st.b) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID: '%s' is not an import name and not "
+                                "a 0x-prefixed NID (the runtime's own table is "
+                                "src/rt/nid_names.h; a name it does not carry can be written as hex)\n",
+                        path, lineno, nid);
+                return -1;
+            }
+            st.a = (uint32_t)strtoul(to, NULL, 10);
+            if (st.a < 1u) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID timeout must be >= 1 vblank\n", path, lineno);
+                return -1;
+            }
         } else if (strcmp(tok, "DELAY") == 0) {
             st.op = ROUTE_OP_DELAY;
             char *n = strtok(NULL, " \t\r\n");
@@ -10816,6 +10974,7 @@ void sr_route_reset(void) {
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
+    route_nid_watch(0);
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
 }
@@ -10880,6 +11039,15 @@ int sr_route_load(const char *path) {
                     st->op == ROUTE_OP_PRESS ? "PRESS" :
                     st->op == ROUTE_OP_UNTIL ? "PRESS_UNTIL" : "PRESS_WHILE", what);
         }
+        /* And say what each WAIT_NID is waiting for, the same way: a route that stalls on an
+         * event names the event in the log instead of leaving a reader to guess. */
+        for (int i = 0; i < s_route_nsteps; i++) {
+            RouteStep *st = &s_route_prog[i];
+            if (st->op != ROUTE_OP_NID) continue;
+            const char *nm = sr_nid_name(st->b);
+            fprintf(stderr, "ROUTE: step %d (WAIT_NID) waits for %s (0x%08x) for %u vblanks\n",
+                    i, nm ? nm : "an unnamed import", st->b, st->a);
+        }
         return 1;
     }
     if (s_route_nlegacy > 0) {
@@ -10927,7 +11095,13 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             return keys;
         }
         RouteStep *st = &s_route_prog[s_route_pc];
-        if (!s_route_step_started) { s_route_step_start = v; s_route_step_started = 1; }
+        if (!s_route_step_started) {
+            s_route_step_start = v;
+            s_route_step_started = 1;
+            /* The NID watch is armed by the step that wants it, so "called since this step
+             * began" is measured from this vblank and not from the start of the route. */
+            route_nid_watch(st->op == ROUTE_OP_NID);
+        }
         uint32_t el = v - s_route_step_start;
         switch (st->op) {
         case ROUTE_OP_PRESS:
@@ -11025,6 +11199,25 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
                            st->line, st->name, v,
                            bi >= 0 ? s_route_cp[bi].name : "<unknown>", bd, st->name, d,
                            wi >= 0 ? s_route_cp[wi].tol : s_route_tol);
+            }
+            return keys;
+        }
+        case ROUTE_OP_NID: {
+            const char *nm = sr_nid_name(st->b);
+            if (route_nid_since(st->b)) {
+                fprintf(stderr, "ROUTE: guest called %s (0x%08x) at vblank %u (step %d, after "
+                                "%u vblanks)\n",
+                        nm ? nm : "an unnamed import", st->b, v, s_route_pc, el);
+                route_advance();
+                continue;
+            }
+            if (el >= st->a) {
+                route_fail("line %d: WAIT_NID %s (0x%08x) was not called within %u vblanks "
+                           "(from vblank %u to %u); the guest made %lu imports in that time, "
+                           "none of them this one",
+                           st->line, nm ? nm : "?", st->b, el, s_route_step_start, v,
+                           s_route_nid_pos - s_route_nid_start);
+                return keys;
             }
             return keys;
         }
@@ -11694,7 +11887,11 @@ static void route_tick(uint32_t v) {
     int pending = 0;
     if (s_route_state == ROUTE_RUNNING && s_route_pc < s_route_nsteps) {
         int op = s_route_prog[s_route_pc].op;
-        pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END);
+        /* WAIT_NID is the one gated step that watches the guest rather than the screen, so it
+         * needs no signature: sampling the framebuffer for it would cost the observer's ~20%
+         * of vblank rate (measured) to learn nothing. */
+        pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END ||
+                    op == ROUTE_OP_NID);
     }
     /* Elapsed-delivered-VCOUNT cadence (#109 reconstruction): delivered VCOUNT is
      * elapsed-period accounting and may jump over every exact residue of
@@ -11723,6 +11920,14 @@ static void route_tick(uint32_t v) {
  * regression drive production sampling/cadence/state-machine behavior without
  * a scheduler, a title, or a GPU. Production builds compile none of this. */
 void sr_route_test_tick(uint32_t v) { route_tick(v); }
+/* Feed the import ring exactly as sr_syscall() does, gate included, and resolve a route's
+ * name-or-hex token through the production resolver. A step that waits on a guest event is
+ * only trustworthy if the observation it reads is the one the dispatcher writes. */
+void sr_route_test_import(uint32_t nid) { if (s_route_watch_nid) route_note_nid(nid); }
+uint32_t sr_route_test_nid(const char *tok) {
+    uint32_t nid = 0;
+    return route_nid_from_token(tok, &nid) == 0 ? nid : 0u;
+}
 /* Read-only view of the cadence bookkeeping: whether an attempt was recorded
  * and which delivered VCOUNT it holds. Pins the record-BEFORE-readback order
  * (a failed readback must still consume its cadence slot). */
@@ -16386,6 +16591,9 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     const int rt_phase_saved = sr_rt_phase;
     sr_rt_phase = SR_RT_PHASE_SYSCALL;
     sr_rt_nid = nid;
+    /* One store per import, and only while a route is waiting on one: this is what lets a
+     * route gate on a guest-visible event instead of on a screen signature. */
+    if (s_route_watch_nid) route_note_nid(nid);
     uint64_t flight_sequence = sr_flight_hle_import(
         nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
     if (flight_sequence != 0u && s) {

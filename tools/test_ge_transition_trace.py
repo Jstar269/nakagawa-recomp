@@ -324,6 +324,7 @@ class TestTransitionTraceC(unittest.TestCase):
         self.assertEqual(first["world_dropped"], 0)
         self.assertEqual(first["view_dropped"], 0)
         self.assertEqual(first["proj_dropped"], 0)
+        self.assertEqual(first["non_finite"], 0, "a clean draw reports no non-finite matrix value")
 
         # --- frame 41, second draw: ordinal advances, vertex base advances ---
         self.assertEqual(second["frame"], 41)
@@ -378,6 +379,12 @@ class TestTransitionTraceC(unittest.TestCase):
             self.assertEqual(nf[side][3], None, f"{side}[3] must be JSON null for NaN")
             self.assertIsNone(nf[side][5], f"{side}[5] must be JSON null for -Inf")
             self.assertEqual(nf[side][0], 0.0)
+        # The record also counts them, so the draw that cannot be drawn is named
+        # by one number instead of by counting nulls by hand. This is the field
+        # that joins an SR_NAN_TRAP line (same vblank) to the GE's drop.
+        self.assertEqual(nf["non_finite"], 3)
+        for record in records[:3]:
+            self.assertEqual(record["non_finite"], 0, record["frame"])
             self.assertEqual(nf[side][1], 1.0)
             self.assertEqual(nf[side][4], -1.0)
             self.assertEqual(len(nf[side]), 96)
