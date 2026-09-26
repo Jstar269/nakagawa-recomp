@@ -39,6 +39,7 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
+from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key_file_path  # noqa: E402
 from nk_core.iso_inspect import (  # noqa: E402
     MAX_EXECUTABLE_BYTES,
     IsoInspectionError,
@@ -410,7 +411,14 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
 
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            module_dir_arg: Path | None,
-                           default_module_dir: Path | None = None) -> Path | None:
+                           default_module_dir: Path | None = None,
+                           user_data_root: Path | None = None) -> Path | None:
+    key_hint = (
+        f" A local key file at {key_file_path(user_data_root)} enables the built-in "
+        "decryption boundary (#295)."
+        if user_data_root is not None
+        else ""
+    )
     modules = [module for module in manifest.get("modules", [])
                if module.get("role") == "guest-prx" and module.get("required", False)]
     if not modules:
@@ -448,13 +456,23 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                     is_elf = module_stream.read(4) == b"\x7fELF"
             except OSError as exc:
                 raise PackageBuildError(f"Could not read required guest PRX {name}: {exc}") from exc
+            copied_by_boundary = False
+            if not is_elf and user_data_root is not None:
+                outcome = decrypt_bytes_to(
+                    source_path.read_bytes(), destination, user_data_root=user_data_root
+                )
+                if outcome.status == "ok":
+                    copied_by_boundary = True
+                    is_elf = True
             if not is_elf:
                 suggested = module_dir_arg or default_module_dir
                 raise PackageBuildError(
                     f"Required guest PRX {_module_label(name, disc_name)} is not a decrypted ELF; "
-                    f"supply decrypted modules at {suggested} (#295). Decrypted module intake is in the works."
+                    f"supply decrypted modules at {suggested} (#295). Decrypted module intake is "
+                    f"in the works.{key_hint}"
                 )
-            _write_private_file(destination, source_path.read_bytes())
+            if not copied_by_boundary:
+                _write_private_file(destination, source_path.read_bytes())
             continue
         extracted = False
         members = []
@@ -493,13 +511,20 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                             offset += count
                     with temporary.open("rb") as module_stream:
                         is_elf = module_stream.read(4) == b"\x7fELF"
+                    if not is_elf and user_data_root is not None:
+                        outcome = decrypt_file_inplace(
+                            temporary, user_data_root=user_data_root
+                        )
+                        if outcome.status == "ok":
+                            with temporary.open("rb") as check_stream:
+                                is_elf = check_stream.read(4) == b"\x7fELF"
                     if not is_elf:
                         temporary.unlink(missing_ok=True)
                         suggested = module_dir_arg or default_module_dir
                         raise PackageBuildError(
                             f"Required guest PRX {_module_label(name, disc_name)} is encrypted or not a "
                             f"plain ELF; supply decrypted modules at {suggested} (#295). "
-                            "Decrypted module intake is in the works."
+                            f"Decrypted module intake is in the works.{key_hint}"
                         )
                     os.replace(temporary, destination)
                     extracted = True
@@ -876,7 +901,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
             raise PackageBuildError(
                 f"Encrypted executable: supply decrypted modules at {folder} (#295). "
-                "Automatic decryption is in the works."
+                f"Automatic decryption is in the works; to enable the built-in boundary, "
+                f"supply a local key file at {key_file_path(user_root)}."
             )
         selected = str(selected_value).upper()
         selected_from_library = entry.get("selected_executable", "")
@@ -955,6 +981,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             cache_dir,
             args.module_dir.expanduser().resolve() if args.module_dir else None,
             decrypted_module_dir(user_root, disc_id),
+            user_data_root=user_root,
         )
         reporter.report("extract", "PASS", "Executable and modules prepared")
 
@@ -1922,6 +1949,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             module_dir = _copy_optional_modules(
                 iso_path, manifest,
                 user_root / "cache" / "bringup" / metadata.disc_id.upper(), None,
+                user_data_root=user_root,
             )
         library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
         _write_bringup_library(

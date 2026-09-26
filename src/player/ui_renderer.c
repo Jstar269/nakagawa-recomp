@@ -1318,7 +1318,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "Executable decryption is in the works (#295). Build the runtime package from the library (#296/#297).");
+                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf (#295). Build the runtime package from the library (#296/#297).");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "%s selected. Build the runtime package from the library (#296/#297).",
@@ -3171,7 +3171,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • Lawfully obtained PSP game ISO\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "This build does not decrypt encrypted executables (#295). It builds runtime "
+                              "This build decrypts encrypted executables with a local key file (#295). It builds runtime "
                               "packages from the library (#296/#297). Verify also lists font (#300) and audio "
                               "(#301) status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
