@@ -25,6 +25,13 @@ import sys
 import tempfile
 from typing import Any
 
+# The Windows embeddable Python runtime uses a fixed ``._pth`` search path and
+# may omit the directory containing this script. Keep sibling tool imports
+# available when the package builder launches this script from that runtime.
+_TOOLS_DIRECTORY = str(Path(__file__).resolve().parent)
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
+
 import title_manifest
 
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``

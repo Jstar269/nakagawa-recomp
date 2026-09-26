@@ -214,9 +214,8 @@ are retained as historical evidence in
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files; this repository ships no decryption tools or keys. For what the player needs
-and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). Whether
-any lawful decryption capability can be offered is an open maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). When you already have plain modules from your own
+ELF/PRX files; this repository ships no keys or key material. The [built-in decryption boundary](#built-in-decryption-boundary-issue-295) below can unwrap a lawfully obtained disc's executable and required modules when you supply your own local key file. For what the player needs
+and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). When you already have plain modules from your own
 lawfully obtained copy, place them at the paths the local manifest expects, for example:
 
 ```text
@@ -242,7 +241,26 @@ When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight c
 
 On Windows, the default per-user data directory is `%LOCALAPPDATA%\Nakagawa\data` (resolving to `<user data>/titles/<DISC_ID>/decrypted/`). When a valid plain MIPS ELF32 `EBOOT.elf` is placed in this folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). If an experimental profile was created while the disc executable was still encrypted (binding no executable), supplying `EBOOT.elf` in this folder is automatically used by `nk_cli build-package` without requiring re-import.
 
-Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be named either after their file name on the disc (for example `psmf.prx`) or after their manifest module name (for example `scePsmf_library.prx`). When a module is encrypted, invalid, or missing, error messages display both names (for example `psmf.prx (scePsmf_library.prx)`). The project ships no decryption tools or keys ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) in the works).
+Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be named either after their file name on the disc (for example `psmf.prx`) or after their manifest module name (for example `scePsmf_library.prx`). When a module is encrypted, invalid, or missing, error messages display both names (for example `psmf.prx (scePsmf_library.prx)`). The project ships no keys; the built-in boundary below fills this folder from your own key file when one is present ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+
+### Built-in decryption boundary (issue #295)
+
+The standalone player and `nk_cli` contain a built-in decryption boundary for a lawfully supplied disc image. It understands the container forms the pipeline meets — `~PSP` executables and PRXs (including `~SCE` outer wrappers and PBP `DATA.PSP` entries) plus the gzip-compressed payloads they can carry — and unwraps them into plain MIPS ELF32 images for the analyzer: the disc's `EBOOT.BIN` and every encrypted `.prx` module the disc carries, one module at a time. The algorithms and container formats live in this repository; the keys do not.
+
+**The boundary never contains key material.** You supply a local-only key file at:
+
+```text
+<user data>/keys/psp-keyfile.json
+```
+
+or at the path named by the `NAKAGAWA_PSP_KEY_FILE` environment variable. The file is JSON carrying `"format": "nakagawa-psp-keystore-1"` and an `entries` object; each entry is named by the thing it unlocks (for example a `prx.tag.0x........` recipe object, `kirk.cmd1.key`, or `kirk.keyvault.<slot>`) with hexadecimal values only. The KeyStore validates the shape, names, and value lengths before anything is decrypted.
+
+How the boundary behaves:
+
+- With a valid key file, `nk_cli inspect`, `build-package`, `bringup`, and the player's compatibility preflight decrypt the disc executable and the disc's encrypted PRX modules automatically and continue to the analyzer. The executable lands in `titles/<DISC_ID>/decrypted/EBOOT.elf`; every decrypted module lands in the same folder under its file name on the disc (for example `psmf.prx`), staged to a temporary name and renamed into place so an interrupted run never leaves a half-written module. Decrypted bytes are written only under the private per-user data directory (`titles/<DISC_ID>/decrypted/` and `cache/decrypted/`) — never next to the ISO, and never into this repository.
+- A valid user-supplied plain copy always wins: if `EBOOT.elf` or a module is already present in the per-title folder under its disc file name or manifest module name, the boundary never overwrites it and that module is skipped.
+- Without a key file, or when an entry is missing, the boundary fails closed and names the exact entry the container needs (for example `MISSING_KEY_ENTRY prx.tag.0x........` and "this executable needs key entry ..."). Each module fails closed on its own: the other modules still decrypt, and the compatibility preflight reports "Guest modules: N of M ready" with the missing entry. The existing guidance to supply decrypted modules at `<user data>/titles/<DISC_ID>/decrypted/` remains, so that route keeps working; a user-supplied `EBOOT.elf` takes precedence over automatic decryption.
+- The key file is never uploaded, never packaged, and never committed. The publication audit rejects key-file paths and KeyStore content outright, and neither the tests nor any release contain key material — the tests generate clearly fake per-run keys only.
 
 ### User title manifests (`<user data>/manifests`)
 
@@ -481,20 +499,25 @@ it needs all of the following:
   `<player exe>/../tools`, `<player exe>/../source/tools` (the v0.0.1 release
   layout), the working directory, and its parent. Running the player from the
   repository root or from `build/` finds it automatically.
-- `python`, `gcc`, and `mingw32-make` on `PATH` — the UCRT64 toolchain installed in
-  section 1. The spawned build inherits the player's `PATH`, so a tool your shell
-  cannot see is a tool the build cannot see either.
-- SDL3 headers/import library and Vulkan headers/loader import library from the
-  UCRT64 package set. The Makefile can use the MSYS2 `libvulkan-1.dll.a` import
-  archive; a separate Vulkan SDK is not needed for this consumer build.
-- `powershell.exe`, which ships with Windows 11. The asset-copy step uses the
-  built-in Windows PowerShell 5.1; PowerShell 7 remains the development baseline
-  for the other repository scripts.
+- `python`, `gcc`, and `mingw32-make` from either the current environment or the
+  player's per-user downloaded build tools. The player changes `PATH` only for
+  the build child; it never edits system `PATH` or the registry.
+- `powershell.exe` (Windows PowerShell 5.1, built into Windows 10 and 11). The
+  asset-copy step and the unpacking of the downloaded Python archive
+  (`Expand-Archive`) use it; PowerShell 7 remains the development baseline for
+  the other repository scripts.
 
-Missing pieces are named on the error card instead of failing deep inside the build:
-`CLI_NOT_FOUND` lists every searched location and the `NK_INSTALL_ROOT` fix,
-`BUILD_TOOLCHAIN_MISSING` names the missing tool (`python`, `gcc`, or
-`mingw32-make`), and `PYTHON_NOT_FOUND` names the interpreter.
+When a pinned Windows prerequisite is missing, BUILD PACKAGE opens one consent
+card showing each component's name, version, source host, download size, and
+licence, plus the total. Nothing is downloaded until **DOWNLOAD** is selected;
+the answer applies only to that build. If CPython is missing, the native player
+first downloads the pinned embeddable archive and checks its HTTPS host, exact
+size, and SHA-256 before extracting it. The verified runtime then runs the
+Python fetcher for the remaining packages. A progress card shows the current
+component and received/total bytes. **CANCEL** removes partial downloads and
+staged extraction data. A successful install resumes BUILD PACKAGE
+automatically. Named error cards explain offline, redirect, size, hash, and disk
+errors and offer a retry.
 
 The pinned candidate download set is recorded in
 [`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
@@ -505,11 +528,18 @@ python.org's release page. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.
 
-The player does not yet bootstrap the Python runtime or show the prerequisite
-consent/progress flow. If a build prerequisite is missing, the card names that
-boundary and points to automatic build-prerequisite installation, in the works
-([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)); it does not
-download anything automatically today.
+Downloaded tools, verified archives, and extracted licence texts live under the
+current user's Nakagawa data folder in `prerequisites/`. **Settings → About &
+Licenses** lists installed components, versions, and licence identifiers and
+opens the notice folder. **Settings → Remove Downloaded Build Tools** removes
+that prerequisites folder after confirmation; it does not remove the game
+library, ISO files, saves, or built packages. The consent card marks unresolved
+`NOASSERTION` licence entries as under review in [#304](https://github.com/Jstar269/nakagawa-recomp/issues/304).
+
+This automatic prerequisite flow currently targets Windows x64 with the
+UCRT64 package set. Linux prerequisite installation is in the works
+([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)); the wider
+distribution and update contract remains tracked by [#324](https://github.com/Jstar269/nakagawa-recomp/issues/324).
 
 The player's UI typography loads `SDL3_ttf.dll` from beside the executable first,
 then from `PATH`; without it the built-in readable debug font is used. Placing
@@ -570,7 +600,7 @@ its redistributable host dependencies, and user-supplied game input.
 - **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest C:\path\to\manifest.json -GameName game` (or `python tools/nk_doctor.py --title-manifest C:\path\to\manifest.json --game-name game`) to validate the toolchain, build dependencies, and the selected title's local inputs. Without a title selection, Doctor uses the public synthetic manifest.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
-- **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and encrypted `~PSP` executables are refused in every build because the project ships no decryption ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+- **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime still refuses encrypted `~PSP` executables because decryption happens earlier, in the player/CLI boundary that requires your own key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
 - **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts import <folder>` pointing to your dumped PSP firmware fonts. Verify that `<user data>/fonts/v1/manifest.json` and `jpn0.pgf` exist. See [System fonts](#system-fonts).

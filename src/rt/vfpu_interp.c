@@ -171,7 +171,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         }
         uint8_t idx[1];vreg_idx(vt,1,idx);
         if(op==0x32){s->vi[idx[0]]=MEM_R32(addr);return SR_VFPU_COMPUTE;}
-        MEM_W32(addr,s->vi[idx[0]]);return SR_VFPU_STATE;
+        MEM_W32_PC(addr,s->vi[idx[0]],s->pc);return SR_VFPU_STATE;
     }
     if (op == 0x35 || op == 0x36 || op == 0x3d || op == 0x3e) {
         int vt=((w>>16)&0x1F)|((w&1)<<5),base=(w>>21)&0x1F;
@@ -224,15 +224,15 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             return SR_VFPU_OTHER;
         }
         if(op==0x36){for(int i=0;i<4;i++)s->vi[idx[i]]=MEM_R32(addr+(uint32_t)i*4);return SR_VFPU_COMPUTE;}
-        if(op==0x3e){for(int i=0;i<4;i++)MEM_W32(addr+(uint32_t)i*4,s->vi[idx[i]]);return SR_VFPU_STATE;}
+        if(op==0x3e){for(int i=0;i<4;i++)MEM_W32_PC(addr+(uint32_t)i*4,s->vi[idx[i]],s->pc);return SR_VFPU_STATE;}
         int offset=(int)((addr>>2)&3);
         if(op==0x35){
             if((w&2)==0){for(int i=0;i<=offset;i++)s->vi[idx[3-i]]=MEM_R32(addr-(uint32_t)i*4);}
             else{for(int i=0;i<=3-offset;i++)s->vi[idx[i]]=MEM_R32(addr+(uint32_t)i*4);}
             return SR_VFPU_COMPUTE;
         }
-        if((w&2)==0){for(int i=0;i<=offset;i++)MEM_W32(addr-(uint32_t)i*4,s->vi[idx[3-i]]);}
-        else{for(int i=0;i<=3-offset;i++)MEM_W32(addr+(uint32_t)i*4,s->vi[idx[i]]);}
+        if((w&2)==0){for(int i=0;i<=offset;i++)MEM_W32_PC(addr-(uint32_t)i*4,s->vi[idx[3-i]],s->pc);}
+        else{for(int i=0;i<=3-offset;i++)MEM_W32_PC(addr+(uint32_t)i*4,s->vi[idx[i]],s->pc);}
         return SR_VFPU_STATE;
     }
 
@@ -604,7 +604,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 for (int b = 0; b < side; b++) _nt_in[_nt_n++] = s->v[mreg_idx(vs, side, b, a)];
             for (int a = 0; a < side; a++)
                 for (int b = 0; b < side; b++) _nt_in[_nt_n++] = s->v[mreg_idx(vt, side, a, b)];
-            VFPU_NAN("vmmul", r, side * side, _nt_in, _nt_n, r, 0); }
+            VFPU_NAN1("vmmul", r, side * side, _nt_in, _nt_n); }
 #endif
         for (int a = 0; a < side; a++)
             for (int b = 0; b < side; b++)
@@ -622,11 +622,14 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             r[i] = sum;
         }
 #ifdef SR_NAN_TRAP
-        {   float _nt_in[32]; int _nt_n = 0;
+        /* Two operand groups, matrix then vector: the vector lanes are consumed
+         * just as much as the matrix lanes, so a report that omitted them would
+         * call this instruction the origin of a NaN the vector already carried. */
+        {   float _nt_mat[16], _nt_vec[4];
             for (int a = 0; a < side; a++)
-                for (int b = 0; b < side; b++) _nt_in[_nt_n++] = s->v[mreg_idx(vs, side, a, b)];
-            for (int k = 0; k < tn; k++) _nt_in[_nt_n++] = s->v[ti[k]];
-            VFPU_NAN("vtfm", r, side, _nt_in, _nt_n, r, 0); }
+                for (int b = 0; b < side; b++) _nt_mat[a * side + b] = s->v[mreg_idx(vs, side, a, b)];
+            for (int k = 0; k < tn; k++) _nt_vec[k] = s->v[ti[k]];
+            VFPU_NAN("vtfm", r, side, _nt_mat, side * side, _nt_vec, tn); }
 #endif
         for (int i = 0; i < side; i++) s->v[di[i]] = r[i];
         eat_prefix(s); return SR_VFPU_COMPUTE;

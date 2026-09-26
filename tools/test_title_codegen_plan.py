@@ -19,6 +19,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 import title_codegen_plan
 import title_manifest
 import test_public_title_isolation
+from test_import_name_safety import build_synthetic_import_prx
+import nk_cli
+from nk_core import package_cache
 
 
 class TitleCodegenPlanTests(unittest.TestCase):
@@ -151,6 +154,60 @@ class TitleCodegenPlanTests(unittest.TestCase):
         ]
         plan = self.plan(manifest, module_dir=None)
         self.assertFalse(any(arg.startswith("--extra-elf=") for arg in plan["commands"]["codegen"]))
+
+    def test_missing_import_boundary_points_to_open_product_issue(self) -> None:
+        base = self.synthetic["executable"]["base"]
+        elf_bytes, _stub = build_synthetic_import_prx(b"sceUntrackedSynthetic", base)
+        with tempfile.TemporaryDirectory(prefix="title_codegen_missing_import_") as temp_dir:
+            elf_path = Path(temp_dir) / "synthetic-prx.elf"
+            elf_path.write_bytes(elf_bytes)
+            _sources, _summary, unsupported_imports, _diagnostics = (
+                title_codegen_plan._make_input_images(
+                    self.synthetic, elf_path, None, None, set()
+                )
+            )
+        self.assertEqual(unsupported_imports, [{
+            "boundary": "PSP import sceUntrackedSynthetic:0x12345678",
+            "module": "executable",
+            "library": "sceUntrackedSynthetic",
+            "nid": "0x12345678",
+            "name": None,
+            "classification": "missing",
+            "status": "in the works",
+            "tracking_issue": 308,
+        }])
+
+    def test_player_and_planner_cache_keys_include_planner_source(self) -> None:
+        captured = []
+
+        def capture_cache_key(**kwargs):
+            captured.append(kwargs)
+            return {}
+
+        with mock.patch.object(
+            package_cache, "build_cache_key", side_effect=capture_cache_key
+        ), mock.patch.object(
+            package_cache, "compiler_identity", return_value="synthetic-compiler"
+        ), mock.patch.object(
+            package_cache, "compiler_target", return_value="synthetic-target"
+        ):
+            title_codegen_plan._cache_key_for_build(
+                input_hashes={}, plan=self.plan(), selected_optional=set(),
+                funcs_per_chunk=64, public_safe=True, compiler_name="gcc",
+            )
+            nk_cli._current_package_cache_key(
+                self.synthetic,
+                self.synthetic_path,
+                "synthetic-executable-hash",
+                None,
+                None,
+                public_safe=True,
+            )
+
+        expected = package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py")
+        self.assertEqual(len(captured), 2)
+        for call in captured:
+            self.assertEqual(call["codegen_options"].get("planner_sha256"), expected)
 
     def test_optional_guest_modules_require_explicit_selection(self) -> None:
         manifest = copy.deepcopy(self.synthetic)

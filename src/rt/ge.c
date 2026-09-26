@@ -794,8 +794,10 @@ static int s_rt_draws_f = 0;         /* draws logged this frame (cap) */
  * bone/world/view/proj matrices as BOTH most-recent guest writes and effective draw-time
  * state (they diverge on cursor-overflow discards and cross-list restores), the decoded
  * VTYPE (weight count uses wc+1 semantics), vertex/index bases, count, prim type, render
- * target, bound texture, and a stable draw_id (FNV-1a over vtype+vbase+prim+count) so the
- * bad draw matches its first recovered equivalent. See tools/ge_transition_diff.py. */
+ * target, bound texture, a stable draw_id (FNV-1a over vtype+vbase+prim+count) so the
+ * bad draw matches its first recovered equivalent, and non_finite, the number of
+ * non-finite values among the four effective matrices (0 for a clean draw). See
+ * tools/ge_transition_diff.py. */
 static int s_tr_enabled = -1;        /* -1=unprobed, 0=off, 1=on */
 static FILE *s_tr_fp = NULL;
 static uint32_t s_tr_ordinal_frame = 0xFFFFFFFFu;
@@ -868,6 +870,22 @@ static void ge_transition_trace_floats(FILE *fp, const float *v, int n) {
     }
 }
 
+/* Non-finite values among the four EFFECTIVE matrices, so one record carries the
+ * count the GE drops this draw from. It joins the two halves of a corruption
+ * report that used to live in different files: the SR_NAN_TRAP line naming the
+ * instruction that produced the bad value (same vblank) and the trace record
+ * naming the draw that could not be drawn. Counting nulls by hand was the only
+ * way to get it before. */
+static int ge_transition_trace_nonfinite(void) {
+    const float *v[4] = { ge.bone, ge.world, ge.view, ge.proj };
+    const int len[4] = { 96, 12, 12, 16 };
+    int n = 0;
+    for (int m = 0; m < 4; m++)
+        for (int i = 0; i < len[m]; i++)
+            if (!isfinite(v[m][i])) n++;
+    return n;
+}
+
 static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsigned long prim_index,
                                      uint32_t list_addr, uint32_t cmd_addr,
                                      uint32_t vbase, uint32_t ibase) {
@@ -923,7 +941,7 @@ static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsign
     ge_transition_trace_floats(fp, s_tr_proj_w, 16);
     fprintf(fp, "],\"proj_effective\":[");
     ge_transition_trace_floats(fp, ge.proj, 16);
-    fprintf(fp, "]}\n");
+    fprintf(fp, "],\"non_finite\":%d}\n", ge_transition_trace_nonfinite());
     fflush(fp);   /* keep each record crash-safe; this path is opt-in only */
 }
 
@@ -953,11 +971,12 @@ static int thru_ztest(void) {
 void ge_set_frame(uint32_t frame) {
     ge_capture_configure();
     ge_transition_trace_configure();
-    /* Arm the opt-in address-windowed instruction trace (SR_TRACE_PC) and mark every
-     * delivered vblank in it, so a windowed trace carries the frame each record belongs
-     * to. A cached env probe once per vblank; both calls are no-ops when it is unset. */
+    /* Arm the opt-in instruction trace and store watch, then carry the delivered vblank
+     * into both diagnostics. Their environment probes are cached and inert when unset. */
     sr_trace_window_configure();
     sr_trace_note_frame(frame);
+    sr_watch_configure();
+    sr_watch_note_vblank(frame);
     if (ge_capture_active() && frame != s_ge_frame) {
         int boundary_ok = !s_gpu || !s_gpu->capture_boundary || s_gpu->capture_boundary();
         if (!boundary_ok) {

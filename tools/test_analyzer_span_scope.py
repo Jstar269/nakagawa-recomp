@@ -112,6 +112,137 @@ def write_elf_with_called_code_outside_text(path: Path) -> int:
     return target
 
 
+def write_elf_with_entry_outside_text(path: Path) -> int:
+    """Place the ELF entry in an executable PT_LOAD prefix before named .text."""
+    base = 0x1000
+    text_addr = base + 0x20
+    words = [
+        0x03E00008,  # entry: jr $ra
+        0x00000000,  # delay slot
+        *([0x00000000] * 6),  # executable, file-backed gap before .text
+        0x03E00008,  # .text function
+        0x00000000,
+        0x00000000,
+        0x00000000,
+    ]
+    payload_off = 52 + 32
+    filesz = len(words) * 4
+    shstr = b"\x00.text\x00.shstrtab\x00"
+    shstr_off = payload_off + filesz
+    shoff = shstr_off + len(shstr)
+    blob = bytearray(shoff + 3 * 40)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, base, 52, shoff, 0, 52, 32, 1, 40, 3, 2,
+    )
+    struct.pack_into(
+        "<8I", blob, 52,
+        1, payload_off, base, base, filesz, filesz, 5, 4,
+    )
+    for index, word in enumerate(words):
+        struct.pack_into("<I", blob, payload_off + index * 4, word)
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into(
+        "<10I", blob, shoff + 40,
+        1, 1, 6, text_addr, payload_off + text_addr - base, 16, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 80,
+        7, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0,
+    )
+    path.write_bytes(blob)
+    return base
+
+
+def write_elf_with_segment_start_trampoline(path: Path) -> int:
+    """Place a framed trampoline at PT_LOAD start while ELF entry is in .text."""
+    base = 0x2000
+    text_addr = base + 0x20
+    words = [
+        0x27BDFFF0,  # addiu $sp, $sp, -16
+        0x03E00008,  # jr $ra
+        0x00000000,  # delay slot
+        *([0x00000000] * 5),  # executable, file-backed gap before .text
+        0x03E00008,  # .text function / ELF entry
+        0x00000000,
+        0x00000000,
+        0x00000000,
+    ]
+    payload_off = 52 + 32
+    filesz = len(words) * 4
+    shstr = b"\x00.text\x00.shstrtab\x00"
+    shstr_off = payload_off + filesz
+    shoff = shstr_off + len(shstr)
+    blob = bytearray(shoff + 3 * 40)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, text_addr, 52, shoff, 0, 52, 32, 1, 40, 3, 2,
+    )
+    struct.pack_into(
+        "<8I", blob, 52,
+        1, payload_off, base, base, filesz, filesz, 5, 4,
+    )
+    for index, word in enumerate(words):
+        struct.pack_into("<I", blob, payload_off + index * 4, word)
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into(
+        "<10I", blob, shoff + 40,
+        1, 1, 6, text_addr, payload_off + text_addr - base, 16, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 80,
+        7, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0,
+    )
+    path.write_bytes(blob)
+    return base
+
+
+def write_elf_with_unusual_section_code_pointer(path: Path) -> int:
+    """Point to out-of-.text code from a linker-specific data section."""
+    base = 0x3000
+    text_addr = base + 0x20
+    target = base + 0x40
+    pointer_addr = base + 0x48
+    words = [0x00000000] * 19
+    words[8] = 0x03E00008  # ELF entry in .text
+    words[16] = 0x03E00008  # address-taken leaf outside .text
+    words[18] = target  # callback pointer in .callback_refs
+    payload_off = 52 + 32
+    filesz = len(words) * 4
+    shstr = b"\x00.text\x00.callback_refs\x00.shstrtab\x00"
+    shstr_off = payload_off + filesz
+    shoff = shstr_off + len(shstr)
+    blob = bytearray(shoff + 4 * 40)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, text_addr, 52, shoff, 0, 52, 32, 1, 40, 4, 3,
+    )
+    struct.pack_into(
+        "<8I", blob, 52,
+        1, payload_off, base, base, filesz, filesz, 5, 4,
+    )
+    for index, word in enumerate(words):
+        struct.pack_into("<I", blob, payload_off + index * 4, word)
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into(
+        "<10I", blob, shoff + 40,
+        1, 1, 6, text_addr, payload_off + text_addr - base, 8, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 80,
+        7, 1, 2, pointer_addr, payload_off + pointer_addr - base, 4, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 120,
+        22, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0,
+    )
+    path.write_bytes(blob)
+    return target
+
+
 def write_elf_with_data_jal_in_text_to_rodata(path: Path) -> int:
     """Place a data word in .text that decodes as a JAL into same-segment .rodata."""
     base = 0x1000
@@ -132,6 +263,7 @@ def write_elf_with_data_jal_in_text_to_rodata(path: Path) -> int:
         "<8I", blob, 52,
         1, payload_off, base, base, filesz, filesz, 5, 4,
     )
+    struct.pack_into("<II", blob, payload_off, 0x03E00008, 0x00000000)
     jal = 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
     struct.pack_into("<I", blob, payload_off + text_addr - base, jal)
     struct.pack_into("<I", blob, payload_off + target - base, 0x03E00008)
@@ -188,6 +320,41 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         called_elf = self.root / "called-outside-text.elf"
         target = write_elf_with_called_code_outside_text(called_elf)
         loaded = analyze.Elf(str(called_elf), base=0)
+
+        starts, ranges = analyze.analyze(loaded)
+
+        self.assertIn(target, starts)
+        self.assertIn((target, target + 8), ranges)
+        self.assertFalse(analyze.in_ranges(target + 8, ranges))
+
+    def test_entry_outside_named_text_owns_only_its_reachable_instructions(self) -> None:
+        entry_elf = self.root / "entry-outside-text.elf"
+        entry = write_elf_with_entry_outside_text(entry_elf)
+        loaded = analyze.Elf(str(entry_elf), base=0)
+
+        starts, ranges = analyze.analyze(loaded)
+
+        self.assertIn(entry, starts)
+        self.assertIn((entry, entry + 8), ranges)
+        self.assertFalse(analyze.in_ranges(entry + 8, ranges))
+        self.assertIn((entry + 0x20, entry + 0x30), ranges)
+
+    def test_segment_start_trampoline_is_owned_without_widening_the_gap(self) -> None:
+        trampoline_elf = self.root / "segment-start-trampoline.elf"
+        trampoline = write_elf_with_segment_start_trampoline(trampoline_elf)
+        loaded = analyze.Elf(str(trampoline_elf), base=0)
+
+        starts, ranges = analyze.analyze(loaded)
+
+        self.assertIn(trampoline, starts)
+        self.assertIn((trampoline, trampoline + 12), ranges)
+        self.assertFalse(analyze.in_ranges(trampoline + 12, ranges))
+        self.assertIn((trampoline + 0x20, trampoline + 0x30), ranges)
+
+    def test_unusual_section_pointer_owns_only_out_of_text_target(self) -> None:
+        pointer_elf = self.root / "unusual-section-code-pointer.elf"
+        target = write_elf_with_unusual_section_code_pointer(pointer_elf)
+        loaded = analyze.Elf(str(pointer_elf), base=0)
 
         starts, ranges = analyze.analyze(loaded)
 
