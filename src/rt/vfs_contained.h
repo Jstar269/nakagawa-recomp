@@ -33,6 +33,12 @@
  *   sr_cd_open_file      open one regular file through the retained POSIX
  *                         directory descriptors (POSIX backend extension;
  *                         Windows savedata keeps its existing HANDLE route)
+ *   sr_cd_mkdir_leaf     create one final directory component without
+ *                         creating missing parents (POSIX guest-I/O extension)
+ *   sr_cd_rename_file    rename one regular file between root-relative paths
+ *                         (POSIX guest-I/O extension)
+ *   sr_cd_delete_file    delete one regular file; reject directories, links,
+ *                         and special files (POSIX guest-I/O extension)
  *   sr_cd_root_close      release the binding
  *
  * TWO SEPARATE GUARANTEES
@@ -116,6 +122,7 @@
 #endif
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -207,10 +214,19 @@ typedef enum sr_cd_status {
     SR_CD_NOT_FOUND,        /* the named object does not exist */
     SR_CD_NOT_CONTAINED,    /* escaped the root, or a link/mount stood in the way */
     SR_CD_IS_DIRECTORY,     /* a directory was named where a file was required */
+    SR_CD_ALREADY_EXISTS,   /* a directory creation target already exists */
     SR_CD_NOT_EMPTY,        /* the tree still held entries this seam may not remove */
     SR_CD_IDENTITY_CHANGED, /* the name stopped resolving to the bound object; nothing removed */
     SR_CD_IO_ERROR          /* the host refused the operation */
 } sr_cd_status;
+
+typedef enum sr_cd_file_mode {
+    SR_CD_FILE_READ = 0,
+    SR_CD_FILE_WRITE_TRUNCATE = 1,
+    SR_CD_FILE_READ_WRITE = 2,
+    SR_CD_FILE_READ_WRITE_TRUNCATE = 3,
+    SR_CD_FILE_READ_WRITE_APPEND = 4
+} sr_cd_file_mode;
 
 /* CALLER CONTRACT: treat EVERY non-OK status as failure.
  *
@@ -280,11 +296,27 @@ static inline const char *sr_cd_status_name(sr_cd_status s) {
         case SR_CD_NOT_FOUND: return "not-found";
         case SR_CD_NOT_CONTAINED: return "not-contained";
         case SR_CD_IS_DIRECTORY: return "is-directory";
+        case SR_CD_ALREADY_EXISTS: return "already-exists";
         case SR_CD_NOT_EMPTY: return "not-empty";
         case SR_CD_IDENTITY_CHANGED: return "identity-changed";
         case SR_CD_IO_ERROR: return "io-error";
     }
     return "unknown";
+}
+
+/* Guest sceIo* handlers expose these failures as PSP kernel error codes.
+ * Keep the conversion beside the shared POSIX status vocabulary so the Linux
+ * HLE route and its source-owned containment tests exercise the same mapping. */
+static inline uint32_t sr_cd_psp_error(sr_cd_status status) {
+    switch (status) {
+        case SR_CD_OK: return 0u;
+        case SR_CD_NOT_FOUND: return 0x80010002u;
+        case SR_CD_ALREADY_EXISTS: return 0x80010011u;
+        case SR_CD_IS_DIRECTORY: return 0x80010015u;
+        case SR_CD_INVALID_PATH:
+        case SR_CD_NOT_CONTAINED: return 0x80010016u;
+        default: return 0x80010005u;
+    }
 }
 
 /* ======================================================================== */
@@ -404,6 +436,31 @@ static inline int sr_cd_rel_is_acceptable(const char *rel) {
         }
     }
     return 1;
+}
+
+/* Convert a PSP Memory Stick guest path into the seam's canonical relative
+ * grammar. Device-less callers are legacy root-relative paths; ms0:/ and
+ * fatms0:/ are the named root forms. Host-absolute, foreign-device, repeated
+ * separators, traversal and overlong inputs fail before an operation starts. */
+static inline sr_cd_status sr_cd_ms0_guest_relpath(const char *guest,
+                                                    char *rel, size_t cap) {
+    if (!guest || !guest[0] || !rel || cap == 0) return SR_CD_INVALID_PATH;
+    const char *tail = NULL;
+    if (sr_ms0_classify(guest, &tail) != SR_MS0_OWNED || !tail)
+        return SR_CD_INVALID_PATH;
+
+    if (!strchr(guest, ':')) {
+        if (guest[0] == '/' || guest[0] == '\\') return SR_CD_INVALID_PATH;
+    } else if (*tail == '/' || *tail == '\\') {
+        tail++;
+        if (*tail == '/' || *tail == '\\') return SR_CD_INVALID_PATH;
+    }
+    size_t len = strlen(tail);
+    if (len == 0 || len >= cap) return SR_CD_INVALID_PATH;
+    for (size_t i = 0; i < len; i++)
+        rel[i] = tail[i] == '\\' ? '/' : tail[i];
+    rel[len] = '\0';
+    return sr_cd_rel_is_acceptable(rel) ? SR_CD_OK : SR_CD_INVALID_PATH;
 }
 
 /* An ENUMERATED directory entry. These names came FROM the host, so the rule is
@@ -639,6 +696,7 @@ static inline int sr_cd__at_open_dir(int parent, const char *comp) {
 static inline sr_cd_status sr_cd__at_open_fail(void) {
     switch (errno) {
         case ENOENT: return SR_CD_NOT_FOUND;
+        case EISDIR: return SR_CD_IS_DIRECTORY;
         case ELOOP: return SR_CD_NOT_CONTAINED;
         case ENOTDIR: return SR_CD_NOT_CONTAINED;
         default: return SR_CD_IO_ERROR;
@@ -748,11 +806,6 @@ static inline sr_cd_status sr_cd_dir_is_contained(const sr_cd_root *root, const 
     return st;
 }
 
-typedef enum sr_cd_file_mode {
-    SR_CD_FILE_READ = 0,
-    SR_CD_FILE_WRITE_TRUNCATE = 1
-} sr_cd_file_mode;
-
 /* Open one regular file relative to a retained root descriptor.  Every
  * component is opened relative to a descriptor and O_NOFOLLOW applies to the
  * final component as well, so the operation has no validation-to-fopen race.
@@ -788,6 +841,15 @@ static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *r
     } else if (mode == SR_CD_FILE_READ) {
         flags |= O_RDONLY;
         stdio_mode = "rb";
+    } else if (mode == SR_CD_FILE_READ_WRITE) {
+        flags |= O_RDWR;
+        stdio_mode = "r+b";
+    } else if (mode == SR_CD_FILE_READ_WRITE_TRUNCATE) {
+        flags |= O_RDWR | O_CREAT;
+        stdio_mode = "w+b";
+    } else if (mode == SR_CD_FILE_READ_WRITE_APPEND) {
+        flags |= O_RDWR | O_CREAT | O_APPEND;
+        stdio_mode = "a+b";
     } else {
         close(dir_fd);
         return SR_CD_INVALID_PATH;
@@ -811,6 +873,10 @@ static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *r
         return SR_CD_NOT_CONTAINED;
     }
     if (mode == SR_CD_FILE_WRITE_TRUNCATE && ftruncate(fd, 0) != 0) {
+        close(fd);
+        return SR_CD_IO_ERROR;
+    }
+    if (mode == SR_CD_FILE_READ_WRITE_TRUNCATE && ftruncate(fd, 0) != 0) {
         close(fd);
         return SR_CD_IO_ERROR;
     }
@@ -876,6 +942,146 @@ static inline sr_cd_status sr_cd_delete_leaf(const sr_cd_root *root, const char 
      * guarantee table at the top of this header. */
     if (unlinkat(dir_fd, leaf, 0) != 0) st = sr_cd__at_unlink_fail(dir_fd, leaf);
     close(dir_fd);
+    return st;
+}
+
+/* Create exactly one root-relative directory. Parent components must already
+ * exist; each is walked through the retained root descriptor and O_NOFOLLOW,
+ * so sceIoMkdir cannot create through a guest-planted link. */
+static inline sr_cd_status sr_cd_mkdir_leaf(const sr_cd_root *root, const char *rel) {
+    char parent_rel[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
+    if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_split(rel, parent_rel, sizeof(parent_rel), leaf, sizeof(leaf)))
+        return SR_CD_INVALID_PATH;
+
+    int parent_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root->fd, parent_rel, &parent_fd);
+    if (st != SR_CD_OK) return st;
+    if (mkdirat(parent_fd, leaf, 0777) == 0) {
+        close(parent_fd);
+        return SR_CD_OK;
+    }
+
+    if (errno == EEXIST) {
+        struct stat info;
+        if (fstatat(parent_fd, leaf, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+            st = sr_cd__at_open_fail();
+        } else if (S_ISLNK(info.st_mode)) {
+            st = SR_CD_NOT_CONTAINED;
+        } else {
+            st = SR_CD_ALREADY_EXISTS;
+        }
+    } else {
+        st = sr_cd__at_open_fail();
+    }
+    close(parent_fd);
+    return st;
+}
+
+/* Rename one regular file between root-relative paths. Both parent walks are
+ * descriptor-relative; fstatat with AT_SYMLINK_NOFOLLOW rejects pre-existing
+ * links, directories, and special files before renameat. renameat itself never
+ * follows either final component, so even a replacement race cannot redirect
+ * the operation outside the two bound parents. POSIX does not offer an
+ * object-bound rename, so this extension claims containment, not child identity. */
+static inline sr_cd_status sr_cd_rename_file(const sr_cd_root *root,
+                                             const char *old_rel,
+                                             const char *new_rel) {
+    char old_parent_rel[SR_CD_REL_MAX], old_leaf[SR_CD_NAME_MAX];
+    char new_parent_rel[SR_CD_REL_MAX], new_leaf[SR_CD_NAME_MAX];
+    if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_split(old_rel, old_parent_rel, sizeof(old_parent_rel),
+                         old_leaf, sizeof(old_leaf)) ||
+        !sr_cd_rel_split(new_rel, new_parent_rel, sizeof(new_parent_rel),
+                         new_leaf, sizeof(new_leaf)))
+        return SR_CD_INVALID_PATH;
+
+    int old_dir_fd = -1, new_dir_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root->fd, old_parent_rel, &old_dir_fd);
+    if (st != SR_CD_OK) return st;
+    st = sr_cd__at_walk(root->fd, new_parent_rel, &new_dir_fd);
+    if (st != SR_CD_OK) {
+        close(old_dir_fd);
+        return st;
+    }
+
+    struct stat info;
+    if (fstatat(old_dir_fd, old_leaf, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        st = sr_cd__at_open_fail();
+        goto done;
+    }
+    if (S_ISLNK(info.st_mode)) {
+        st = SR_CD_NOT_CONTAINED;
+        goto done;
+    }
+    if (S_ISDIR(info.st_mode)) {
+        st = SR_CD_IS_DIRECTORY;
+        goto done;
+    }
+    if (!S_ISREG(info.st_mode)) {
+        st = SR_CD_NOT_CONTAINED;
+        goto done;
+    }
+
+    if (fstatat(new_dir_fd, new_leaf, &info, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (S_ISLNK(info.st_mode)) {
+            st = SR_CD_NOT_CONTAINED;
+            goto done;
+        }
+        if (S_ISDIR(info.st_mode)) {
+            st = SR_CD_IS_DIRECTORY;
+            goto done;
+        }
+        if (!S_ISREG(info.st_mode)) {
+            st = SR_CD_NOT_CONTAINED;
+            goto done;
+        }
+    } else if (errno != ENOENT) {
+        st = sr_cd__at_open_fail();
+        goto done;
+    }
+
+    if (renameat(old_dir_fd, old_leaf, new_dir_fd, new_leaf) == 0) {
+        st = SR_CD_OK;
+    } else {
+        switch (errno) {
+            case ENOENT: st = SR_CD_NOT_FOUND; break;
+            case EISDIR: st = SR_CD_IS_DIRECTORY; break;
+            case ELOOP:
+            case ENOTDIR: st = SR_CD_NOT_CONTAINED; break;
+            default: st = SR_CD_IO_ERROR; break;
+        }
+    }
+
+done:
+    close(new_dir_fd);
+    close(old_dir_fd);
+    return st;
+}
+
+/* sceIoRemove names regular files only. Unlike the savedata delete_leaf
+ * contract, a guest-planted symlink is refused and left in place. The no-follow
+ * type check ensures its target is never opened; unlinkat remains relative to
+ * the verified parent descriptor. */
+static inline sr_cd_status sr_cd_delete_file(const sr_cd_root *root,
+                                              const char *rel) {
+    char parent_rel[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
+    if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_split(rel, parent_rel, sizeof(parent_rel), leaf, sizeof(leaf)))
+        return SR_CD_INVALID_PATH;
+
+    int parent_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root->fd, parent_rel, &parent_fd);
+    if (st != SR_CD_OK) return st;
+    struct stat info;
+    if (fstatat(parent_fd, leaf, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        st = sr_cd__at_open_fail();
+    } else if (S_ISLNK(info.st_mode) || !S_ISREG(info.st_mode)) {
+        st = S_ISDIR(info.st_mode) ? SR_CD_IS_DIRECTORY : SR_CD_NOT_CONTAINED;
+    } else if (unlinkat(parent_fd, leaf, 0) != 0) {
+        st = sr_cd__at_unlink_fail(parent_fd, leaf);
+    }
+    close(parent_fd);
     return st;
 }
 
@@ -1049,6 +1255,30 @@ static inline sr_cd_status sr_cd_root_open(const char *root_utf8, sr_cd_root *ou
 }
 
 static inline void sr_cd_root_close(sr_cd_root *root) { (void)root; }
+
+static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *rel_dir,
+                                            const char *leaf, sr_cd_file_mode mode,
+                                            FILE **out) {
+    (void)root; (void)rel_dir; (void)leaf; (void)mode;
+    if (out) *out = NULL;
+    return SR_CD_UNSUPPORTED_HOST;
+}
+
+static inline sr_cd_status sr_cd_mkdir_leaf(const sr_cd_root *root, const char *rel) {
+    (void)root; (void)rel;
+    return SR_CD_UNSUPPORTED_HOST;
+}
+
+static inline sr_cd_status sr_cd_rename_file(const sr_cd_root *root,
+                                              const char *old_rel, const char *new_rel) {
+    (void)root; (void)old_rel; (void)new_rel;
+    return SR_CD_UNSUPPORTED_HOST;
+}
+
+static inline sr_cd_status sr_cd_delete_file(const sr_cd_root *root, const char *rel) {
+    (void)root; (void)rel;
+    return SR_CD_UNSUPPORTED_HOST;
+}
 
 static inline sr_cd_status sr_cd_delete_leaf(const sr_cd_root *root, const char *rel_dir,
                                              const char *leaf) {

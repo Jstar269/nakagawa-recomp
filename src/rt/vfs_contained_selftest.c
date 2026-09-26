@@ -819,6 +819,167 @@ static void case_host_policy_end_to_end(void) {
     nuke(root);
 }
 
+/* POSIX guest IoFileMgr operations share the descriptor-relative seam with
+ * savedata. The status-to-PSP conversion is the same inline helper used by
+ * hle.c, so hostile names are checked at the guest-visible error boundary. */
+static void case_posix_guest_file_operations(void) {
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char root[1100], outside[1200], outside_file[1400];
+    char made_dir[1300], file_path[1400], renamed_path[1400], link_path[1400];
+    char dir_link[1400], long_name[SR_CD_NAME_MAX + 2], content[32] = {0};
+    char rel[SR_CD_REL_MAX], long_guest[SR_CD_REL_MAX + 2];
+    CHECK(build_save("t_guest_io", "ULUS00001DATA", NULL, 0, root, sizeof(root)),
+          "fixture t_guest_io");
+    fp(outside, sizeof(outside), "%s/t_guest_io_outside", g_tmp);
+    nuke(outside);
+    CHECK(t_mkdir(outside) == 0, "outside fixture directory");
+    fp(outside_file, sizeof(outside_file), "%s/KEEP.BIN", outside);
+    CHECK(write_file(outside_file, "outside must survive"), "outside fixture file");
+
+    sr_cd_root r;
+    CHECK_ST(sr_cd_root_open(root, &r), SR_CD_OK);
+
+    CHECK_ST(sr_cd_ms0_guest_relpath("ms0:/PSP/SAVEDATA/NEW-DIR", rel, sizeof(rel)),
+             SR_CD_OK);
+    CHECK(!strcmp(rel, "PSP/SAVEDATA/NEW-DIR"), "ms0 root form normalizes to a relative path");
+    CHECK_ST(sr_cd_ms0_guest_relpath("fatms0:\\PSP\\SAVEDATA\\NEW-DIR", rel, sizeof(rel)),
+             SR_CD_OK);
+    CHECK(!strcmp(rel, "PSP/SAVEDATA/NEW-DIR"), "fatms0 backslash form normalizes safely");
+    static const char *const escaped_guest_paths[] = {
+        "/tmp/outside/KEEP.BIN", "../outside/KEEP.BIN", "ms0:/../outside/KEEP.BIN",
+        "ms0:/PSP/SAVEDATA/../KEEP.BIN", "ms0://PSP/SAVEDATA/KEEP.BIN",
+        "disc0:/PSP/SAVEDATA/KEEP.BIN"
+    };
+    for (size_t i = 0; i < sizeof(escaped_guest_paths) / sizeof(escaped_guest_paths[0]); i++) {
+        sr_cd_status bad = sr_cd_ms0_guest_relpath(escaped_guest_paths[i], rel, sizeof(rel));
+        CHECK_ST(bad, SR_CD_INVALID_PATH);
+        CHECK(sr_cd_psp_error(bad) == 0x80010016u,
+              "guest escape '%s' maps to PSP EINVAL", escaped_guest_paths[i]);
+    }
+    memset(long_guest, 'g', sizeof(long_guest) - 1u);
+    long_guest[sizeof(long_guest) - 1u] = '\0';
+    sr_cd_status long_guest_status = sr_cd_ms0_guest_relpath(long_guest, rel, sizeof(rel));
+    CHECK_ST(long_guest_status, SR_CD_INVALID_PATH);
+    CHECK(sr_cd_psp_error(long_guest_status) == 0x80010016u,
+          "an overlong guest path maps to PSP EINVAL");
+
+    CHECK_ST(sr_cd_mkdir_leaf(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_OK);
+    CHECK(sr_cd_psp_error(SR_CD_OK) == 0u, "successful operations map to PSP zero");
+    CHECK_ST(sr_cd_mkdir_leaf(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_ALREADY_EXISTS);
+    CHECK(sr_cd_psp_error(SR_CD_ALREADY_EXISTS) == 0x80010011u,
+          "an existing directory maps to PSP EEXIST");
+    fp(made_dir, sizeof(made_dir), "%s/PSP/SAVEDATA/NEW-DIR", root);
+    CHECK(is_dir(made_dir), "mkdir creates the in-root directory");
+
+    FILE *stream = NULL;
+    CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "DATA.BIN",
+                             SR_CD_FILE_READ_WRITE_TRUNCATE, &stream), SR_CD_OK);
+    CHECK(stream != NULL, "contained create returns a file stream");
+    if (stream) {
+        CHECK(fwrite("payload", 1, 7, stream) == 7, "contained create writes bytes");
+        CHECK(fclose(stream) == 0, "contained create closes cleanly");
+    }
+    stream = NULL;
+    CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "DATA.BIN",
+                             SR_CD_FILE_READ, &stream), SR_CD_OK);
+    CHECK(stream != NULL, "contained file reopens for read");
+    if (stream) {
+        CHECK(fread(content, 1, 7, stream) == 7 && !memcmp(content, "payload", 7),
+              "contained file reads the written bytes");
+        fclose(stream);
+    }
+
+    CHECK_ST(sr_cd_rename_file(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
+                               "PSP/SAVEDATA/NEW-DIR/RENAMED.BIN"), SR_CD_OK);
+    fp(file_path, sizeof(file_path), "%s/PSP/SAVEDATA/NEW-DIR/DATA.BIN", root);
+    fp(renamed_path, sizeof(renamed_path), "%s/PSP/SAVEDATA/NEW-DIR/RENAMED.BIN", root);
+    CHECK(!exists(file_path) && exists(renamed_path), "rename moves only the in-root file");
+    CHECK_ST(sr_cd_delete_file(&r, "PSP/SAVEDATA/NEW-DIR/RENAMED.BIN"), SR_CD_OK);
+    CHECK(!exists(renamed_path), "remove deletes the in-root regular file");
+    CHECK_ST(sr_cd_delete_file(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_IS_DIRECTORY);
+    CHECK(sr_cd_psp_error(SR_CD_IS_DIRECTORY) == 0x80010015u,
+          "a directory named to remove maps to PSP EISDIR");
+
+    /* Every structural escape fails before a host operation and maps to the
+     * PSP illegal-path error (EINVAL). */
+    static const char *const escaped[] = {
+        "/tmp/outside/KEEP.BIN", "../outside/KEEP.BIN", "PSP/SAVEDATA/../KEEP.BIN",
+        "PSP//SAVEDATA/KEEP.BIN", "PSP/SAVEDATA/"
+    };
+    for (size_t i = 0; i < sizeof(escaped) / sizeof(escaped[0]); i++) {
+        CHECK_ST(sr_cd_delete_file(&r, escaped[i]), SR_CD_INVALID_PATH);
+        CHECK(sr_cd_psp_error(SR_CD_INVALID_PATH) == 0x80010016u,
+              "escape '%s' maps to PSP EINVAL", escaped[i]);
+    }
+    CHECK_ST(sr_cd_open_file(&r, "/tmp", "KEEP.BIN", SR_CD_FILE_READ, &stream),
+             SR_CD_INVALID_PATH);
+    CHECK(sr_cd_psp_error(SR_CD_NOT_CONTAINED) == 0x80010016u,
+          "a contained-route refusal maps to PSP EINVAL");
+
+    memset(long_name, 'n', SR_CD_NAME_MAX);
+    long_name[SR_CD_NAME_MAX] = '\0';
+    CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA", long_name, SR_CD_FILE_READ, &stream),
+             SR_CD_INVALID_PATH);
+    CHECK_ST(sr_cd_mkdir_leaf(&r, long_name), SR_CD_INVALID_PATH);
+    CHECK(sr_cd_psp_error(SR_CD_INVALID_PATH) == 0x80010016u,
+          "an overlong component maps to PSP EINVAL");
+
+    fp(link_path, sizeof(link_path), "%s/PSP/SAVEDATA/OUTSIDE-FILE", root);
+    fp(dir_link, sizeof(dir_link), "%s/PSP/SAVEDATA/OUTSIDE-DIR", root);
+    stream = NULL;
+    CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "MOVE.BIN",
+                             SR_CD_FILE_READ_WRITE_TRUNCATE, &stream), SR_CD_OK);
+    if (stream) fclose(stream);
+    CHECK(symlink(outside_file, link_path) == 0, "plant final symlink to outside file");
+    CHECK(symlink(outside, dir_link) == 0, "plant directory symlink to outside root");
+    stream = NULL;
+    CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA", "OUTSIDE-FILE", SR_CD_FILE_READ, &stream),
+             SR_CD_NOT_CONTAINED);
+    CHECK(stream == NULL && sr_cd_psp_error(SR_CD_NOT_CONTAINED) == 0x80010016u,
+          "opening a planted symlink returns PSP EINVAL without following it");
+    sr_cd_status link_delete = sr_cd_delete_file(&r, "PSP/SAVEDATA/OUTSIDE-FILE");
+    CHECK_ST(link_delete, SR_CD_NOT_CONTAINED);
+    CHECK(sr_cd_psp_error(link_delete) == 0x80010016u,
+          "removing a planted symlink returns PSP EINVAL");
+    sr_cd_status link_mkdir = sr_cd_mkdir_leaf(&r, "PSP/SAVEDATA/OUTSIDE-FILE");
+    CHECK_ST(link_mkdir, SR_CD_NOT_CONTAINED);
+    CHECK(sr_cd_psp_error(link_mkdir) == 0x80010016u,
+          "creating through a planted symlink returns PSP EINVAL");
+    sr_cd_status parent_mkdir = sr_cd_mkdir_leaf(&r, "PSP/SAVEDATA/OUTSIDE-DIR/NEW-DIR");
+    CHECK_ST(parent_mkdir, SR_CD_NOT_CONTAINED);
+    CHECK(sr_cd_psp_error(parent_mkdir) == 0x80010016u,
+          "creating below an outside directory link returns PSP EINVAL");
+    sr_cd_status link_rename = sr_cd_rename_file(&r, "PSP/SAVEDATA/OUTSIDE-FILE",
+                                                 "PSP/SAVEDATA/NEW-DIR/RENAMED.BIN");
+    CHECK_ST(link_rename, SR_CD_NOT_CONTAINED);
+    CHECK(sr_cd_psp_error(link_rename) == 0x80010016u,
+          "renaming a planted symlink returns PSP EINVAL");
+    sr_cd_status parent_rename = sr_cd_rename_file(&r, "PSP/SAVEDATA/NEW-DIR/MOVE.BIN",
+                                                   "PSP/SAVEDATA/OUTSIDE-DIR/RENAMED.BIN");
+    CHECK_ST(parent_rename, SR_CD_NOT_CONTAINED);
+    CHECK(sr_cd_psp_error(parent_rename) == 0x80010016u,
+          "renaming through an outside directory link returns PSP EINVAL");
+    sr_cd_status parent_delete = sr_cd_delete_file(&r, "PSP/SAVEDATA/OUTSIDE-DIR/KEEP.BIN");
+    CHECK_ST(parent_delete, SR_CD_NOT_CONTAINED);
+    CHECK(sr_cd_psp_error(parent_delete) == 0x80010016u,
+          "removing below an outside directory link returns PSP EINVAL");
+    FILE *outside_stream = fopen(outside_file, "rb");
+    CHECK(outside_stream != NULL, "outside target remains readable");
+    if (outside_stream) {
+        CHECK(fgets(content, sizeof(content), outside_stream) != NULL &&
+              !strcmp(content, "outside must survive"),
+              "no file operation follows a planted symlink outside the root");
+        fclose(outside_stream);
+    }
+
+    sr_cd_root_close(&r);
+    nuke(root);
+    nuke(outside);
+#else
+    /* This extension intentionally belongs to the POSIX descriptor backend. */
+#endif
+}
+
 /* ---- final-directory object identity ----------------------------------- */
 
 /* Deterministic replacement of the save directory, driven by the seam's own
@@ -1089,6 +1250,7 @@ int main(void) {
     case_rejected_paths_touch_nothing();
     case_policy_layer_boundary();
     case_host_policy_end_to_end();
+    case_posix_guest_file_operations();
     case_final_dir_replacement();
     case_residual_window_is_bounded();
     case_normal_leaf_delete();

@@ -34,6 +34,12 @@
 #ifndef SR_BUILD_DIR
 #define SR_BUILD_DIR "build/hst"
 #endif
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#include "vfs_contained.h"
+#endif
 #include "recomp.h"
 #include "iso.h"
 #include "pgf_api.h"
@@ -4258,21 +4264,17 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
  * UTF-16 Win32 call surface, and handle-based containment verified through
  * \\?\-prefixed final paths. The conversions, joins, environment reads, module
  * directory and stream sizing below are ordinary host operations and are
- * re-expressed here with the POSIX primitive that performs them. Two Win32-only
- * concepts are NOT simulated:
+ * re-expressed here with the POSIX primitive that performs them. One Win32-only
+ * concept is NOT simulated:
  *
  *   - the \\?\ extended-length prefix: POSIX paths are bounded by the host, not
  *     by MAX_PATH, so sr_wide_extended_absolute_alloc is the identity copy and
  *     the 'is this already extended/absolute' predicates report what this host
  *     actually has;
- *   - ms0_fopen_utf8, the CONTAINED memstick open. Its Windows guarantee comes
- *     from opening a HANDLE and verifying its final path under a canonical root
- *     before the CRT ever sees it. The repo's POSIX answer to that contract is
- *     the descriptor-relative contained seam (vfs_contained.h, SR_CD_BACKEND_
- *     POSIX_AT) that src/rt/savedata.c already uses for every save file. Until
- *     the guest file route is bound to that seam it is UNAVAILABLE here, so an
- *     sceIoOpen answers the ordinary PSP error and says so once on stderr --
- *     never a fabricated handle and never a write outside the root. */
+ *   - the \\?\ extended-length prefix: POSIX paths are bounded by the host, not
+ *     by MAX_PATH, so sr_wide_extended_absolute_alloc is the identity copy and
+ *     the 'is this already extended/absolute' predicates report what this host
+ *     actually has. */
 
 static int sr_utf8_to_wide_alloc(const char *src, wchar_t **out) {
     if (!src || !out || !sr_asset_index_valid_utf8(src)) return 0;
@@ -4720,22 +4722,89 @@ static int sr_ensure_directory_utf8(const char *path) {
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-/* CONTAINED memstick open: unavailable on this host. See the note above. The
- * one-time diagnostic names the gap so an operator sees a real refusal rather
- * than a silent empty directory listing. */
-static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
-    static int reported = 0;
-    (void)host_path;
-    (void)mode;
-    if (!reported) {
-        reported = 1;
-        fprintf(stderr,
-                "hle: contained Memory Stick file open is unavailable on this host "
-                "(Windows uses a verified HANDLE route); guest file I/O answers the "
-                "ordinary PSP error\n");
-        fflush(stderr);
+/* The guest path is reduced to the seam's canonical root-relative grammar
+ * before any host operation. PSP mount-root separators are consumed once;
+ * host-absolute paths, foreign devices, traversal, repeated separators and
+ * overlong components fail with the PSP illegal-path result. */
+static sr_cd_status ms0_posix_guest_relpath(const char *guest, char *rel, size_t cap) {
+    return sr_cd_ms0_guest_relpath(guest, rel, cap);
+}
+
+static sr_cd_status ms0_posix_host_relpath(const char *host_path, char *rel, size_t cap) {
+    const char *root = sr_ms0_root();
+    if (!host_path || !root || !root[0] || !rel || cap == 0) return SR_CD_INVALID_PATH;
+    size_t root_len = strlen(root);
+    if (strncmp(host_path, root, root_len) != 0) return SR_CD_INVALID_PATH;
+    const char *tail = host_path + root_len;
+    if (root[root_len - 1u] != '/') {
+        if (*tail != '/') return SR_CD_INVALID_PATH;
+        tail++;
     }
-    return NULL;
+    size_t len = strlen(tail);
+    if (len == 0 || len >= cap) return SR_CD_INVALID_PATH;
+    memcpy(rel, tail, len + 1u);
+    return sr_cd_rel_is_acceptable(rel) ? SR_CD_OK : SR_CD_INVALID_PATH;
+}
+
+static uint32_t ms0_posix_psp_error(sr_cd_status status) {
+    return sr_cd_psp_error(status);
+}
+
+static sr_cd_status ms0_posix_root_open(sr_cd_root *root) {
+    if (!sr_ensure_directory_utf8(sr_ms0_root())) return SR_CD_IO_ERROR;
+    return sr_cd_root_open(sr_ms0_root(), root);
+}
+
+static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
+                                sr_cd_status *status_out) {
+    if (status_out) *status_out = SR_CD_INVALID_PATH;
+    if (!rel || !mode || !mode[0]) return NULL;
+    char parent[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
+    if (!sr_cd_rel_split(rel, parent, sizeof(parent), leaf, sizeof(leaf))) return NULL;
+
+    int has_w = 0, has_a = 0, has_plus = 0;
+    for (const wchar_t *p = mode; *p; p++) {
+        if (*p == L'w') has_w = 1;
+        else if (*p == L'a') has_a = 1;
+        else if (*p == L'+') has_plus = 1;
+        else if (*p != L'r' && *p != L'b') return NULL;
+    }
+    if ((has_w && has_a) || ((has_w || has_a) && !has_plus)) return NULL;
+    sr_cd_file_mode file_mode = has_w ? SR_CD_FILE_READ_WRITE_TRUNCATE :
+                                has_a ? SR_CD_FILE_READ_WRITE_APPEND :
+                                has_plus ? SR_CD_FILE_READ_WRITE : SR_CD_FILE_READ;
+
+    sr_cd_root root;
+    sr_cd_status st = ms0_posix_root_open(&root);
+    if (st != SR_CD_OK) {
+        if (status_out) *status_out = st;
+        return NULL;
+    }
+    FILE *stream = NULL;
+    st = sr_cd_open_file(&root, parent, leaf, file_mode, &stream);
+    sr_cd_root_close(&root);
+    if (status_out) *status_out = st;
+    return st == SR_CD_OK ? stream : NULL;
+}
+
+static FILE *ms0_fopen_guest_utf8(const char *guest_path, const wchar_t *mode,
+                                  sr_cd_status *status_out) {
+    char rel[SR_CD_REL_MAX];
+    sr_cd_status st = ms0_posix_guest_relpath(guest_path, rel, sizeof(rel));
+    if (st != SR_CD_OK) {
+        if (status_out) *status_out = st;
+        return NULL;
+    }
+    return ms0_fopen_rel_utf8(rel, mode, status_out);
+}
+
+/* Compatibility helper for the legacy-flat import, whose destination was
+ * already resolved beneath the unified root. The final open still enters the
+ * descriptor-relative seam and never opens the joined pathname. */
+static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+    char rel[SR_CD_REL_MAX];
+    if (ms0_posix_host_relpath(host_path, rel, sizeof(rel)) != SR_CD_OK) return NULL;
+    return ms0_fopen_rel_utf8(rel, mode, NULL);
 }
 #endif /* _WIN32 */
 
@@ -4772,7 +4841,11 @@ static char *host_path_alloc(const char *guest) {
     size_t cap = root_len + guest_len + 2u;
     char *path = (char *)malloc(cap);
     if (!path) return NULL;
+#ifdef _WIN32
     if (!sr_ms0_resolve(root, guest, path, cap, '\\')) {
+#else
+    if (!sr_ms0_resolve(root, guest, path, cap, '/')) {
+#endif
         free(path);
         return NULL;
     }
@@ -4788,7 +4861,11 @@ static char *host_dir_path_alloc(const char *guest) {
     size_t cap = root_len + guest_len + 2u;
     char *out = (char *)malloc(cap);
     if (!out) return NULL;
+#ifdef _WIN32
     if (!sr_ms0_resolve(root, guest, out, cap, '\\')) {
+#else
+    if (!sr_ms0_resolve(root, guest, out, cap, '/')) {
+#endif
         free(out);
         return NULL;
     }
@@ -9628,6 +9705,9 @@ static uint32_t h_IoOpen(CpuState *s) {
 
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
+#ifndef _WIN32
+    sr_cd_status open_status = SR_CD_NOT_FOUND;
+#endif
     uint32_t lba, size;
     int in_iso = (iso_lookup(path, &lba, &size) == 0);
 
@@ -9639,12 +9719,31 @@ static uint32_t h_IoOpen(CpuState *s) {
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
         else if (writing || creating) mode = L"r+b"; /* update; fall back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
+#ifdef _WIN32
         FILE *fp = hp ? ms0_fopen_utf8(hp, mode) : NULL;
         if (!fp && (writing || creating) && hp) fp = ms0_fopen_utf8(hp, L"w+b");
         if (!fp && !writing && !creating && hp && ms0_try_legacy_flat_import(path, hp))
             fp = ms0_fopen_utf8(hp, mode);
+#else
+        FILE *fp = sr_ms0_classify(path, NULL) == SR_MS0_OWNED ?
+                   ms0_fopen_guest_utf8(path, mode, &open_status) : NULL;
+        if (!fp && (writing || creating) && open_status == SR_CD_NOT_FOUND &&
+            sr_ms0_classify(path, NULL) == SR_MS0_OWNED)
+            fp = ms0_fopen_guest_utf8(path, L"w+b", &open_status);
+        if (!fp && !writing && !creating && open_status == SR_CD_NOT_FOUND && hp &&
+            ms0_try_legacy_flat_import(path, hp))
+            fp = ms0_fopen_guest_utf8(path, mode, &open_status);
+#endif
         free(hp);
         if (!fp) {
+#ifndef _WIN32
+            if (sr_ms0_classify(path, NULL) == SR_MS0_OWNED &&
+                open_status != SR_CD_NOT_FOUND) {
+                fprintf(stderr, "sceIoOpen: contained Memory Stick path refused (%s): %s\n",
+                        path, sr_cd_status_name(open_status));
+                return ms0_posix_psp_error(open_status);
+            }
+#endif
             if (!writing && !creating && s_data_archive_mode &&
                 data_archive_guest_path_allowed(path)) {
                 int wanted_variant = -2;
@@ -10672,36 +10771,11 @@ static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canoni
 }
 #endif /* _WIN32 */
 
-#ifndef _WIN32
-/* The destructive memstick operations (rename, mkdir, remove) are the
- * containment-critical half of the guest file route: on Windows each one opens
- * or moves a HANDLE whose final path was verified under a canonical root. The
- * repo's POSIX answer to that same contract is the descriptor-relative
- * contained seam in vfs_contained.h (SR_CD_BACKEND_POSIX_AT), which
- * src/rt/savedata.c already uses for every save file. Until the guest file
- * route is bound to that seam, these three refuse: one loud diagnostic, then
- * the same EIO the Windows route returns when its containment prerequisite
- * cannot be established. No guest byte is ever resolved by name here. */
-static void ms0_write_route_unavailable(const char *operation) {
-    static int reported = 0;
-    if (reported) return;
-    reported = 1;
-    fprintf(stderr,
-            "hle: contained Memory Stick %s is unavailable on this host "
-            "(Windows verifies a HANDLE's final path under a canonical root; the POSIX "
-            "route is not bound to the contained-delete seam yet); the guest gets EIO\n",
-            operation);
-    fflush(stderr);
-}
-#endif /* !_WIN32 */
-
 /* sceIoRename(oldname, newname). Both names resolve beneath the unified
- * Memory Stick root (host_path_alloc), never the disc. Foreign devices and
- * traversal fail closed with EINVAL (0x80010016). An existing regular-file
- * destination is removed through the contained delete before MoveFileEx
- * WITHOUT MOVEFILE_REPLACE_EXISTING (directories refuse with EISDIR). Parent
- * directories are pre-verified for existence and containment; residual TOCTOU
- * on those by-path checks is documented here rather than hidden. */
+ * Memory Stick root, never the disc. POSIX uses the descriptor-relative
+ * renameat extension in vfs_contained.h; Windows keeps its verified-root
+ * checks and MoveFileEx route below. Foreign devices and traversal fail closed
+ * with EINVAL (0x80010016). */
 #ifdef _WIN32
 static uint32_t h_IoRename(CpuState *s) {
     char oldpath[256], newpath[256];
@@ -10817,15 +10891,39 @@ static uint32_t h_IoMkdir(CpuState *s) {
 
 #ifndef _WIN32
 static uint32_t h_IoRename(CpuState *s) {
-    (void)s;
-    ms0_write_route_unavailable("rename");
-    return 0x80010005u;
+    char old_guest[256], new_guest[256];
+    char old_rel[SR_CD_REL_MAX], new_rel[SR_CD_REL_MAX];
+    if (!guest_cstr(A0, old_guest, sizeof(old_guest)) ||
+        !guest_cstr(A1, new_guest, sizeof(new_guest)))
+        return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    sr_cd_status st = ms0_posix_guest_relpath(old_guest, old_rel, sizeof(old_rel));
+    if (st == SR_CD_OK)
+        st = ms0_posix_guest_relpath(new_guest, new_rel, sizeof(new_rel));
+    if (st != SR_CD_OK) return ms0_posix_psp_error(st);
+
+    sr_cd_root root;
+    st = ms0_posix_root_open(&root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_rename_file(&root, old_rel, new_rel);
+        sr_cd_root_close(&root);
+    }
+    return ms0_posix_psp_error(st);
 }
 
 static uint32_t h_IoMkdir(CpuState *s) {
-    (void)s;
-    ms0_write_route_unavailable("mkdir");
-    return 0x80010005u;
+    char guest[256], rel[SR_CD_REL_MAX];
+    if (!guest_cstr(A0, guest, sizeof(guest)))
+        return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
+    if (st != SR_CD_OK) return ms0_posix_psp_error(st);
+
+    sr_cd_root root;
+    st = ms0_posix_root_open(&root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_mkdir_leaf(&root, rel);
+        sr_cd_root_close(&root);
+    }
+    return ms0_posix_psp_error(st);
 }
 #endif /* !_WIN32 */
 
@@ -10869,9 +10967,19 @@ static uint32_t h_IoRemove(CpuState *s) {
 
 #ifndef _WIN32
 static uint32_t h_IoRemove(CpuState *s) {
-    (void)s;
-    ms0_write_route_unavailable("remove");
-    return 0x80010005u;
+    char guest[256], rel[SR_CD_REL_MAX];
+    if (!guest_cstr(A0, guest, sizeof(guest)))
+        return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
+    if (st != SR_CD_OK) return ms0_posix_psp_error(st);
+
+    sr_cd_root root;
+    st = ms0_posix_root_open(&root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_delete_file(&root, rel);
+        sr_cd_root_close(&root);
+    }
+    return ms0_posix_psp_error(st);
 }
 #endif /* !_WIN32 */
 
