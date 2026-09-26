@@ -5356,7 +5356,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3693b7e255bcdd7f664ce35f2a78fc2fa8ab9d9bd27031736b8d2427b382b63c"
+      "sha256": "24dce15375aed0e3bd3fb8ab69e85a4ea3af6b6c5c822aadaca8eb4a0eec4916"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5489,7 +5489,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c848d2320d6fef86f0dee11c1f5bdd7000a2c66ed294532d47fa613bb93c7ddb"
+      "sha256": "ae95e3cff41561ab250cb1e1ac007e2da5cffd36197dd0b5cdc0d92aa2d8c231"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7335,7 +7335,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "98a564325bf9fa66ce133a052d933707d01705504a5c9ef97a0378c68b498492"
+      "sha256": "7031ae925a4c74cfec03e2b271b50eca87d4d075da8c004f50906ae8b5c542f0"
     },
     {
       "path": "tools/test_evf_c.py",
