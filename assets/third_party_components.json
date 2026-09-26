@@ -2,7 +2,7 @@
   "$schema": "./third_party_components.schema.json",
   "name": "nakagawa-recomp-third-party-components",
   "schema_version": 1,
-  "description": "Single machine-readable source of truth for every third-party component that can enter a release artifact. tools/package_notices.py (native package), tools/dashboard_notices.py (dashboard standalone output), tools/generate_sbom.py (SBOM) and tools/test_third_party_notices.py (release gate) all read this file. A component without a spdx_id, a license text in the tree, and (for Python tools) a recorded license fails the gate.",
+  "description": "Single machine-readable source of truth for every third-party component that can enter a release artifact. tools/package_notices.py (native package), tools/generate_sbom.py (SBOM) and tools/test_third_party_notices.py (release gate) all read this file. A component without a spdx_id, a license text in the tree, and (for Python tools) a recorded license fails the gate.",
   "version_source_policy": "No version literal is trusted. Native DLL versions are read from the toolchain's own pacman database (var/lib/pacman/local/<pkg>/desc); Python and npm versions are read from the declared lockfiles. Every license text under third_party/licenses/ was copied verbatim from the component's own distribution in the local toolchain; each record below names the exact file it was copied from.",
   "native": {
     "copy_routes": [
@@ -170,9 +170,9 @@
         "recorded_from": "installed dist-info compiledb-0.10.7.dist-info/METADATA (License: GPL-3.0-or-later; Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)); License-File: LICENSE"
       },
       "ruff": {
-        "version": "0.16.0",
+        "version": "0.16.8",
         "spdx_id": "MIT",
-        "recorded_from": "installed dist-info ruff-0.16.0.dist-info/METADATA (License-Expression: MIT); License-File: LICENSE"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/ruff/0.16.8/json (license_expression: MIT; license_files: LICENSE)"
       },
       "click": {
         "version": "8.5.0",
@@ -185,113 +185,5 @@
         "recorded_from": "installed dist-info bashlex-0.18.dist-info/METADATA (License: GPLv3+; Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)); License-File: LICENSE"
       }
     }
-  },
-  "dashboard": {
-    "lockfile": "interface/package-lock.json",
-    "notices_target": "interface/.next/standalone",
-    "generator": "tools/dashboard_notices.py",
-    "note": "The Next.js standalone output traces npm packages out of node_modules, so it redistributes third-party code even though this repository does not carry node_modules. The lockfile is the exact inventory: every entry's license expression is emitted verbatim. Classes listed in license_obligations need a maintainer decision that this repository does not make.",
-    "license_obligations": {
-      "MIT": {
-        "applies_to": [],
-        "obligation": "MIT requires the copyright notice and permission text to travel with the distribution. Each traced package keeps its own LICENSE file under its node_modules directory; the notices bundle names the exact package so that directory is kept.",
-        "resolved": true
-      },
-      "ISC": {
-        "applies_to": [],
-        "obligation": "ISC requires the copyright notice and permission text to travel with the distribution. The traced package directory carries it.",
-        "resolved": true
-      },
-      "BSD-2-Clause": {
-        "applies_to": [],
-        "obligation": "BSD-2-Clause requires the copyright notice, the conditions and the disclaimer to travel with the distribution. The traced package directory carries it.",
-        "resolved": true
-      },
-      "BSD-3-Clause": {
-        "applies_to": [],
-        "obligation": "BSD-3-Clause requires the copyright notice, the conditions, the disclaimer and the non-endorsement clause to travel with the distribution. The traced package directory carries it.",
-        "resolved": true
-      },
-      "0BSD": {
-        "applies_to": [],
-        "obligation": "0BSD is a public-domain-equivalent dedication with no attribution condition.",
-        "resolved": true
-      },
-      "CC0-1.0": {
-        "applies_to": [],
-        "obligation": "CC0-1.0 is a public-domain dedication. The notices bundle records the dedication; no further attribution is required.",
-        "resolved": true
-      },
-      "WTFPL": {
-        "applies_to": [],
-        "obligation": "Do What The Fuck You Want Public License imposes no attribution condition. Recorded for completeness where it appears inside a choice expression.",
-        "resolved": true
-      },
-      "Unlicense": {
-        "applies_to": [
-          "postgres",
-          "robust-predicates"
-        ],
-        "obligation": "Public-domain dedication. The notices bundle records the dedication; no further attribution is required.",
-        "resolved": true
-      },
-      "Python-2.0": {
-        "applies_to": [
-          "argparse"
-        ],
-        "obligation": "PSF License 2.0 requires the copyright notice and license to travel with the distribution.",
-        "resolved": true
-      },
-      "Apache-2.0": {
-        "applies_to": [
-          "@img/sharp-*",
-          "next",
-          "framer-motion",
-          "recharts",
-          "lightningcss (MPL-2.0 companion)"
-        ],
-        "obligation": "Apache-2.0 requires the NOTICE/attribution text to travel with the distribution where the upstream project supplies one. The per-package copyright and NOTICE text is carried by the traced package itself under its own node_modules directory; the notices bundle names the exact package directories to keep.",
-        "resolved": true
-      },
-      "MPL-2.0": {
-        "applies_to": [
-          "lightningcss",
-          "lightningcss-*",
-          "axe-core"
-        ],
-        "obligation": "File-level copyleft. Redistribution of the unmodified files is permitted with the license text and a statement that the files were not modified.",
-        "resolved": true
-      },
-      "LGPL-3.0-or-later": {
-        "applies_to": [
-          "@img/sharp-libvips-*",
-          "@img/sharp-win32-*",
-          "@img/sharp-wasm32",
-          "@img/sharp-darwin-*"
-        ],
-        "obligation": "libvips and the sharp prebuilt binary packages are LGPL-3.0-or-later and are shipped as prebuilt shared libraries inside the standalone output. The relink mechanism (relinkable object files plus a relink script, dynamic linking against a replaceable library, or exclusion of these packages from the release) was left open by #421, which covers only the native package. The maintainer retired the web dashboard on 2026-09-25 (#314), so exclusion applies: these packages are removed with interface/ and ship in no release.",
-        "resolved": false
-      },
-      "EPL-2.0": {
-        "applies_to": [
-          "elkjs"
-        ],
-        "obligation": "EPL-2.0 section 3 permits a Secondary License (for example GPL-2.0-or-later) for the GPL-incompatible modules. Whether this distribution designates a Secondary License is a maintainer legal decision and is NOT made here. It becomes moot with the web dashboard's retirement (#314), which removes elkjs from every release.",
-        "resolved": false
-      },
-      "CC-BY-4.0": {
-        "applies_to": [
-          "caniuse-lite"
-        ],
-        "obligation": "Creative Commons Attribution 4.0 requires attribution to the creator, a link to the license, and an indication of whether changes were made. caniuse-lite carries the data set compiled from the Can I Use project; the exact attribution string to publish is a maintainer decision. It becomes moot with the web dashboard's retirement (#314), which removes caniuse-lite from every release.",
-        "resolved": false
-      }
-    },
-    "project_attribution": [
-      {
-        "file": "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
-        "covers": "the shadcn/ui primitives copied into interface/src"
-      }
-    ]
   }
 }

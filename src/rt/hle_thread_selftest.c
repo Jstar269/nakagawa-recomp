@@ -420,6 +420,20 @@ void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+/* Display-source service-cadence attribution (perf.c owns the real counters; the
+ * selftest needs only the symbols to link, and reads the phase tag directly). */
+void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (void)periods; }
+void sr_perf_vblank_coalesced(void) {}
+void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
+void sr_perf_phase_report(int force) { (void)force; }
+int sr_rt_phase;
+uint32_t sr_rt_nid;
+uint32_t (*sr_rt_pc_fn)(void);
+uint32_t (*sr_rt_uid_fn)(void);
+const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
+    "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
+};
 int sr_perf_aot_active;
 void sr_perf_aot_begin(uint32_t pc) { (void)pc; }
 void sr_perf_aot_end(void) {}
@@ -2297,6 +2311,8 @@ static void reset_fixture(void) {
     s_dispatch_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_pending_vblanks = 0;          /* owed VBLANK episodes */
+    s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_count = 0;
@@ -3157,17 +3173,19 @@ static void test_display_queries_do_not_progress_display(void) {
 }
 
 /* Guest-visible VCOUNT advances by elapsed display periods at scheduler
- * source-latch boundaries, decoupled from VBLANK service -- it is not a count
- * of delivered/serviced VBLANK episodes and is not described as strictly
- * free-running.  A provisional PSP observation corroborates the service-
- * independence direction, but it does not establish the runtime's exact rate;
- * this checked-in regression is HOST_TESTED source-contract evidence.
+ * source-latch boundaries, and the serviced VBLANK event is a COUNT of those
+ * periods rather than one coalesced bit.
  *
- * This is the public failing-before regression for that boundary, exercised
- * through the production scheduler_latch_due_events / scheduler_service_pending
- * path (not HST, not the hardware probe).  For each N the source deadline is
- * advanced across exactly N periods before service; VCOUNT must reflect V+N,
- * while delivered episodes stay at most one. */
+ * The two used to be deliberately split: VCOUNT advanced by the elapsed period
+ * count while delivery collapsed to a single pending bit.  That split is what
+ * made a vblank-paced title observe fewer VBLANK episodes than display periods
+ * (measured 55.0 Hz against a 59.94 Hz source) with an exactly-correct VCOUNT.
+ * The hardware does not split them: the PSP's IF/IE pair is a level that is
+ * re-asserted for every edge that arrives while the CPU is still in the previous
+ * handler, so a guest that spends N periods inside one stretch with no service
+ * point is owed N handler episodes.  These are the production
+ * scheduler_latch_due_events / scheduler_service_pending path (not HST, not the
+ * hardware probe); HOST_TESTED source-contract evidence. */
 static void test_vcount_tracks_elapsed_source_periods(void) {
     enum {
         NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
@@ -3182,6 +3200,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
 
@@ -3201,21 +3220,24 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         snprintf(msg, sizeof msg, "N=%u: no delivery before the eligible service phase", N);
         expect(s_vbl_count == 0u, msg);
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "a burst of periods coalesces into one pending source bit");
+               "a burst of periods still raises the source bit");
+        expect(s_pending_vblanks == N,
+               "a burst of periods is owed one serviced episode each");
 
-        /* Service once: one delivered episode, VCOUNT unchanged. */
+        /* Service once: the whole burst is delivered, VCOUNT unchanged. */
         scheduler_service_pending();
-        snprintf(msg, sizeof msg, "N=%u: one serviced episode regardless of the burst", N);
-        expect(s_vbl_count == 1u, msg);
+        snprintf(msg, sizeof msg, "N=%u: one serviced episode per elapsed period", N);
+        expect(s_vbl_count == N, msg);
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + N,
                "service does not re-advance guest VCOUNT");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) == 0u,
-               "service clears the coalesced source bit");
+               "service clears the source bit");
+        expect(s_pending_vblanks == 0u, "service clears the owed episode count");
     }
 
-    /* Pending bit already set before the latch: the latch must not manufacture
-     * a second episode; VCOUNT still advances by the crossed periods. */
+    /* Pending bit already set before the latch: the burst still adds its own
+     * episodes; VCOUNT advances by the crossed periods. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3224,6 +3246,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3237,11 +3260,12 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "a pre-set pending bit still lets VCOUNT track the crossed periods");
         expect(s_vbl_count == 0u, "a pre-set pending bit adds no delivery before service");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "a pre-set pending bit still coalesces to one episode");
+        expect(s_vbl_count == 3u,
+               "a pre-set pending bit adds no episode beyond the three crossed periods");
     }
 
     /* Multiple deadline-latch calls before service: each latch contributes its
-     * own period burst to VCOUNT and the delivery stays one episode. */
+     * own period burst and every period is still owed an episode. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3250,6 +3274,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3264,9 +3289,11 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "multiple latches accumulate VCOUNT (2 + 3 periods)");
         expect(s_vbl_count == 0u, "no delivery yet across multiple latches");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "multiple latches still coalesce into one pending source");
+               "multiple latches still raise the source bit");
+        expect(s_pending_vblanks == 5u,
+               "multiple latches accumulate one owed episode per elapsed period");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "one delivery after multiple latches");
+        expect(s_vbl_count == 5u, "every accumulated period is delivered after multiple latches");
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 5u,
                "service leaves the accumulated VCOUNT alone");
@@ -9713,6 +9740,112 @@ static void test_ge_guest_sentinel(void) {
            "resumed list rendered purple rectangle to completion");
 }
 
+/* A display list the GE already ran to its END is consumed, and a stall address
+ * that arrives after that is a defined no-op on a known list -- not an unknown
+ * one. pspgu's GU ring buffer issues one sceGeListUpdateStallAddr per flushed
+ * chunk, so every chunk after the one carrying the END lands here; running the
+ * list again would redraw the same frame once per chunk.
+ *
+ * The contract this pins:
+ *   - the list runs once and its primitive work is observable;
+ *   - a late stall address returns 0 and executes no further GE work;
+ *   - the late address is accounted as a consumed list, so SR_GELOG and the
+ *     enqueue trace name the boundary instead of claiming an unknown list id.
+ * The display list is a source-owned synthetic list built below. */
+static void test_ge_consumed_list_ignores_late_stall_address(void) {
+    extern unsigned sr_hle_test_ge_late_stall_ignored(void);
+    extern uint32_t g_frame_prims;
+
+    const uint32_t fb_base = 0x04000000u;
+    const uint32_t fb_stride = 512u;
+    const uint32_t dl_base = 0x08950000u;   /* in guest RAM */
+    const uint32_t vtx_base = 0x08950800u;  /* in guest RAM */
+    const uint32_t list_color = 0xFF3399CCu;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(dl_base);
+    uint32_t p = 0;
+#define LATE_CMD(cmd, value) \
+    do { dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(value) & 0x00ffffffu); } while (0)
+#define LATE_VTX(addr, value) do { float _f = (value); uint32_t _u; memcpy(&_u, &_f, 4); MEM_W32((addr), _u); } while (0)
+
+    LATE_CMD(0x9C, fb_base & 0x00ffffffu);
+    LATE_CMD(0x9D, fb_stride | ((fb_base & 0xff000000u) >> 8));
+    LATE_CMD(0xD2, 3);
+    LATE_CMD(0x15, 0);                            /* REGION1 = (0,0) */
+    LATE_CMD(0x16, ((272u - 1u) << 10) | (480u - 1u)); /* REGION2 */
+    LATE_CMD(0xD4, 0);                            /* SCISSOR1 = (0,0) */
+    LATE_CMD(0xD5, ((272u - 1u) << 10) | (480u - 1u)); /* SCISSOR2 */
+    LATE_CMD(0x23, 0);                            /* ZTEST off */
+    LATE_CMD(0x22, 0);                            /* ALPHATEST off */
+    LATE_CMD(0x21, 0);                            /* ALPHABLEND off */
+    LATE_CMD(0x1E, 0);                            /* TEXTUREMAP off */
+    LATE_CMD(0xD3, 0x301);                        /* clear color + alpha from the sprite */
+    LATE_CMD(0x12, (7 << 2) | (3 << 7) | (1 << 23));  /* VERTEXTYPE: color, float pos, through */
+    LATE_CMD(0x01, vtx_base & 0x00ffffffu);
+    LATE_CMD(0x04, (6 << 16) | 2);                /* one sprite, two corner vertices */
+    LATE_CMD(0x0F, 0);
+    LATE_CMD(0x0C, 0);
+#undef LATE_CMD
+
+    MEM_W32(vtx_base + 0, list_color);
+    LATE_VTX(vtx_base + 4, 0.0f);   LATE_VTX(vtx_base + 8, 0.0f);   LATE_VTX(vtx_base + 12, 0.0f);
+    MEM_W32(vtx_base + 16, list_color);
+    LATE_VTX(vtx_base + 20, 480.0f); LATE_VTX(vtx_base + 24, 272.0f); LATE_VTX(vtx_base + 28, 0.0f);
+#undef LATE_VTX
+
+    memset(SR_HOST(fb_base), 0x5a, fb_stride * 272u * 4u);
+    uint32_t *fb = (uint32_t *)SR_HOST(fb_base);
+
+    /* stall == 0: the GE runs the list to its END inside the enqueue. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl_base;
+    cpu.r[5] = 0;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xff000000u) == 0x35000000u, "the late-stall fixture enqueues a list");
+    expect(fb[100 * fb_stride + 100] == list_color, "the list ran once and drew its primitive");
+
+    uint32_t prims_after_run = g_frame_prims;
+    unsigned ignored_before = sr_hle_test_ge_late_stall_ignored();
+
+    /* The next flushed chunk's stall address: the list is already consumed. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = dl_base + (p * 4u);
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+           "a stall address that arrives after the list ran is accepted");
+    expect(g_frame_prims == prims_after_run,
+           "a stall address that arrives after the list ran executes no further GE work");
+    expect(sr_hle_test_ge_late_stall_ignored() == ignored_before + 1u,
+           "a stall address that arrives after the list ran is accounted as a consumed list");
+
+    /* The list is still the GE's own completed list, not an unknown id. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "the consumed list stays complete for sceGeListSync after a late stall address");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "the consumed list leaves the GE drawing nothing after a late stall address");
+
+    /* Every further chunk of the same flushed frame behaves the same way. */
+    for (int chunk = 0; chunk < 3; chunk++) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = qid;
+        cpu.r[5] = dl_base + (p * 4u) + 0x40u * (uint32_t)(chunk + 1);
+        expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+               "each further flushed chunk's stall address is accepted");
+    }
+    expect(g_frame_prims == prims_after_run &&
+               sr_hle_test_ge_late_stall_ignored() == ignored_before + 4u,
+           "a fully flushed frame re-executes nothing and is counted once per late chunk");
+}
+
 static uint32_t ge_transfer_enqueue(uint32_t src, uint32_t src_stride,
                                     uint32_t src_x, uint32_t src_y,
                                     uint32_t dst, uint32_t dst_stride,
@@ -15736,7 +15869,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 2") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 3") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -15882,6 +16015,7 @@ int main(int argc, char **argv) {
     test_nested_frame_under_psp_callback_dispatch();
     test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
+    test_ge_consumed_list_ignores_late_stall_address();
     test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);

@@ -76,7 +76,7 @@ typedef struct {
 } PreparationState;
 
 typedef struct {
-    int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p, 8 = 4K */
+    int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     bool fullscreen;
     bool vsync;
     int fps_cap;          /* 30, 60, 0 = uncapped */
@@ -84,7 +84,9 @@ typedef struct {
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
     char controller_name[64];
     bool controller_connected;
-    char save_directory[MAX_PATH_LEN];
+    /* Save locations are not a setting: nk_launch_prepare_session resolves a
+       writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
+       screen shows that real root instead of a configurable dead field. */
 } PlayerSettings;
 
 typedef struct {
@@ -178,6 +180,11 @@ typedef struct {
     int showcase_count;
     bool is_game_running;
     uint64_t launch_time_ms;
+    /* Launch the child without a window. PLAY NOW always requests the window;
+       this is the launcher's own headless default, reached only when a caller
+       asks for it explicitly, so a host with no display can still prove the
+       launch path end to end. */
+    bool launch_headless;
 
     /* Set by the renderer when a control asks for the host file dialog. The
        renderer has no SDL_Window and must stay free of platform dialog calls,
@@ -278,6 +285,25 @@ int player_app_focus_count(const PlayerApp *app);
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
 void player_app_stop_game(PlayerApp *app);
+
+/* Copy the launch-relevant player settings into a prepared session's runtime
+ * configuration (resolution, frame cap, vsync, fullscreen, master volume).
+ * reduce_motion is launcher-UI state and deliberately not copied. Kept as a
+ * named seam so tests can pin the settings -> session mapping without
+ * spawning a child. */
+void player_app_apply_settings_to_session(const PlayerSettings *settings,
+                                          NkRuntimeConfig *config);
+
+/* Advance the running-game session state machine one tick at `now_ms`.
+ *
+ * Returns true when this tick observed the child's exit and finalized the
+ * session. A child that exits before 500 ms of wall time is reported through
+ * the structured RUNTIME_PREMATURE_EXIT error; a later non-zero exit becomes
+ * RUNTIME_ERROR_EXIT. Either way the session's process handles are released
+ * and is_game_running is false before returning, so a subsequent launch
+ * starts from clean state. Pure state logic (no SDL): the caller supplies the
+ * clock so tests can drive classification deterministically. */
+bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms);
 
 /* Commit the inspected, successfully staged title to the persistent library
  * and enter PLAYER_VIEW_READY_LIBRARY. Runtime readiness remains separate:

@@ -15,6 +15,11 @@
  * GPU) written with substantial assistance from an LLM (Anthropic Claude). See NOTICE.md.
  * GPLv2+: it consumes ge.c, whose GE semantics are derived from PPSSPP. */
 
+/* setenv/unsetenv on the non-Windows capture/profile-test path (POSIX.1-2008). */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "sdl3vk.h"
 #include "nk_platform.h"
 #include "../perf.h"
@@ -81,6 +86,12 @@ static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
 
 static int      s_renderer_terminal = 0;
+/* A quit request (window close, SDL_EVENT_QUIT, ESC) is sticky. Two call sites drain
+ * the SDL event queue -- gui_pump's sdl3vk_poll() and every present -- and only the
+ * former exits the process. When a present consumed the quit (the common case: it
+ * polls every frame), the request was lost and the runtime kept running with no
+ * window, so the launcher could never see the game end. */
+static int      s_quit_requested = 0;
 static uint64_t s_swapchain_gen = 0;
 static uint64_t s_frame_sem_gen = 0;
 
@@ -241,9 +252,17 @@ static int create_swapchain(void) {
     sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
     {
         VkPresentModeKHR pm[8]; uint32_t npm = 8;
-        if (vkGetPhysicalDeviceSurfacePresentModesKHR(s_pdev, s_surf, &npm, pm) >= VK_SUCCESS)
-            for (uint32_t i = 0; i < npm; i++)
-                if (pm[i] == VK_PRESENT_MODE_MAILBOX_KHR) { sci.presentMode = pm[i]; break; }
+        int avail[8]; int navail = 0;
+        if (vkGetPhysicalDeviceSurfacePresentModesKHR(s_pdev, s_surf, &npm, pm) >= VK_SUCCESS) {
+            for (uint32_t i = 0; i < npm && i < 8; i++) avail[navail++] = (int)pm[i];
+        }
+        const char *vs = getenv("SR_VSYNC");
+        int vsync_on = !vs || !vs[0] || atoi(vs) != 0;
+        sci.presentMode = (VkPresentModeKHR)sdl3vk_pick_present_mode(vsync_on, avail, navail);
+        if (!vsync_on && sci.presentMode == VK_PRESENT_MODE_FIFO_KHR) {
+            fprintf(stderr, "sdl3vk: SR_VSYNC=0 requested but this surface offers no "
+                            "MAILBOX/IMMEDIATE mode; falling back to FIFO (vsync)\n");
+        }
     }
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = old;
@@ -256,6 +275,24 @@ static int create_swapchain(void) {
     memset(s_swap_img_fence,0,sizeof(s_swap_img_fence));
     s_swapchain_gen++;
     return 1;
+}
+
+/* Guard the plain-int present-mode contract the picker documents against the
+ * Vulkan enum actually compiled against (IMMEDIATE=0, MAILBOX=1, FIFO=2). */
+typedef char sdl3vk_present_mode_immediate_is_0[(int)VK_PRESENT_MODE_IMMEDIATE_KHR == 0 ? 1 : -1];
+typedef char sdl3vk_present_mode_mailbox_is_1[(int)VK_PRESENT_MODE_MAILBOX_KHR == 1 ? 1 : -1];
+typedef char sdl3vk_present_mode_fifo_is_2[(int)VK_PRESENT_MODE_FIFO_KHR == 2 ? 1 : -1];
+
+int sdl3vk_pick_present_mode(int vsync, const int *available, int count) {
+    const int immediate = 0;
+    const int mailbox = 1;
+    const int fifo = 2;
+    if (vsync) return fifo;
+    for (int i = 0; i < count; i++)
+        if (available[i] == mailbox) return mailbox;
+    for (int i = 0; i < count; i++)
+        if (available[i] == immediate) return immediate;
+    return fifo;
 }
 
 /* ---- init --------------------------------------------------------------------------- */
@@ -271,6 +308,15 @@ int sdl3vk_init(const char *title) {
     if (!s_win) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 0;
+    }
+    {
+        /* Settings > Fullscreen (SR_FULLSCREEN), applied before the Vulkan
+         * surface is created so the swapchain picks up the right extent. */
+        const char *fs = getenv("SR_FULLSCREEN");
+        if (fs && fs[0] && atoi(fs) != 0 && !SDL_SetWindowFullscreen(s_win, true)) {
+            fprintf(stderr, "sdl3vk: SR_FULLSCREEN=1 could not be applied: %s\n",
+                    SDL_GetError());
+        }
     }
 
     Uint32 next = 0;
@@ -326,7 +372,7 @@ int sdl3vk_init(const char *title) {
         s_validation_destroy = (PFN_vkDestroyDebugUtilsMessengerEXT)
             vkGetInstanceProcAddr(s_inst, "vkDestroyDebugUtilsMessengerEXT");
         VkDebugUtilsMessengerCreateInfoEXT mci =
-            { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+            { .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
         mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
         mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
@@ -606,9 +652,9 @@ static void poll_input(int *quit) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
-        case SDL_EVENT_QUIT: *quit = 1; break;
+        case SDL_EVENT_QUIT: s_quit_requested = 1; break;
         case SDL_EVENT_KEY_DOWN:
-            if (ev.key.key == SDLK_ESCAPE) *quit = 1;
+            if (ev.key.key == SDLK_ESCAPE) s_quit_requested = 1;
             if (ev.key.key == SDLK_F1 && !ev.key.repeat) {
                 sdl3vk_hud_set_enabled(!s_hud_enabled);
             }
@@ -671,6 +717,7 @@ static void poll_input(int *quit) {
     }
     s_buttons = b;
     s_lx = lx; s_ly = ly;
+    if (s_quit_requested) *quit = 1;
 }
 
 int sdl3vk_get_vk(Sdl3VkInfo *out) {
@@ -765,7 +812,7 @@ static int cap_ensure(uint32_t w, uint32_t h) {
     if (need == 0 || need > UINT32_MAX) return 0;
     if (s_cap_buf && need <= s_cap_alloc) return 1;
     cap_free_buffer();
-    VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bci.size = (VkDeviceSize)need;
     bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     if (vkCreateBuffer(s_dev, &bci, NULL, &s_cap_buf) != VK_SUCCESS) return 0;
@@ -781,7 +828,7 @@ static int cap_ensure(uint32_t w, uint32_t h) {
         s_cap_noncoherent = 1;
     }
     if (mtype == UINT32_MAX) { cap_free_buffer(); return 0; }
-    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     mai.allocationSize = mr.size;
     mai.memoryTypeIndex = mtype;
     if (vkAllocateMemory(s_dev, &mai, NULL, &s_cap_mem) != VK_SUCCESS ||
@@ -808,7 +855,7 @@ static int cap_record(VkCommandBuffer cmd, VkImage src, int srcw, int srch) {
     bic.imageExtent.depth = 1;
     vkCmdCopyImageToBuffer(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            s_cap_buf, 1, &bic);
-    VkBufferMemoryBarrier bb = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+    VkBufferMemoryBarrier bb = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
     bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     bb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     bb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -865,7 +912,7 @@ static int cap_write_file(void) {
     if (!s_cap_buf || !s_cap_map || !s_cap_path[0]) return 0;
     if (!cap_ensure_parent_dir(s_cap_path)) return 0;
     if (s_cap_noncoherent) {
-        VkMappedMemoryRange rng = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+        VkMappedMemoryRange rng = { .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
         rng.memory = s_cap_mem;
         rng.offset = 0;
         rng.size = VK_WHOLE_SIZE;
@@ -1045,7 +1092,7 @@ static int recover_unenqueued_present(PresentFrame *f) {
         vkDestroySemaphore(s_dev, f->sem_done, NULL);
         f->sem_done = VK_NULL_HANDLE;
     }
-    VkSemaphoreCreateInfo sci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     if (vkCreateSemaphore(s_dev, &sci, NULL, &f->sem_done) != VK_SUCCESS) {
         s_renderer_terminal = 1;
         return 0;
@@ -1176,7 +1223,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         }
         s_swap_img_fence[idx] = f->fence;
 
-        VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkResetCommandBuffer(cmd, 0);
         vkBeginCommandBuffer(cmd, &bi);
@@ -1248,7 +1295,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) { why = "vkEndCommandBuffer failed"; goto fail; }
 
         VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
         si.waitSemaphoreCount = 1;
         si.pWaitSemaphores = &f->sem_acq;
         si.pWaitDstStageMask = &wait_st;
@@ -1267,7 +1314,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         f->source = upload ? VK_NULL_HANDLE : src;
         if (s_cap_state == CAP_ARMED) s_cap_state = CAP_RECORDED;
 
-        VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+        VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1;
         pi.pWaitSemaphores = &f->sem_done;
         pi.swapchainCount = 1;
@@ -1283,7 +1330,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             PresentDisposition fd = classify_present(pr, &fake_presented, &fake_why);
             if (is_enqueued_present(fd)) {
                 VkPipelineStageFlags wstage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                VkSubmitInfo esi = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+                VkSubmitInfo esi = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
                 esi.waitSemaphoreCount = 1;
                 esi.pWaitSemaphores = &f->sem_done;
                 esi.pWaitDstStageMask = &wstage;
@@ -1553,7 +1600,7 @@ static void cap_test_image_destroy(CapTestImage *t) {
 static int cap_test_image_create(CapTestImage *t, int w, int h) {
     memset(t, 0, sizeof *t);
     t->w = w; t->h = h;
-    VkImageCreateInfo imi = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    VkImageCreateInfo imi = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     imi.imageType = VK_IMAGE_TYPE_2D;
     imi.format = VK_FORMAT_R8G8B8A8_UNORM;
     imi.extent.width = (uint32_t)w; imi.extent.height = (uint32_t)h; imi.extent.depth = 1;
@@ -1564,7 +1611,7 @@ static int cap_test_image_create(CapTestImage *t, int w, int h) {
     if (vkCreateImage(s_dev, &imi, NULL, &t->img) != VK_SUCCESS) return 0;
     VkMemoryRequirements mr;
     vkGetImageMemoryRequirements(s_dev, t->img, &mr);
-    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     mai.allocationSize = mr.size;
     mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mai.memoryTypeIndex == UINT32_MAX ||
@@ -1573,7 +1620,7 @@ static int cap_test_image_create(CapTestImage *t, int w, int h) {
         cap_test_image_destroy(t);
         return 0;
     }
-    VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bci.size = (VkDeviceSize)((size_t)w * (size_t)h * 4u);
     bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     if (vkCreateBuffer(s_dev, &bci, NULL, &t->staging) != VK_SUCCESS) {
@@ -1609,7 +1656,7 @@ static int cap_test_image_upload(CapTestImage *t) {
             px[3] = 0xFF;
         }
     vkResetCommandBuffer(s_cmd, 0);
-    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(s_cmd, &bi) != VK_SUCCESS) return 0;
     barrier(s_cmd, t->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1625,7 +1672,7 @@ static int cap_test_image_upload(CapTestImage *t) {
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     if (vkEndCommandBuffer(s_cmd) != VK_SUCCESS) return 0;
-    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_cmd;
     uint64_t perf_submit_started = sr_perf_now_ns();
@@ -2282,6 +2329,26 @@ int sdl3vk_capture_selftest(void) {
             fprintf(stderr, "terminal state: refused arm exposed stale result=%d\n",
                     sdl3vk_capture_result()); ok = 0;
         }
+    }
+
+    /* Test 7: a quit consumed by a present is not lost. The present path drains the
+     * event queue every frame, so a window close almost always lands there; the
+     * process-exit decision is made later by sdl3vk_poll(). */
+    {
+        s_renderer_terminal = 0;
+        create_swapchain();
+        SDL_Event quit_ev;
+        SDL_zero(quit_ev);
+        quit_ev.type = SDL_EVENT_QUIT;
+        if (!SDL_PushEvent(&quit_ev)) {
+            fprintf(stderr, "quit: SDL_PushEvent failed: %s\n", SDL_GetError()); ok = 0;
+        }
+        (void)sdl3vk_present_rgba(px);
+        if (sdl3vk_poll() != 0) {
+            fprintf(stderr, "quit: a quit consumed by a present was lost; sdl3vk_poll() still reports alive\n");
+            ok = 0;
+        }
+        s_quit_requested = 0;
     }
 
     int errors = sdl3vk_validation_error_count();

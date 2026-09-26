@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/flight_recorder_schema.json",
   "$comment": "SPDX-License-Identifier: GPL-3.0-or-later",
-  "title": "Nakagawa Recomp Flight Recorder Bundle v2",
+  "title": "Nakagawa Recomp Flight Recorder Bundle v3",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "runtime", "build", "recorder", "terminal", "events"],
   "properties": {
-    "schema_version": {"enum": [1, 2]},
+    "schema_version": {"enum": [1, 2, 3]},
     "runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -20,11 +20,14 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["compiler", "compiled_date", "compiled_time", "pointer_bits"],
+      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; a schema_version 3 bundle must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
+      "required": ["compiler", "pointer_bits"],
       "properties": {
         "compiler": {"enum": ["gcc", "clang", "other"]},
         "compiled_date": {"type": "string", "pattern": "^[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4}$"},
         "compiled_time": {"type": "string", "pattern": "^[0-9]{2}:[0-9]{2}:[0-9]{2}$"},
+        "source_date_epoch": {"type": ["integer", "null"], "minimum": 0, "maximum": 253402300799},
+        "build_id": {"type": ["string", "null"], "pattern": "^[0-9a-f]{7,64}$"},
         "pointer_bits": {"enum": [32, 64]}
       }
     },
@@ -74,7 +77,7 @@
         "additionalProperties": false,
         "required": ["schema_version", "sequence", "class", "kind", "arg0", "arg1", "arg2", "arg3"],
         "properties": {
-          "schema_version": {"enum": [1, 2]},
+          "schema_version": {"enum": [1, 2, 3]},
           "sequence": {"type": "integer", "minimum": 1},
           "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal"]},
           "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295},
@@ -105,7 +108,7 @@
             }
           },
           {
-            "if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
+            "if": {"properties": {"schema_version": {"enum": [2, 3]}}, "required": ["schema_version"]},
             "then": {
               "if": {
                 "properties": {"class": {"const": "hle"}, "kind": {"const": 1}},
@@ -132,6 +135,27 @@
     {
       "if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
       "then": {"properties": {"events": {"items": {"properties": {"schema_version": {"const": 2}}}}}}
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": 3}}, "required": ["schema_version"]},
+      "then": {"properties": {"events": {"items": {"properties": {"schema_version": {"const": 3}}}}}}
+    },
+    {
+      "if": {"properties": {"schema_version": {"enum": [1, 2]}}, "required": ["schema_version"]},
+      "then": {"properties": {"build": {"allOf": [
+        {"required": ["compiled_date", "compiled_time"]},
+        {"not": {"required": ["source_date_epoch"]}},
+        {"not": {"required": ["build_id"]}}
+      ]}}}
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": 3}}, "required": ["schema_version"]},
+      "then": {"properties": {"build": {"allOf": [
+        {"required": ["source_date_epoch", "build_id"]},
+        {"not": {"properties": {"source_date_epoch": {"type": "null"}, "build_id": {"type": "null"}}}},
+        {"not": {"required": ["compiled_date"]}},
+        {"not": {"required": ["compiled_time"]}}
+      ]}}}
     }
   ]
 }

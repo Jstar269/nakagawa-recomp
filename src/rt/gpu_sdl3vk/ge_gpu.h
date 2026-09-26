@@ -8,6 +8,22 @@
 #define GE_GPU_H
 
 #include <stdint.h>
+#include <stdlib.h>
+
+/* Pure parser for the render-scale environment (Settings > Internal Render
+ * Resolution). The explicit diagnostic SR_GPU_SCALE wins when present; otherwise
+ * the player-facing SR_RESOLUTION_SCALE is used. Values clamp to
+ * [1, max_scale]; missing or non-numeric input yields 1 (native). */
+static inline int sr_parse_render_scale(const char *gpu_scale,
+                                        const char *res_scale,
+                                        int max_scale) {
+    const char *raw = (gpu_scale && gpu_scale[0]) ? gpu_scale : res_scale;
+    if (!raw || !raw[0]) return 1;
+    long parsed = strtol(raw, NULL, 10);
+    if (parsed < 1) return 1;
+    if (max_scale >= 1 && parsed > (long)max_scale) return max_scale;
+    return (int)parsed;
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -177,10 +193,11 @@ void gegpu_replay_stats_reset(void);
 void gegpu_replay_stats_get(GeGpuReplayStats *out);
 void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out);
 
-#if defined(SR_GPU_COHERENCE_SELFTEST) || defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
+/* Selftest entry points: defined only in selftest builds (see ge_gpu.c), but
+ * declared unconditionally so no translation unit ever sees an implicit
+ * declaration under any flag combination. */
 int gegpu_coherence_selftest(void);
 int gegpu_snapshot_sync_selftest(void);
-#endif
 
 void gegpu_shutdown(void);
 
