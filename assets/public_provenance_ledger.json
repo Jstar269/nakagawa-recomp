@@ -493,7 +493,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "10ae313da81215465d6ec9e9c45eb09e4f2647dd43197ca766d8ade4f14fded7"
+      "sha256": "2e9a96e99e1f3166cf4197cee6703f5fb0c8a9ee77ef7cce5ed59f491955bf01"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -922,7 +922,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e08b5cbacc74c064e2b28eff6a2252fa44b0f6231abdf3e93118dac12120d727"
+      "sha256": "3ac7a11c28a2d164cf7fa321e59bcb1a5ec63294b1e921de719efe93551d7eb0"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -8840,6 +8840,18 @@
       "sha256": "1d58e21d367b02668e80296feaf2d6962432eef0b25091ae141da03f58b079f9"
     },
     {
+      "path": "tools/test_vblank_ledger.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vblank-ledger",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "7aa3e5ee2fe05b9520b4a6577c6d1e1e08122acc2cf0e9273d50802e7238876c"
+    },
+    {
       "path": "tools/test_vfpu_addressing.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9139,6 +9151,18 @@
         "upstream_attribution": null
       },
       "sha256": "a416e68b4ba4c1317ccb5dbf686c99d8d055b9ea93f7639c6f9e11e44268b886"
+    },
+    {
+      "path": "tools/vblank_ledger.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vblank-ledger",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6bd11bb3b01df00ff2986731b3e8b5b54a8bda41096e1ff406a5e863ae68309b"
     },
     {
       "path": "tools/verify_gates.py",
