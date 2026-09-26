@@ -1426,7 +1426,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b498ac3146d644e926cf0e2f8c64329baffc50e06c8cf4291899dc91602735dc"
+      "sha256": "46446288859e0aeb403d45d12ff8cce49e99580106dd0e8bed1cb7f623a30169"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -1462,7 +1462,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b180e09f8dc727f7bae024b2eaa5416c8bab12a65e43255d2124ba7b43570f7c"
+      "sha256": "5f5c4b2449fc761dc3f43852d6fa24187b5b311565275ed3314144b3334720eb"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -1474,7 +1474,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1e60495dcbe20209ea0884284dee7618a6a4277232cc4c5814056a2150ce78b3"
+      "sha256": "4c5b67d899cbe3bd03b1b0bbf49e771f4f1f9176f8c6224a6e79c582e675f311"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -2032,7 +2032,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cffdaa909f8783b1d79f955a6faf67327171e468a0eab452e28aba88a6000ec6"
+      "sha256": "1c148d9c4ca6b335acc0160c23dc0567bd3f330ada5c5525b06dcc8b01519618"
     },
     {
       "path": "nk.ps1",
@@ -6532,7 +6532,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "51438bd10165d3b4586c30d8e9ba72eaac933f03ccfcbb311fea102c055582e1"
+      "sha256": "f38f188597ea454b2336612f5c32a93a76c92511082792d2d92e5ff362e7f7cc"
     },
     {
       "path": "tools/test_analyze_toml_emit.py",
@@ -6544,7 +6544,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c8025e0a229b7de7a0ef912776718782e34946df7a012fd2be2ecdd09773988"
+      "sha256": "f240c4815ed6e3f04401215d4c4aa7ca292df01dd102f639638e1dea2aae92bd"
     },
     {
       "path": "tools/test_analyzer_span_scope.py",
@@ -6580,7 +6580,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eaa280f0bcb27d56c4df9fc0a4a6b01dbd788240a3d3d7cf39e4fabab8e56cee"
+      "sha256": "746eb366e4429308ee0691fcf83f870476b319ac8e343f973a5861fa42760557"
     },
     {
       "path": "tools/test_boot_gate.py",
@@ -6640,7 +6640,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "35ea7a2a10f6471b84648d651abdebdd22f4fdd57bb5faa5c7de3a7e0c79a95f"
+      "sha256": "728ed9d4bb3f08bc0c2319deaa4b2d2a2509a5c8b4c940a3394bfa710afb9a88"
     },
     {
       "path": "tools/test_ci_paths.py",
@@ -6676,7 +6676,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7607c4c3771e2b76dd8916c6363f978cf1f0f3fb375c1dcd379fcfc59f19125e"
+      "sha256": "6a05676de92e16023e2f5363ccb9fa263b0e51e474720821e3f3f4c11841a11e"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
@@ -6688,7 +6688,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8dc6a360a35545b57da20a4d2b3a65e1338deab866f36d6748f68fe1e70218e3"
+      "sha256": "bf000b8eecf0a48f632432542a4334f187fb4c9dda266ad29d7df8489537a149"
     },
     {
       "path": "tools/test_codegen_fp_convert.py",
@@ -6700,7 +6700,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bfb45e5f8940098de7fcd42188276a8c613b769eee204e666e734eb7b2b2b393"
+      "sha256": "8c73834c8bc2a7b20e5be5345f69b5bd015c095c1c2ad690bf0b884b27dd5920"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
@@ -6725,7 +6725,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94342ea86a9c2dd05d6156658797db4adbd88857355e4ea864924f1948bcc365"
+      "sha256": "c61ce08eabf964877417e00999aa818fed93741f72aa9488e059b958b78cbcbf"
     },
     {
       "path": "tools/test_codegen_nan_trap.py",
@@ -6749,7 +6749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "59739c655cfdaf21e09e175c0612ba80af8f0bb0323c47bd47db59fa9dea9377"
+      "sha256": "fe82f67562d4ddf35fd42843585716e522099c4b67f47ad53cc76bc668ce3d6f"
     },
     {
       "path": "tools/test_codegen_profile_isolation.py",
@@ -6761,7 +6761,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16fc85f0b79da5b82926c78b29b2f4d057c75edf656fa5941bd836de47dfbef8"
+      "sha256": "c7b401f4fca51b5fc09f71102910fb04923e4e43e7f6efa851aaac64d0da5ffd"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
@@ -6773,7 +6773,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b3c8ec2660e11aac65e5f5680b1f927577fe8b42f052831e93d66ffb665716cc"
+      "sha256": "98c385b86fc843dd8a6267f07f5bebe6842a4d8f25134d4bf93e0d3272db036c"
     },
     {
       "path": "tools/test_codegen_static_verify.py",
@@ -6785,7 +6785,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd2e182f942ed75045ee3008b598e225871f2846b7017b55da10f95632181cad"
+      "sha256": "8f7951b96780a2627d5b86113f897ef961bee8104382641edfda0f9d05d0bfd9"
     },
     {
       "path": "tools/test_codegen_transfer_target_timing.py",
@@ -6797,7 +6797,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "acf6dc677690ef5394eb968102f7859589809c6cb67efc02793c123e376cb416"
+      "sha256": "47ed1a585ebf7de94a3400a609e508049501c846172de34422a671f6dcdea062"
     },
     {
       "path": "tools/test_codegen_vfpu_fallback.py",
@@ -6809,7 +6809,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e380d286a2a01559a94ec510f2884825d85a358392323a7063a4686f869a1933"
+      "sha256": "3ba8a59573a04d940c3e1af267eb0fec5d1b5dea2748a3e8c79e80d7a9c59920"
     },
     {
       "path": "tools/test_compat_manifest.py",
@@ -6821,7 +6821,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a07856ad981bb8fc0f038e303fc24fc59be6f3562ed9d1a5ca428108497a20f"
+      "sha256": "83c2f4dc26f2acc6909a217fe6ed40ceea9e5c64671c421e23578604ac4b1bbf"
     },
     {
       "path": "tools/test_contrib_check.py",
@@ -6845,7 +6845,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b47ac3c8b070087c447bb918f4b459fc9a2652fdb01fa7af299099dc1ded288d"
+      "sha256": "f20ec35625985e0d3be82b0f33c1626b181ee1dcb2fe14293212abdb17737169"
     },
     {
       "path": "tools/test_cpu_lle.py",
@@ -6869,7 +6869,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "41980f9231e4332e27b22a10a372b83440240e2a211e92c6bfbf743d93821f8d"
+      "sha256": "1df4e433b0cfe31252f9b9481c6a88e9430493ef1193caaf3996dfb3298b1ebe"
     },
     {
       "path": "tools/test_debug.py",
@@ -6881,7 +6881,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "454cabd8d775acffd4f5e102c93fed7f2ec046c0d0cd20b36854c3499886e07e"
+      "sha256": "ce80b89e4c0a2bab5e397ddc62a5eb0e3ab4669b578db3648c4cab3a0db82ab8"
     },
     {
       "path": "tools/test_decompme_export.py",
@@ -6893,7 +6893,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0cd9688ddf26b5afa8c7ccded25180a36f618a84a158e09740830a3621e28f10"
+      "sha256": "70730b8976c77945a947611b227c7466b8f022d8c40629e432afee4adabe0857"
     },
     {
       "path": "tools/test_direct_j_omission_mutation.py",
@@ -6905,7 +6905,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8c8173cda45f98d5fd1a65f8b81e33a497f87d401519616ef31b265ea6eede33"
+      "sha256": "0628b81aa32cb2e279543b0469f0f5a776d0d023cebd9a7db5eea30cf4176102"
     },
     {
       "path": "tools/test_discovery_contract.py",
@@ -6917,7 +6917,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1fabbb86b372cdd638f3d62184e27580e9bd270acad0336ee7b089bdac43306"
+      "sha256": "ea59acaf3833f75169f5d2d8916b9185372ae74b61e0d28090b14ac4d822c765"
     },
     {
       "path": "tools/test_dispatch_c.py",
@@ -6929,7 +6929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4d1135499618fc78aa3d0ec1b9aeefd960fb9e743a3487897cdfab4d566f00d"
+      "sha256": "af5c58e836563242e63f03f180c998ab9e3268c34047be7acf3eed830af7328e"
     },
     {
       "path": "tools/test_dispatch_call_boundary.py",
@@ -6941,7 +6941,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "454967c27b58b438ce1ec0bc97ac62d1267c81780807fc98929aabe42d848d94"
+      "sha256": "65ddf39a57f366e65abc5953247d8e3f22ef8190e2ad5c0f89d5fe3c2ca3394c"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -6965,7 +6965,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a0ac55ba846e6d6a7ded7545c8e26117927b7190068ced6719f9eb826da72a67"
+      "sha256": "bb60ebafa4973bcac3df26ef07138b2ee68cafe2ee0298377a88773ba464e9a4"
     },
     {
       "path": "tools/test_domain_mode.py",
@@ -7013,7 +7013,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "69c90b61000f08a0d6c048b9e985c1e4d1f5f6b807800b9b1df28140b5996dd4"
+      "sha256": "98a564325bf9fa66ce133a052d933707d01705504a5c9ef97a0378c68b498492"
     },
     {
       "path": "tools/test_evf_c.py",
@@ -7025,7 +7025,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6d0a5e3941891b4d0d0a225e4ba3f27f415ef2013909210acd6df78498727041"
+      "sha256": "ef9fe93ff60582887de4622948aff242a8ff72476aca5241ff79af03f528d33f"
     },
     {
       "path": "tools/test_evidence_model.py",
@@ -7049,7 +7049,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c3661e99445b17ed88f33a60198f458328dfe46e68e7f53b35f79df6b673878"
+      "sha256": "f6e551b7a3bc1f87157da6fede65b9bc4c99c4836523dc233a3ef92a2a0b0990"
     },
     {
       "path": "tools/test_extract_xb_probe_fallback.py",
@@ -7121,7 +7121,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7f69fd2002ffaa6a5c84618ce350ea5c460fd9d8aad8111359ebddf2a4d15cf"
+      "sha256": "ae19e3466a996b767d015f561e48f7d09430d0e94fb7206dd512685d99eeb801"
     },
     {
       "path": "tools/test_funcdiff_cmp.py",
@@ -7145,7 +7145,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0af6459294089f3f52a94e74805dac94c18ac1e65d59608f439cb6f948346375"
+      "sha256": "ca070dba93b4cb5da24991cc153f31ababbcb5e79ed37468b25e3e8c172f366c"
     },
     {
       "path": "tools/test_ge_capture.py",
@@ -7157,7 +7157,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cda06d44c0b26503bd92696a8db4e76be9afdd33d11d19327b518194ae1871c0"
+      "sha256": "7a14eb08ffe2d52c393d0a835a7e557115be678d8bccf1f0a940615cf032e936"
     },
     {
       "path": "tools/test_ge_transition_trace.py",
@@ -7217,7 +7217,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "896a0211627558b827de16c931ba9f8bb76f2550c488ffef197583687a512c74"
+      "sha256": "93e338c63ba36bf3c51210fc086e2a2046413ea2632e225bc0d59a71336afb8a"
     },
     {
       "path": "tools/test_guest_span_routing.py",
@@ -7229,7 +7229,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a41c6815361704e0cfae4feae1c3f407d1047f51974ecfec445b5ff880e1fe5f"
+      "sha256": "bebe42536ee128460d3a071bfb42d7b06b3b443b6264ec6d83f4cabe7d6a6026"
     },
     {
       "path": "tools/test_guestmem_c.py",
@@ -7241,7 +7241,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3a791304e18172271ffb7ba66e4829a1744924812774804494cebd9bf7a448fd"
+      "sha256": "3010527ea87953bb3b399648f13d39c73bae7729c74aec7cb915cb00d83eac95"
     },
     {
       "path": "tools/test_hardware_runner_protocol.py",
@@ -7314,7 +7314,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce04d1e895cd17798b41acd1ad8d8c47846e73a8f6f47e9fc527f1051a0d38c5"
+      "sha256": "bafc3867ba63eee8bd2f4e93f8a05c539f5772f75ba830705ceb1d98aec8a00d"
     },
     {
       "path": "tools/test_hst_doctor.py",
@@ -7374,7 +7374,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cc1d36a89721a46dbe1a36db9b37ba1bffb33ae98efeae74cf91dc747bda0f18"
+      "sha256": "457c574b50f2590728085dcfcce7fd8d2daf3f90c2d2fbec4e1b1fd4177a30de"
     },
     {
       "path": "tools/test_import_name_safety.py",
@@ -7386,7 +7386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2bbed677974a2d28674fa5e6d1b2d0f27d671d2ec0f1aed85a47f928b29bc417"
+      "sha256": "f5f6c9d11f0c27e2645f666ae4c2dd67ce09b182003d59edb1adfa301b2ba393"
     },
     {
       "path": "tools/test_imports.py",
@@ -7398,7 +7398,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "51bbdb2639a2aa01b4daec328170d0f4fb70909c72e1a6da14967831bd3de8c0"
+      "sha256": "7706bce2d0418a142b8839b4568268f136edefc9c1828be67f2a599d3bff5671"
     },
     {
       "path": "tools/test_incident_regression_private.py",
@@ -7410,7 +7410,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "692861e05d4d4242bfc68dcc3a32ab0e252e0d267aa7c6a0b283f061aaca8146"
+      "sha256": "81eddf9dcd92d043add567f50cf66ee0c43655e8eee534ce0f201edbf3391aa2"
     },
     {
       "path": "tools/test_intr_waits_matrix.py",
@@ -7422,7 +7422,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab322063a27cff3f3509fd87a0a71fa643c8ca5ae2588959de6c6a1b92f7e8f7"
+      "sha256": "c1a8ce2aa314b3814c895166082df953e7ea88d47eac109488a6b1e73b5c0416"
     },
     {
       "path": "tools/test_iso_parity.py",
@@ -7446,7 +7446,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dc6742e97e2eba408264ab0ff9aef9168fcd35d03be5c5391f5277e4993859e8"
+      "sha256": "eb2aedb0d3e647b83f4fc2dc682003d900c57c9ecf43460218bcff926946ae9c"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -7470,7 +7470,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "913901c51f927548b6360084b245284219abaa4368c1a9a4137c9122af5fdea4"
+      "sha256": "7a9b86422ba604f96ec540500b5796496c6191e07e1dc54ec414a0bbd1a462fd"
     },
     {
       "path": "tools/test_manager_safety.py",
@@ -7482,7 +7482,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "218a61c0435a716393f448b5535daf494650e2794c234b70a4a67872dc77288e"
+      "sha256": "de8d58113ac145bf7ab5b4adeb3c87ec7c21a74781945083357327acfcdf4508"
     },
     {
       "path": "tools/test_manager_symbol_docs.py",
@@ -7494,7 +7494,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "763b3ef6eeac36005169511a7fef14ee36420fdb42539a4a20c41d1a0e39f8a7"
+      "sha256": "a5fb8e2f08042e340bee7f9e9f43e56559a4c2cfe7d7d8c460d4e09b9f4eba28"
     },
     {
       "path": "tools/test_matrix_disposition.py",
@@ -7506,7 +7506,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f389ae20c9c8ac62133febaae1157bcd66c52016669e961e2f61380e2d470b06"
+      "sha256": "33779f2ac908d00c0f11acc31def136ec4bbf383e1f3964bf7d9c663cb2928e3"
     },
     {
       "path": "tools/test_matrix_report.py",
@@ -7554,7 +7554,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d718df8c6b54194b8e6d8aa9485a26994ec05e88c1016d1df178b9c71474da13"
+      "sha256": "2c39dbdf6c77a72415f2a1035c0e0a3ab791ab3fdf53efe8f316b612c64804a5"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
@@ -7566,7 +7566,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "83d8e6228c2b8e83958c935fd80e47f00cf84c6538b682ff2c41a2481108153b"
+      "sha256": "904774175ed29ce451446bc7bc1f526f5acb2e72a6294cba05dfc9c2200667eb"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
@@ -7578,7 +7578,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6172f5f131bad2c28247744e600e450f2adb12827af21ce388ced4166de12e89"
+      "sha256": "664b171a69091d117b638d733881700bbea498c09aafdc1fd8f7984e555f2e4e"
     },
     {
       "path": "tools/test_native_host_backends.py",
@@ -7686,7 +7686,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "85991c6985235193fca0fb3f0b9a0d1d885b697ab42716bb4014257aad3c42ad"
+      "sha256": "de1981d7479d8699026935564e31c71f1bdb0baabd10b64e83d72e9743e51726"
     },
     {
       "path": "tools/test_parse_fuzz.py",
@@ -7698,7 +7698,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ef73d834a8c705f61f716e98d4bd697ac9b016897eca60f3479417f3530ed80"
+      "sha256": "d59a1707056ecd36b3f8435b2e0fb62dd5b1bc57267153f876b2478272ce5f87"
     },
     {
       "path": "tools/test_perf_summary_diff.py",
@@ -7794,7 +7794,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd6d1a8754ba16b93d80673fffcba96e49c1ae59a0470343cd6e5c905e023b96"
+      "sha256": "3754982c0d345f954c381d6886bcf1928179a9c941386d0a3682e96833652881"
     },
     {
       "path": "tools/test_progress_tracker.py",
@@ -7806,7 +7806,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70a3e7056565f1d28f46511175578d891dc7c73fc4ad885d03bdc0d58ab33870"
+      "sha256": "0de5a236364e5d51758d626e899186003962d7e8ba69be92e1ed1845af824fd1"
     },
     {
       "path": "tools/test_provenance_attest_verify.py",
@@ -7866,7 +7866,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6960f7ff7a8e06b1104d76b7aefe718c08e1f99b6f8049f5ec35e3608abd0dc5"
+      "sha256": "6177cd4cd03fab813292213fd59b83ed559d62f5288d4a0334ffbd684857da57"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -7878,7 +7878,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bdd4ef7a3ac6999d8659b32ac06b2571368e19c2a87a29ddf8c65a590891107c"
+      "sha256": "a1d7cb037b00998cb872c3d932d2e9fda781244010bd401a9cb9bd61309dde3c"
     },
     {
       "path": "tools/test_prx_loader_cleanroom.py",
@@ -7902,7 +7902,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f71e664ce64742d1035eafaf1c9466a3e9d97ecccf1c7e1c4ee3328fe6c1e3f2"
+      "sha256": "1234c22165fa16274d2c177e657d9df0addf6866650df6308255882eac9e8e52"
     },
     {
       "path": "tools/test_prxload_relocations.py",
@@ -7914,7 +7914,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c30029c9e86dcfd10846b17a51ba1852e4b114b46dba8eb16f2b0bb983e8803a"
+      "sha256": "291e0806e5a2c170b62fe04713f1661fe0373effc5b4d6dc75655c9803f5f4e0"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",
@@ -8034,7 +8034,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee39c2bda54b96c61615fe55d695eac3b96584cc6acf39533ceaf02e4b673db5"
+      "sha256": "98e5f845ae6ad795f661f557efdad30fd4196f640a6acb5af3b5d2670cd1470c"
     },
     {
       "path": "tools/test_public_ci_wiring.py",
@@ -8046,7 +8046,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6aa8a46f629efcb55530a5d23592ba101d598126848c331a8403a922d620fff"
+      "sha256": "0437ccd337351ed09ba8d098a8135e704c3bd4743ac67401c0d2671f35042522"
     },
     {
       "path": "tools/test_public_export.py",
@@ -8058,7 +8058,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aeeb49ac4f45bff8aed94db98079812d1e395d33cc7f9f8bbdaa11bd9ad75ded"
+      "sha256": "3f0aee8e0c7a073b22345a72d2e6f57507f66645aa3de1ffdd77464e475f3f95"
     },
     {
       "path": "tools/test_public_title_isolation.py",
@@ -8118,7 +8118,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "779a8637b59f26b19f6d61116c40970274a26e76d2b3e889db61813ef2aef9ee"
+      "sha256": "9177460e0e75d55c6345e6fe02c4acab212c9f5582bc8ec6a6901b10b9aa30eb"
     },
     {
       "path": "tools/test_release_manifest.py",
@@ -8142,7 +8142,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f371069a9ee7779ae0a3476ea86315904b8de1a9f2091b14530b8c48132b05e8"
+      "sha256": "cc99d276e222adfaed23b44d55b0eb483f41adb8ddd499f61c0c445692034ce5"
     },
     {
       "path": "tools/test_savedata_spans.py",
@@ -8203,7 +8203,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50414d8768c590ca7c22a1bb911ddbe0b0dd5f5ccde27781e4d4bd9f9cd8f1f0"
+      "sha256": "5c97d74c5d556bf599f080691eba48e021fba1f5f11ad68da5edf65e1e566d93"
     },
     {
       "path": "tools/test_sdkver_c.py",
@@ -8215,7 +8215,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd30940cbcbf11cbb8b050fe3889b52369abdf3607f0869d7d7c022b0b8320ba"
+      "sha256": "1b083a7f4aac621aa5246d83fd39d1382e93f53506337603664536c985723825"
     },
     {
       "path": "tools/test_second_title_ingest.py",
@@ -8239,7 +8239,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae51f20e4e4e1626d3b545224a9ee034d12413a49e0ed41d0195a31bb3af0d9a"
+      "sha256": "d6374e6871b8eec1c471c45c8de711c54b97cd5f2869ac7e2028210d523fb521"
     },
     {
       "path": "tools/test_showcase.py",
@@ -8491,7 +8491,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f63d986bafdb3c7237e6fda1e5431cce31fc2b380dc846d8d963acdb6aa222dd"
+      "sha256": "c55eaaca5c758dd1f904730d76ce7ab0c97af36a2998f99b85a29244cad32024"
     },
     {
       "path": "tools/test_vfpu_nan_payload.py",
@@ -8527,7 +8527,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "58621998bebe3a766307d368942cf5125b0f40e9e134e5cfb42f940941b8b308"
+      "sha256": "bc39a6a6e704005bc09225317874969fe298ce5a1371db713c62da1aa2b44286"
     },
     {
       "path": "tools/test_vfpu_synth_corpus.py",
@@ -8539,7 +8539,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "01285ddbea820b62d3d1b9f910b054d1fee9e5ecf06ccb7f19f7b7e2eb3b2e0e"
+      "sha256": "7d83d794e37d756e2e608e27f5bb7c5253fafbfcb9ec0c40f9088006d8a6972c"
     },
     {
       "path": "tools/test_vfpu_table_manifest.py",
@@ -8551,7 +8551,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1869c94e6ed67a186bddd53aa3c4775be7399f21f6e953a3cd76b17825583174"
+      "sha256": "b486aaa95826597464d8fb6073b78dc87e3b0175e48f357b63539e6716bbf017"
     },
     {
       "path": "tools/test_vfpu_trace_bits.py",
@@ -8563,7 +8563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f08f66b8011ba3beb4717b98f62ca11a69e7196d459ca2b1f4f19586181b8dd9"
+      "sha256": "7a62e65fb50f175996f90c4c0ee550357253bff76310a9a2c445ced211ce89dc"
     },
     {
       "path": "tools/test_vfs_c.py",
@@ -8575,7 +8575,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c7ab07f593953e2c431f90a77689befe3dbdc73ec9cc54146499c5eb856d11e"
+      "sha256": "884cb8ed8192a1ac83e76991924df7672b2264761170b7902ab216c48002c6fd"
     },
     {
       "path": "tools/test_vfs_contained.py",
@@ -8587,7 +8587,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c75a8b61b8b6161f4901f997d14bcc1b761109ad1c2cf2bcda442bbb5ad17723"
+      "sha256": "6cf5233908c031c870ff76727750220a4174a5e0ec417e18e831194afa87a11f"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
@@ -8599,7 +8599,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0834bca920e6f30136d847a15dc1117a1827e2c19b7a119090f187b1e4e3a651"
+      "sha256": "ac7f3f448cdef20741e6e29e49531822e47b79199a9e17d2725df03339791558"
     },
     {
       "path": "tools/test_visual_oracle.py",
@@ -8611,7 +8611,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3fea96ac3e98cd0dfc6dbb4e6e4dac7761b553447924ae92551b4c9cc7c87683"
+      "sha256": "865b200ee34b20efa38e403d841232ad354e000c92bd782ea2cf61136871b354"
     },
     {
       "path": "tools/test_vulkan_sdk.py",
@@ -8623,7 +8623,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6dfdbfc789c297ed8bd65cac1dac749147ff331e885aa7386e835237bb86502"
+      "sha256": "f47a3a0cfb48f45e1d864f8c108248fadf7d99638a0bedace4e0a0e96fb8a1f1"
     },
     {
       "path": "tools/test_waits_census.py",
@@ -8659,7 +8659,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "51b1ae565796bee574a85472b0e8e42503535b8ff40a45b4ccfcfc062e3234e8"
+      "sha256": "94f50f10f633cc2c194fb702e03da105d32ef0e4acb180fd2132d8f120c487d0"
     },
     {
       "path": "tools/title_catalog_codegen.py",

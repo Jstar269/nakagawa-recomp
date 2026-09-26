@@ -76,7 +76,23 @@ class TestInventoryShape(unittest.TestCase):
             and path not in covered
         }
         self.assertEqual(reported, expected)
-        self.assertTrue(expected, "the batch is empty, which would mean the gate stopped asking")
+
+    def test_a_path_the_gate_asks_about_is_reported_once_uncovered(self) -> None:
+        """Remove one covered implementation path: the inventory must name it.
+
+        The live repository may have no gaps at all once every path is admitted,
+        so the gate's question is proved on a constructed gap instead."""
+        covered = gap.exact_paths_from_public_ledger(LEDGER)
+        policy = gap.load_policy(ROOT / gap.POLICY_PATH)
+        asked = sorted(
+            path for path in covered
+            if policy.resolve(path).disposition == "included"
+            and provenance_ledger.admission_requires_implementation(path)
+        )
+        self.assertTrue(asked, "the gate asks about no covered path, which means it stopped asking")
+        victim = asked[0]
+        reported = {item["path"] for item in gap.record_gaps(covered=covered - {victim})}
+        self.assertIn(victim, reported)
 
 
 class TestAgreementWithTheGate(unittest.TestCase):
@@ -121,7 +137,24 @@ class TestAgreementWithTheGate(unittest.TestCase):
 
 class TestOutput(unittest.TestCase):
     def test_check_mode_fails_closed_while_gaps_exist(self) -> None:
-        self.assertEqual(gap.main(["--repo", str(ROOT), "--check"]), 1)
+        from unittest import mock
+
+        covered = gap.exact_paths_from_public_ledger(LEDGER)
+        policy = gap.load_policy(ROOT / gap.POLICY_PATH)
+        victim = min(
+            path for path in covered
+            if policy.resolve(path).disposition == "included"
+            and provenance_ledger.admission_requires_implementation(path)
+        )
+        with mock.patch.object(gap, "exact_paths_from_public_ledger",
+                               return_value=covered - {victim}):
+            self.assertEqual(gap.main(["--repo", str(ROOT), "--check"]), 1)
+
+    def test_check_mode_passes_when_no_gap_exists(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(gap, "record_gaps", return_value=[]):
+            self.assertEqual(gap.main(["--repo", str(ROOT), "--check"]), 0)
 
     def test_the_inventory_mode_is_not_a_gate(self) -> None:
         self.assertEqual(gap.main(["--repo", str(ROOT)]), 0)
