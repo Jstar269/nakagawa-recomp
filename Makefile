@@ -620,6 +620,7 @@ PUBLIC_TARGETS := \
 	test \
 	native-core-tests \
 	player-ui-tests \
+	player-ui-regressions \
 	fuzz-parsers \
 	readiness \
 	provenance-refresh \
@@ -733,6 +734,7 @@ HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
 HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
 HELP_DESCRIPTION_player := build the native player
 HELP_DESCRIPTION_player-ui-tests := build and run native player UI tests (needs SDL3)
+HELP_DESCRIPTION_player-ui-regressions := run scripted native player UI event and recovery flows (needs SDL3)
 HELP_DESCRIPTION_public-safe-verify := build public-safe host-neutral core objects
 HELP_DESCRIPTION_production-smoke := run the public production-composition smoke test
 HELP_DESCRIPTION_production-smoke-staged := run the production smoke from a staging directory outside the build tree
