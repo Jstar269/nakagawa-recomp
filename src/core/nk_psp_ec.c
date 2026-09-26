@@ -307,12 +307,32 @@ int nk_ec_point_mul(const NkEcParams *params,
     return 0;
 }
 
-static void mod_reduce_to_n(const uint8_t *x, const uint8_t *n, uint8_t *out)
+/* out = x mod n by shift-and-subtract: exactly NK_EC_Len * 8 steps whatever
+ * the curve order is. Repeated subtraction (the earlier form) ran for up to
+ * x / n iterations, which a key file with a tiny order turns into a hang.
+ * The running remainder r stays below n, so 2r + bit < 2n; a carry out of
+ * the shift means 2r + bit >= 2^160 > n, and one subtraction modulo 2^160
+ * lands on the true value in both cases. */
+int nk_ec_mod_n(const uint8_t x[NK_EC_BYTES], const uint8_t n[NK_EC_BYTES],
+                uint8_t out[NK_EC_BYTES])
 {
-    memcpy(out, x, NK_EC_Len);
-    while (ge(out, n)) {
-        (void)sub_borrow(out, n, out);
+    uint8_t r[NK_EC_Len];
+    if (x == NULL || n == NULL || out == NULL || is_zero(n)) return -1;
+    memset(r, 0, sizeof(r));
+    for (int i = 0; i < NK_EC_Len; i++) {
+        for (int bit = 7; bit >= 0; bit--) {
+            uint8_t carry = (uint8_t)(r[0] >> 7);
+            for (int j = 0; j < NK_EC_Len - 1; j++) {
+                r[j] = (uint8_t)((r[j] << 1) | (r[j + 1] >> 7));
+            }
+            r[NK_EC_Len - 1] = (uint8_t)((r[NK_EC_Len - 1] << 1) | ((x[i] >> bit) & 1u));
+            if (carry || ge(r, n) || memcmp(r, n, NK_EC_Len) == 0) {
+                (void)sub_borrow(r, n, r);
+            }
+        }
     }
+    memcpy(out, r, NK_EC_Len);
+    return 0;
 }
 
 int nk_ec_verify(const NkEcParams *params,
@@ -349,6 +369,6 @@ int nk_ec_verify(const NkEcParams *params,
     if (x.infinity) return -1;
 
     uint8_t xr[NK_EC_Len];
-    mod_reduce_to_n(x.x, params->n, xr);
+    if (nk_ec_mod_n(x.x, params->n, xr) != 0) return -1;
     return memcmp(xr, r, NK_EC_Len) == 0 ? 0 : -1;
 }

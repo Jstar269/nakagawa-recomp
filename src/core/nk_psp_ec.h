@@ -44,6 +44,11 @@ int nk_ec_point_mul(const NkEcParams *params,
                     const uint8_t px[NK_EC_BYTES], const uint8_t py[NK_EC_BYTES],
                     uint8_t outx[NK_EC_BYTES], uint8_t outy[NK_EC_BYTES]);
 
+/* out = x mod n in a fixed NK_EC_BYTES * 8 steps, whatever n is (a key file
+ * supplies n).  0 = success; -1 = null argument or n == 0. */
+int nk_ec_mod_n(const uint8_t x[NK_EC_BYTES], const uint8_t n[NK_EC_BYTES],
+                uint8_t out[NK_EC_BYTES]);
+
 #ifdef __cplusplus
 }
 #endif

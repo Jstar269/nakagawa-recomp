@@ -143,22 +143,27 @@ int kirk_CMD10(NkPspCtx *ctx, u8 *inbuff, int insize)
     return KIRK_SIG_CHECK_INVALID; /* checks for commands 2 & 3 not enabled */
 }
 
-/* Load curve parameters (and optionally a public point) from the KeyStore. */
+/* Load curve parameters (and optionally a public point) from the KeyStore.
+ * Both KIRK curves share the prime and a coefficient, so those entries carry
+ * no curve suffix (kirk.ecdsa.p, kirk.ecdsa.a); b, the order and the base
+ * point are per curve (kirk.ecdsa.b1 ... kirk.ecdsa.gy2), matching the names
+ * the KeyStore accepts. */
 static int load_curve(NkPspCtx *ctx, const char *suffix, NkEcParams *params)
 {
-    static const struct { const char *field; size_t offset; } fields[] = {
-        {"p", offsetof(NkEcParams, p)},
-        {"a", offsetof(NkEcParams, a)},
-        {"b", offsetof(NkEcParams, b)},
-        {"n", offsetof(NkEcParams, n)},
-        {"gx", offsetof(NkEcParams, gx)},
-        {"gy", offsetof(NkEcParams, gy)},
+    static const struct { const char *field; size_t offset; int per_curve; } fields[] = {
+        {"p", offsetof(NkEcParams, p), 0},
+        {"a", offsetof(NkEcParams, a), 0},
+        {"b", offsetof(NkEcParams, b), 1},
+        {"n", offsetof(NkEcParams, n), 1},
+        {"gx", offsetof(NkEcParams, gx), 1},
+        {"gy", offsetof(NkEcParams, gy), 1},
     };
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
         char name[40];
         const uint8_t *value = NULL;
         size_t len = 0;
-        snprintf(name, sizeof(name), "kirk.ecdsa.%s%s", fields[i].field, suffix);
+        snprintf(name, sizeof(name), "kirk.ecdsa.%s%s", fields[i].field,
+                 fields[i].per_curve ? suffix : "");
         if (nk_psp_need(ctx, name, &value, &len) != NK_PSP_OK)
             return NK_PSP_ERR_MISSING_KEY;
         uint8_t *dst = (uint8_t *)params + fields[i].offset;

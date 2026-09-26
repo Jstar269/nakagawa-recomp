@@ -15,6 +15,7 @@
 #include "prx_loader.h"
 #include "nk_psp_aes.h"
 #include "nk_psp_container.h"
+#include "nk_psp_ec.h"
 #include "nk_psp_inflate.h"
 #include "nk_psp_keystore.h"
 #include "nk_psp_kirk.h"
@@ -2035,6 +2036,112 @@ static void test_fuzz_inflate(unsigned iters) {
 
 /* ---- KIRK command dispatch on attacker-controlled headers -------------- */
 
+/* A key file carrying every ECDSA entry the KeyStore accepts must satisfy an
+ * ECDSA-signed CMD1 block: the curve loads, and a fake signature then fails
+ * the integrity check. Before the fix, load_curve asked for kirk.ecdsa.p1 /
+ * a1, names the KeyStore rejects, so this path always reported a missing key. */
+static void test_kirk_ecdsa_curve_names(void) {
+    printf("[FUZZ] Testing that an ECDSA key file satisfies the KIRK curve loader...\n");
+    fflush(stdout);
+    static const char *const names20[] = {
+        "kirk.ecdsa.p", "kirk.ecdsa.a", "kirk.ecdsa.b1", "kirk.ecdsa.b2",
+        "kirk.ecdsa.gx1", "kirk.ecdsa.gy1", "kirk.ecdsa.gx2", "kirk.ecdsa.gy2",
+        "kirk.ecdsa.px1", "kirk.ecdsa.py1"};
+    static const char *const names21[] = {"kirk.ecdsa.n1", "kirk.ecdsa.n2"};
+    char json[2048];
+    uint8_t cmd1[16];
+    char cmd1_hex[33];
+    fuzz_fake_key(cmd1, 1u);
+    fuzz_hex_encode(cmd1, sizeof(cmd1), cmd1_hex);
+    int n = snprintf(json, sizeof(json),
+                     "{\"format\":\"" FUZZ_KEYSTORE_FORMAT "\",\"entries\":{"
+                     "\"kirk.cmd1.key\":\"%s\"", cmd1_hex);
+    assert(n > 0 && (size_t)n < sizeof(json));
+    for (size_t i = 0; i < sizeof(names20) / sizeof(names20[0]); i++) {
+        uint8_t v[20];
+        char hex[41];
+        for (unsigned b = 0; b < 20u; b++) v[b] = (uint8_t)(0x40u + i * 7u + b);
+        fuzz_hex_encode(v, sizeof(v), hex);
+        n += snprintf(json + n, sizeof(json) - (size_t)n, ",\"%s\":\"%s\"", names20[i], hex);
+        assert((size_t)n < sizeof(json));
+    }
+    for (size_t i = 0; i < sizeof(names21) / sizeof(names21[0]); i++) {
+        uint8_t v[21];
+        char hex[43];
+        v[0] = 0u;
+        for (unsigned b = 1; b < 21u; b++) v[b] = (uint8_t)(0xF0u - i - b);
+        fuzz_hex_encode(v, sizeof(v), hex);
+        n += snprintf(json + n, sizeof(json) - (size_t)n, ",\"%s\":\"%s\"", names21[i], hex);
+        assert((size_t)n < sizeof(json));
+    }
+    n += snprintf(json + n, sizeof(json) - (size_t)n, "}}");
+    assert((size_t)n < sizeof(json));
+
+    NkKeystore *ks = nk_keystore_create();
+    char err[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, (size_t)n, err, sizeof(err)) == NK_PSP_OK);
+
+    enum { SIZE = 0x90u + 0x80u };
+    uint8_t in[SIZE], out[SIZE];
+    memset(in, 0, sizeof(in));
+    put32le(in + 0x60, 1u);      /* KIRK_MODE_CMD1 */
+    in[0x64] = 1u;               /* ecdsa_hash: signed with the curve-1 key */
+    put32le(in + 0x70, 0x80u);   /* data_size */
+    put32le(in + 0x74, 0x10u);   /* data_offset */
+    for (unsigned i = 0; i < 0x80u; i++) in[0x90u + i] = (uint8_t)i;
+
+    NkPspCtx ctx;
+    nk_psp_ctx_init(&ctx, ks);
+    int rc = sceUtilsBufferCopyWithRange(&ctx, out, SIZE, in, SIZE, KIRK_CMD_DECRYPT_PRIVATE);
+    assert(rc != KIRK_INVALID_OPERATION);   /* the curve and public key loaded */
+    assert(rc != KIRK_OPERATION_SUCCESS);   /* a fake signature never verifies */
+    assert(ctx.missing_entry[0] == '\0');
+    nk_keystore_free(ks);
+}
+
+/* nk_ec_mod_n finishes in a fixed number of steps for every order a key file
+ * can supply (the earlier repeated subtraction hung on a tiny order), and it
+ * agrees with the definition for orders near the real 160-bit ones. */
+static void test_ec_mod_n_is_bounded(unsigned iters) {
+    printf("[FUZZ] Testing bounded reduction modulo a key-file curve order (%u iterations)...\n",
+           iters);
+    fflush(stdout);
+    uint8_t x[NK_EC_BYTES], nn[NK_EC_BYTES], out[NK_EC_BYTES];
+    memset(x, 0xFF, sizeof(x));
+    memset(nn, 0, sizeof(nn));
+    assert(nk_ec_mod_n(x, nn, out) == -1);             /* order 0 is refused */
+    nn[NK_EC_BYTES - 1] = 2u;
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* (2^160 - 1) mod 2 = 1 */
+    for (unsigned i = 0; i + 1u < NK_EC_BYTES; i++) assert(out[i] == 0u);
+    assert(out[NK_EC_BYTES - 1] == 1u);
+    nn[NK_EC_BYTES - 1] = 3u;
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* 2^160 = 1 (mod 3) */
+    for (unsigned i = 0; i < NK_EC_BYTES; i++) assert(out[i] == 0u);
+    memset(nn, 0xFF, sizeof(nn));
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* x == n */
+    for (unsigned i = 0; i < NK_EC_BYTES; i++) assert(out[i] == 0u);
+
+    /* Orders with the top bit set: x mod n is x or x - n (one subtraction). */
+    for (unsigned it = 0; it < iters; it++) {
+        for (unsigned i = 0; i < NK_EC_BYTES; i++) {
+            x[i] = (uint8_t)fuzz_rand32();
+            nn[i] = (uint8_t)fuzz_rand32();
+        }
+        nn[0] |= 0x80u;
+        uint8_t expect[NK_EC_BYTES];
+        int x_ge_n = memcmp(x, nn, NK_EC_BYTES) >= 0;
+        int borrow = 0;
+        for (int i = NK_EC_BYTES - 1; i >= 0; i--) {
+            int d = (int)x[i] - (x_ge_n ? (int)nn[i] : 0) - borrow;
+            borrow = d < 0;
+            expect[i] = (uint8_t)(d < 0 ? d + 256 : d);
+        }
+        assert(nk_ec_mod_n(x, nn, out) == 0);
+        assert(memcmp(out, expect, NK_EC_BYTES) == 0);
+    }
+}
+
 static void test_fuzz_kirk(unsigned iters) {
     printf("[FUZZ] Testing KIRK command dispatch on hostile headers "
            "(%u iterations)...\n", iters);
@@ -2276,6 +2383,8 @@ int main(int argc, char **argv) {
     test_fuzz_inflate(iters > 2000 ? 2000 : iters);
     test_fuzz_kirk(iters > 2000 ? 2000 : iters);
     test_fuzz_kle(iters > 2000 ? 2000 : iters);
+    test_kirk_ecdsa_curve_names();
+    test_ec_mod_n_is_bounded(iters > 2000 ? 2000 : iters);
 
     printf("=================================================================\n");
     printf("ALL DETERMINISTIC PARSER FUZZ HARNESSES PASSED SUCCESSFULLY!\n");
