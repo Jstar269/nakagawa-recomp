@@ -170,9 +170,9 @@
         "recorded_from": "installed dist-info compiledb-0.10.7.dist-info/METADATA (License: GPL-3.0-or-later; Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)); License-File: LICENSE"
       },
       "ruff": {
-        "version": "0.16.0",
+        "version": "0.16.8",
         "spdx_id": "MIT",
-        "recorded_from": "installed dist-info ruff-0.16.0.dist-info/METADATA (License-Expression: MIT); License-File: LICENSE"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/ruff/0.16.8/json (license_expression: MIT; license_files: LICENSE)"
       },
       "click": {
         "version": "8.5.0",

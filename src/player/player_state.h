@@ -76,7 +76,7 @@ typedef struct {
 } PreparationState;
 
 typedef struct {
-    int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p, 8 = 4K */
+    int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     bool fullscreen;
     bool vsync;
     int fps_cap;          /* 30, 60, 0 = uncapped */
@@ -84,7 +84,9 @@ typedef struct {
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
     char controller_name[64];
     bool controller_connected;
-    char save_directory[MAX_PATH_LEN];
+    /* Save locations are not a setting: nk_launch_prepare_session resolves a
+       writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
+       screen shows that real root instead of a configurable dead field. */
 } PlayerSettings;
 
 typedef struct {
@@ -283,6 +285,14 @@ int player_app_focus_count(const PlayerApp *app);
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
 void player_app_stop_game(PlayerApp *app);
+
+/* Copy the launch-relevant player settings into a prepared session's runtime
+ * configuration (resolution, frame cap, vsync, fullscreen, master volume).
+ * reduce_motion is launcher-UI state and deliberately not copied. Kept as a
+ * named seam so tests can pin the settings -> session mapping without
+ * spawning a child. */
+void player_app_apply_settings_to_session(const PlayerSettings *settings,
+                                          NkRuntimeConfig *config);
 
 /* Advance the running-game session state machine one tick at `now_ms`.
  *

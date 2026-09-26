@@ -846,9 +846,23 @@ static uint32_t ge_transition_draw_id(uint32_t vtype, uint32_t vbase, int prim, 
     return h;
 }
 
+/* One JSON-safe number. printf renders a non-finite float as `-nan(ind)` or
+ * `inf`, neither of which is JSON, so a real #69 trace aborted
+ * tools/ge_transition_diff.py at the first corrupted bone matrix. Non-finite
+ * values are emitted as JSON `null`; the diff tool treats a null as a value
+ * that differs from every finite one and flags it as NON_FINITE. Finite values
+ * keep the exact `%.9g` rendering they always had, so existing traces of
+ * uncorrupted frames are unchanged. */
+static void ge_json_float(FILE *fp, float v) {
+    if (isfinite(v)) fprintf(fp, "%.9g", v);
+    else fputs("null", fp);
+}
+
 static void ge_transition_trace_floats(FILE *fp, const float *v, int n) {
-    for (int i = 0; i < n; i++)
-        fprintf(fp, "%s%.9g", i ? "," : "", v[i]);
+    for (int i = 0; i < n; i++) {
+        if (i) fputc(',', fp);
+        ge_json_float(fp, v[i]);
+    }
 }
 
 static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsigned long prim_index,
@@ -3340,7 +3354,10 @@ uint32_t ge_run_list(uint32_t addr, int resume) {
     }
     uint64_t profile_started = ge_cpu_profile_begin();
     unsigned long t0 = wall_ms();
+    const int rt_phase_saved = sr_rt_phase;
+    sr_rt_phase = SR_RT_PHASE_GE;
     uint32_t next_addr = ge_run_list_inner(addr, resume);
+    sr_rt_phase = rt_phase_saved;
     if (perf_started) sr_perf_ge_cpu(perf_started);
     if (sr_perf_enabled && s_cpu_profile) {
         uint64_t transform_after = s_cpu_profile_stats.primitive_profile_phase[GE_PRIM_PROFILE_TRANSFORM].ns;

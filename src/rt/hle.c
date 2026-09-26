@@ -38,6 +38,7 @@
 #include "iso.h"
 #include "pgf_api.h"
 #include "pgd_api.h"
+#include "nk_input_profile.h"
 #include "evf.h"         /* pure sceKernelEventFlag pattern/mode semantics */
 #include "asset_index.h" /* dynamic extracted-data index (issue #223) */
 #include "archive_vfs.h" /* validated read-only XB provider (issue #298) */
@@ -11507,6 +11508,100 @@ static int route_hex_nib(int c) {
     return -1;
 }
 
+/* The pad bits a route can name, in the order they are listed in the layout the guest
+ * reads (NK_PSP_BTN_*_BIT, shared with both host front-ends). A route that presses the
+ * wrong bit does not fail: the game receives a button the screen ignores and the run
+ * looks exactly like a frozen game, which is the most expensive way to learn that a
+ * mask was one bit out. Naming the button removes the counting, and an unknown name is
+ * refused rather than read as a mask that happens to parse. */
+static const struct { const char *name; uint32_t bit; } s_route_btn[] = {
+    { "SELECT",   NK_PSP_BTN_SELECT_BIT   },
+    { "START",    NK_PSP_BTN_START_BIT    },
+    { "UP",       NK_PSP_BTN_UP_BIT       },
+    { "RIGHT",    NK_PSP_BTN_RIGHT_BIT    },
+    { "DOWN",     NK_PSP_BTN_DOWN_BIT     },
+    { "LEFT",     NK_PSP_BTN_LEFT_BIT     },
+    { "L",        NK_PSP_BTN_LTRIGGER_BIT },
+    { "R",        NK_PSP_BTN_RTRIGGER_BIT },
+    { "TRIANGLE", NK_PSP_BTN_TRIANGLE_BIT },
+    { "CIRCLE",   NK_PSP_BTN_CIRCLE_BIT   },
+    { "CROSS",    NK_PSP_BTN_CROSS_BIT    },
+    { "SQUARE",   NK_PSP_BTN_SQUARE_BIT   },
+    { "HOME",     NK_PSP_BTN_HOME_BIT     },
+    { "HOLD",     NK_PSP_BTN_HOLD_BIT     },
+};
+#define ROUTE_NBTN ((int)(sizeof s_route_btn / sizeof s_route_btn[0]))
+
+static int route_casecmp(const char *a, const char *b) {
+    for (;; a++, b++) {
+        int ca = (unsigned char)*a, cb = (unsigned char)*b;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb || ca == 0) return ca - cb;
+    }
+}
+
+/* A press mask is either a hex literal (as every route written before this existed, with
+ * or without the 0x prefix the legacy table accepts) or one or more button names joined by
+ * '+'. A token is read as hex only when every one of its characters is a hex digit, because
+ * several names begin with one (CROSS, CIRCLE) and a prefix test would swallow them whole.
+ * Returns 0 on success, -1 for anything else, so an unknown button fails the route at load
+ * instead of pressing nothing for the rest of the run. */
+static int route_parse_mask(const char *tok, uint32_t *out) {
+    if (tok[0] == 0) return -1;
+    const char *digits = (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) ? tok + 2 : tok;
+    int all_hex = digits[0] != 0;
+    for (const char *p = digits; *p; p++)
+        if (route_hex_nib((unsigned char)*p) < 0) { all_hex = 0; break; }
+    if (all_hex) {
+        char *end = NULL;
+        unsigned long v = strtoul(tok, &end, 16);
+        if (!end || *end != 0) return -1;
+        *out = (uint32_t)v;
+        return 0;
+    }
+    uint32_t mask = 0;
+    const char *p = tok;
+    for (;;) {
+        char name[16];
+        int n = 0;
+        while (p[n] && p[n] != '+' && n < (int)sizeof name - 1) { name[n] = p[n]; n++; }
+        name[n] = 0;
+        if (n == 0) return -1;
+        int found = -1;
+        for (int i = 0; i < ROUTE_NBTN; i++)
+            if (route_casecmp(name, s_route_btn[i].name) == 0) { found = i; break; }
+        if (found < 0) return -1;
+        mask |= s_route_btn[found].bit;
+        if (p[n] == 0) break;
+        p += n + 1;                     /* skip the '+' */
+    }
+    *out = mask;
+    return 0;
+}
+
+/* What a mask presses, in words. Printed once per press step at load so any run's own
+ * log says which buttons the route asked for: "the route pressed START and the screen
+ * ignored it" is a one-line diagnosis, while the same fact spread across a hex mask is
+ * a puzzle. */
+static void route_describe_mask(uint32_t mask, char *out, size_t n) {
+    size_t used = 0;
+    out[0] = 0;
+    for (int i = 0; i < ROUTE_NBTN; i++) {
+        if (!(mask & s_route_btn[i].bit)) continue;
+        int w = snprintf(out + used, n - used, "%s%s", used ? "+" : "", s_route_btn[i].name);
+        if (w < 0 || (size_t)w >= n - used) return;
+        used += (size_t)w;
+    }
+    if (used == 0 && n > 8) snprintf(out, n, "0x%04x", mask);
+}
+
+/* The names a mask argument may use, for the refusal that has to teach the fix. */
+static const char *route_button_names(void) {
+    return "SELECT START UP RIGHT DOWN LEFT L R TRIANGLE CIRCLE CROSS SQUARE HOME HOLD, "
+           "joinable with '+'";
+}
+
 /* Exactly `want` bytes of hex and nothing else: a truncated signature would silently
  * compare only its prefix and match screens it has never seen. */
 static int route_parse_sig(const char *hex, uint8_t *out, int want) {
@@ -11641,8 +11736,14 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: expected '<frame> <hexmask> <width>'\n", path, lineno);
             return -1;
         }
+        uint32_t lmask = 0;
+        if (route_parse_mask(m, &lmask) != 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: '%s' is not a hex mask or a button name (%s)\n",
+                    path, lineno, m, route_button_names());
+            return -1;
+        }
         s_route_legacy[s_route_nlegacy].f    = (uint32_t)strtoul(tok, NULL, 10);
-        s_route_legacy[s_route_nlegacy].mask = (uint32_t)strtoul(m, NULL, 16);
+        s_route_legacy[s_route_nlegacy].mask = lmask;
         s_route_legacy[s_route_nlegacy].w    = (uint32_t)strtoul(w, NULL, 10);
         s_route_nlegacy++;
         return 0;
@@ -11754,7 +11855,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 return -1;
             }
             snprintf(st.name, ROUTE_NAME_MAX, "%s", name);
-            st.a = (uint32_t)strtoul(m, NULL, 16);
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: %s: '%s' is not a hex mask or a button name "
+                                "(%s)\n", path, lineno, tok, m, route_button_names());
+                return -1;
+            }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             st.c = (uint32_t)strtoul(p, NULL, 10);
             st.d = (uint32_t)strtoul(t, NULL, 10);
@@ -11766,7 +11871,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             st.op = ROUTE_OP_PRESS;
             char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
             if (!m || !w) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS <hexmask> <width>\n", path, lineno); return -1; }
-            st.a = (uint32_t)strtoul(m, NULL, 16);
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS: '%s' is not a hex mask or a button name (%s)\n",
+                        path, lineno, m, route_button_names());
+                return -1;
+            }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             if (st.b < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS width must be >= 1\n", path, lineno); return -1; }
         } else if (strcmp(tok, "DELAY") == 0) {
@@ -11853,6 +11962,19 @@ int sr_route_load(const char *path) {
                         "sample_every=%d, tolerance=%d)\n",
                 path, s_route_nsteps, s_route_ncp, s_route_cols, s_route_rows,
                 s_route_sample_every, s_route_tol);
+        /* Say what each press asks for, in button names. The guest is given the same bits
+         * a player produces, so "the route pressed START and the title ignored it" is a
+         * fact this log can state outright instead of leaving a reader to decode a mask. */
+        for (int i = 0; i < s_route_nsteps; i++) {
+            RouteStep *st = &s_route_prog[i];
+            if (st->op != ROUTE_OP_PRESS && st->op != ROUTE_OP_UNTIL && st->op != ROUTE_OP_WHILE)
+                continue;
+            char what[64];
+            route_describe_mask(st->a, what, sizeof what);
+            fprintf(stderr, "ROUTE: step %d (%s) presses %s\n", i,
+                    st->op == ROUTE_OP_PRESS ? "PRESS" :
+                    st->op == ROUTE_OP_UNTIL ? "PRESS_UNTIL" : "PRESS_WHILE", what);
+        }
         return 1;
     }
     if (s_route_nlegacy > 0) {
@@ -17354,6 +17476,11 @@ static int link_started_export(CpuState *s, uint32_t nid) {
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
+    /* A syscall is where a guest thread can stop making scheduler progress, so the
+     * attribution of a late display period has to be able to name it. */
+    const int rt_phase_saved = sr_rt_phase;
+    sr_rt_phase = SR_RT_PHASE_SYSCALL;
+    sr_rt_nid = nid;
     uint64_t flight_sequence = sr_flight_hle_import(
         nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
     if (flight_sequence != 0u && s) {
@@ -17369,6 +17496,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (link_started_export(s, nid)) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
+        sr_rt_phase = rt_phase_saved;
         return ret;
     }
     HleEntry *e = hle_find(nid);
@@ -17431,5 +17559,6 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (e->unsupported_error) {
         sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
     }
+    sr_rt_phase = rt_phase_saved;
     return ret;
 }

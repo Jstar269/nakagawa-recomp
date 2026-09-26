@@ -182,7 +182,71 @@ should ignore the trailing uid/vblank columns.
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |
 | `SR_TEXDUMP_AFTER=N` | Defer texture dumping until GE frame `N`, preserving the fixed distinct-texture budget for a late deterministic scene |
-| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD` |
+| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` |
+| `SR_NAN_TRAP_LIMIT=N` | Report limit for the `SR_NAN_TRAP` build option below (default 20; `0` silences it). Only has an effect in a package built with `make NAN_TRAP=1` |
+
+### Locating the instruction that produced a NaN (issue #69)
+
+The `SR_GE_TRANSITION_TRACE` above tells you **that** a draw's bone matrices went NaN. It cannot
+tell you **which guest instruction** made them NaN, because it records state, not arithmetic.
+`SR_NAN_TRAP` answers that: it is a build-time option that follows every FPU and VFPU result
+write — in the generated code and in the AOT-gap interpreter alike — with a check that reports the
+first few instructions whose result went non-finite **from operands that were all finite**:
+
+```text
+NAN_TRAP pc=0x00001234 op=div.s dst=f7 in=[0,0] out=[nan]
+NAN_TRAP pc=0x088a1f2c op=vdiv.s dst=v13 in=[0,4.5,0,4.5] out=[nan,1,0,1]
+```
+
+It is a diagnostic, never a semantic gate: no result changes on any path, and a NaN that is only
+*propagated* (every later instruction in a long chain) is not reported, so the report names the
+origin rather than the last echo.
+
+Rebuild the package with the trap, play to the corruption, and read the first `NAN_TRAP` lines:
+
+```powershell
+# 1. Build with both halves of the option (codegen --nan-trap and -DSR_NAN_TRAP).
+#    The Make variable is inherited by the manager's make invocation, and it is
+#    carried into the codegen and recompiler profile hashes, so this regenerates
+#    instead of reusing untrapped objects.
+$env:NAN_TRAP = "1"
+.\nk_manager.ps1 -Action BuildFull
+
+# 2. Play by hand to the corrupted model, capturing stderr. From another shell:
+Get-Content -Wait logs\nan_trap.txt | Select-String '^NAN_TRAP '
+
+# 3. Raise or lower the report budget if the first 20 are not the interesting ones.
+$env:SR_NAN_TRAP_LIMIT = "200"
+
+# 4. Back to an ordinary build afterwards.
+Remove-Item Env:NAN_TRAP -ErrorAction SilentlyContinue
+.\nk_manager.ps1 -Action BuildFull
+```
+
+Driving the player directly works the same way — `NAN_TRAP` is an ordinary Make input:
+
+```powershell
+mingw32-make all NAN_TRAP=1          # adds --nan-trap and -DSR_NAN_TRAP together
+```
+
+> [!IMPORTANT]
+> **`make NAN_TRAP=1` turns on both halves at once, and both are needed.** `--nan-trap` makes
+> `tools/codegen.py` emit the checks; `-DSR_NAN_TRAP` makes those checks live. Setting only one
+> produces a build that looks correct and reports nothing. With the option off, codegen emits no
+> check statement at all, so the generated C is byte-identical to a pre-trap build, and every
+> `SR_NAN_TRAP_*` macro expands to `((void)0)` — an untrapped object is byte-identical with and
+> without `-DSR_NAN_TRAP` (proved by `tools/test_codegen_nan_trap.py`).
+
+Coverage boundary: every FPU result write and every VFPU *value-producing* lane form is checked —
+`add.s`/`sub.s`/`mul.s`/`div.s`/`sqrt.s`/`abs.s`/`mov.s`/`neg.s`, `vadd/vsub/vmul/vdiv`, `vdot`,
+`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
+the transcendental set (`vrcp`/`vrsqrt`/`vsin`/`vcos`/`vexp2`/`vlog2`/`vsqrt`/`vasin`), `vmmul`,
+`vtfm`, `vmscl`, `vcrsp`/`vqmul`, and `vrot`. Not checked, by construction: constant broadcasts
+(`viim`/`vfim`/`vcst`/`vzero`/`vone`/`vidt`/`vmidt`/`vmzero`/`vmone`, which have no operand to be
+non-finite relative to), the integer reinterpretations (`vs2i`/`vi2uc`/`vi2c`/`vi2us`/`vi2s`/
+`vf2i*`, which write integer words), `vi2f` (a signed 32-bit integer always widens to a finite
+float32), the `lv`/`sv` memory forms (guest data, not a computed result), and the raw per-element
+`v[]` row copies of `VFPUMatrix1` (`vmmov`/`vmscl` rows, which move an existing lane).
 
 > [!IMPORTANT]
 > **`SR_RTRACE` re-arms only when `SR_GESTAT` is also set.** Its per-window frame budget is reset
@@ -300,9 +364,9 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to record it again (see below) |
 | `WAIT <NAME> <timeout>` | Block until `NAME` is observed; fail the run on timeout |
 | `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
-| `PRESS <hexmask> <width>` | Hold `hexmask` for `width` vblanks |
-| `PRESS_UNTIL <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
-| `PRESS_WHILE <NAME> <hexmask> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
+| `PRESS <hexmask\|buttons> <width>` | Hold `hexmask` (or the named buttons) for `width` vblanks |
+| `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
+| `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
 | `END` | Route complete |
 
@@ -326,7 +390,7 @@ at load: they are not one screen, and a route built on them could not fail.
 their own START and there is no way to know in advance how many. As a fixed table, every
 extra press is one that lands on whatever comes next when the run is faster than the
 recording — which is precisely how a `CROSS` meant for the title screen ended up opening a
-menu. `PRESS_UNTIL TITLE_SCREEN 0008 8 240 15000` stops the moment the title appears.
+menu. `PRESS_UNTIL TITLE_SCREEN START 8 240 15000` stops the moment the title appears.
 
 **Failure is loud and terminal.** A failed `WAIT` or `EXPECT` prints `ROUTE_FAIL:` naming the
 step, the vblank and the screen that was actually there, then exits **86**. The manager reads
@@ -354,6 +418,45 @@ Two habits keep a program honest. Gate every screen *transition* with `WAIT`, an
 only for input cadence inside one screen — a `DELAY` standing in for a transition is the
 fixed-vblank bet again. And put an `EXPECT` after a press whose effect you care about: `WAIT`
 proves you arrived, `EXPECT` proves the press did what the route claims.
+
+### Naming the buttons a route presses
+
+A press mask is a bit in the `SceCtrlData.Buttons` field the guest reads — the same field a
+player's keyboard or controller produces. Name the button and the mask is filled in from one
+table (`NK_PSP_BTN_*_BIT` in `src/core/nk_input_profile.h`, which both host front-ends also
+publish from):
+
+| Name | Bit | Name | Bit | Name | Bit |
+| ---- | --- | ---- | --- | ---- | --- |
+| `SELECT` | `0x0001` | `L` | `0x0100` | `CIRCLE` | `0x2000` |
+| `START` | `0x0008` | `R` | `0x0200` | `CROSS` | `0x4000` |
+| `UP` | `0x0010` | `TRIANGLE` | `0x1000` | `SQUARE` | `0x8000` |
+| `RIGHT` | `0x0020` | `HOME` | `0x10000` | | |
+| `DOWN` | `0x0040` | `HOLD` | `0x20000` | | |
+| `LEFT` | `0x0080` | | | | |
+
+```text
+PRESS_WHILE TITLE CROSS 20 90 6000
+PRESS START+UP 30
+```
+
+Names are case-insensitive and join with `+`; a hex mask (`PRESS 4000 20`) still means exactly
+what it always did, in the program and in the legacy `frame hexmask width` table. A name that is
+not a button is refused at load, which fails the route instead of pressing nothing.
+
+Count the bits by hand only as a last resort, because a mask that is one bit out cannot fail
+visibly: the guest receives a button the screen ignores, the screen never changes, and the run
+looks exactly like a game that has frozen. `START` on a title that waits for `CROSS` is that
+mistake, and it cost a whole investigation before the log said which button was being pressed.
+Every run now narrates it at load —
+
+```text
+ROUTE: step 1 (PRESS_WHILE) presses CROSS
+```
+
+— so a route that stalls says which button it offered. Note that the boot prefix wants `START`
+(warning screens, intro movie) and title screens usually want `CROSS`; one press is not
+automatically the right one for the next screen.
 
 ### Visual-oracle runs (`-Action VisualOracle`)
 
