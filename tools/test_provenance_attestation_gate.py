@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Adversarial regression: the publication gates cannot be bypassed by editing
 the checked-in public ledger/policy/export in the same change.
@@ -305,7 +305,7 @@ class TestReleaseAnchorRejectsSelfAuthorization(unittest.TestCase):
             "src/rt/attacker_smuggle.c": SPDX_C,
             "tools/evil_self_attest.py": SPDX_PY,
             "tools/psp_oracle/evil_runner.ps1": SPDX_PS1,
-            "interface/src/lib/attacker_module.ts": SPDX_TS,
+            "src/attacker_module.ts": SPDX_TS,
         }
 
     def _stage_forged_attack(self, repo: _AttestationRepo) -> dict[str, str]:

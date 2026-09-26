@@ -26,7 +26,7 @@ Classification is fail-closed:
   paths may keep one only while their trusted bytes and claim are frozen, and
   require an exact record before their bytes change;
 * any other path -- in particular an unrecorded implementation path under
-  ``src/``, ``tools/``, or the dashboard -- resolves to ``unresolved``, and the
+  ``src/``, ``tools/``, or another implementation tree -- resolves to ``unresolved``, and the
   generator refuses to write release evidence while any included path is
   unresolved.
 
@@ -90,11 +90,13 @@ from dataclasses import dataclass
 
 try:
     from .nk_core.git_isolation import isolated_git_env
+    from .public_export import build_control_document as _build_control_document
     from .public_export import build_document as _build_export_document
     from .public_export import write_document as _write_json_document
     from .publication_policy import load_policy as _load_publication_policy
 except ImportError:
     from nk_core.git_isolation import isolated_git_env
+    from public_export import build_control_document as _build_control_document
     from public_export import build_document as _build_export_document
     from public_export import write_document as _write_json_document
     from publication_policy import load_policy as _load_publication_policy
@@ -544,9 +546,8 @@ def _is_configuration_path(path: str) -> bool:
 
     Matches CI/template prefixes (``.github/``), build fragments (``mk/``),
     configuration extensions, well-known configuration filenames, dotfiles, and
-    ``*.config.*`` files.  ``interface/`` as a whole is deliberately *not*
-    configuration: the dashboard's ``src/`` is implementation and needs a
-    ledger record, only its config-shaped files match this rule.
+    config-shaped files. Source-bearing suffixes remain implementation even
+    beside configuration files.
     """
     if path.startswith(CONFIGURATION_PREFIXES):
         return True
@@ -892,7 +893,7 @@ def _exact_path(path: object, *, code: str) -> str:
         raise RefreshError(code, "authorization must name a non-empty exact path")
     if "\\" in path or path.startswith("/") or PurePosixPath(path).is_absolute():
         raise RefreshError(code, f"path is not a repository-relative POSIX path: {path!r}")
-    # Brackets are valid literal path characters (for example a Next.js
+    # Brackets are valid literal path characters in dynamic route paths.
     # dynamic route directory named ``[id]``).  Only glob operators are
     # treated as wildcard authorization here; bracketed paths are still
     # required to match an exact path in the trusted tree.
@@ -1327,7 +1328,10 @@ def _refresh_export_bytes(
         provenance_ledger=ledger_bytes,
         manifest=manifest,
     )
-    return _canonical_json_bytes(document)
+    # Only the policy-derived control form is written; the tree-wide digests and
+    # the commit id are recomputed at verification time.  See
+    # public_export.build_control_document.
+    return _canonical_json_bytes(_build_control_document(document))
 
 
 def refresh_reviewed(
@@ -2369,3 +2373,10 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Public names for the admission decisions that other provenance tools share
+# (tools/provenance_record_gap.py); the verifier's existing imports keep the
+# underscore names.
+admission_requires_implementation = _admission_requires_implementation
+class_for = _class_for

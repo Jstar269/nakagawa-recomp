@@ -183,7 +183,7 @@ The detailed development ledger is deliberately outside the active public source
 
 Documentation, configuration, public factual metadata, and explicitly synthetic fixtures keep
 narrow deterministic classifications that need no ledger record. Any other unrecorded path — in
-particular implementation under `src/`, `tools/`, or the dashboard — resolves to `unresolved`,
+particular implementation under `src/`, `tools/`, or a user interface — resolves to `unresolved`,
 and the generator refuses to write release evidence while any included path is unresolved.
 
 The gate catches drift; it cannot catch a dishonest record. Classification remains a human judgment

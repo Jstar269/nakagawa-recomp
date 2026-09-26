@@ -14,7 +14,6 @@
     "sdl": "SDL3 >= 3.0.0"
   },
   "lockfiles": {
-    "npm": "interface/package-lock.json",
     "python": "tools/requirements-lock.txt"
   },
   "toolchain_policy": {
@@ -90,16 +89,6 @@
       "disposition": "external_system_dependency"
     },
     {
-      "id": "shadcn-ui",
-      "name": "shadcn/ui dashboard primitives",
-      "license": "MIT",
-      "origin": "https://github.com/shadcn-ui/ui",
-      "revision": "see interface/package-lock.json",
-      "notice_path": "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
-      "evidence_path": "interface/components.json",
-      "disposition": "included_dashboard_notice"
-    },
-    {
       "id": "vfpu",
       "name": "PPSSPP-origin VFPU lookup tables",
       "license": "GPL-2.0-or-later and upstream data notices",
@@ -111,43 +100,154 @@
     }
   ],
   "excluded_paths": [
-    {"path": "assets/titles/hst-ucus98701.json", "comment": "Title-specific manifest excluded by the public profile."},
-    {"path": "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md", "comment": "Private title-run acceptance evidence excluded from public scope."},
-    {"path": "docs/COVERAGE_LEDGER.md", "comment": "Internal coverage/audit snapshot excluded from public scope."},
-    {"path": "docs/DOCUMENTATION_AUDIT.md", "comment": "Internal documentation/publication audit work product excluded from public scope."},
-    {"path": "docs/DUAL_REPO_SYNC.md", "comment": "Private repository topology and synchronization procedure excluded from public scope."},
-    {"path": "docs/GHIDRA.md", "comment": "Title-specific reverse-engineering workflow excluded pending a generic rewrite."},
-    {"path": "docs/HLE_CALL_CENSUS_2026-08-05.md", "comment": "Private title-run census excluded from public scope."},
-    {"path": "docs/INVESTIGATION_CHECKPOINT_2026-07-18.md", "comment": "Private retail investigation checkpoint excluded from public scope."},
-    {"path": "docs/KEY_HISTORY_SCRUB.md", "comment": "Private archive sanitation runbook excluded from public scope."},
-    {"path": "docs/LEGAL_REWRITE_ASSESSMENT.md", "comment": "Counsel-oriented legal-risk work product excluded from public scope."},
-    {"path": "docs/NID_INTEGRITY_AUDIT_2026-08-06.md", "comment": "Dated HST/NID investigation record excluded from public scope."},
-    {"path": "docs/NEXT_SESSION.md", "comment": "Private operational continuation notes excluded from public scope."},
-    {"path": "docs/PGD_AMCTRL_REVIEW_PACKET.md", "comment": "Qualified-review packet for the excluded PGD/amctrl surface."},
-    {"path": "docs/PGD_KEYS.md", "comment": "Local PSP constants/key operating instructions excluded from public scope."},
-    {"path": "docs/PGF_LICENSE_REVIEW_PACKET.md", "comment": "Qualified-review packet for the excluded PGF/font surface."},
-    {"path": "docs/PERFORMANCE.md", "comment": "Private title-run performance/capture evidence excluded from public scope."},
-    {"path": "docs/PHASE5_HARDWARE_EVIDENCE.md", "comment": "Dated development-lane hardware acceptance record excluded from public scope."},
-    {"path": "docs/PSP_HARDWARE_FINDING_waitthreadend_20260805.md", "comment": "Dated hardware-finding work product excluded from public scope."},
-    {"path": "docs/PSP_HARDWARE_ORACLE.md", "comment": "Historical hardware-oracle operations record excluded from public scope."},
-    {"path": "docs/PSP_ISSUE_MATRIX.json", "comment": "Volatile historical issue snapshot with private-route classifications excluded from public scope."},
-    {"path": "docs/PUBLISH_VS_EXCLUDE_MATRIX.md", "comment": "Internal disposition matrix excluded; machine policy is authoritative."},
-    {"path": "docs/PUBLICATION_LANE_VERIFICATION_2026-08-06.md", "comment": "Private publication-lane verification record excluded from public scope."},
-    {"path": "docs/RETAINED_BRANCH_AUDIT_2026-08-04.md", "comment": "Internal branch/topology audit excluded from public scope."},
-    {"path": "docs/SAS_NID_SIGNATURES.md", "comment": "HST route-census/audio disposition table excluded from public scope."},
-    {"path": "docs/STATUS_HISTORY.md", "comment": "Private/game-derived engineering history excluded from public scope."},
-    {"path": "docs/TEST_DISCOVERY.md", "comment": "Dated test-discovery report with private-input-dependent counts excluded from public scope."},
-    {"path": "docs/TEST_MATRIX.json", "comment": "Generated test matrix with private asset/key skip conditions excluded from public scope."},
-    {"path": "docs/TEST_SHAPE_CLASSIFICATION.md", "comment": "Internal source-shape triage report excluded from public scope."},
-    {"path": "docs/TEST_SKIPS.md", "comment": "Private-input/key skip inventory excluded from public scope."},
-    {"path": "docs/ROADMAP.md", "comment": "Historical HST-specific strategy/topology roadmap excluded from public scope."},
-    {"path": "docs/VFPU_ORACLE_BASELINE_2026-08-05.md", "comment": "Dated VFPU oracle/hardware-result narrative excluded from public scope."},
-    {"path": "docs/issue-139-face-resource-semantics.md", "comment": "Title-specific retail-image investigation excluded from public scope."},
-    {"path": "docs/issue-51-entry-semantics.md", "comment": "Title-specific continuation investigation excluded from public scope."},
-    {"path": "docs/provenance/IMPLEMENTATION_PROVENANCE.json", "comment": "Detailed development provenance ledger contains private investigation context and links to excluded review work products; the public candidate carries the path-hashed public ledger instead."},
-    {"path": "docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md", "comment": "PGD/amctrl qualified-review source archaeology excluded from public scope."},
-    {"path": "docs/provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md", "comment": "PGF/font qualified-review source archaeology excluded from public scope."},
-    {"path": "docs/provenance/SAL063_RETENTION_2026-08-06.md", "comment": "Internal sal063 retention worksheet excluded from public scope."}
+    {
+      "path": "assets/titles/hst-ucus98701.json",
+      "comment": "Title-specific manifest excluded by the public profile."
+    },
+    {
+      "path": "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
+      "comment": "Private title-run acceptance evidence excluded from public scope."
+    },
+    {
+      "path": "docs/COVERAGE_LEDGER.md",
+      "comment": "Internal coverage/audit snapshot excluded from public scope."
+    },
+    {
+      "path": "docs/DOCUMENTATION_AUDIT.md",
+      "comment": "Internal documentation/publication audit work product excluded from public scope."
+    },
+    {
+      "path": "docs/DUAL_REPO_SYNC.md",
+      "comment": "Private repository topology and synchronization procedure excluded from public scope."
+    },
+    {
+      "path": "docs/GHIDRA.md",
+      "comment": "Title-specific reverse-engineering workflow excluded pending a generic rewrite."
+    },
+    {
+      "path": "docs/HLE_CALL_CENSUS_2026-08-05.md",
+      "comment": "Private title-run census excluded from public scope."
+    },
+    {
+      "path": "docs/INVESTIGATION_CHECKPOINT_2026-07-18.md",
+      "comment": "Private retail investigation checkpoint excluded from public scope."
+    },
+    {
+      "path": "docs/KEY_HISTORY_SCRUB.md",
+      "comment": "Private archive sanitation runbook excluded from public scope."
+    },
+    {
+      "path": "docs/LEGAL_REWRITE_ASSESSMENT.md",
+      "comment": "Counsel-oriented legal-risk work product excluded from public scope."
+    },
+    {
+      "path": "docs/NID_INTEGRITY_AUDIT_2026-08-06.md",
+      "comment": "Dated HST/NID investigation record excluded from public scope."
+    },
+    {
+      "path": "docs/NEXT_SESSION.md",
+      "comment": "Private operational continuation notes excluded from public scope."
+    },
+    {
+      "path": "docs/PGD_AMCTRL_REVIEW_PACKET.md",
+      "comment": "Qualified-review packet for the excluded PGD/amctrl surface."
+    },
+    {
+      "path": "docs/PGD_KEYS.md",
+      "comment": "Local PSP constants/key operating instructions excluded from public scope."
+    },
+    {
+      "path": "docs/PGF_LICENSE_REVIEW_PACKET.md",
+      "comment": "Qualified-review packet for the excluded PGF/font surface."
+    },
+    {
+      "path": "docs/PERFORMANCE.md",
+      "comment": "Private title-run performance/capture evidence excluded from public scope."
+    },
+    {
+      "path": "docs/PHASE5_HARDWARE_EVIDENCE.md",
+      "comment": "Dated development-lane hardware acceptance record excluded from public scope."
+    },
+    {
+      "path": "docs/PSP_HARDWARE_FINDING_waitthreadend_20260805.md",
+      "comment": "Dated hardware-finding work product excluded from public scope."
+    },
+    {
+      "path": "docs/PSP_HARDWARE_ORACLE.md",
+      "comment": "Historical hardware-oracle operations record excluded from public scope."
+    },
+    {
+      "path": "docs/PSP_ISSUE_MATRIX.json",
+      "comment": "Volatile historical issue snapshot with private-route classifications excluded from public scope."
+    },
+    {
+      "path": "docs/PUBLISH_VS_EXCLUDE_MATRIX.md",
+      "comment": "Internal disposition matrix excluded; machine policy is authoritative."
+    },
+    {
+      "path": "docs/PUBLICATION_LANE_VERIFICATION_2026-08-06.md",
+      "comment": "Private publication-lane verification record excluded from public scope."
+    },
+    {
+      "path": "docs/RETAINED_BRANCH_AUDIT_2026-08-04.md",
+      "comment": "Internal branch/topology audit excluded from public scope."
+    },
+    {
+      "path": "docs/SAS_NID_SIGNATURES.md",
+      "comment": "HST route-census/audio disposition table excluded from public scope."
+    },
+    {
+      "path": "docs/STATUS_HISTORY.md",
+      "comment": "Private/game-derived engineering history excluded from public scope."
+    },
+    {
+      "path": "docs/TEST_DISCOVERY.md",
+      "comment": "Dated test-discovery report with private-input-dependent counts excluded from public scope."
+    },
+    {
+      "path": "docs/TEST_MATRIX.json",
+      "comment": "Generated test matrix with private asset/key skip conditions excluded from public scope."
+    },
+    {
+      "path": "docs/TEST_SHAPE_CLASSIFICATION.md",
+      "comment": "Internal source-shape triage report excluded from public scope."
+    },
+    {
+      "path": "docs/TEST_SKIPS.md",
+      "comment": "Private-input/key skip inventory excluded from public scope."
+    },
+    {
+      "path": "docs/ROADMAP.md",
+      "comment": "Historical HST-specific strategy/topology roadmap excluded from public scope."
+    },
+    {
+      "path": "docs/VFPU_ORACLE_BASELINE_2026-08-05.md",
+      "comment": "Dated VFPU oracle/hardware-result narrative excluded from public scope."
+    },
+    {
+      "path": "docs/issue-139-face-resource-semantics.md",
+      "comment": "Title-specific retail-image investigation excluded from public scope."
+    },
+    {
+      "path": "docs/issue-51-entry-semantics.md",
+      "comment": "Title-specific continuation investigation excluded from public scope."
+    },
+    {
+      "path": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+      "comment": "Detailed development provenance ledger contains private investigation context and links to excluded review work products; the public candidate carries the path-hashed public ledger instead."
+    },
+    {
+      "path": "docs/provenance/PGD_AMCTRL_SOURCE_ARCHAEOLOGY_2026-08-09.md",
+      "comment": "PGD/amctrl qualified-review source archaeology excluded from public scope."
+    },
+    {
+      "path": "docs/provenance/PGF_SOURCE_ARCHAEOLOGY_2026-08-08.md",
+      "comment": "PGF/font qualified-review source archaeology excluded from public scope."
+    },
+    {
+      "path": "docs/provenance/SAL063_RETENTION_2026-08-06.md",
+      "comment": "Internal sal063 retention worksheet excluded from public scope."
+    }
   ],
   "components": [
     {
@@ -514,6 +614,57 @@
       "public_scope_included": false,
       "optional": true,
       "comment": "Font provenance and redistribution terms remain unresolved; the evidence packet is kept private with the optional binaries."
+    },
+    {
+      "id": "readme-showcase-ge-scene-v120",
+      "name": "README screenshot: GE scene demo at vblank 120",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/showcase-ge-scene-v120.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
+      },
+      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
+    },
+    {
+      "id": "readme-showcase-ge-scene-v240",
+      "name": "README screenshot: GE scene demo at vblank 240",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/showcase-ge-scene-v240.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "d258a82c18eb714c30e4cde2402cbe83d20265337231d25feed9c57cd433289b"
+      },
+      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
+    },
+    {
+      "id": "readme-showcase-breakout-v180",
+      "name": "README screenshot: breakout demo at vblank 180",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/showcase-breakout-v180.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "bda0e223bc94c7bd44d2d799953dbde8120d2b16ce9f15d281842f6a6de4874b"
+      },
+      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
     }
   ]
 }

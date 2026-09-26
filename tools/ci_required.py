@@ -14,13 +14,12 @@ _GATES = (
     ("markdown", "MARKDOWN_RESULT", "RUN_MARKDOWN"),
     ("python-tools", "PYTHON_RESULT", "RUN_PYTHON"),
     ("native-tools", "NATIVE_RESULT", "RUN_NATIVE"),
-    ("dashboard", "DASHBOARD_RESULT", "RUN_DASHBOARD"),
     ("windows-runtime", "WINDOWS_RESULT", "RUN_WINDOWS"),
     ("main-smoke", "MAIN_SMOKE_RESULT", "RUN_MAIN_SMOKE"),
 )
 
 _SUBSTANTIVE_GATES = frozenset(
-    {"python-tools", "native-tools", "dashboard", "windows-runtime"}
+    {"python-tools", "native-tools", "windows-runtime"}
 )
 
 
