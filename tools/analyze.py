@@ -401,7 +401,7 @@ def _file_backed_exec_ranges(elf):
     if cached is None:
         cached = [
             (segment["vaddr"], segment["vaddr"] + segment["filesz"])
-            for segment in elf.segments
+            for segment in getattr(elf, "segments", ())
             if segment["type"] == 1 and (segment.get("flags", 0) & 1) and segment["filesz"] > 0
         ]
         elf._file_backed_exec_ranges = cached
