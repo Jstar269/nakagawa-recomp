@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -100,6 +101,38 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertEqual(notice.read_text(encoding="utf-8"), "Python license text\n")
         self.assertEqual(result["python-test"]["sha256"], item["sha256"])
         self.assertTrue((install_root / "installed.json").is_file())
+
+    def test_msys2_libstdcxx_artifact_id_allows_plus_characters(self) -> None:
+        item = self.item()
+        item["id"] = "mingw-w64-ucrt-x86_64-libstdc++"
+        result = install_items({"artifacts": [item]}, self.root, allow_http=True)
+        self.assertEqual(result[item["id"]]["sha256"], item["sha256"])
+
+    def test_current_cpython_fetcher_does_not_replace_its_running_runtime(self) -> None:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("python.exe", b"archive runtime\n")
+            archive.writestr("libcrypto-3.dll", b"archive crypto\n")
+            archive.writestr("LICENSE.txt", "Python license text\n")
+        _PayloadHandler.payload = stream.getvalue()
+        item = self.item(payload=_PayloadHandler.payload)
+        item["id"] = "cpython-embed-amd64"
+        item["filename"] = "python-3.14-embed-amd64.zip"
+        python_root = self.root / "prerequisites" / "python"
+        python_root.mkdir(parents=True)
+        running_python = python_root / "python.exe"
+        running_python.write_bytes(b"running bootstrap runtime\n")
+        running_crypto = python_root / "libcrypto-3.dll"
+        running_crypto.write_bytes(b"loaded OpenSSL library\n")
+
+        with patch.object(sys, "executable", str(running_python)):
+            records = install_items({"artifacts": [item]}, self.root, allow_http=True)
+
+        self.assertEqual(running_python.read_bytes(), b"running bootstrap runtime\n")
+        self.assertEqual(running_crypto.read_bytes(), b"loaded OpenSSL library\n")
+        self.assertEqual(records[item["id"]]["sha256"], item["sha256"])
+        notice = self.root / "prerequisites" / "notices" / item["id"] / "LICENSE.txt"
+        self.assertTrue(notice.is_file())
 
     def test_hash_mismatch_fails_closed(self) -> None:
         item = self.item()

@@ -348,6 +348,57 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
 }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+enum {
+    PLAYER_UI_TEST_ACTION_WAIT_MS = -20260926,
+    PLAYER_UI_TEST_ACTION_WAIT_VIEW = -20260927,
+    PLAYER_UI_TEST_ACTION_ASSERT_CONSENT = -20260928,
+    PLAYER_UI_TEST_ACTION_ASSERT_VIEW = -20260929,
+    PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING = -20260930
+};
+
+static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
+    static const struct { const char *name; PlayerView view; } views[] = {
+        { "library", VIEW_LIBRARY }, { "ready_library", PLAYER_VIEW_READY_LIBRARY },
+        { "supported", VIEW_SUPPORTED_TITLE }, { "experimental", VIEW_EXPERIMENTAL_TITLE },
+        { "unsupported", VIEW_UNSUPPORTED_TITLE }, { "settings", VIEW_SETTINGS },
+        { "building_package", VIEW_BUILDING_PACKAGE }, { "error", VIEW_ERROR },
+        { "prereq_consent", VIEW_PREREQ_CONSENT },
+        { "prereq_progress", VIEW_PREREQ_PROGRESS },
+        { "prereq_about", VIEW_PREREQ_ABOUT },
+        { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS }
+    };
+    if (!names || !names[0] || !mask) return false;
+    uint32_t parsed_mask = 0;
+    char *name = names;
+    while (name) {
+        char *next = strchr(name, '|');
+        if (next) *next++ = '\0';
+        if (!name[0]) return false;
+        bool found = false;
+        for (size_t i = 0; i < sizeof(views) / sizeof(views[0]); i++) {
+            if (strcmp(name, views[i].name) == 0) {
+                if ((unsigned)views[i].view >= 32) return false;
+                parsed_mask |= UINT32_C(1) << (unsigned)views[i].view;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+        name = next;
+    }
+    *mask = parsed_mask;
+    return parsed_mask != 0;
+}
+
+static bool player_ui_test_parse_positive_u64(const char *text, uint64_t *value) {
+    if (!text || !text[0] || text[0] == '-' || !value) return false;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(text, &end, 10);
+    if (end == text || !end || *end != '\0' || parsed == 0) return false;
+    *value = (uint64_t)parsed;
+    return true;
+}
+
 static int player_ui_test_next_event(const char *script, size_t *cursor,
                                     SDL_Event *event) {
     if (!script || !cursor || !event) return -1;
@@ -366,6 +417,59 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
 
     if (strcmp(token, "QUIT") == 0) {
         event->type = SDL_EVENT_QUIT;
+        return 1;
+    }
+    if (strncmp(token, "WAIT_MS=", 8) == 0) {
+        uint64_t duration = 0;
+        if (!player_ui_test_parse_positive_u64(token + 8, &duration) ||
+            duration > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_MS;
+        event->user.windowID = (Uint32)duration;
+        return 1;
+    }
+    if (strncmp(token, "WAIT_VIEW=", 10) == 0) {
+        char *comma = strchr(token + 10, ',');
+        if (!comma) return -1;
+        *comma = '\0';
+        uint32_t target_mask = 0;
+        uint64_t timeout = 0;
+        if (!player_ui_test_parse_views(token + 10, &target_mask) ||
+            !player_ui_test_parse_positive_u64(comma + 1, &timeout) ||
+            timeout > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_VIEW;
+        event->user.windowID = target_mask;
+        event->user.timestamp = timeout;
+        return 1;
+    }
+    if (strncmp(token, "ASSERT_VIEW=", 12) == 0) {
+        uint32_t target_mask = 0;
+        if (!player_ui_test_parse_views(token + 12, &target_mask) ||
+            (target_mask & (target_mask - 1)) != 0) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_VIEW;
+        event->user.windowID = target_mask;
+        return 1;
+    }
+    if (strcmp(token, "ASSERT_GAME_RUNNING") == 0) {
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING;
+        return 1;
+    }
+    if (strncmp(token, "ASSERT_CONSENT=", 15) == 0) {
+        char *comma = strchr(token + 15, ',');
+        if (!comma) return -1;
+        *comma = '\0';
+        uint64_t item_count = 0;
+        uint64_t total_bytes = 0;
+        if (!player_ui_test_parse_positive_u64(token + 15, &item_count) ||
+            item_count > PACKAGE_BUILDER_MAX_PREREQUISITES ||
+            !player_ui_test_parse_positive_u64(comma + 1, &total_bytes)) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_CONSENT;
+        event->user.windowID = (Uint32)item_count;
+        event->user.timestamp = total_bytes;
         return 1;
     }
     if (strncmp(token, "DROP_FILE=", 10) == 0) {
@@ -444,6 +548,10 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case PLAYER_VIEW_READY_LIBRARY: return "ready_library";
     case VIEW_CONTROLLER_SETTINGS: return "controller";
     case VIEW_BUILDING_PACKAGE: return "building_package";
+    case VIEW_PREREQ_CONSENT: return "prereq_consent";
+    case VIEW_PREREQ_PROGRESS: return "prereq_progress";
+    case VIEW_PREREQ_ABOUT: return "prereq_about";
+    case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
     default: return "unknown";
     }
 }
@@ -487,16 +595,23 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     }
     SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
     bool badge_valid = ui_last_status_badge_rect(&badge);
-    printf("[PLAYER_UI_TEST] frame=%d view=%s selected=%d focus=%d focus_count=%d wizard_step=%s "
+    printf("[PLAYER_UI_TEST] frame=%d ticks_ms=%llu view=%s "
+           "selected=%d selected_disc=%s selected_title_id=%s "
+           "focus=%d focus_count=%d wizard_step=%s "
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
-           "selected_runtime=%d selected_package_status=%d games=%d build_stage=%d "
+           "selected_runtime=%d selected_package_status=%d games=%d "
+           "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx\n",
-           frame_number, player_ui_test_view_name(app->active_view),
-           app->selected_game_index, app->focus_index, ui_focus_count(app),
+           frame_number, (unsigned long long)SDL_GetTicks(),
+           player_ui_test_view_name(app->active_view),
+           app->selected_game_index,
+           selected ? selected->disc_id : "NONE",
+           selected ? selected->title_id : "NONE",
+           app->focus_index, ui_focus_count(app),
            player_ui_test_wizard_step_name(app->wizard.step),
            app->wizard.font_confirmed ? 1 : 0,
            app->wizard.is_extracting ? 1 : 0, app->wizard.extraction_percent,
@@ -518,11 +633,28 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            selected && selected->assets_staged ? 1 : 0,
            selected && player_app_game_has_runtime(app, selected) ? 1 : 0,
            (int)package_status, app->game_count,
+           app->prerequisites.items.count,
+           (unsigned long long)app->prerequisites.total_bytes,
+           app->is_game_running ? 1 : 0,
            (int)app->build_session.current_stage,
            badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
            badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
            running ? 1 : 0,
            (unsigned long long)player_ui_test_frame_hash(renderer));
+
+    static bool consent_items_reported = false;
+    if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
+        printf("[PLAYER_UI_TEST] consent items=%zu total_bytes=%llu ids=",
+               app->prerequisites.items.count,
+               (unsigned long long)app->prerequisites.total_bytes);
+        for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+            printf("%s%s", i ? "," : "", app->prerequisites.items.items[i].id);
+        }
+        printf("\n");
+        consent_items_reported = true;
+    } else if (app->active_view != VIEW_PREREQ_CONSENT) {
+        consent_items_reported = false;
+    }
 }
 #endif
 
@@ -1158,6 +1290,10 @@ int main(int argc, char *argv[]) {
     bool ui_test_quit_queued = false;
     size_t ui_test_event_cursor = 0;
     int ui_test_frame = 0;
+    bool ui_test_waiting_for_time = false;
+    bool ui_test_waiting_for_view = false;
+    uint64_t ui_test_wait_deadline = 0;
+    uint32_t ui_test_wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
 #endif
     bool launch_now = false;
     bool stage_initial_iso = false;
@@ -1230,6 +1366,10 @@ int main(int argc, char *argv[]) {
             test_view = "wizard";
         }
     }
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_mode) setvbuf(stdout, NULL, _IONBF, 0);
+#endif
 
     /* A --view= run is an explicit test or capture invocation, so it gets the
        fixture too. --empty wins regardless of argument order. */
@@ -1777,24 +1917,103 @@ int main(int argc, char *argv[]) {
 #endif
     while (running && !app.should_quit) {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (ui_test_mode && !ui_test_quit_queued) {
+        if (ui_test_mode) {
+            uint64_t ui_test_now = SDL_GetTicks();
+            bool ui_test_block_script = false;
+            if (ui_test_waiting_for_view) {
+                uint32_t current_view_mask = (unsigned)app.active_view < 32
+                    ? UINT32_C(1) << (unsigned)app.active_view : 0;
+                if (ui_test_wait_view_mask & current_view_mask) {
+                    printf("[PLAYER_UI_TEST] wait_view actual=%s result=PASS\n",
+                           player_ui_test_view_name(app.active_view));
+                    ui_test_waiting_for_view = false;
+                } else if (ui_test_now >= ui_test_wait_deadline) {
+                    fprintf(stderr, "[PLAYER_UI_TEST] wait_view result=FAIL actual=%s\n",
+                            player_ui_test_view_name(app.active_view));
+                    ui_test_failed = true;
+                    ui_test_quit_queued = true;
+                    running = false;
+                } else {
+                    ui_test_block_script = true;
+                }
+            }
+            if (ui_test_waiting_for_time) {
+                if (ui_test_now >= ui_test_wait_deadline) {
+                    printf("[PLAYER_UI_TEST] wait_ms result=PASS\n");
+                    ui_test_waiting_for_time = false;
+                } else {
+                    ui_test_block_script = true;
+                }
+            }
+            if (!ui_test_block_script && !ui_test_quit_queued && running) {
             SDL_Event scripted_event;
             int next_event = player_ui_test_next_event(
                 ui_test_events, &ui_test_event_cursor, &scripted_event);
             if (next_event > 0) {
-                if (scripted_event.type == SDL_EVENT_DROP_FILE) {
-                    ui_test_drop_data = (char *)scripted_event.drop.data;
-                }
-                if (!SDL_PushEvent(&scripted_event)) {
-                    if (ui_test_drop_data) {
-                        SDL_free(ui_test_drop_data);
-                        ui_test_drop_data = NULL;
+                if (scripted_event.type == SDL_EVENT_USER &&
+                    scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_MS) {
+                    ui_test_wait_deadline = ui_test_now + scripted_event.user.windowID;
+                    ui_test_waiting_for_time = true;
+                    printf("[PLAYER_UI_TEST] wait_ms=%u started\n",
+                           scripted_event.user.windowID);
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_VIEW) {
+                    ui_test_wait_view_mask = scripted_event.user.windowID;
+                    ui_test_wait_deadline = ui_test_now + scripted_event.user.timestamp;
+                    ui_test_waiting_for_view = true;
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_CONSENT) {
+                    bool matches = app.active_view == VIEW_PREREQ_CONSENT &&
+                        app.prerequisites.items.count == scripted_event.user.windowID &&
+                        app.prerequisites.total_bytes == scripted_event.user.timestamp;
+                    printf("[PLAYER_UI_TEST] assert_consent result=%s items=%zu expected_items=%u "
+                           "total_bytes=%llu expected_bytes=%llu\n",
+                           matches ? "PASS" : "FAIL",
+                           app.prerequisites.items.count, scripted_event.user.windowID,
+                           (unsigned long long)app.prerequisites.total_bytes,
+                           (unsigned long long)scripted_event.user.timestamp);
+                    if (!matches) {
+                        ui_test_failed = true;
+                        ui_test_quit_queued = true;
+                        running = false;
                     }
-                    ui_test_failed = true;
-                    running = false;
-                    fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
-                } else if (scripted_event.type == SDL_EVENT_QUIT) {
-                    ui_test_quit_queued = true;
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_VIEW) {
+                    uint32_t current_view_mask = (unsigned)app.active_view < 32
+                        ? UINT32_C(1) << (unsigned)app.active_view : 0;
+                    bool matches = (scripted_event.user.windowID & current_view_mask) != 0;
+                    printf("[PLAYER_UI_TEST] assert_view result=%s actual=%s\n",
+                           matches ? "PASS" : "FAIL",
+                           player_ui_test_view_name(app.active_view));
+                    if (!matches) {
+                        ui_test_failed = true;
+                        ui_test_quit_queued = true;
+                        running = false;
+                    }
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING) {
+                    printf("[PLAYER_UI_TEST] assert_game_running result=%s\n",
+                           app.is_game_running ? "PASS" : "FAIL");
+                    if (!app.is_game_running) {
+                        ui_test_failed = true;
+                        ui_test_quit_queued = true;
+                        running = false;
+                    }
+                } else {
+                    if (scripted_event.type == SDL_EVENT_DROP_FILE) {
+                        ui_test_drop_data = (char *)scripted_event.drop.data;
+                    }
+                    if (!SDL_PushEvent(&scripted_event)) {
+                        if (ui_test_drop_data) {
+                            SDL_free(ui_test_drop_data);
+                            ui_test_drop_data = NULL;
+                        }
+                        ui_test_failed = true;
+                        running = false;
+                        fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
+                    } else if (scripted_event.type == SDL_EVENT_QUIT) {
+                        ui_test_quit_queued = true;
+                    }
                 }
             } else if (next_event == 0) {
                 memset(&scripted_event, 0, sizeof(scripted_event));
@@ -1811,6 +2030,7 @@ int main(int argc, char *argv[]) {
                 running = false;
                 fprintf(stderr, "[PLAYER_UI_TEST] Invalid synthetic event script near byte %llu.\n",
                         (unsigned long long)ui_test_event_cursor);
+            }
             }
         }
 #endif

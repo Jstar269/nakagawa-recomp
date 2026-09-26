@@ -61,7 +61,7 @@ def _validated_item(item: dict, *, allow_http: bool) -> tuple[str, int, str, set
         hosts = {host.lower().rstrip(".") for host in item["allowed_hosts"]}
     except (KeyError, AttributeError, TypeError) as exc:
         raise PrerequisiteFetchError("MANIFEST_INVALID: prerequisite fields are missing.") from exc
-    if not isinstance(item_id, str) or not item_id or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789-._" for ch in item_id):
+    if not isinstance(item_id, str) or not item_id or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789-._+" for ch in item_id):
         raise PrerequisiteFetchError("MANIFEST_INVALID: prerequisite ID is unsafe.")
     if not isinstance(size, int) or size <= 0:
         raise PrerequisiteFetchError(f"MANIFEST_INVALID: {item_id} has no positive byte size.")
@@ -323,6 +323,14 @@ def _merge_staged_tree(source: Path, target: Path) -> None:
         os.replace(path, destination)
 
 
+def _is_running_executable(path: Path) -> bool:
+    """Return whether this process is running from the supplied executable path."""
+    try:
+        return Path(sys.executable).resolve(strict=False) == path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+
+
 def _write_install_record(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as stream:
@@ -379,6 +387,11 @@ def install_items(
         format_name = item.get("archive_format", "none")
         install_subdir = item.get("install_subdir", "msys64")
         target_root = python_root if install_subdir == "python" else binary_root
+        running_bootstrap_python = (
+            item.get("id") == "cpython-embed-amd64"
+            and install_subdir == "python"
+            and _is_running_executable(python_root / "python.exe")
+        )
         staging_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=f"{item['id']}-", dir=staging_root) as temporary:
             item_stage = Path(temporary)
@@ -398,7 +411,12 @@ def install_items(
                 raise PrerequisiteFetchError(f"MANIFEST_INVALID: unsupported archive format {format_name!r}.")
             if cancelled and cancelled():
                 raise PrerequisiteFetchError("INSTALL_CANCELLED: extraction cancelled by the user.")
-            _merge_staged_tree(staged_payload, target_root)
+            # The native player has already hash-verified and installed this archive
+            # before launching its embedded Python. Replacing that running executable
+            # or its loaded OpenSSL DLLs fails on Windows, so verify the cached archive
+            # and refresh notices without moving its payload over the live runtime.
+            if not running_bootstrap_python:
+                _merge_staged_tree(staged_payload, target_root)
             _merge_staged_tree(staged_notices, notices_root)
         records[item["id"]] = {
             "version": item["version"],

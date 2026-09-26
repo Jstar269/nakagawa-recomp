@@ -12,8 +12,16 @@
 #                   [--out image.bin] [--verify pc=word ...]
 
 import hashlib
+import os
 import struct
 import sys
+
+# The Windows embeddable Python runtime uses a fixed ``._pth`` search path and
+# may omit the directory containing this script. Keep sibling tool imports
+# available when Make launches this script from that runtime.
+_TOOLS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
 
 import build_profile
 from dataclasses import dataclass

@@ -1361,8 +1361,15 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
     if (!out_path || out_size == 0) return false;
     out_path[0] = '\0';
 
+    bool ignore_external_python = false;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Let the UI lane model a clean user account on a tool-equipped host. */
+    const char *isolate_python = getenv("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON");
+    ignore_external_python = isolate_python && strcmp(isolate_python, "1") == 0;
+#endif
+
     /* 1. Check PYTHON environment variable */
-    const char *env_py = getenv("PYTHON");
+    const char *env_py = ignore_external_python ? NULL : getenv("PYTHON");
     if (env_py && env_py[0] && nk_platform_file_exists(env_py)) {
         if (nk_platform_absolute_path(env_py, out_path, out_size)) {
             return true;
@@ -1379,7 +1386,8 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
         "C:/msys64/ucrt64/bin/python3.exe",
         "C:/msys64/ucrt64/bin/python.exe"
     };
-    for (size_t i = 0; i < sizeof(kWinCandidates) / sizeof(kWinCandidates[0]); i++) {
+    for (size_t i = 0; !ignore_external_python &&
+                        i < sizeof(kWinCandidates) / sizeof(kWinCandidates[0]); i++) {
         if (nk_platform_file_exists(kWinCandidates[i])) {
             safe_str_copy(out_path, out_size, kWinCandidates[i]);
             return true;
