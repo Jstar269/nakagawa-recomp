@@ -843,7 +843,10 @@ class LongPathDiagnosticTests(unittest.TestCase):
         """
         # Anchored at the filesystem root so the length is the same on every
         # host: a "C:\\" literal is relative on POSIX and would absorb the cwd.
-        root = Path(Path.cwd().anchor) / ("r" * 90)
+        # The name is sized so the total lands between the advisory limit (240)
+        # and MAX_PATH (260) whatever the anchor's length ("C:\\" or "/").
+        anchor = Path.cwd().anchor
+        root = Path(anchor) / ("r" * (99 - len(anchor)))
         deep_tracked = Path("src") / "rt" / "gpu_sdl3vk" / ("d" * 120) / "shader.c"
         report = nk_doctor.Report(root, "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
