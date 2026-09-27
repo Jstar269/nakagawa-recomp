@@ -482,6 +482,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
            "selected_runtime=%d selected_package_status=%d games=%d build_stage=%d "
+           "font=%s font_reason=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx\n",
            frame_number, player_ui_test_view_name(app->active_view),
            app->selected_game_index, app->focus_index, ui_focus_count(app),
@@ -507,6 +508,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            selected && player_app_game_has_runtime(app, selected) ? 1 : 0,
            (int)package_status, app->game_count,
            (int)app->build_session.current_stage,
+           ui_font_mode(), ui_font_fallback_reason(),
            badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
            badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
            running ? 1 : 0,

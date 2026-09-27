@@ -464,5 +464,136 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertEqual(tracked_status(), before)
 
 
+class TestRuntimeDllStaging(unittest.TestCase):
+    """Runtime staging ships SDL3_ttf, its resolved closure, and licences (#421).
+
+    Synthetic DLL files plus a fake import resolver are enough: the contract under
+    test is the mechanical closure walk, the copy, and the licence staging, not
+    the toolchain's PE bytes.
+    """
+
+    GRAPH = {
+        "sdl3.dll": ["KERNEL32.dll"],
+        "sdl3_ttf.dll": ["SDL3.dll", "libfreetype-6.dll", "KERNEL32.dll"],
+        "libfreetype-6.dll": ["libpng16-16.dll", "zlib1.dll"],
+        "libpng16-16.dll": ["zlib1.dll"],
+        "zlib1.dll": ["KERNEL32.dll"],
+    }
+
+    def fake_resolver(self):
+        def imports_of(path: Path) -> list[str]:
+            return list(self.GRAPH.get(path.name.lower(), []))
+
+        def is_system(name: str) -> bool:
+            return name.lower() == "kernel32.dll"
+
+        return imports_of, is_system
+
+    def write_fake_dlls(self, bin_dir: Path) -> None:
+        bin_dir.mkdir(parents=True)
+        for name in self.GRAPH:
+            (bin_dir / name).write_bytes(b"MZ\0\0synthetic-" + name.encode())
+
+    def test_staging_copies_ttf_closure_and_licence_files(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            staged = stage_runtime_dlls.stage_runtime_dlls(
+                package_dir,
+                roots=["SDL3.dll", "SDL3_ttf.dll"],
+                search_dirs=[bin_dir],
+                env={},
+                imports_of=imports_of,
+                is_system=is_system,
+            )
+
+            staged_names = {name.lower() for name in staged}
+            self.assertEqual(
+                staged_names,
+                {"sdl3.dll", "sdl3_ttf.dll", "libfreetype-6.dll", "libpng16-16.dll", "zlib1.dll"},
+            )
+            for name in staged_names:
+                self.assertTrue((package_dir / name).is_file(), name)
+            self.assertFalse((package_dir / "KERNEL32.dll").exists())
+
+            notices = package_dir / "THIRD_PARTY_NOTICES"
+            self.assertTrue(notices.is_dir())
+            notice_text = "\n".join(
+                p.name for p in notices.iterdir() if p.is_file()
+            )
+            for licence in ("SDL3_ttf", "FreeType", "libpng", "zlib"):
+                self.assertIn(licence, notice_text)
+
+    def test_missing_sdl3_ttf_fails_the_stage_closed(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            empty_bin = Path(tmp) / "toolchain-bin"
+            empty_bin.mkdir()
+            imports_of, is_system = self.fake_resolver()
+            with self.assertRaises(stage_runtime_dlls.StageError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3_ttf.dll"],
+                    search_dirs=[empty_bin],
+                    env={},
+                    imports_of=imports_of,
+                    is_system=is_system,
+                )
+            self.assertIn("SDL3_ttf.dll", str(ctx.exception))
+            self.assertEqual(list(package_dir.iterdir()), [])
+
+    def test_unresolved_closure_member_fails_closed(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+            broken = dict(self.GRAPH)
+            broken["libfreetype-6.dll"] = ["libghost.dll"]
+
+            def broken_imports(path: Path) -> list[str]:
+                return list(broken.get(path.name.lower(), []))
+
+            with self.assertRaises(stage_runtime_dlls.StageError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3_ttf.dll"],
+                    search_dirs=[bin_dir],
+                    env={},
+                    imports_of=broken_imports,
+                    is_system=is_system,
+                )
+            self.assertIn("libghost.dll", str(ctx.exception))
+
+    @unittest.skipUnless(os.name == "nt", "the Windows staging route copies DLLs")
+    def test_package_route_staging_step_covers_sdl3_ttf(self) -> None:
+        """The build-package route delegates its DLL staging to the shared step."""
+        from unittest import mock
+
+        import nk_cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            with mock.patch.object(
+                nk_cli._runtime_dlls, "stage_runtime_dlls"
+            ) as stage:
+                nk_cli._stage_runtime_assets(package_dir)
+            stage.assert_called_once()
+            self.assertEqual(stage.call_args.args[0], package_dir)
+
+
 if __name__ == "__main__":
     unittest.main()

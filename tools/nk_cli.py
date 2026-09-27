@@ -46,6 +46,7 @@ from nk_core.iso_inspect import (
     write_experimental_profile,
 )
 import title_manifest
+import stage_runtime_dlls as _runtime_dlls
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -592,13 +593,17 @@ def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
         shutil.copytree(vfpu_source, package_dir / "assets" / "vfpu", dirs_exist_ok=True)
-    if os.name == "nt" and not (package_dir / "SDL3.dll").is_file():
-        candidates = [Path(os.environ["SDL3_DLL"])] if os.environ.get("SDL3_DLL") else []
-        candidates.extend((Path("C:/msys64/ucrt64/bin/SDL3.dll"),))
-        found = next((path for path in candidates if path.is_file()), None)
-        if found is None:
-            raise PackageBuildError("SDL3.dll was not bundled in the package and could not be resolved; install the SDL3 runtime used by #296.")
-        shutil.copyfile(found, package_dir / "SDL3.dll")
+    if os.name == "nt":
+        # SDL3.dll and the SDL3_ttf typography closure (#421): the same
+        # mechanical staging step the Makefile's player target uses, so every
+        # package carries the readable-font runtime and its licence notices.
+        try:
+            _runtime_dlls.stage_runtime_dlls(package_dir, notices=False)
+        except _runtime_dlls.StageError as exc:
+            raise PackageBuildError(
+                f"{exc}; install the SDL3/SDL3_ttf runtimes used by #296/#421 "
+                "or set SDL3_DLL / SDL3_TTF_DLL."
+            ) from exc
 
 
 def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:

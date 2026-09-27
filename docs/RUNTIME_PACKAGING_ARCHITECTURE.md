@@ -91,7 +91,7 @@ list is not evidence that a distributable installer or title package exists:
 
 | Target Environment | Packaging Strategy | Binary Artifacts |
 | --- | --- | --- |
-| **Windows x86-64** | Inno Setup / MSIX / Portable ZIP | `nakagawa_player.exe`, `bin/nakagawa_core.dll` (or static), `build/<game>/<game>.exe`, SDL3.dll |
+| **Windows x86-64** | Inno Setup / MSIX / Portable ZIP | `nakagawa_player.exe`, `bin/nakagawa_core.dll` (or static), `build/<game>/<game>.exe`, SDL3.dll, SDL3_ttf.dll + resolved closure, `THIRD_PARTY_NOTICES/` |
 | **Linux / Steam Deck** | AppImage / Flatpak | `nakagawa_player`, `bin/<game>`, `libSDL3.so` bundled in AppDir |
 | **macOS ARM64** | App Bundle (`Nakagawa.app`) | `Nakagawa.app/Contents/MacOS/nakagawa_player`, helper executables in `MacOS/` |
 
@@ -140,7 +140,7 @@ an unsupported path is rejected as `PACKAGE_UNSUPPORTED_PATH` (#296).
 | `runtime` | `CpuState` ABI version and header hash, resolved guest run entry, runtime contract, bindings, and required bindings. |
 | `executable` | Relative native executable path and hash plus the guest ELF entry address. |
 | `generated_objects` | Sorted relative object paths and SHA-256 hashes. |
-| `required_local_assets` | Manifest title-data/resource roots, selected or optional guest PRXs, and host SDL3/Vulkan runtime requirements. These are references; title assets are not copied into the package. |
+| `required_local_assets` | Manifest title-data/resource roots, selected or optional guest PRXs, and host SDL3/SDL3_ttf/Vulkan runtime requirements. These are references; title assets are not copied into the package. |
 | `build_report` | Relative path `build-report.json`. |
 | `cache` | Versioned AOT/native cache key, codegen options, and runtime ABI compatibility decision. |
 | `completion-manifest.json` | Completion marker containing the cache key and SHA-256 for every published artifact; written last. |
@@ -163,6 +163,24 @@ executable and does not unwrap a disc itself; `tools/nk_cli.py build-package
 resulting package. Checkout-independent run-directory provisioning (#297) is
 still tracked there; analyzer ownership and stack-balance gates remain tracked
 by #291.
+
+### Host runtime DLL staging (#421)
+
+Every Windows route that ships or runs a player stages the same host runtime
+DLLs with one mechanical step, `tools/stage_runtime_dlls.py`: `SDL3.dll` and
+`SDL3_ttf.dll` (each overridable via `SDL3_DLL` / `SDL3_TTF_DLL`, otherwise
+resolved from `C:/msys64/ucrt64/bin`), plus the SDL3_ttf dependency closure
+resolved by walking PE import tables recursively and stopping at Windows system
+DLLs. The step runs from the Makefile's `player` target (beside
+`build/nakagawa_player.exe`) and from `tools/nk_cli.py build-package` (into each
+built package), and it fails closed with the unresolved import named when the
+closure is incomplete. Licence texts for every staged DLL are copied beside them
+as `THIRD_PARTY_NOTICES/` by `tools/package_notices.py`, driven by
+`assets/third_party_components.json`. Because the closure sits beside the
+executable, launching from Explorer or a plain `cmd.exe` without MSYS2 on `PATH`
+uses the readable TTF font; the 8x8 SDL bitmap font remains only as a logged
+last-resort fallback (`NK_UI_NO_TTF=1` forces it), and the workspace doctor
+reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`.
 
 ## 6. Private content-addressed cache contract (#316)
 
