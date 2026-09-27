@@ -520,7 +520,10 @@ bool nk_title_manifest_parse_buffer(
             json_free(root);
             return false;
         }
-        static const char * const allowed_disc_keys[] = {"id", "region", "revision_policy", "compatible_revisions", NULL};
+        static const char * const allowed_disc_keys[] = {
+            "id", "region", "revision_policy", "compatible_revisions",
+            "require_local_compatibility_record", NULL
+        };
         static const char * const required_disc_keys[] = {"id", "region", "revision_policy", NULL};
         if (!check_object_keys(disc_node, "$.disc", allowed_disc_keys, required_disc_keys, error_buf, error_buf_len)) {
             json_free(root);
@@ -557,6 +560,13 @@ bool nk_title_manifest_parse_buffer(
         const char *pol = pol_node->u.str_val;
         if (strcmp(pol, "exact-disc-id") != 0 && strcmp(pol, "explicit-compatible-revisions") != 0) {
             if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.revision_policy: unsupported revision policy");
+            json_free(root);
+            return false;
+        }
+        JsonNode *local_record_node = obj_get(disc_node, "require_local_compatibility_record");
+        if (local_record_node && local_record_node->type != JSON_BOOL) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.disc.require_local_compatibility_record: must be a boolean");
             json_free(root);
             return false;
         }
@@ -2383,6 +2393,8 @@ typedef struct {
     char disc_id[NK_MAX_DISC_ID_LEN];
     char title_id[64];
     char identity_digest[65];
+    char current_input_identity_digest[65];
+    char disc_version[32];
     NkRuntimePackageInfo info;
 } PackageValidationCache;
 
@@ -2494,6 +2506,8 @@ static bool package_validation_cache_get(
     const char *package_root,
     const char *disc_id,
     const char *title_id,
+    const char *current_input_identity_digest,
+    const char *disc_version,
     uint32_t player_abi_version,
     uint64_t catalog_epoch,
     NkRuntimePackageInfo *out_info
@@ -2503,7 +2517,11 @@ static bool package_validation_cache_get(
         s_package_validation_cache.player_abi_version != player_abi_version ||
         strcmp(s_package_validation_cache.package_root, package_root) != 0 ||
         strcmp(s_package_validation_cache.disc_id, disc_id) != 0 ||
-        strcmp(s_package_validation_cache.title_id, title_id) != 0) return false;
+        strcmp(s_package_validation_cache.title_id, title_id) != 0 ||
+        strcmp(s_package_validation_cache.current_input_identity_digest,
+               current_input_identity_digest ? current_input_identity_digest : "") != 0 ||
+        strcmp(s_package_validation_cache.disc_version,
+               disc_version ? disc_version : "") != 0) return false;
     char identity_digest[65];
     if (!package_completion_identity(package_root, identity_digest) ||
         strcmp(identity_digest, s_package_validation_cache.identity_digest) != 0) {
@@ -2519,6 +2537,8 @@ static void package_validation_cache_put(
     const char *package_root,
     const char *disc_id,
     const char *title_id,
+    const char *current_input_identity_digest,
+    const char *disc_version,
     uint32_t player_abi_version,
     uint64_t catalog_epoch,
     const char *identity_digest,
@@ -2531,6 +2551,11 @@ static void package_validation_cache_put(
     snprintf(cache->package_root, sizeof(cache->package_root), "%s", package_root);
     snprintf(cache->disc_id, sizeof(cache->disc_id), "%s", disc_id);
     snprintf(cache->title_id, sizeof(cache->title_id), "%s", title_id);
+    snprintf(cache->current_input_identity_digest,
+             sizeof(cache->current_input_identity_digest), "%s",
+             current_input_identity_digest ? current_input_identity_digest : "");
+    snprintf(cache->disc_version, sizeof(cache->disc_version), "%s",
+             disc_version ? disc_version : "");
     snprintf(cache->identity_digest, sizeof(cache->identity_digest), "%s",
              identity_digest);
     cache->info = *info;
@@ -2581,6 +2606,314 @@ static bool package_check_sha_object(const JsonNode *node, const char *path,
     return true;
 }
 
+static bool package_validate_title_input_identity(const JsonNode *identity,
+                                                  char *error,
+                                                  size_t error_size) {
+    static const char * const root_keys[] = {
+        "format", "schema_version", "manifest", "disc", "param_sfo",
+        "container", "main_executable", "modules", "psp_header", NULL
+    };
+    static const char * const manifest_keys[] = {"id", "schema_version", NULL};
+    static const char * const disc_keys[] = {"id", "region", "disc_version", NULL};
+    static const char * const container_keys[] = {
+        "format", "volume_id", "size_bytes", "pvd_sector", "sector_size", NULL
+    };
+    static const char * const executable_keys[] = {"name", "sha256", NULL};
+    static const char * const module_keys[] = {"name", "sha256", NULL};
+    static const char * const header_keys[] = {"sha256", "magic", NULL};
+    static const char * const sfo_keys[] = {
+        "DISC_ID", "TITLE", "DISC_VERSION", "APP_VER", "PSP_SYSTEM_VER", "CATEGORY", NULL
+    };
+    static const char * const required[] = {
+        "format", "schema_version", "manifest", "disc", "param_sfo",
+        "container", "main_executable", "modules", "psp_header", NULL
+    };
+    const char *value = NULL;
+    if (!package_check_object(identity, "title_input_identity", root_keys, required,
+                              error, error_size) ||
+        !package_string(obj_get(identity, "format"), &value) ||
+        strcmp(value, "nakagawa-title-input-identity") != 0 ||
+        !package_number(obj_get(identity, "schema_version"), 1)) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity format or schema is unsupported");
+        }
+        return false;
+    }
+    const JsonNode *manifest = obj_get(identity, "manifest");
+    if (!package_check_object(manifest, "title_input_identity.manifest",
+                              manifest_keys, manifest_keys, error, error_size) ||
+        !package_string(obj_get(manifest, "id"), NULL) ||
+        !package_number(obj_get(manifest, "schema_version"), 1)) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity manifest record is invalid");
+        }
+        return false;
+    }
+    const JsonNode *disc = obj_get(identity, "disc");
+    if (!package_check_object(disc, "title_input_identity.disc", disc_keys, disc_keys,
+                              error, error_size)) return false;
+    const JsonNode *disc_id = obj_get(disc, "id");
+    const JsonNode *region = obj_get(disc, "region");
+    const JsonNode *disc_version = obj_get(disc, "disc_version");
+    if ((disc_id->type != JSON_NULL &&
+         (disc_id->type != JSON_STRING || !is_valid_disc_id(disc_id->u.str_val))) ||
+        (region->type != JSON_NULL && region->type != JSON_STRING) ||
+        (disc_version->type != JSON_NULL && disc_version->type != JSON_STRING)) {
+        snprintf(error, error_size, "title input identity disc revision record is invalid");
+        return false;
+    }
+    const JsonNode *sfo = obj_get(identity, "param_sfo");
+    if (sfo->type != JSON_NULL) {
+        if (!package_check_object(sfo, "title_input_identity.param_sfo", sfo_keys,
+                                  NULL, error, error_size)) return false;
+        for (size_t i = 0; i < sfo->u.obj.count; i++) {
+            if (sfo->u.obj.members[i].val->type != JSON_STRING) {
+                snprintf(error, error_size, "title input identity PARAM.SFO fact is invalid");
+                return false;
+            }
+        }
+    }
+    const JsonNode *container = obj_get(identity, "container");
+    if (container->type != JSON_NULL) {
+        if (!package_check_object(container, "title_input_identity.container",
+                                  container_keys, container_keys, error, error_size) ||
+            !package_string(obj_get(container, "format"), NULL) ||
+            obj_get(container, "volume_id")->type != JSON_STRING) return false;
+        const char * const number_fields[] = {"size_bytes", "pvd_sector", "sector_size", NULL};
+        for (size_t i = 0; number_fields[i]; i++) {
+            const JsonNode *number = obj_get(container, number_fields[i]);
+            if (!number || number->type != JSON_NUMBER || !number->u.num.is_integer ||
+                number->u.num.int_val < 0) {
+                snprintf(error, error_size, "title input identity container metadata is invalid");
+                return false;
+            }
+        }
+    }
+    const JsonNode *executable = obj_get(identity, "main_executable");
+    if (!package_check_object(executable, "title_input_identity.main_executable",
+                              executable_keys, executable_keys, error, error_size) ||
+        !package_string(obj_get(executable, "name"), NULL) ||
+        !package_sha256(obj_get(executable, "sha256"), NULL)) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity main executable record is invalid");
+        }
+        return false;
+    }
+    const JsonNode *modules = obj_get(identity, "modules");
+    if (!modules || modules->type != JSON_ARRAY) {
+        snprintf(error, error_size, "title input identity modules must be an array");
+        return false;
+    }
+    for (size_t i = 0; i < modules->u.arr.count; i++) {
+        const JsonNode *module = modules->u.arr.items[i];
+        const char *name = NULL;
+        if (!package_check_object(module, "title_input_identity.modules[]",
+                                  module_keys, module_keys, error, error_size) ||
+            !package_string(obj_get(module, "name"), &name) ||
+            !package_sha256(obj_get(module, "sha256"), NULL)) return false;
+        for (size_t j = 0; j < i; j++) {
+            const char *prior = NULL;
+            if (package_string(obj_get(modules->u.arr.items[j], "name"), &prior) &&
+                nk_ascii_casecmp(name, prior) == 0) {
+                snprintf(error, error_size, "title input identity repeats a module name");
+                return false;
+            }
+        }
+    }
+    const JsonNode *header = obj_get(identity, "psp_header");
+    if (header->type != JSON_NULL &&
+        (!package_check_object(header, "title_input_identity.psp_header",
+                               header_keys, header_keys, error, error_size) ||
+         !package_sha256(obj_get(header, "sha256"), NULL) ||
+         (obj_get(header, "magic")->type != JSON_NULL &&
+          obj_get(header, "magic")->type != JSON_STRING))) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity PSP header record is invalid");
+        }
+        return false;
+    }
+    return true;
+}
+
+static const char *package_title_identity_change(const JsonNode *previous,
+                                                const JsonNode *current,
+                                                char *change,
+                                                size_t change_size) {
+    if (!json_nodes_equal(obj_get(previous, "manifest"), obj_get(current, "manifest"))) {
+        return "manifest/profile changed";
+    }
+    const JsonNode *old_disc = obj_get(previous, "disc");
+    const JsonNode *new_disc = obj_get(current, "disc");
+    if (!json_nodes_equal(obj_get(old_disc, "id"), obj_get(new_disc, "id"))) {
+        return "DISC_ID changed";
+    }
+    if (!json_nodes_equal(obj_get(old_disc, "region"), obj_get(new_disc, "region"))) {
+        return "region changed";
+    }
+    const JsonNode *old_sfo = obj_get(previous, "param_sfo");
+    const JsonNode *new_sfo = obj_get(current, "param_sfo");
+    if (!json_nodes_equal(obj_get(old_disc, "disc_version"),
+                          obj_get(new_disc, "disc_version")) ||
+        !json_nodes_equal(obj_get(old_sfo, "DISC_VERSION"),
+                          obj_get(new_sfo, "DISC_VERSION")) ||
+        !json_nodes_equal(obj_get(old_sfo, "APP_VER"), obj_get(new_sfo, "APP_VER"))) {
+        return "SFO revision changed";
+    }
+    if (!json_nodes_equal(old_sfo, new_sfo)) return "PARAM.SFO facts changed";
+    const JsonNode *old_exe = obj_get(previous, "main_executable");
+    const JsonNode *new_exe = obj_get(current, "main_executable");
+    if (!json_nodes_equal(obj_get(old_exe, "sha256"), obj_get(new_exe, "sha256")) ||
+        !json_nodes_equal(obj_get(old_exe, "name"), obj_get(new_exe, "name"))) {
+        return "main executable changed";
+    }
+    const JsonNode *old_modules = obj_get(previous, "modules");
+    const JsonNode *new_modules = obj_get(current, "modules");
+    for (size_t i = 0; i < old_modules->u.arr.count; i++) {
+        const JsonNode *old_module = old_modules->u.arr.items[i];
+        const char *name = NULL;
+        const char *old_hash = NULL;
+        (void)package_string(obj_get(old_module, "name"), &name);
+        (void)package_sha256(obj_get(old_module, "sha256"), &old_hash);
+        bool found = false;
+        for (size_t j = 0; j < new_modules->u.arr.count; j++) {
+            const JsonNode *new_module = new_modules->u.arr.items[j];
+            const char *new_name = NULL;
+            const char *new_hash = NULL;
+            if (package_string(obj_get(new_module, "name"), &new_name) &&
+                strcmp(name, new_name) == 0 &&
+                package_sha256(obj_get(new_module, "sha256"), &new_hash) &&
+                strcmp(old_hash, new_hash) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (change && change_size) snprintf(change, change_size, "module %s changed", name);
+            return change && change_size ? change : "guest module changed";
+        }
+    }
+    for (size_t i = 0; i < new_modules->u.arr.count; i++) {
+        const JsonNode *new_module = new_modules->u.arr.items[i];
+        const char *name = NULL;
+        (void)package_string(obj_get(new_module, "name"), &name);
+        bool found = false;
+        for (size_t j = 0; j < old_modules->u.arr.count; j++) {
+            const char *old_name = NULL;
+            if (package_string(obj_get(old_modules->u.arr.items[j], "name"), &old_name) &&
+                strcmp(name, old_name) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (change && change_size) snprintf(change, change_size, "module %s changed", name);
+            return change && change_size ? change : "guest module changed";
+        }
+    }
+    if (!json_nodes_equal(obj_get(previous, "container"), obj_get(current, "container"))) {
+        return "container metadata changed";
+    }
+    if (!json_nodes_equal(obj_get(previous, "psp_header"), obj_get(current, "psp_header"))) {
+        return "PSP header changed";
+    }
+    return NULL;
+}
+
+static bool package_local_identity_file(const char *user_data_root,
+                                       const char *disc_id,
+                                       char out_path[NK_MAX_PATH * 2]) {
+    char relative[NK_MAX_DISC_ID_LEN + 96];
+    int written = snprintf(relative, sizeof(relative),
+        "title-input-identities/%s/title-input-identity.json", disc_id);
+    return written > 0 && (size_t)written < sizeof(relative) &&
+           package_direct_file(user_data_root, relative, out_path,
+                               NK_MAX_PATH * 2);
+}
+
+static bool package_validate_current_identity(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    const char *current_disc_version,
+    const JsonNode *package_identity,
+    char out_file_digest[65],
+    char *error,
+    size_t error_size
+) {
+    const JsonNode *package_disc = obj_get(package_identity, "disc");
+    const JsonNode *package_disc_id = obj_get(package_disc, "id");
+    if (package_disc_id->type == JSON_NULL) {
+        out_file_digest[0] = '\0';
+        return true;
+    }
+    const char *identity_disc_id = NULL;
+    if (!package_string(package_disc_id, &identity_disc_id) ||
+        strcmp(identity_disc_id, disc_id) != 0) {
+        snprintf(error, error_size,
+                 "Title input identity mismatch: DISC_ID changed; this revision boundary is in the works (#315).");
+        return false;
+    }
+    char identity_path[NK_MAX_PATH * 2];
+    if (!package_local_identity_file(user_data_root, disc_id, identity_path)) {
+        snprintf(error, error_size,
+                 "Title input identity record is missing; exact revision binding is in the works (#315).");
+        return false;
+    }
+    if (!package_hash_file(identity_path, out_file_digest)) {
+        snprintf(error, error_size,
+                 "Title input identity record is unreadable; exact revision binding is in the works (#315).");
+        return false;
+    }
+    char *identity_text = NULL;
+    size_t identity_length = 0;
+    if (!package_read_json(identity_path, NK_MANIFEST_MAX_BYTES, &identity_text,
+                           &identity_length, error, error_size)) {
+        snprintf(error, error_size,
+                 "Title input identity record is unreadable; exact revision binding is in the works (#315).");
+        return false;
+    }
+    JsonNode *current = json_parse(identity_text, identity_length, error, error_size);
+    free(identity_text);
+    if (!current || !package_validate_title_input_identity(current, error, error_size)) {
+        if (current) json_free(current);
+        snprintf(error, error_size,
+                 "Title input identity record is invalid; exact revision binding is in the works (#315).");
+        return false;
+    }
+    const JsonNode *current_manifest = obj_get(current, "manifest");
+    const JsonNode *current_disc = obj_get(current, "disc");
+    const char *current_title_id_value = NULL;
+    const char *recorded_disc_version = NULL;
+    if (!package_string(obj_get(current_manifest, "id"), &current_title_id_value) ||
+        strcmp(current_title_id_value, title_id) != 0) {
+        json_free(current);
+        snprintf(error, error_size,
+                 "Title input identity mismatch: manifest/profile changed; this revision boundary is in the works (#315).");
+        return false;
+    }
+    if (current_disc_version && *current_disc_version &&
+        package_string(obj_get(current_disc, "disc_version"), &recorded_disc_version) &&
+        strcmp(current_disc_version, recorded_disc_version) != 0) {
+        json_free(current);
+        snprintf(error, error_size,
+                 "Title input identity mismatch: SFO revision changed; this revision boundary is in the works (#315).");
+        return false;
+    }
+    const char *change = NULL;
+    char module_change[192] = "";
+    if (!json_nodes_equal(package_identity, current)) {
+        change = package_title_identity_change(package_identity, current,
+                                               module_change, sizeof(module_change));
+        snprintf(error, error_size,
+                 "Title input identity mismatch: %s; this revision boundary is in the works (#315).",
+                 change ? change : "identity record changed");
+        json_free(current);
+        return false;
+    }
+    json_free(current);
+    return true;
+}
+
 static bool package_cache_text(const JsonNode *node) {
     return node && node->type == JSON_STRING;
 }
@@ -2595,7 +2928,8 @@ static bool package_validate_cache(const JsonNode *package,
     static const char * const key_keys[] = {"schema_version", "aot", "native", NULL};
     static const char * const aot_keys[] = {"digest", "components", NULL};
     static const char * const aot_component_keys[] = {
-        "executable_sha256", "manifest_sha256", "modules_sha256", "psp_header_sha256",
+        "executable_sha256", "manifest_sha256", "modules_sha256",
+        "title_input_identity_sha256", "psp_header_sha256",
         "analyzer_codegen_epoch", "analyzer_sha256", "codegen_sha256",
         "codegen_options_sha256", "generated_code_abi_epoch", "runtime_abi_epoch", NULL
     };
@@ -2620,6 +2954,7 @@ static bool package_validate_cache(const JsonNode *package,
     const char *manifest_digest = NULL;
     const char *codegen_options_digest = NULL;
     const char *modules_digest = NULL;
+    const char *identity_digest = NULL;
     char computed_digest[65];
     if (!package_check_object(cache, "$.cache", cache_keys, cache_keys, error, error_size) ||
         !package_check_object(key, "$.cache.key", key_keys, key_keys, error, error_size) ||
@@ -2641,7 +2976,7 @@ static bool package_validate_cache(const JsonNode *package,
         !package_number(obj_get(obj_get(cache, "runtime_abi_compatibility"), "current_epoch"),
                         NK_AOT_RUNTIME_ABI_EPOCH) ||
         obj_get(obj_get(cache, "runtime_abi_compatibility"), "generated_code_reusable")->type != JSON_BOOL) {
-        snprintf(error, error_size, "package cache metadata does not match the v1 cache contract");
+        snprintf(error, error_size, "package cache metadata does not match the v2 cache contract");
         return false;
     }
     if (!inputs || inputs->type != JSON_OBJECT ||
@@ -2659,6 +2994,9 @@ static bool package_validate_cache(const JsonNode *package,
         !package_sha256(obj_get(components, "modules_sha256"), &modules_digest) ||
         !package_hash_json_node(obj_get(inputs, "modules"), computed_digest) ||
         strcmp(computed_digest, modules_digest) != 0 ||
+        !package_sha256(obj_get(components, "title_input_identity_sha256"), &identity_digest) ||
+        !package_hash_json_node(obj_get(package, "title_input_identity"), computed_digest) ||
+        strcmp(computed_digest, identity_digest) != 0 ||
         !package_string(obj_get(components, "analyzer_codegen_epoch"), NULL) ||
         !package_sha256(obj_get(components, "analyzer_sha256"), NULL) ||
         !package_sha256(obj_get(components, "codegen_sha256"), NULL) ||
@@ -2708,8 +3046,9 @@ static bool package_validate_contract(const JsonNode *package,
                                       const char **input_exe_hash,
                                       char *error, size_t error_size) {
     static const char * const root_keys[] = {
-        "format", "schema_version", "title", "inputs", "runtime", "executable", "cache",
-        "generated_objects", "required_local_assets", "build_report", NULL
+        "format", "schema_version", "title", "inputs", "title_input_identity",
+        "runtime", "executable", "cache", "generated_objects",
+        "required_local_assets", "build_report", NULL
     };
     static const char * const title_keys[] = {
         "id", "display_name", "kind", "manifest_sha256", "protected_digest", NULL
@@ -2734,8 +3073,8 @@ static bool package_validate_contract(const JsonNode *package,
     const char *value = NULL;
     if (!package_check_object(package, "$", root_keys, root_keys, error, error_size)) return false;
     if (!package_string(obj_get(package, "format"), &value) || strcmp(value, "nakagawa-aot-package") != 0 ||
-        !package_number(obj_get(package, "schema_version"), 1)) {
-        snprintf(error, error_size, "package format or schema_version is not v1");
+        !package_number(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION)) {
+        snprintf(error, error_size, "package format or schema_version is not v2");
         return false;
     }
 
@@ -2759,6 +3098,8 @@ static bool package_validate_contract(const JsonNode *package,
 
     const JsonNode *inputs = obj_get(package, "inputs");
     if (!package_check_object(inputs, "$.inputs", inputs_keys, inputs_required, error, error_size)) return false;
+    const JsonNode *title_input_identity = obj_get(package, "title_input_identity");
+    if (!package_validate_title_input_identity(title_input_identity, error, error_size)) return false;
     const JsonNode *manifest_input = obj_get(inputs, "manifest");
     const JsonNode *executable_input = obj_get(inputs, "executable");
     const char *manifest_hash = NULL;
@@ -2766,6 +3107,15 @@ static bool package_validate_contract(const JsonNode *package,
         !package_check_sha_object(executable_input, "$.inputs.executable", input_exe_hash, error, error_size)) return false;
     if (strcmp(manifest_hash, obj_get(title, "manifest_sha256")->u.str_val) != 0) {
         snprintf(error, error_size, "package manifest hash disagrees with its title record");
+        return false;
+    }
+    const JsonNode *identity_manifest = obj_get(title_input_identity, "manifest");
+    const JsonNode *identity_executable = obj_get(title_input_identity, "main_executable");
+    if (!package_string(obj_get(identity_manifest, "id"), &value) ||
+        strcmp(value, obj_get(title, "id")->u.str_val) != 0 ||
+        !package_sha256(obj_get(identity_executable, "sha256"), &value) ||
+        strcmp(value, *input_exe_hash) != 0) {
+        snprintf(error, error_size, "title input identity does not match the manifest/profile");
         return false;
     }
     const JsonNode *modules = obj_get(inputs, "modules");
@@ -2785,9 +3135,47 @@ static bool package_validate_contract(const JsonNode *package,
             return false;
         }
     }
+    const JsonNode *identity_modules = obj_get(title_input_identity, "modules");
+    if (identity_modules->u.arr.count != modules->u.arr.count) {
+        snprintf(error, error_size, "title input identity does not match its module inputs");
+        return false;
+    }
+    for (size_t i = 0; i < identity_modules->u.arr.count; i++) {
+        const JsonNode *identity_module = identity_modules->u.arr.items[i];
+        const char *identity_name = NULL;
+        const char *identity_sha = NULL;
+        bool matched = false;
+        (void)package_string(obj_get(identity_module, "name"), &identity_name);
+        (void)package_sha256(obj_get(identity_module, "sha256"), &identity_sha);
+        for (size_t j = 0; j < modules->u.arr.count; j++) {
+            const JsonNode *input_module = modules->u.arr.items[j];
+            const char *input_name = NULL;
+            const char *input_sha = NULL;
+            if (package_string(obj_get(input_module, "name"), &input_name) &&
+                package_sha256(obj_get(input_module, "sha256"), &input_sha) &&
+                strcmp(identity_name, input_name) == 0 &&
+                strcmp(identity_sha, input_sha) == 0) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            snprintf(error, error_size, "title input identity does not match its module inputs");
+            return false;
+        }
+    }
     const JsonNode *psp_header = obj_get(inputs, "psp_header");
     if (psp_header->type != JSON_NULL &&
         !package_check_sha_object(psp_header, "$.inputs.psp_header", NULL, error, error_size)) return false;
+    const JsonNode *identity_header = obj_get(title_input_identity, "psp_header");
+    if ((psp_header->type == JSON_NULL && identity_header->type != JSON_NULL) ||
+        (psp_header->type != JSON_NULL &&
+         (identity_header->type != JSON_OBJECT ||
+          !json_nodes_equal(obj_get(psp_header, "sha256"),
+                            obj_get(identity_header, "sha256"))))) {
+        snprintf(error, error_size, "title input identity does not match the PSP header input");
+        return false;
+    }
     if (!package_validate_cache(package, *input_exe_hash, error, error_size)) return false;
 
     const JsonNode *runtime = obj_get(package, "runtime");
@@ -2978,10 +3366,12 @@ static bool package_validate_completion(const char *package_root,
                                         char out_identity_digest[65],
                                         char *error, size_t error_size) {
     static const char * const allowed_keys[] = {
-        "format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits", NULL
+        "format", "schema_version", "status", "cache_key", "title_input_identity",
+        "artifacts", "backends", "limits", NULL
     };
     static const char * const required_keys[] = {
-        "format", "schema_version", "status", "cache_key", "artifacts", NULL
+        "format", "schema_version", "status", "cache_key", "title_input_identity",
+        "artifacts", NULL
     };
     static const char * const artifact_keys[] = {"path", "sha256", NULL};
     char completion_path[NK_MAX_PATH * 2];
@@ -3026,10 +3416,14 @@ static bool package_validate_completion(const char *package_root,
                               error, error_size) ||
         !package_string(obj_get(completion, "format"), &value) ||
         strcmp(value, "nakagawa-aot-cache-completion") != 0 ||
-        !package_number(obj_get(completion, "schema_version"), 1) ||
+        !package_number(obj_get(completion, "schema_version"), NK_AOT_COMPLETION_SCHEMA_VERSION) ||
         !package_string(obj_get(completion, "status"), &value) ||
         strcmp(value, "complete") != 0 ||
-        !json_nodes_equal(obj_get(completion, "cache_key"), obj_get(package_cache, "key"))) {
+        !json_nodes_equal(obj_get(completion, "cache_key"), obj_get(package_cache, "key")) ||
+        !package_validate_title_input_identity(obj_get(completion, "title_input_identity"),
+                                               error, error_size) ||
+        !json_nodes_equal(obj_get(completion, "title_input_identity"),
+                          obj_get(package, "title_input_identity"))) {
         snprintf(error, error_size, "Runtime package completion manifest does not match the cache key.");
         json_free(completion);
         return false;
@@ -3237,6 +3631,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
+    const char *current_disc_version,
     uint32_t player_abi_version,
     NkRuntimePackageInfo *out_info,
     char *reason,
@@ -3292,14 +3687,23 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     snprintf(package_root, sizeof(package_root), "%s", resolved_package_root);
+    char current_identity_file_digest[65] = "";
+    char current_identity_path[NK_MAX_PATH * 2];
+    if (package_local_identity_file(user_data_root, normalized,
+                                    current_identity_path) &&
+        !package_hash_file(current_identity_path, current_identity_file_digest)) {
+        current_identity_file_digest[0] = '\0';
+    }
     if (!is_experimental &&
         package_validation_cache_get(package_root, normalized, title_id,
+                                     current_identity_file_digest,
+                                     current_disc_version,
                                      player_abi_version, s_catalog_epoch,
                                      &resolved_info)) {
         if (out_info) *out_info = resolved_info;
         if (reason && reason_size) {
             snprintf(reason, reason_size,
-                     "Runtime package v1 is valid for %s.", normalized);
+                     "Runtime package v2 is valid for %s.", normalized);
         }
         return NK_RUNTIME_PACKAGE_OK;
     }
@@ -3342,6 +3746,19 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     if (!package_validate_completion(package_root, package, obj_get(package, "cache"),
                                      exe_relative, exe_hash, package_identity_digest,
                                      parse_error, sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_STALE;
+    }
+
+    char validated_identity_file_digest[65] = "";
+    if (!package_validate_current_identity(
+            user_data_root, normalized, title_id, current_disc_version,
+            obj_get(package, "title_input_identity"),
+            validated_identity_file_digest, parse_error, sizeof(parse_error)) ||
+        strcmp(validated_identity_file_digest, current_identity_file_digest) != 0) {
+        if (!parse_error[0]) snprintf(parse_error, sizeof(parse_error),
+            "Title input identity changed during validation; exact revision binding is in the works (#315).");
         package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
         json_free(package);
         return NK_RUNTIME_PACKAGE_STALE;
@@ -3438,6 +3855,8 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         memcpy(resolved_info.image_path, resolved_image, strlen(resolved_image) + 1);
         if (!is_experimental) {
             package_validation_cache_put(package_root, normalized, title_id,
+                                         validated_identity_file_digest,
+                                         current_disc_version,
                                          player_abi_version, s_catalog_epoch,
                                          package_identity_digest, &resolved_info);
         }
