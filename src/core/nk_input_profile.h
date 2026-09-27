@@ -13,10 +13,19 @@
 extern "C" {
 #endif
 
-#define NK_INPUT_PROFILE_SCHEMA_VERSION 1
+/* Schema 1 was the single global mapping written to <config>/input_profile.json.
+ * Schema 2 adds the optional per_title map keyed by disc ID, so one session can
+ * give two discs different host mappings without editing a global file (#520).
+ * A schema 1 file still loads: it migrates in memory to schema 2 with no
+ * per-title entries, so the global mapping keeps working unchanged. */
+#define NK_INPUT_PROFILE_SCHEMA_VERSION 2
+#define NK_INPUT_PROFILE_MIN_SCHEMA_VERSION 1
 #define NK_INPUT_GUID_MAX_LEN 64
 #define NK_INPUT_NAME_HINT_MAX_LEN 128
 #define NK_INPUT_DIAGNOSTIC_MAX_LEN 256
+/* Per-title entries a single profile document may carry. Beyond this the
+ * document is refused rather than silently dropping a disc's mapping. */
+#define NK_INPUT_MAX_PER_TITLE 8
 
 /* Default calibration values matching current runtime (src/rt/gpu_sdl3vk/sdl3vk.c) */
 #define NK_INPUT_DEFAULT_DEADZONE_INNER 7849
@@ -194,6 +203,21 @@ typedef struct {
 } NkInputProfile;
 
 /**
+ * A whole versioned input profile document: the global mapping every disc uses
+ * unless it names its own, plus the optional per-title map keyed by disc ID
+ * (#520). An NkInputProfile stays the "one effective mapping" value type that
+ * the runtime, the player UI and the pad evaluation helpers already consume, so
+ * adding per-title support does not change what any of them take.
+ */
+typedef struct {
+    int schema_version; /* always the current version once loaded or saved */
+    NkInputProfile global;
+    char title_disc_id[NK_INPUT_MAX_PER_TITLE][NK_MAX_DISC_ID_LEN];
+    NkInputProfile title[NK_INPUT_MAX_PER_TITLE];
+    int title_count;
+} NkInputProfileFile;
+
+/**
  * @brief Transform raw host SDL axis value to PSP analog byte (0..255, centre 128).
  *
  * Mapping Formula:
@@ -309,6 +333,8 @@ NkResult nk_input_profile_validate(
  *
  * Fails to safe defaults on unknown version, out-of-range value, duplicate or
  * conflicting binding, or malformed JSON. A future version is never downgraded.
+ * A schema 1 file migrates to the current version; any invalid per-title entry
+ * refuses the whole document, so a half-applied mapping is never reachable.
  */
 NkResult nk_input_profile_load(
     NkInputProfile *out_profile,
@@ -337,6 +363,96 @@ NkResult nk_input_profile_save(
     char *diag_buf,
     size_t diag_buf_sz
 );
+
+/**
+ * @brief Initialize a whole profile document to the global default mapping.
+ */
+void nk_input_profile_file_init_default(NkInputProfileFile *doc);
+
+/**
+ * @brief Strictly load a whole profile document, per-title map included.
+ *
+ * Any invalid global mapping or invalid per-title entry refuses the document:
+ * the caller receives safe defaults and a diagnostic naming the offending entry,
+ * never a partially applied mapping.
+ */
+NkResult nk_input_profile_file_load(
+    NkInputProfileFile *doc,
+    const char *file_path,
+    char *diag_buf,
+    size_t diag_buf_sz
+);
+
+/**
+ * @brief Strictly parse a whole profile document from in-memory JSON text.
+ */
+NkResult nk_input_profile_file_parse_json(
+    NkInputProfileFile *doc,
+    const char *json_str,
+    size_t json_len,
+    char *diag_buf,
+    size_t diag_buf_sz
+);
+
+/**
+ * @brief Save a whole profile document atomically (write to .tmp then rename).
+ *
+ * Every global mapping and per-title entry is validated first, so a refused
+ * document never replaces the file already on disk.
+ */
+NkResult nk_input_profile_file_save(
+    const NkInputProfileFile *doc,
+    const char *file_path,
+    char *diag_buf,
+    size_t diag_buf_sz
+);
+
+/**
+ * @brief Index of the per-title entry for `disc_id`, or -1 when there is none.
+ * Matching is case-insensitive on ASCII, like every other name lookup here.
+ */
+int nk_input_profile_file_find_title(const NkInputProfileFile *doc, const char *disc_id);
+
+/**
+ * @brief Effective mapping for `disc_id`: its own entry, else the global one.
+ *
+ * An entry that fails validation is reported through `diag_buf` and the global
+ * mapping is returned instead, because a partially applied per-title mapping
+ * would hand the guest buttons the screen does not show.
+ */
+const NkInputProfile *nk_input_profile_file_resolve(
+    const NkInputProfileFile *doc,
+    const char *disc_id,
+    char *diag_buf,
+    size_t diag_buf_sz
+);
+
+/**
+ * @brief Store `mapping` as the per-title entry for `disc_id`, creating it when
+ * the disc has none. The mapping is validated first and a full document, an
+ * unsafe disc ID or an invalid mapping is refused without touching the document.
+ */
+NkResult nk_input_profile_file_set_title(
+    NkInputProfileFile *doc,
+    const char *disc_id,
+    const NkInputProfile *mapping,
+    char *diag_buf,
+    size_t diag_buf_sz
+);
+
+/**
+ * @brief Drop the per-title entry for `disc_id` so the disc uses the global map.
+ * @return true when an entry was removed.
+ */
+bool nk_input_profile_file_remove_title(NkInputProfileFile *doc, const char *disc_id);
+
+/**
+ * @brief True when `disc_id` is safe to use as a per-title profile file name.
+ *
+ * Only ASCII letters, digits, '-', '_' and '.' are accepted, so a disc ID read
+ * from an image can never traverse out of the profile directory.
+ */
+bool nk_input_profile_disc_id_safe(const char *disc_id);
 
 /**
  * @brief Resolve the active input profile file path.
