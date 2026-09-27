@@ -145,15 +145,15 @@ static bool ui_font_find_system_font(char *out_path, size_t out_len) {
     char app_fonts_root[MAX_PATH_LEN];
     bool have_app_fonts_root = false;
     if (nk_platform_resolve_app_data_dir(data_root, sizeof(data_root))) {
+        /* Windows and macOS keep data under <vendor>/data, so fonts sit beside
+         * it in <vendor>/fonts; the XDG root is the vendor directory itself. */
         char *leaf = strrchr(data_root, nk_platform_path_separator());
-        if (leaf && strcmp(leaf + 1, "data") == 0) {
-            *leaf = '\0';
-            int written = snprintf(app_fonts_root, sizeof(app_fonts_root),
-                                   "%s%cfonts", data_root,
-                                   nk_platform_path_separator());
-            have_app_fonts_root = written > 0 &&
-                (size_t)written < sizeof(app_fonts_root);
-        }
+        if (leaf && strcmp(leaf + 1, "data") == 0) *leaf = '\0';
+        int written = snprintf(app_fonts_root, sizeof(app_fonts_root),
+                               "%s%cfonts", data_root,
+                               nk_platform_path_separator());
+        have_app_fonts_root = written > 0 &&
+            (size_t)written < sizeof(app_fonts_root);
     }
     if (have_app_fonts_root) {
         for (int i = 0; kOpenSourceFiles[i]; i++) {
