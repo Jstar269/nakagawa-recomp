@@ -37,6 +37,18 @@ void ui_font_shutdown(void);
  * high-density displays). Values outside [1, 3] are ignored. */
 void ui_font_set_density(float density);
 
+/* Which text path the renderer is drawing with: "ttf" (SDL3_ttf + a system UI
+ * font) or "bitmap" (the SDL_RenderDebugText last-resort fallback). Evaluates
+ * the lazy font load on first use. */
+const char *ui_font_mode(void);
+
+/* Why the readable TTF path is unavailable: "NONE" when it is active,
+ * otherwise the failing step as one stable token ("forced-off",
+ * "library-missing", "symbol-missing", "init-failed", "no-system-font",
+ * "open-failed"). The same reason is logged once to stderr when the fallback
+ * engages, so the bitmap font is never a silent outcome. */
+const char *ui_font_fallback_reason(void);
+
 /* Helper to capture current render target to BMP file */
 bool ui_capture_screenshot(SDL_Renderer *renderer, const char *output_bmp_path);
 
