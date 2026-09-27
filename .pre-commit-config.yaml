@@ -13,7 +13,7 @@ exclude: |
       oracle/|
       fs/|
       memstick/|
-      logs/|
+      logs/
   )
 
 repos:
@@ -25,10 +25,12 @@ repos:
         # identify/pre-commit classifies them as text. Three larger legacy
         # source/test files also contain a handful of pre-existing whitespace-only
         # blank lines; leave those historical lines untouched to avoid an unrelated
-        # mass-format diff. The local staged-diff hook below still rejects any
-        # *new* whitespace in every file.
+        # mass-format diff. Preserve the pinned upstream crypto C sources/headers and
+        # third-party license copies listed below byte-for-byte; the formatter
+        # removes recorded trailing whitespace from those imported files. The local
+        # staged-diff hook below still rejects any *new* whitespace in every file.
         exclude: >-
-          ^(assets/vfpu/.*\.dat|src/rt/sched_selftest\.c|tools/gen_microtest\.py|tools/test_codegen_gate_b_encoding\.py|src/rt/atrac3p/LICENSE\.LGPLv2\.1\.txt|THIRD_PARTY_LICENSES/GPL-2\.0\.txt|THIRD_PARTY_LICENSES/Graphite2\.txt|THIRD_PARTY_LICENSES/bzip2\.txt)$
+          ^(assets/vfpu/.*\.dat|src/rt/sched_selftest\.c|tools/gen_microtest\.py|tools/test_codegen_gate_b_encoding\.py|src/rt/atrac3p/LICENSE\.LGPLv2\.1\.txt|THIRD_PARTY_LICENSES/GPL-2\.0\.txt|THIRD_PARTY_LICENSES/Graphite2\.txt|THIRD_PARTY_LICENSES/bzip2\.txt|THIRD_PARTY_LICENSES/libiconv\.txt|THIRD_PARTY_LICENSES/libintl\.txt|src/core/nk_psp_aes\.c|src/core/nk_psp_aes\.h|src/core/nk_psp_sha1\.c|src/core/nk_psp_sha1\.h)$
       - id: end-of-file-fixer
         # Never mutate pinned binary LUT bytes.
         exclude: ^assets/vfpu/.*\.dat$

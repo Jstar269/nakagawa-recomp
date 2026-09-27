@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
+import textwrap
 import unittest
 from unittest import mock
 from unittest.mock import patch
@@ -540,6 +542,28 @@ class PublicationCoverageInvariantTests(unittest.TestCase):
         self.assertIn("tools/publish_audit.py", config)
         self.assertIn("--provenance-self-consistency", config)
         self.assertIn("tools/policy_sync.py", config)
+
+
+class PrecommitPathCoverageTests(unittest.TestCase):
+    def test_global_exclusion_preserves_public_hook_inputs(self) -> None:
+        config = (Path(__file__).resolve().parents[1] / ".pre-commit-config.yaml").read_text(
+            encoding="utf-8")
+        block = re.search(r"(?m)^exclude:\s*\|\n((?:[ \t]+[^\n]*(?:\n|$))+)", config)
+        self.assertIsNotNone(block, "global pre-commit exclusion must remain explicit")
+        pattern = re.compile(textwrap.dedent(block.group(1)))
+        for path in (
+            "README.md", ".github/workflows/ci.yml", ".pre-commit-config.yaml",
+            "src/rt/hle.c", "tools/test_ci_paths.py", "fixtures/profile_zero/main.c",
+            "docs/build/layout.md", "tools/third_party_audit.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(pattern.search(path), f"public hook input excluded: {path}")
+        for prefix in (
+            "build", "third_party", "place_game_here", "original_game",
+            "oracle", "fs", "memstick", "logs",
+        ):
+            with self.subTest(prefix=prefix):
+                self.assertIsNotNone(pattern.search(f"{prefix}/input.bin"))
 
 
 if __name__ == "__main__":

@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eacd33256e2063cab56bce29de3f9c42c0c29ad1610ede6a2c25eaf621ec303c"
+      "sha256": "ab32664df7f0ea9b1b6c97d2bd13aabfe7f8b06f9449c6189e86fca9ab4434f2"
     },
     {
       "path": "AGENTS.md",
@@ -1201,7 +1201,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2dc4df8310432b80856afd2a08dbd9b221afb66dc98bf331b1ac62a32a93ab44"
+      "sha256": "d0d5f391dc09e9d010bcd0eeacae2faf94953c00e86a6d7f4b4d1bc445dc0d71"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -1312,7 +1312,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "169761a40e0ae79f2ae6085f66ddc5407d97684cd37637ce7697c9f66429a7e9"
+      "sha256": "edcb05c0254f8d47f8a63b546ed45a7c3915627b1e23b5eb7b53bcdf7eb8a703"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -7226,7 +7226,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2b2f4a45ec5d733539673622d4789537c9ac928227ae35035a6cc57abdc0449"
+      "sha256": "00d5746bec632e4382af4cc7c5d41f700332e7f6156cbe07c84ecbae9259bc85"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -8296,7 +8296,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4d36426f3c3129edf217d654ea891233edbe9ed0f38566abe030eb78df46215"
+      "sha256": "d59a1707056ecd36b3f8435b2e0fb62dd5b1bc57267153f876b2478272ce5f87"
     },
     {
       "path": "tools/test_perf_summary_diff.py",
@@ -9601,11 +9601,10 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
-    "candidate_tree": "a5525744d30abd4ddf7580b4309181258bccfc3b",
+    "candidate_tree": "d209c13abe5ea1ef2fe04b3badc48ff30fcf1845",
     "refreshed_paths": [
-      "docs/PARSER_SAFETY_INVENTORY.json",
-      "docs/README.md",
-      "tools/test_parse_fuzz.py"
+      ".pre-commit-config.yaml",
+      "tools/test_ci_paths.py"
     ]
   }
 }
