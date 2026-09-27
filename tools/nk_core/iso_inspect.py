@@ -1387,10 +1387,9 @@ def inspect_compatibility_preflight(
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
                 f"Encrypted executable: {decrypted_elf} is invalid or not a usable MIPS ELF32; "
-                f"supply a valid EBOOT.elf and required PRXs at {module_dir} (#295). "
-                "This container remains in the works."
+                f"replace it with a valid decrypted EBOOT.elf and required PRXs at {module_dir}."
             ),
-            "issues": [295],
+            "issues": [],
         }
     elif (
         eboot_kind in user_decryptable_kinds
@@ -1411,16 +1410,17 @@ def inspect_compatibility_preflight(
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
                 f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
-                f"Automatic decryption is in the works; to enable the built-in boundary, "
-                f"supply a local key file at {key_hint}."
+                f"A matching local key file at {key_hint} enables built-in decryption "
+                "for supported formats. The project ships no keys; broader ISO-to-Play "
+                "support is in the works (#308)."
             ),
             "issues": [295],
         }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Encrypted executable. Decryption support is in the works (#295).",
-            "issues": [295],
+            "message": "Encrypted executable format is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "issues": [308],
         }
     elif eboot_kind == "EMPTY_OR_ZERO_FILLED":
         executable_check = {
@@ -1430,14 +1430,14 @@ def inspect_compatibility_preflight(
     elif eboot_kind == "SCE_WRAPPER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "~SCE wrapper is not analyzable; container support is in the works (#295).",
-            "issues": [295],
+            "message": "~SCE wrapper could not be analyzed; broader ISO-to-Play support is in the works (#308).",
+            "issues": [308],
         }
     elif eboot_kind == "PBP":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "PBP is not plain ELF; executable unpacking is in the works (#295).",
-            "issues": [295],
+            "message": "PBP executable unpacking is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "issues": [308],
         }
     else:
         executable_check = {
