@@ -11445,6 +11445,9 @@ static uint32_t ctrl_fill(uint32_t buf, uint32_t count, int negate) {
     return ctrl_fill_n(buf, count, negate, 0);
 }
 static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
+static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
+    return ctrl_fill_n(A0, A1, 0, 1);
+}
 
 /* sceDisplay: remember the framebuffer; vblank waits block until the next delivered vblank. */
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride);
@@ -11786,6 +11789,10 @@ static void display_present_active(void) {
                 s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         return;
     }
+    if (getenv("SR_PRESENT_TRACE"))
+        fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
+                s_vcount, s_display_active.addr, s_display_active.fmt,
+                s_display_active.stride);
     gui_present(s_display_active.addr, s_display_active.fmt,
                 (uint32_t)s_display_active.stride);
 }
@@ -12903,6 +12910,12 @@ typedef struct {
 } GeListInfo;
 
 static GeListInfo s_ge_lists[GE_LIST_MAX];
+
+static uint32_t h_GeGetCmd(CpuState *s) {
+    (void)s;
+    if (A0 > 0xffu) return 0x800001feu; /* SCE_KERNEL_ERROR_INVALID_VALUE */
+    return ge_get_cmd(A0);
+}
 
 /* Stall addresses that arrived after the GE already consumed the list. Counted
  * for the selftest and for SR_GELOG triage: a ring-buffer guest that flushes more
@@ -15990,6 +16003,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
+    sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -16096,6 +16110,7 @@ static void hle_register_ge_handlers(void) {
     sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
     sr_hle_register(0x1f6752ad, "sceGeEdramGetSize", h_GeEdramGetSize);
     sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
+    sr_hle_register(0xdc93cfef, "sceGeGetCmd", h_GeGetCmd);
 }
 
 static void hle_register_atrac_handlers(void) {
