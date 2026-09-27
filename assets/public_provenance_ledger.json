@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1a0a0347134282f3d448556839a29938dce72e9b85b8f8d81ae01d65cbf977d"
+      "sha256": "91301427e37eee89d73ec3183c47afc0a49d085cd0bc72fd2e67d22fa78f5eba"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -195,7 +195,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3eb488e8e90af0aab7f0054fc1cac637fc5f04b4112d75fc7dd58e39354fba68"
+      "sha256": "7d3760d102a24a8e9d3794649698aa0abaf22dd9b391307ce573480d8a2b8551"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -649,7 +649,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "5ff2c3c00cf41a07bf9d385cb2cad7944e2e5481a769a9cbcf4c0b3db146aeda"
+      "sha256": "8016f5bfc1efe432828fb2b1791f359e58389510d46e883ca67f2a8312c9e206"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1051,7 +1051,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2ab6af9390f6f2b4c760cbdcb13f3f3b4ca8f7147e3920790f756cfa253280d"
+      "sha256": "457b94ef5509f1247ed77ff4e446fbe3895a236e6b56f91b4573959b4b4af084"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "60f024fbe823b090011d542fbb257e734bb785ff635a03eae6e706ed31982b0e"
+      "sha256": "0b6d721c170297b718fc42a6f578e32bbbe5650ce65cebe90c5489a0241bd2ef"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1384,7 +1384,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "26dea0a567002a9d8046c793e1a290b7a018da60e0efcf9e4a0646d8c359f3b6"
+      "sha256": "618e23b043613b2ad4b064333d8c6bb8da6a60c6043511db25f797082cd24635"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -1783,6 +1783,18 @@
       "sha256": "cc247604e7ff1da55669eec2bf1c31f2547822b20e3c67a92c26930247fc56ea"
     },
     {
+      "path": "fixtures/profile_zero/README.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "profile-zero-fixture-readme",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a10a2784c17c55ca49a71011118ee47e2b29919cd151c2321b67371858c02d80"
+    },
+    {
       "path": "fixtures/profile_zero/main.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -1793,6 +1805,42 @@
         "upstream_attribution": null
       },
       "sha256": "a9e47c3fad0982352bf36c2fa527c32e42c2cdfb96e51e77d298826a8769c113"
+    },
+    {
+      "path": "fixtures/profile_zero/prebuilt/EBOOT.PBP",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "profile-zero-fixture-prebuilt",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "1ebe269479f8cc226c20ccffb06e3c9326cc8296456b7187f97193860db1f500"
+    },
+    {
+      "path": "fixtures/profile_zero/prebuilt/SHA256SUMS",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "profile-zero-fixture-prebuilt",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "d441545200cc0b2d233478883f0fab23fd9a6d3f557511e57b74c70fc2f619b5"
+    },
+    {
+      "path": "fixtures/profile_zero/prebuilt/profile_zero_guest.prx",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "profile-zero-fixture-prebuilt",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "aa6df0f9e6ac3356a44ba1d840e7289b67a1e9f798cec99b331452ef7773c863"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -8344,7 +8392,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "52a8272627287cdc8134813111fc439d69326804e53d0c654190f5025bfe3e30"
+      "sha256": "5c22431993f11e0eedf3d924c263be5e08900ba3a2dfb32fcd286d6ecc88d3e7"
     },
     {
       "path": "tools/test_progress_evidence.py",
