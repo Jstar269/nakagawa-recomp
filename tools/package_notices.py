@@ -181,6 +181,26 @@ def is_system_dll(name: str) -> bool:
     return any(pat.fullmatch(clean) is not None for pat in SYSTEM_DLL_PATTERNS)
 
 
+def _prerequisite_toolchain_root() -> Path | None:
+    """The pinned-prerequisite installer's UCRT64 root, when installed (#296/#547).
+
+    Mirrors ``nk_core.prereq_fetcher.default_data_root()`` (kept dependency-free):
+    the installer extracts each MSYS2 package under ``<data root>/prerequisites/msys64``,
+    so its toolchain root is ``<data root>/prerequisites/msys64/ucrt64`` with
+    ``bin/`` and ``share/licenses/`` coming from the packages themselves.
+    """
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.environ.get("USERPROFILE")
+        if not base:
+            return None
+        data_root = Path(base) / "Nakagawa" / "data"
+    elif os.name == "posix" and os.environ.get("XDG_DATA_HOME"):
+        data_root = Path(os.environ["XDG_DATA_HOME"]) / "nakagawa-recomp"
+    else:
+        data_root = Path.home() / ".local" / "share" / "nakagawa-recomp"
+    return data_root / "prerequisites" / "msys64" / "ucrt64"
+
+
 def resolve_toolchain_root() -> Path | None:
     """Discover the local compiler toolchain root (e.g. C:/msys64/ucrt64)."""
     def is_toolchain_root(candidate: Path) -> bool:
@@ -197,6 +217,12 @@ def resolve_toolchain_root() -> Path | None:
         gcc_bin = Path(gcc_path).resolve().parent
         if gcc_bin.name.lower() == "bin":
             candidates.append(gcc_bin.parent)
+    # The one-consent installer's pinned toolchain outranks the hardcoded MSYS2
+    # fallback, so the clean-PATH route stages the closure from the toolchain the
+    # build just used.
+    prerequisite_root = _prerequisite_toolchain_root()
+    if prerequisite_root is not None:
+        candidates.append(prerequisite_root)
     candidates.append(Path("C:/msys64/ucrt64"))
     for candidate in candidates:
         if is_toolchain_root(candidate):
