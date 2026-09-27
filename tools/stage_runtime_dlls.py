@@ -33,6 +33,7 @@ any staged binary has no licence record in ``assets/third_party_components.json`
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import os
 import shutil
 import sys
@@ -132,10 +133,10 @@ def resolve_dll_closure(
     importer.
     """
     resolved: dict[str, Path] = {root.name.lower(): root}
-    pending: list[Path] = [root]
+    pending: deque[Path] = deque([root])
     unresolved: dict[str, str] = {}
     while pending:
-        current = pending.pop(0)
+        current = pending.popleft()
         for imported in imports_of(current):
             key = imported.lower()
             if is_system(imported) or key in resolved or key in unresolved:

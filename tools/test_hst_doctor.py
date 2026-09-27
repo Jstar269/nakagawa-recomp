@@ -885,8 +885,10 @@ class TypographyRuntimeCheckTests(unittest.TestCase):
                 "libfreetype-6.dll": ["zlib1.dll"],
                 "zlib1.dll": [],
             }
+            # Real file names, so a case-sensitive host (the Linux CI runner) finds them.
+            canonical = {"sdl3_ttf.dll": "SDL3_ttf.dll", "sdl3.dll": "SDL3.dll"}
             for name in graph:
-                (player_dir / name).write_bytes(b"MZ\0\0" + name.encode())
+                (player_dir / canonical.get(name, name)).write_bytes(b"MZ\0\0" + name.encode())
             imports_of, is_system = self.fake_resolver(graph)
             report = nk_doctor.Report(root, "workspace")
             with mock.patch.dict(os.environ, {}, clear=False):
