@@ -1,10 +1,29 @@
 # Build and development setup
 
-The supported and tested core build is Windows 11 x64; the host-neutral object
-gate is a portability probe, not Linux support. For an ISO/player workflow, start with
+Windows 11 x64 remains the supported desktop baseline. Linux also has a bounded,
+headless showcase route for the runtime. For an ISO/player workflow, start with
 [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). For development, see
 [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) and
 [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The native player is the repository's only user interface.
+
+## Linux headless showcase
+
+Linux can build and run the two source-owned showcase packages through the runtime.
+The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.8,
+and PSPDEV v20260501 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
+3.4.8 release commit and verifies the PSPDEV archive against
+[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
+
+Run the showcase from the repository root:
+
+```bash
+make CC=gcc showcase-linux
+```
+
+The smoke selects SDL's dummy video and audio drivers and runs without a desktop or
+GPU. This confirms the Linux runtime builds and runs the showcase fixtures; general
+consumer ISO compatibility and interactive Linux presentation remain in the works
+([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)).
 
 ## Supported development baseline
 
