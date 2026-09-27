@@ -1390,16 +1390,12 @@ static void deliver_vblank(void) {
                 h, s_cpu->r[4], save.pc, save.r[29]);
         fprintf(stderr, "  insn[entry  ]=0x%08x insn[entry+4]=0x%08x insn[entry+8]=0x%08x\n",
                 MEM_R32(h), MEM_R32(h + 4), MEM_R32(h + 8));
-        fprintf(stderr, "  0x310a034=0x%08x 0x002cf6b4=0x%08x libc_main=0x%08x\n",
-                MEM_R32(0x310a034u), MEM_R32(0x002cf6b4u), MEM_R32(0x0030a040u));
         fflush(stderr);
     }
     if (h) dispatch(s_cpu, h);
     if (h && getenv("SR_CBSNAP")) {
         fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
                 h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
-        fprintf(stderr, "  0x310a034=0x%08x 0x002cf6b4=0x%08x\n",
-                MEM_R32(0x310a034u), MEM_R32(0x002cf6b4u));
         fflush(stderr);
     }
     extern int sr_vblank_dispatch_registered(void);
@@ -1433,8 +1429,7 @@ static void deliver_vblank(void) {
                  * func 0x599c) and is not reliably reset here -- so a dormant worker could
                  * be held forever, presenting only frame 0. Re-arm whenever the worker is
                  * dormant; the relaunch is the surrogate for the GE callback. */
-                uint32_t ge_ctr = MEM_R32(0x00331b80u);
-                fprintf(stderr, "RELAUNCH: worker 0x%x dormant (counter=%u), restarting to entry 0x%08x\n", wuid, ge_ctr, w->entry);
+                fprintf(stderr, "RELAUNCH: worker 0x%x dormant, restarting to entry 0x%08x\n", wuid, w->entry);
                 sched_start_thread(wuid, 0, 0);
             }
         }
@@ -1619,25 +1614,25 @@ static void coro_body(void *param) {
     }
 }
 
-uint32_t g_master_reent = 0x002cf338u; // fallback to default global reent
+uint32_t g_master_reent;
 
 /* Host-side registry of live guest threads, keyed by k0, holding (k0, state_ptr) pairs in
- * host memory instead of guest RAM. This avoids colliding with the guest's module/EH-metadata
- * registry at 0x0030a040. */
+ * host memory instead of guest RAM. */
 extern uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra);
 extern void sr_callback_unregister_owner(uint32_t thread_uid);
 extern void sr_hle_release_thread_resources(uint32_t thread_uid);
 
-/* guest_reent_register: insert (uid, state_ptr) into the guest per-thread reent/state hash
- * rooted at 0x0030aa88.  Used by the host to pre-populate the table for threads that do not
- * call the original f_00011710 themselves.  The translated f_00011710 returns -1 on
- * duplicate UID; this host helper silently overwrites (idempotent refresh on restart). */
+/* guest_reent_register: insert (uid, state_ptr) into the title-configured guest
+ * per-thread reent/state hash for threads that do not call the guest registration
+ * routine themselves. The translated routine returns -1 on duplicate UID; this host
+ * helper silently overwrites (idempotent refresh on restart). */
 static void guest_reent_register(uint32_t uid, uint32_t state_ptr) {
+    SrTitleReentBindings bindings;
+    if (!sr_title_config_reent_bindings(&bindings)) return;
     uint32_t bucket = uid % 32;
-    /* Per-thread reent/state hash root at 0x0030aa88 (BSS static).
-     * Layout: { next(+0x00), state_ptr[32](+0x04..+0x80), uid[32](+0x84..+0x100) }
+    /* Layout: { next(+0x00), state_ptr[32](+0x04..+0x80), uid[32](+0x84..+0x100) }.
      * Bucket = uid % 32 (signed-safe for positive PSP thread UIDs). */
-    uint32_t node_addr = 0x0030aa88u;
+    uint32_t node_addr = bindings.guest_thread_table_addr;
 
     if (getenv("SR_REENT_TRACE")) {
         fprintf(stderr, "REENT_TRACE guest_register: uid=0x%x state_ptr=0x%x bucket=%u\n",
@@ -1674,15 +1669,17 @@ static void guest_reent_register(uint32_t uid, uint32_t state_ptr) {
 }
 
 /* guest_reent_unregister: remove the entry for (uid derived from state_ptr+0x37c) from
- * the per-thread reent/state hash at 0x0030aa88.  Zeroes both the uid key and state_ptr
+ * the configured per-thread reent/state hash. Zeroes both the uid key and state_ptr
  * slots so f_00011600 no longer finds this thread. */
 static void guest_reent_unregister(uint32_t state_ptr) {
+    SrTitleReentBindings bindings;
+    if (!sr_title_config_reent_bindings(&bindings)) return;
     if (!sr_inrange(state_ptr)) return;
     uint32_t uid = MEM_R32(state_ptr + 0x37cu);
     if (uid == 0) return;
 
     uint32_t bucket = uid % 32;
-    uint32_t node_addr = 0x0030aa88u;
+    uint32_t node_addr = bindings.guest_thread_table_addr;
 
     if (getenv("SR_REENT_TRACE")) {
         fprintf(stderr, "REENT_TRACE guest_unregister: uid=0x%x state_ptr=0x%x bucket=%u\n",
@@ -1701,6 +1698,10 @@ static void guest_reent_unregister(uint32_t state_ptr) {
 }
 
 static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
+    SrTitleReentBindings bindings;
+    int has_bindings = sr_title_config_reent_bindings(&bindings);
+    if (has_bindings && g_master_reent == 0u)
+        g_master_reent = bindings.master_reent_addr;
     /* Copy master thread's reent structure to initialize the new thread's reent.
      * This inherits the initialized allocator context. A thread holding the ROOT or
      * LAUNCHER role keeps its own independently-initialized reent: root has the
@@ -1727,8 +1728,7 @@ static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
         }
     }
     /* Write the thread UID to state_ptr + 0x37c after the copy resolves.
-     * f_00011600 (per-thread reent lookup) reads this field to identify the current
-     * thread UID before walking the 0x0030aa88 hash table. */
+     * guest per-thread lookup reads this field to identify the current thread UID. */
     MEM_W32(state_ptr + 0x37cu, uid);
     if (getenv("SR_REENT_TRACE")) {
         fprintf(stderr, "REENT_TRACE init_guest_reent: uid=0x%x state_ptr=0x%x uid_at_37c=0x%x\n",
@@ -1738,9 +1738,8 @@ static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
 
 /* register_libc_thread: record (k0, state_ptr, uid) in the host-owned s_libc_threads table
  * and initialize the thread's reent structure (init_guest_reent), then pre-register the thread
- * in the guest per-thread reent/state hash at 0x0030aa88 for all threads except the launcher
- * (the launcher's guest entry f_0029a174 calls f_00011710 itself and must not see a pre-existing
- * entry -- f_00011710 returns -1 on duplicate and would cause the launcher to exit early).
+ * in the configured guest reent/state hash for all threads except the launcher. The launcher's
+ * guest entry calls its own registration routine and must see an empty slot.
  *
  * Returns 0 on success, -1 if the host table is full (structurally impossible in production
  * because s_libc_threads has MAXTHREADS slots and there can never be more live records than
@@ -1783,10 +1782,9 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
 
     init_guest_reent(state_ptr, uid);
 
-    /* Pre-register in the guest per-thread reent/state hash for every thread except a
-     * launcher, which calls the guest's own registration function from its entry and
-     * must find an empty slot. Role test, not UID number: with no launcher role
-     * captured, every thread is registered. */
+    /* Pre-register in the configured guest hash for every thread except a launcher,
+     * which calls the guest's own registration function from its entry and must find
+     * an empty slot. The accessor makes this compatibility behavior inert otherwise. */
     if (!sched_uid_is_launcher(uid)) {
         guest_reent_register(uid, state_ptr);
     }
@@ -2059,11 +2057,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     MEM_W32(state_ptr + 0x08, state_ptr + 0x2c4);
     MEM_W32(state_ptr + 0x0c, state_ptr + 0x320);
     MEM_W32(k0 + 4, state_ptr);
-    /* Seed the thread UID into the kernel thread info structure at state_ptr + 0x37c.
-     * f_00011600 (per-thread reent lookup) reads MEM[state_ptr + 0x37c] to get the
-     * current thread's UID, then walks the per-thread reent/state hash at 0x0030aa88
-     * to find the matching state pointer.  Without this seed the UID read returns
-     * garbage and every lookup fails. */
+    /* Seed the thread UID field consumed by the configured guest reent lookup. */
     MEM_W32(state_ptr + 0x37cu, t->uid);
 
     fprintf(stderr, "DEBUG: sched_create_thread uid=0x%x entry=0x%x k0=0x%x state_ptr=0x%x val=0x%x\n",
@@ -2073,10 +2067,8 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     MEM_W32(k0 + 0, user_base);
     MEM_W32(k0 + 8, state_ptr);
 
-    /* Register in the host-owned s_libc_threads table and (for non-launcher threads)
-     * pre-populate the guest per-thread reent/state hash at 0x0030aa88 so that
-     * f_00011600 can locate this thread's reent before the thread's own entry runs.
-     * NOTE: 0x0030a040 is the separate module/EH-metadata registry (not touched here). */
+    /* Register in the host-owned s_libc_threads table and any configured guest reent
+     * hash before the thread's own entry runs. */
     register_libc_thread(k0, state_ptr, t->uid);
 
     /* Re-seed the thread UID into the kernel thread info structure at state_ptr + 0x37c.
@@ -2085,34 +2077,6 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
      * lookup (f_00011600) reads MEM[state_ptr + 0x37c] for the UID, so we must
      * write it again AFTER the copy. */
     MEM_W32(state_ptr + 0x37cu, t->uid);
-
-    /* Phase-3 integrity check: confirm both the kernel thread-info UID slot (f_00011600
-     * reads this) and the hash-bucket return slot actually landed in the guest hash table. */
-    {
-        static uint32_t s_noisy_set[64] = {0};
-        int idx = (t->uid >> 4) & 63;
-        uint32_t bit = 1u << (t->uid & 31);
-        if (!(s_noisy_set[idx] & bit)) {
-            s_noisy_set[idx] |= bit;
-            uint32_t bucket = t->uid % 32;
-            uint32_t node_addr = 0x0030aa88u;
-            uint32_t found_ptr = 0;
-            while (node_addr != 0u) {
-                uint32_t key = MEM_R32(node_addr + 0x84u + bucket * 4u);
-                if (key == t->uid) {
-                    found_ptr = MEM_R32(node_addr + 0x04u + bucket * 4u);
-                    break;
-                }
-                node_addr = MEM_R32(node_addr);
-            }
-            if (!sched_uid_is_launcher(t->uid) && found_ptr != state_ptr) {
-                fprintf(stderr, "THREAD_SEED_MISMATCH: uid=0x%x found_ptr=0x%08x expected=0x%08x\n",
-                        t->uid, found_ptr, state_ptr);
-            } else {
-                fprintf(stderr, "THREAD_SEED_OK: uid=0x%x state=0x%08x in guest hash\n", t->uid, state_ptr);
-            }
-        }
-    }
 
     return t->uid;
 }
@@ -2306,340 +2270,6 @@ static void switch_to_scheduler(void) {
     sr_coro_switch(s_sched_coro);
 }
 
-/* Phase 2.B: SR_SPINLOG watchdog. Detects every-yield-at-same-PC starvation and
- * dumps the trapped thread's registers so we can identify which guest loop is
- * holding the scheduler. Default OFF (env-gated). Threshold N from SR_SPIN_N,
- * defaults to 200000 yields. Fires once per (uid,pc) pair to avoid trace flood. */
-static int s_spin_on = -1;
-static int s_spin_thr = 200000;
-
-static int guest_ptr_readable(uint32_t p) {
-    uint32_t phys = p & 0x1fffffffu;
-    /* Diagnostic pointers are expected to reference guest objects/strings, never
-     * the ELF header or first code page. Reject the null-page offsets too so a
-     * null object plus a field offset cannot masquerade as a readable pointer. */
-    return phys >= 0x1000u && phys < 0x0c000000u;
-}
-
-static void boot_diag_string(const char *label, uint32_t p) {
-    char text[81];
-    int i = 0;
-    if (!guest_ptr_readable(p)) {
-        fprintf(stderr, " %s=<invalid:0x%08x>", label, p);
-        return;
-    }
-    for (; i < 80; i++) {
-        unsigned char c = MEM_R8(p + (uint32_t)i);
-        if (c == 0) break;
-        text[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
-    }
-    text[i] = '\0';
-    fprintf(stderr, " %s@0x%08x=\"%s\"", label, p, text);
-}
-
-/* SR_BOOT_DIAG: bounded probes for the current resource-table boot path. Unlike
- * SR_SPINLOG, this intentionally recognizes the alternating list-search -> strcmp
- * call cycle. It observes guest state only; it never changes control flow or RAM. */
-static void boot_diag(CpuState *s) {
-    static int enabled = -1;
-    static unsigned list_hits, strcmp_hits, table_hits, parse_hits, parse_samples;
-    static unsigned text_lookup_hits;
-    static unsigned render_hits, render_entry_hits, render_finish_hits, render_hook_hits;
-    if (enabled < 0) {
-        const char *e = getenv("SR_BOOT_DIAG");
-        enabled = e && strcmp(e, "0") != 0;
-        if (enabled) fprintf(stderr, "BOOT_DIAG enabled (read-only, bounded)\n");
-    }
-    if (!enabled || s_cur < 0 || !sched_uid_is_worker(s_tcb[s_cur].uid)) return;
-
-    if (s->pc == 0x001039d8u && guest_ptr_readable(s->r[5]) &&
-        MEM_R8(s->r[5]) == 'l' && MEM_R8(s->r[5] + 1u) == 'i' &&
-        MEM_R8(s->r[5] + 2u) == '_' && text_lookup_hits++ < 12u) {
-        uint32_t container = s->r[4];
-        uint32_t base = guest_ptr_readable(container + 4u) ? MEM_R32(container + 4u) : 0u;
-        uint32_t count = guest_ptr_readable(container + 8u) ? MEM_R32(container + 8u) : 0u;
-        fprintf(stderr,
-                "BOOT_DIAG text-lookup hit=%u tick=%llu container=0x%08x base=0x%08x count=%u ra=0x%08x",
-                text_lookup_hits, (unsigned long long)s_tick, container, base, count, s->r[31]);
-        boot_diag_string("query", s->r[5]);
-        fprintf(stderr, "\n");
-        uint32_t sample_count = count < 8u ? count : 8u;
-        for (uint32_t i = 0; i < sample_count; i++) {
-            uint32_t slot = base + i * 4u;
-            uint32_t item = guest_ptr_readable(slot) ? MEM_R32(slot) : 0u;
-            uint32_t name_slot = item + 0xc0u;
-            uint32_t name = guest_ptr_readable(name_slot) ? MEM_R32(name_slot) : 0u;
-            fprintf(stderr, "  item[%u] slot=0x%08x object=0x%08x nameptr=0x%08x",
-                    i, slot, item, name);
-            boot_diag_string("name", name);
-            fprintf(stderr, "\n");
-        }
-        fflush(stderr);
-    } else if ((s->pc == 0x0008250cu || s->pc == 0x00082530u) && render_hook_hits++ < 24u) {
-        fprintf(stderr,
-                "BOOT_DIAG render-hook hit=%u tick=%llu pc=0x%08x hook0=0x%08x hook1=0x%08x ra=0x%08x\n",
-                render_hook_hits, (unsigned long long)s_tick, s->pc,
-                MEM_R32(0x0033316cu), MEM_R32(0x00333170u), s->r[31]);
-    } else if (s->pc == 0x0003dfd0u && render_entry_hits++ < 8u) {
-        uint32_t owner = s->r[5];
-        uint32_t kind = guest_ptr_readable(owner + 0x14u) ? MEM_R32(owner + 0x14u) : 0u;
-        uint32_t table_entry = 0x002bbe74u + kind * 4u;
-        fprintf(stderr,
-                "BOOT_DIAG render-entry hit=%u tick=%llu owner=0x%08x head=0x%08x tail=0x%08x kind=%u count=%u finalize=0x%08x\n",
-                render_entry_hits, (unsigned long long)s_tick, owner,
-                guest_ptr_readable(owner + 4u) ? MEM_R32(owner + 4u) : 0u,
-                guest_ptr_readable(owner + 12u) ? MEM_R32(owner + 12u) : 0u,
-                kind,
-                guest_ptr_readable(owner + 0x24u) ? MEM_R32(owner + 0x24u) : 0u,
-                guest_ptr_readable(table_entry) ? MEM_R32(table_entry) : 0u);
-    } else if (s->pc == 0x0003d828u && render_finish_hits++ < 8u) {
-        uint32_t owner = s->r[4];
-        uint32_t kind = guest_ptr_readable(owner + 0x14u) ? MEM_R32(owner + 0x14u) : 0u;
-        uint32_t table_entry = 0x002bbe74u + kind * 4u;
-        fprintf(stderr,
-                "BOOT_DIAG render-finalize hit=%u tick=%llu owner=0x%08x head=0x%08x tail=0x%08x kind=%u count=%u target=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x\n",
-                render_finish_hits, (unsigned long long)s_tick, owner,
-                guest_ptr_readable(owner + 4u) ? MEM_R32(owner + 4u) : 0u,
-                guest_ptr_readable(owner + 12u) ? MEM_R32(owner + 12u) : 0u,
-                kind,
-                guest_ptr_readable(owner + 0x24u) ? MEM_R32(owner + 0x24u) : 0u,
-                guest_ptr_readable(table_entry) ? MEM_R32(table_entry) : 0u,
-                s->r[5], s->r[6], s->r[7]);
-    } else if (s->pc == 0x0003e050u && render_hits++ < 32u) {
-        uint32_t node = s->r[16];
-        fprintf(stderr,
-                "BOOT_DIAG render-list hit=%u tick=%llu node=0x%08x next=0x%08x command=0x%08x callback=0x%08x owner=0x%08x\n",
-                render_hits, (unsigned long long)s_tick, node,
-                guest_ptr_readable(node + 4u) ? MEM_R32(node + 4u) : 0,
-                guest_ptr_readable(node + 8u) ? MEM_R32(node + 8u) : 0,
-                guest_ptr_readable(node + 12u) ? MEM_R32(node + 12u) : 0,
-                s->r[18]);
-    } else if (s->pc == 0x0019668cu && list_hits++ < 24u) {
-        uint32_t node = s->r[16];
-        uint32_t ctx = s->r[21];
-        uint32_t query = guest_ptr_readable(ctx) ? MEM_R32(ctx) : 0;
-        uint32_t key = guest_ptr_readable(node + 0x0cu) ? MEM_R32(node + 0x0cu) : 0;
-        fprintf(stderr, "BOOT_DIAG list hit=%u tick=%llu node=0x%08x next=0x%08x prev=0x%08x key=0x%08x ctx=0x%08x query=0x%08x",
-                list_hits, (unsigned long long)s_tick, node,
-                guest_ptr_readable(node) ? MEM_R32(node) : 0,
-                guest_ptr_readable(node + 4u) ? MEM_R32(node + 4u) : 0,
-                key, ctx, query);
-        boot_diag_string("query", query);
-        boot_diag_string("key", key);
-        fprintf(stderr, "\n");
-    } else if (s->pc == 0x00014934u && strcmp_hits++ < 24u) {
-        fprintf(stderr, "BOOT_DIAG strcmp hit=%u tick=%llu", strcmp_hits,
-                (unsigned long long)s_tick);
-        boot_diag_string("a0", s->r[4]);
-        boot_diag_string("a1", s->r[5]);
-        fprintf(stderr, "\n");
-    } else if (s->pc == 0x0019357cu && table_hits++ < 24u) {
-        uint32_t desc = s->r[16];
-        fprintf(stderr, "BOOT_DIAG table hit=%u tick=%llu desc=0x%08x count=%u base=0x%08x index=%u offset=0x%08x\n",
-                table_hits, (unsigned long long)s_tick, desc,
-                guest_ptr_readable(desc) ? MEM_R32(desc) : 0,
-                guest_ptr_readable(desc + 4u) ? MEM_R32(desc + 4u) : 0,
-                s->r[18], s->r[17]);
-    } else if (s->pc == 0x00015fb4u) {
-        /* f_00015fb4 is newlib's re-entrant strtol: a0=reent, a1=input,
-         * a2=endptr, a3=base.  Sample the early calls and then sparsely sample
-         * long-running parsing so a repeated caller remains diagnosable. */
-        parse_hits++;
-        if (parse_hits <= 16u || ((parse_hits & 0x7ffu) == 0u && parse_samples < 32u)) {
-            parse_samples++;
-            fprintf(stderr, "BOOT_DIAG parse hit=%u tick=%llu ra=0x%08x reent=0x%08x",
-                    parse_hits, (unsigned long long)s_tick, s->r[31], s->r[4]);
-            boot_diag_string("input", s->r[5]);
-            fprintf(stderr, " endptr=0x%08x base=%u\n", s->r[6], s->r[7]);
-        }
-    }
-    if (render_hits == 32u || list_hits == 24u || strcmp_hits == 24u || table_hits == 24u || parse_hits == 16u)
-        fflush(stderr);
-}
-
-void sr_boot_probe(CpuState *s, uint32_t guest_pc) {
-    static int enabled = -1;
-    static unsigned walker_hits, finalize_hits, queue_entry_hits;
-    static unsigned text_table_hits, named_table_hits;
-    static uint64_t strtol_scan_hits;
-    static uint64_t queue_iter_hits;
-    if (enabled < 0) {
-        const char *e = getenv("SR_BOOT_DIAG");
-        enabled = e && strcmp(e, "0") != 0;
-    }
-    if (!enabled || !s) return;
-
-    if (guest_pc == 0x001039d8u && text_table_hits < 24u) {
-        uint32_t container = s->r[4], query = s->r[5];
-        int layout_constructor_lookup = s->r[31] == 0x0021af28u;
-        int list_item_lookup = guest_ptr_readable(query) && MEM_R8(query) == 'l' &&
-            MEM_R8(query + 1u) == 'i' && MEM_R8(query + 2u) == '_';
-        if (layout_constructor_lookup || list_item_lookup) {
-            unsigned hit = ++text_table_hits;
-            uint32_t base = guest_ptr_readable(container + 4u) ? MEM_R32(container + 4u) : 0u;
-            uint32_t count = guest_ptr_readable(container + 8u) ? MEM_R32(container + 8u) : 0u;
-            fprintf(stderr,
-                    "BOOT_DIAG text-table-enter hit=%u container=0x%08x base=0x%08x count=%u limit=%d ra=0x%08x",
-                    hit, container, base, count, (int32_t)s->r[6], s->r[31]);
-            boot_diag_string("query", query);
-            fprintf(stderr, "\n");
-            uint32_t samples = count < 8u ? count : 8u;
-            for (uint32_t i = 0; i < samples; i++) {
-                uint32_t slot = base + i * 4u;
-                uint32_t item = guest_ptr_readable(slot) ? MEM_R32(slot) : 0u;
-                uint32_t name = guest_ptr_readable(item + 0xc0u) ? MEM_R32(item + 0xc0u) : 0u;
-                fprintf(stderr, "  item[%u] object=0x%08x nameptr=0x%08x", i, item, name);
-                boot_diag_string("name", name);
-                fprintf(stderr, "\n");
-            }
-            fflush(stderr);
-        }
-    } else if (guest_pc == 0x001026b8u && named_table_hits < 24u) {
-        uint32_t container = s->r[4], query = s->r[5];
-        if (guest_ptr_readable(query) && MEM_R8(query) == 'l' &&
-            MEM_R8(query + 1u) == 'i' && MEM_R8(query + 2u) == '_') {
-            unsigned hit = ++named_table_hits;
-            uint32_t base = guest_ptr_readable(container + 0x10u) ? MEM_R32(container + 0x10u) : 0u;
-            uint32_t count = guest_ptr_readable(container + 0x14u) ? MEM_R32(container + 0x14u) : 0u;
-            fprintf(stderr,
-                    "BOOT_DIAG named-table-enter hit=%u container=0x%08x base=0x%08x count=%u ra=0x%08x",
-                    hit, container, base, count, s->r[31]);
-            boot_diag_string("query", query);
-            fprintf(stderr, "\n");
-            uint32_t samples = count < 8u ? count : 8u;
-            for (uint32_t i = 0; i < samples; i++) {
-                uint32_t slot = base + i * 4u;
-                uint32_t item = guest_ptr_readable(slot) ? MEM_R32(slot) : 0u;
-                uint32_t name = guest_ptr_readable(item + 0x10u) ? MEM_R32(item + 0x10u) : 0u;
-                fprintf(stderr, "  item[%u] object=0x%08x nameptr=0x%08x", i, item, name);
-                boot_diag_string("name", name);
-                fprintf(stderr, "\n");
-            }
-            fflush(stderr);
-        }
-    } else if (guest_pc == 0x000705b0u) {
-        unsigned hit = ++queue_entry_hits;
-        if (hit <= 24u) {
-            uint32_t queue = s->r[4];
-            uint32_t table = MEM_R32(0x00331c50u);
-            uint32_t slot = table + (queue << 4);
-            fprintf(stderr,
-                    "BOOT_DIAG queue-enter hit=%u queue=%u table=0x%08x slot=0x%08x count=%u index=%u capacity=%u ra=0x%08x\n",
-                    hit, queue, table, slot,
-                    guest_ptr_readable(slot + 4u) ? MEM_R32(slot + 4u) : 0u,
-                    guest_ptr_readable(slot + 12u) ? MEM_R32(slot + 12u) : 0u,
-                    MEM_R32(0x00331c54u), s->r[31]);
-            fflush(stderr);
-        }
-    } else if (guest_pc == 0x000705e4u) {
-        uint64_t hit = ++queue_iter_hits;
-        uint32_t slot = s->r[16];
-        uint32_t count = guest_ptr_readable(slot + 4u) ? MEM_R32(slot + 4u) : 0u;
-        if (hit <= 16u || (hit & (hit - 1u)) == 0u) {
-            fprintf(stderr,
-                    "BOOT_DIAG queue-drain hit=%llu slot=0x%08x count=%u index=%u capacity=%u ra=0x%08x\n",
-                    (unsigned long long)hit, slot, count,
-                    guest_ptr_readable(slot + 12u) ? MEM_R32(slot + 12u) : 0u,
-                    MEM_R32(0x00331c54u), s->r[31]);
-            fflush(stderr);
-        }
-    } else if (guest_pc == 0x000160e8u) {
-        uint64_t hit = ++strtol_scan_hits;
-        /* First few iterations establish the token, then powers of two show
-         * unbounded growth without flooding the log. r15 is the original input
-         * and r9 is newlib strtol's current cursor in f_00015fb4. */
-        if (hit <= 16u || (hit & (hit - 1u)) == 0u) {
-            uint32_t start = s->r[15], cursor = s->r[9];
-            fprintf(stderr,
-                    "BOOT_DIAG strtol-scan hit=%llu start=0x%08x cursor=0x%08x delta=%u char=0x%02x ra=0x%08x\n",
-                    (unsigned long long)hit, start, cursor, cursor - start,
-                    MEM_R8(cursor), s->r[31]);
-            fflush(stderr);
-        }
-    } else if (guest_pc == 0x0003dfd0u && walker_hits++ < 16u) {
-        uint32_t owner = s->r[4], list = s->r[5];
-        fprintf(stderr,
-                "BOOT_DIAG command-walk hit=%u owner=0x%08x list=0x%08x mode=%u head=0x%08x tail=0x%08x count=%u owner_list=0x%08x ra=0x%08x\n",
-                walker_hits, owner, list,
-                guest_ptr_readable(list + 0x18u) ? MEM_R32(list + 0x18u) : 0u,
-                guest_ptr_readable(list + 4u) ? MEM_R32(list + 4u) : 0u,
-                guest_ptr_readable(list + 12u) ? MEM_R32(list + 12u) : 0u,
-                guest_ptr_readable(list + 0x24u) ? MEM_R32(list + 0x24u) : 0u,
-                guest_ptr_readable(owner + 0xe0u) ? MEM_R32(owner + 0xe0u) : 0u,
-                s->r[31]);
-    } else if (guest_pc == 0x0003d828u && finalize_hits++ < 16u) {
-        uint32_t list = s->r[4];
-        uint32_t kind = guest_ptr_readable(list + 0x14u) ? MEM_R32(list + 0x14u) : 0u;
-        uint32_t table_entry = 0x002cbe74u + kind * 4u;
-        fprintf(stderr,
-                "BOOT_DIAG command-finalize hit=%u list=0x%08x kind=%u head=0x%08x tail=0x%08x count=%u target=0x%08x\n",
-                finalize_hits, list, kind,
-                guest_ptr_readable(list + 4u) ? MEM_R32(list + 4u) : 0u,
-                guest_ptr_readable(list + 12u) ? MEM_R32(list + 12u) : 0u,
-                guest_ptr_readable(list + 0x24u) ? MEM_R32(list + 0x24u) : 0u,
-                guest_ptr_readable(table_entry) ? MEM_R32(table_entry) : 0u);
-    }
-}
-
-static void spin_check(CpuState *s) {
-    if (s_spin_on < 0) {
-        const char *e = getenv("SR_SPINLOG");
-        s_spin_on = e ? 1 : 0;
-        const char *t = getenv("SR_SPIN_N");
-        if (t) { int v = atoi(t); if (v > 0) s_spin_thr = v; }
-    }
-    if (!s_spin_on || s_cur < 0) return;
-    TCB *t = &s_tcb[s_cur];
-    /* Per-thread streak tracking. The previous single global prev_uid/prev_pc reset the
-     * streak on every context switch, so any workload where a sibling thread stays READY
-     * (the normal boot state: the launcher never blocks) capped the observable streak at
-     * the anti-starvation rotation length (~3 quanta) and the diagnostic could never
-     * latch -- the "SR_SPINLOG did not fire" gap noted in ISSUES.md. Track one streak per
-     * TCB slot instead, and re-fire every s_spin_thr crossings (max 8 dumps per (uid,pc))
-     * so a long-running loop yields PROGRESSION samples (s0/s1 deltas across dumps show
-     * whether the loop index advances), not a single ambiguous shot. */
-    static struct { uint32_t pc; unsigned long long streak; } s_streak[MAXTHREADS];
-    static struct { uint32_t uid, pc; int fires; } fired[128]; static int n_fired = 0;
-    /* The saved-PC may diverge from `s->pc` (live PC): when sr_yield returns via the
-     * !other path, t->saved is NOT re-saved, so the live `s->pc` is the authoritative
-     * "where the thread last yielded from" for bypass routing. */
-    uint32_t cur_pc = s->pc ? s->pc : t->saved.pc;
-    if (s_streak[s_cur].pc == cur_pc) s_streak[s_cur].streak++;
-    else { s_streak[s_cur].pc = cur_pc; s_streak[s_cur].streak = 1; }
-    if (s_streak[s_cur].streak < (unsigned long long)s_spin_thr) return;
-    s_streak[s_cur].streak = 0;               /* rearm: next dump after s_spin_thr more */
-    int slot = -1;
-    for (int i = 0; i < n_fired; i++) if (fired[i].uid == t->uid && fired[i].pc == cur_pc) { slot = i; break; }
-    if (slot < 0) {
-        if (n_fired >= 128) return;
-        slot = n_fired++;
-        fired[slot].uid = t->uid; fired[slot].pc = cur_pc; fired[slot].fires = 0;
-    }
-    if (fired[slot].fires >= 8) return;
-    fired[slot].fires++;
-    fprintf(stderr, "SPIN[%d]: uid=0x%x pc=0x%08x ra=0x%08x after %u yields at same PC\n",
-            fired[slot].fires, t->uid, cur_pc, s->r[31], s_spin_thr);
-    fprintf(stderr, "  v0=0x%08x a0=0x%08x a1=0x%08x s0=0x%08x s1=0x%08x s2=0x%08x k0=0x%08x sp=0x%08x\n",
-            s->r[2], s->r[4], s->r[5], s->r[16], s->r[17], s->r[18],
-            s->r[26], s->r[29]);
-    fflush(stderr);
-}
-
-static void audio_trace(CpuState *s) {
-    if (s_cur < 0) return;
-    if (s->pc == 0x000872ccu) {
-        fprintf(stderr, "DEBUG PLAYSTREAM: uid=0x%x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x ra=0x%08x\n",
-                s_tcb[s_cur].uid, s->r[4], s->r[5], s->r[6], s->r[7], s->r[31]);
-        fflush(stderr);
-    }
-}
-
-/* Phase 2.C: SR_T111PC trace. Logs each yield of the LAUNCHER thread (historically uid
- * 0x111 -- the trace keeps its original name) while its PC differs from the last recorded
- * PC; capped at SR_T111PC_MAX (default 256) entries so a long post-worker loop does not
- * flood the trace. Cleared on capture so we can dump a fresh window per bring-up cycle.
- * The uid is resolved via the captured launcher role, so allocation drift cannot
- * silence the trace -- and a build with no launcher binding traces nothing. */
 static int s_t111_on = -1;
 static int s_t111_max = 256;
 typedef struct { uint32_t pc, ra; uint64_t tick; } T111Rec;
@@ -2688,34 +2318,6 @@ void sr_yield(CpuState *s) {
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
-    /* SR_COPYSPIN: bounded register dumps at the plane-copy / cache-flush emulator
-     * back-edges (f_00025a18 / f_00025a74).  Sits ABOVE the interrupt-suspension
-     * early return on purpose: a hang with interrupts suspended silences every
-     * diagnostic below that return, so this one must not depend on it. */
-    static int s_copyspin = -1;
-    if (s_copyspin < 0) s_copyspin = getenv("SR_COPYSPIN") ? 1 : 0;
-    if (s_copyspin) {
-        static int copyspin_n = 0;
-        static uint64_t copyspin_seen = 0;
-        if (s->pc == 0x00025a50u || s->pc == 0x00025a5cu ||
-            s->pc == 0x00025abcu || s->pc == 0x00025ac8u) {
-            copyspin_seen++;
-            if (copyspin_n < 12 && (copyspin_seen & (copyspin_seen - 1)) == 0) { /* powers of two: 1,2,4,... */
-                copyspin_n++;
-                fprintf(stderr,
-                    "COPYSPIN[%d]: pc=0x%08x backedge_hits=%llu intr=%d tick=%llu\n"
-                    "  cols_left(r5)=0x%08x width(r6)=0x%08x rows_left(r7)=0x%08x stride(r8)=0x%08x\n"
-                    "  src(r9)=0x%08x dst(r4)=0x%08x rowbase(r11)=0x%08x\n"
-                    "  s0(r16)=0x%08x s3(r19)=0x%08x s4(r20)=0x%08x s5(r21)=0x%08x s6(r22)=0x%08x ra=0x%08x\n",
-                    copyspin_n, s->pc, (unsigned long long)copyspin_seen, s_interrupts_enabled,
-                    (unsigned long long)s_tick,
-                    s->r[5], s->r[6], s->r[7], s->r[8],
-                    s->r[9], s->r[4], s->r[11],
-                    s->r[16], s->r[19], s->r[20], s->r[21], s->r[22], s->r[31]);
-                fflush(stderr);
-            }
-        }
-    }
     /* Time and source latches advance at every scheduler boundary, even when
      * the CPU's interrupt-enable bit currently suppresses delivery. */
     scheduler_progress_time();
@@ -2731,20 +2333,6 @@ void sr_yield(CpuState *s) {
                 "sr_yield: 200k consecutive yields with interrupts suspended "
                 "(uid=0x%x pc=0x%08x ra=0x%08x) -- suspension appears stuck\n",
                 s_cur >= 0 ? s_tcb[s_cur].uid : 0, s->pc, s->r[31]);
-            if (s->pc == 0x00010c70u) {
-                /* _malloc_r bin-chain walk (node = MEM[node+0xc] until sentinel in v1).
-                 * Dump the chain so a poisoned bin is visible in the log. */
-                uint32_t sentinel = s->r[3], node = s->r[16];
-                fprintf(stderr, "  malloc bin walk: sentinel=0x%08x cursor=0x%08x "
-                        "binhead[0x2cf6d4]=0x%08x binalt[0x2cf6dc]=0x%08x req(r17)=0x%08x\n",
-                        sentinel, node, MEM_R32(0x002cf6d4u), MEM_R32(0x002cf6dcu), s->r[17]);
-                for (int i = 0; i < 12 && node != 0u; i++) {
-                    fprintf(stderr, "    node[%d]=0x%08x size(+4)=0x%08x fwd(+8)=0x%08x bck(+0xc)=0x%08x\n",
-                            i, node, MEM_R32(node + 4u), MEM_R32(node + 8u), MEM_R32(node + 0xcu));
-                    node = MEM_R32(node + 0xcu);
-                    if (node == sentinel) { fprintf(stderr, "    (reached sentinel)\n"); break; }
-                }
-            }
             fflush(stderr);
         }
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
@@ -2774,93 +2362,6 @@ void sr_yield(CpuState *s) {
         }
         yield_count++;
     }
-    /* HEAPSPIN diagnostic (SR_HEAPSPIN): one-shot dump of the libc malloc free-list
-     * control words when the worker is spinning in the heap allocator.
-     * f_00010738 (malloc) reads MEM[0x2cf6d4] (free-list head) / MEM[0x2cf6dc]; if
-     * these are zero the allocator can't satisfy a request and loops. Dump once. */
-    static int s_heapspin = -1;
-    if (s_heapspin < 0) s_heapspin = getenv("SR_HEAPSPIN") ? 1 : 0;
-    if (s_cur >= 0 && sched_uid_is_worker(s_tcb[s_cur].uid) && s_heapspin) {
-        static int workerspin_dumped = 0;
-        if (s->pc == 0x000115e8u || s->pc == 0x0000d62cu || s->pc == 0x00000c5cu) {
-            fprintf(stderr, "HEAPSPIN: pc=0x%08x tick=%llu ra=0x%08x\n", s->pc, (unsigned long long)s_tick, s->r[31]);
-            fprintf(stderr, "  a0(r4)=0x%08x a1(r5)=0x%08x (req size) a2(r6)=0x%08x\n", s->r[4], s->r[5], s->r[6]);
-            fprintf(stderr, "  s0(r16)=0x%08x s2(r18)=0x%08x s3(r19)=0x%08x\n", s->r[16], s->r[18], s->r[19]);
-            fprintf(stderr, "  MEM[0x2cf6d4] freelist_head=0x%08x\n", MEM_R32(0x002cf6d4u));
-            fprintf(stderr, "  MEM[0x2cf6dc] freelist_alt =0x%08x\n", MEM_R32(0x002cf6dcu));
-            {
-                uint32_t head = MEM_R32(0x002cf6d4u);
-                fprintf(stderr, "  Freelist blocks: ");
-                uint32_t curr = head;
-                for (int k = 0; k < 10 && curr != 0 && curr >= 0x0030b000u && curr < 0x0164b000u; k++) {
-                    uint32_t prev = MEM_R32(curr + 0x0u);
-                    uint32_t size = MEM_R32(curr + 0x4u);
-                    uint32_t next = MEM_R32(curr + 0x8u);
-                    uint32_t prev_self = MEM_R32(curr + 0xcu);
-                    fprintf(stderr, "[0x%08x: prev=0x%08x size=0x%x next=0x%08x prev_self=0x%08x] ", curr, prev, size, next, prev_self);
-                    if (next == head || next == 0 || next == curr) break;
-                    curr = next;
-                }
-                fprintf(stderr, "\n");
-            }
-            fprintf(stderr, "  MEM[0x2cf6b8] heap_ctx     =0x%08x\n", MEM_R32(0x002cf6b8u));
-            fprintf(stderr, "  MEM[0x2cf6c0]              =0x%08x\n", MEM_R32(0x002cf6c0u));
-            fprintf(stderr, "  MEM[0x2cf6c8]              =0x%08x\n", MEM_R32(0x002cf6c8u));
-            fprintf(stderr, "  UserSbrk block uid 0x112: MEM[0x30b000]=0x%08x (freelist node), MEM[0x30aa84]=0x%08x (heap_bump_ptr seed)\n",
-                    MEM_R32(0x0030b000u), MEM_R32(0x0030aa84u));
-            fflush(stderr);
-        }
-        /* Phase A followup: capture worker state at the post-VFS spin PC 0x48c18
-         * once, so we can see what game init step got stuck after the heap wedge
-         * cleared. Default off; gate on env var so the verbose dump doesn't
-         * race the heap probe. */
-        if (!workerspin_dumped && s->pc == 0x00048c18u) {
-            workerspin_dumped = 1;
-            fprintf(stderr, "WORKERSPIN: pc=0x48c18 ra=0x%08x tick=%llu\n", s->r[31], (unsigned long long)s_tick);
-            fprintf(stderr, "  a0(r4)=0x%08x a1(r5)=0x%08x a2(r6)=0x%08x a3(r7)=0x%08x\n",
-                    s->r[4], s->r[5], s->r[6], s->r[7]);
-            fprintf(stderr, "  s0(r16)=0x%08x s1(r17)=0x%08x s2(r18)=0x%08x s3(r19)=0x%08x "
-                    "s4(r20)=0x%08x s5(r21)=0x%08x s6(r22)=0x%08x s7(r23)=0x%08x\n",
-                    s->r[16], s->r[17], s->r[18], s->r[19],
-                    s->r[20], s->r[21], s->r[22], s->r[23]);
-            fprintf(stderr, "  t0(r8)=0x%08x t1(r9)=0x%08x t2(r10)=0x%08x v0(r2)=0x%08x\n",
-                    s->r[8], s->r[9], s->r[10], s->r[2]);
-            fprintf(stderr, "  libc_main_id[0x0030a040]=0x%08x  heap_bump[0x0030b000]=0x%08x  "
-                    "audio_gate[0x0030ab8c]=0x%08x\n",
-                    MEM_R32(0x0030a040u), MEM_R32(0x0030b000u), MEM_R32(0x0030ab8cu));
-            fflush(stderr);
-        }
-        /* AUDIOWEDGE diagnostic was removed alongside the audio spin hack —
-         * once f_0004ea98 is replaced with a native handler in hle.c the
-         * wedge becomes reproducible and we no longer need the per-yield
-         * memory-of-record dump. */
-    }
-    /* Previously an SR_WORKER_RELAUNCH block lived here that force-mocked
-     * the worker thread into DORMANT after the first GE submit so a relaunch
-     * hack could restart it each vblank. Removed: it's a hack; the real
-     * path is for the worker's recompiled main_RunGameLoop to round-trip
-     * through engine_YieldFrame / sceDisplayWaitVblankStart natively, in
-     * which case the per-vblank stub avail no longer matters. */
-
-    /* I2: extra yield snapshot for the worker after umd.ufl is parsed. Activated by
-     *   SR_POSTUMD env (default off). Captures a0..a2 + RA + libc_main_id + last_alloc
-     *   so we can see which guest function landed at each yield after the manifest
-     *   decode. Bounded at 256 entries so we don't fill the trace. */
-    if (s_cur >= 0 && sched_uid_is_worker(s_tcb[s_cur].uid)) {
-        static int s_postumd = -1;
-        if (s_postumd < 0) { const char *e = getenv("SR_POSTUMD"); s_postumd = (e && strcmp(e, "0") != 0) ? 1 : 0; }
-        if (s_postumd) {
-            static int post_yield_count = 0;
-            if (post_yield_count < 256) {
-                fprintf(stderr, "POSTUMD-YIELD uid=0x%x pc=0x%08x ra=0x%08x tick=%llu a0=0x%08x a1=0x%08x a2=0x%08x libc_main_id[0x0030a040]=0x%08x last_alloc=0x%08x\n",
-                        g_worker_uid, s->pc, s->r[31], (unsigned long long)s_tick,
-                        s->r[4], s->r[5], s->r[6],
-                        MEM_R32(0x0030a040u), MEM_R32(0x0030b000u));
-                fflush(stderr);
-                post_yield_count++;
-            }
-        }
-    }
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
     if (s_cur < 0) {
         scheduler_service_pending();
@@ -2868,9 +2369,6 @@ void sr_yield(CpuState *s) {
     }
     s_tick++;
     if ((s_tick & 0xff) == 0) vtime_refresh(); /* observation only; time already progressed above */
-    audio_trace(s);
-    boot_diag(s);
-    spin_check(s);
     t111_trace(s);
     /* Pump messages if we are spinning/loading and not calling gui_present. */
     if (gui_on() && (s_tick & 0x7f) == 0) {
@@ -3005,89 +2503,6 @@ void sr_yield(CpuState *s) {
                         s_tcb[i].priority, s_tcb[i].saved.pc, s_tcb[i].saved.r[31],
                         s_tcb[i].saved.r[19], s_tcb[i].saved.r[2],
                         s_tcb[i].wait_obj, s_tcb[i].wakeups);
-            /* If spinning in hash area (0x1b5xx-0x1b8xx), dump table diagnostics. */
-            if (s->pc == 0x0006ea40u) {
-                fprintf(stderr, "  0x6ea40 loop diag: r2=0x%08x r3=0x%08x r4=0x%08x r5=0x%08x r16=0x%08x r17=0x%08x\n",
-                        s->r[2], s->r[3], s->r[4], s->r[5], s->r[16], s->r[17]);
-            }
-            if (s->pc == 0x00014dacu) {
-                static int strspin_cnt = 0;
-                strspin_cnt++;
-                if (strspin_cnt <= 3) {
-                    fprintf(stderr, "  0x14dac strcmp-spin #%d: r4=0x%08x r5=0x%08x r6=%u r16=%u r18=0x%08x ra=0x%08x\n",
-                            strspin_cnt, s->r[4], s->r[5], s->r[6], s->r[16], s->r[18], s->r[31]);
-                    fprintf(stderr, "    mem[r4]: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                            MEM_R8(s->r[4]+0), MEM_R8(s->r[4]+1), MEM_R8(s->r[4]+2), MEM_R8(s->r[4]+3),
-                            MEM_R8(s->r[4]+4), MEM_R8(s->r[4]+5), MEM_R8(s->r[4]+6), MEM_R8(s->r[4]+7));
-                    fprintf(stderr, "    mem[r5]: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                            MEM_R8(s->r[5]+0), MEM_R8(s->r[5]+1), MEM_R8(s->r[5]+2), MEM_R8(s->r[5]+3),
-                            MEM_R8(s->r[5]+4), MEM_R8(s->r[5]+5), MEM_R8(s->r[5]+6), MEM_R8(s->r[5]+7));
-                }
-            }
-            if (s->pc == 0x0000095cu) {
-                fprintf(stderr, "  0x0095c walker diag: r4=0x%08x r5=0x%08x r16=0x%08x r17=0x%08x r18=0x%08x r19=0x%08x r20=0x%08x r2=0x%08x\n",
-                        s->r[4], s->r[5], s->r[16], s->r[17], s->r[18], s->r[19], s->r[20], s->r[2]);
-            }
-            if (s->pc >= 0x0001b500u && s->pc <= 0x0001b800u) {
-                fprintf(stderr, "  hash diag: r4=0x%08x r5=0x%08x r6=0x%08x r7=0x%08x r16=0x%08x r17=0x%08x r18=0x%08x r19=0x%08x\n",
-                        s->r[4], s->r[5], s->r[6], s->r[7], s->r[16], s->r[17], s->r[18], s->r[19]);
-                /* Try to dump the table struct pointed to by r17 */
-                uint32_t struct_ptr = s->r[17];
-                if (struct_ptr >= 0x00001000u && struct_ptr < 0x0c000000u) {
-                    uint32_t tbl_base = MEM_R32(struct_ptr);
-                    uint32_t tbl_count = MEM_R32(struct_ptr + 4);
-                    uint32_t probe_idx = s->r[7];
-                    fprintf(stderr, "  hash diag: struct=0x%08x tbl_base=0x%08x count=%u probe_idx=%u\n",
-                            struct_ptr, tbl_base, tbl_count, probe_idx);
-                    if (tbl_base >= 0x00001000u && tbl_base < 0x0c000000u && tbl_count > 0 && tbl_count < 200000u) {
-                        int empty = 0, occupied = 0;
-                        uint32_t scan_limit = tbl_count < 50000 ? tbl_count : 50000;
-                        for (uint32_t i = 0; i < scan_limit; i++) {
-                            uint32_t key = MEM_R32(tbl_base + i * 8);
-                            if (key == 0xFFFFFFFFu) empty++;
-                            else occupied++;
-                        }
-                        fprintf(stderr, "  hash diag: empty=%d occupied=%d (scanned %u of %u)\n",
-                                empty, occupied, scan_limit, tbl_count);
-                        for (int i = 0; i < 4 && i < (int)scan_limit; i++)
-                            fprintf(stderr, "  slot[%d]: key=0x%08x val=0x%08x\n", i,
-                                    MEM_R32(tbl_base + i*8), MEM_R32(tbl_base + i*8 + 4));
-                        if (probe_idx < scan_limit) {
-                            uint32_t end = probe_idx + 8 < scan_limit ? probe_idx + 8 : scan_limit;
-                            fprintf(stderr, "  probe area [%u..%u]:\n", probe_idx, end - 1);
-                            for (uint32_t i = probe_idx; i < end; i++)
-                                fprintf(stderr, "  slot[%u]: key=0x%08x val=0x%08x\n", i,
-                                        MEM_R32(tbl_base + i*8), MEM_R32(tbl_base + i*8 + 4));
-                        }
-                    } else {
-                        fprintf(stderr, "  hash diag: invalid tbl_base or count\n");
-                    }
-                } else {
-                    fprintf(stderr, "  hash diag: invalid struct_ptr 0x%08x\n", struct_ptr);
-                }
-            }
-            /* If spinning in memcpy (0x11090-0x1119c), dump memcpy diagnostics. */
-            if (s->pc >= 0x00011090u && s->pc <= 0x0001119cu) {
-                fprintf(stderr, "  memcpy diag: dest=0x%08x src=0x%08x size=%d counter=%u ra=0x%08x\n",
-                        s->r[4], s->r[5], (int32_t)s->r[6], s->r[8], s->r[31]);
-                if (s->r[31] == 0x00048378u) {
-                    fprintf(stderr, "  memcpy from ge-loop: [0x310fec]=0x%08x [0x310ff0]=0x%08x\n",
-                            MEM_R32(0x310fecu), MEM_R32(0x310ff0u));
-                }
-            }
-            /* If spinning in display-list loop (0x48360-0x483a0 in f_00048258), dump the
-             * display-list struct at 0x310fe0-0x310ff0 so we can see the loop count/size. */
-            if (s->pc >= 0x00048360u && s->pc <= 0x000483a0u) {
-                fprintf(stderr, "  ge-loop diag: r16(counter)=%u r17(dest)=0x%08x r18(src)=0x%08x\n",
-                        s->r[16], s->r[17], s->r[18]);
-                fprintf(stderr, "  ge-loop struct: [0x310fe0]=0x%08x [0x310fe4]=0x%08x [0x310fe8]=0x%08x [0x310fec](entry_size)=%u [0x310ff0](count)=%u\n",
-                        MEM_R32(0x310fe0u), MEM_R32(0x310fe4u), MEM_R32(0x310fe8u),
-                        MEM_R32(0x310fecu), MEM_R32(0x310ff0u));
-                fprintf(stderr, "  ge-loop mem: dest_area[0]=0x%08x src_area[0]=0x%08x src_area[1]=0x%08x\n",
-                        s->r[17] < 0x0c000000u ? MEM_R32(s->r[17]) : 0xDEADBEEF,
-                        s->r[18] < 0x0c000000u ? MEM_R32(s->r[18]) : 0xDEADBEEF,
-                        s->r[18] < 0x0bfffffcu ? MEM_R32(s->r[18] + 4) : 0xDEADBEEF);
-            }
             fflush(stderr);
         }
         return;
@@ -3795,18 +3210,14 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
      * -- rather than the synthetic thread stack. */
     memcpy(&t0->saved, s_cpu, sizeof(CpuState));
     arglen = s_cpu->r[4]; argp = s_cpu->r[5];
-    /* Historical "libc_main_thid" seed -- REMOVED. Static analysis and read-watchpoint
-     * instrumentation confirmed that guest code does not read 0x0030a040 as a thread-id scalar,
-     * but rather treats the region starting at 0x0030a040 as a module/EH-metadata registry.
-     * The legacy seed write stomped slot 0 of the registry, which is now exclusively guest-owned. */
-    /* Seed the PSP kernel wait queue head at 0x30aa88 to 0 (end of list).
-     * Per-thread state_ptr entries are seeded in sched_create_thread (+4 slot only).
-     * The uid slot (+0x84) is intentionally NOT pre-seeded: the game's f_00011710
-     * (kernel thread-table registration) writes it; pre-seeding causes f_00011710 to
-     * return -1 ("already registered") which aborts the launcher before the game loop.
-     * After f_00011710 runs, f_00011600 (libc main-thread check) can read both fields. */
-    MEM_W32(0x0030aa88u, 0u);                          /* next pointer: end of list (head init) */
-    fprintf(stderr, "DEBUG: wait queue head init: [0x30aa88]=0x%x\n", MEM_R32(0x30aa88u));
+    /* The HST guest reent hash is initialized only when the validated profile
+     * supplies its typed binding. Other titles receive no guest-memory seed. */
+    SrTitleReentBindings reent_bindings;
+    if (sr_title_config_reent_bindings(&reent_bindings) &&
+        sr_inrange(reent_bindings.guest_thread_table_addr) &&
+        sr_inrange(reent_bindings.guest_thread_table_addr + 4u)) {
+        MEM_W32(reent_bindings.guest_thread_table_addr, 0u);
+    }
     sched_start_thread(uid, arglen, argp);
 
     static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};

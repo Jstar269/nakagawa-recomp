@@ -328,30 +328,12 @@ static inline void sr_log_store_context(uint32_t addr, uint32_t value,
     fflush(stderr);
 }
 
-static inline void sr_check_metadata_watch(uint32_t addr, uint32_t val, int write, int width, uint32_t pc) {
-    if (__builtin_expect(g_sr_metadata_watch, 0)) {
-        /* Use uint64_t to prevent wrap-around when addr is near UINT32_MAX: a
-         * 32-bit addr + width - 1 can wrap to a small value and falsely match
-         * the monitored window.  The comparison against 32-bit constants is safe
-         * because both sides are widened before the comparison. */
-        uint64_t end = (uint64_t)addr + (uint32_t)width - 1ULL;
-        if ((uint64_t)addr <= 0x0030a0bfULL && end >= 0x0030a040ULL) {
-            extern uint32_t sched_current_uid(void);
-            fprintf(stderr, "METADATA_WATCH: %s addr=0x%08x width=%d val=0x%08x pc=0x%08x thread_uid=0x%x caller=%s\n",
-                    write ? "WRITE" : "READ",
-                    addr, width, val, pc, sched_current_uid(),
-                    ((g_hle_depth > 0) || (sched_current_uid() == 0)) ? "host/HLE" : "guest");
-        }
-    }
-}
-
 void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc);
 void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc);
 
 static inline uint8_t  sr_r8 (uint32_t a) {
     if (sr_inrange(a)) {
         uint8_t v = *(uint8_t  *)SR_HOST(a);
-        sr_check_metadata_watch(a, v, 0, 1, s_cpu ? s_cpu->pc : 0);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -359,7 +341,6 @@ static inline uint8_t  sr_r8 (uint32_t a) {
 static inline uint16_t sr_r16(uint32_t a) {
     if (sr_inrange_n(a, 2)) {
         uint16_t v; memcpy(&v, SR_HOST(a), sizeof v);
-        sr_check_metadata_watch(a, v, 0, 2, s_cpu ? s_cpu->pc : 0);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -371,7 +352,6 @@ static inline uint32_t sr_r32(uint32_t a) {
     }
     if (sr_inrange_n(a, 4)) {
         uint32_t v; memcpy(&v, SR_HOST(a), sizeof v);
-        sr_check_metadata_watch(a, v, 0, 4, s_cpu ? s_cpu->pc : 0);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -380,7 +360,6 @@ static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 1u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 1u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
-    sr_check_metadata_watch(a, v, 1, 1, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 1u, v, pc);
     if (sr_inrange(a)) {
         *(uint8_t *)SR_HOST(a) = v;
@@ -391,7 +370,6 @@ static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 2u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 2u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
-    sr_check_metadata_watch(a, v, 1, 2, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 2u, v, pc);
     if (sr_inrange_n(a, 2)) {
         memcpy(SR_HOST(a), &v, sizeof v);
@@ -402,7 +380,6 @@ static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 4u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 4u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
-    sr_check_metadata_watch(a, v, 1, 4, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 4u, v, pc);
     if (sr_inrange_n(a, 4)) {
         memcpy(SR_HOST(a), &v, sizeof v);
@@ -450,6 +427,11 @@ uint32_t sr_bitrev(uint32_t x);
 
 /* PSP-EABI bridge used by the generated guest sprintf entry. */
 void sr_guest_sprintf(CpuState *s);
+/* Format the guest string at `fmt` with variadic words starting in register
+ * `first_reg` into a bounded host buffer (NUL-terminated; never guest-visible).
+ * Returns the full formatted length, as printf does. */
+int sr_guest_format_host(CpuState *s, uint32_t fmt, uint32_t first_reg,
+                         char *buf, int cap);
 
 /* VFPU source/destination prefix application (ARCHITECTURE section 6.4), ported from
  * PPSSPP. sr_vread reads n lanes from physical indices idx[], then applies a source
@@ -712,9 +694,6 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid);
 extern int     sr_sched_on;
 extern atomic_int_least32_t sr_timeslice;
 void sr_yield(CpuState *s);
-/* Environment-gated, bounded guest-function probe used by boot diagnostics.
- * Codegen emits calls only at explicitly reviewed function boundaries. */
-void sr_boot_probe(CpuState *s, uint32_t guest_pc);
 /* Returns 1 if the host wall-clock has crossed the vblank quantum since the last vblank
  * delivery. Defined in sched.c; safe to call from anywhere reactive. Used by SR_YIELD to
  * force a premature slice expiry when the recomp-emitted yield cadence is too sparse to

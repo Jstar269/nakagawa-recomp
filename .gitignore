@@ -75,6 +75,8 @@ tools/vfpu_game_*.txt
 
 # Runtime state, logs, captures, and reports
 /logs/
+# Private flagship verifier outputs written at the worktree root; never tracked.
+/logs_*.txt
 /fs/
 /memstick/
 *.log

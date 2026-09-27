@@ -695,6 +695,8 @@ static void test_title_config_hle_bindings(void) {
     uint32_t libfont_flag = 0, frame_latch = 0;
     int has_libfont = sr_title_config_libfont_ready_flag_addr(&libfont_flag);
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
+    SrTitleReentBindings reent;
+    int has_reent = sr_title_config_reent_bindings(&reent);
     CpuState cpu;
 
     memset(g_mem_base, 0, 0x0c000000u);
@@ -711,6 +713,12 @@ static void test_title_config_hle_bindings(void) {
     expect((has_bringup && has_sync && has_libfont && has_latch) ||
            (!has_bringup && !has_sync && !has_libfont && !has_latch),
            "migrated HLE groups are all configured together or all absent");
+    expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
+           "HST reent compatibility is selected only by the validated HST title config");
+    if (has_reent) {
+        expect(reent.master_reent_addr != 0u && reent.guest_thread_table_addr != 0u,
+               "HST reent compatibility config supplies both required guest addresses");
+    }
 
     s_title_hle_guest_calls = 0;
     s_title_hle_probe = 1;
@@ -2318,7 +2326,7 @@ static void reset_fixture(void) {
     g_root_uid = 0x110u;
     g_launcher_uid = 0x111u;
     g_worker_uid = 0x114u; /* primary render worker, not the resource worker below */
-    g_master_reent = 0x002cf338u;
+    g_master_reent = 0x00300000u;
     s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
