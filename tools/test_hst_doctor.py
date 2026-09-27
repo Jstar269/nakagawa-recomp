@@ -841,7 +841,9 @@ class LongPathDiagnosticTests(unittest.TestCase):
         build path cannot see: the repository is short but one tracked directory
         is deep.
         """
-        root = Path("C:\\" + "r" * 90)
+        # Anchored at the filesystem root so the length is the same on every
+        # host: a "C:\\" literal is relative on POSIX and would absorb the cwd.
+        root = Path(Path.cwd().anchor) / ("r" * 90)
         deep_tracked = Path("src") / "rt" / "gpu_sdl3vk" / ("d" * 120) / "shader.c"
         report = nk_doctor.Report(root, "build")
         with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
