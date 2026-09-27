@@ -670,7 +670,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3179041488d42cfec742c3a4a7f0e4f584db9b47a30fb61d4de6558242948c6e"
+      "sha256": "f4e6e932cfca1e6ea85410a49596e77446f6600499a14ef44219ebbb8a483f75"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1792,7 +1792,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a10a2784c17c55ca49a71011118ee47e2b29919cd151c2321b67371858c02d80"
+      "sha256": "8078d4e2eef3718aa34c885ff3af95a9632e4dcf6664f2c89d7da141a3c4e463"
     },
     {
       "path": "fixtures/profile_zero/main.c",
@@ -6998,7 +6998,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f9df2400be4ac7530ae35f14c9d817db473969108bb054e93b2b8df6f6e3fcf0"
+      "sha256": "0da5ed7d3ee6f359a6fc6193cf84dc5a8429093af15105602cf7e9854da2a2c3"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -8716,7 +8716,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "148719e75984b977aba94b43d42a8f9c168f444b02e4767acf9dfc38dd0b97a7"
+      "sha256": "abffee23def931c4ccae504ed53001522f83fb421a93a2eda3131407baf7219f"
     },
     {
       "path": "tools/test_readme_images.py",
