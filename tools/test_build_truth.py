@@ -465,6 +465,44 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertEqual(offenders, [2])
 
 
+class FlightRecorderLinkDependencyTests(unittest.TestCase):
+    """The synthetic media selftest includes mpeg.c, which inherits the
+    production recorder declarations through recomp.h. The Makefile adds
+    SR_FLIGHT_RECORDER_LINKED globally, so this host target must link the real
+    recorder implementation just like the other runtime selftests do.
+    """
+
+    def test_psmf_media_selftest_links_the_recorder_implementation(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        logical = _logical_lines(makefile)
+        selftest = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
+        mpeg = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
+        recomp = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        recorder = (ROOT / "src" / "rt" / "flight_recorder.c").read_text(encoding="utf-8")
+
+        self.assertIn('#include "mpeg.c"', selftest)
+        self.assertIn('#include "recomp.h"', mpeg)
+        self.assertIn('#include "flight_recorder.h"', recomp)
+        self.assertIn("override CFLAGS += -DSR_FLIGHT_RECORDER_LINKED", makefile)
+        self.assertRegex(recorder, r"(?m)^int g_sr_watch_enabled;")
+        self.assertRegex(recorder, r"(?m)^void sr_watch_store\s*\(")
+
+        media_links = [
+            (number, text)
+            for number, text in logical
+            if "psmf_media_selftest.exe" in text and _is_link_statement(text)
+        ]
+        self.assertEqual(len(media_links), 1, media_links)
+        number, link = media_links[0]
+        self.assertIn(
+            "src/rt/flight_recorder.c",
+            link,
+            "Makefile:%d links psmf_media_selftest.exe with SR_FLIGHT_RECORDER_LINKED, "
+            "but omits the implementation that defines sr_watch_store and "
+            "g_sr_watch_enabled:\n%s" % (number, link.strip()),
+        )
+
+
 NESTED_FRAMES_C = "src/rt/nested_frames.c"
 # Anything that already carries nested_frames.c: naming one of these is as good
 # as naming the file, and a recipe should prefer them.
@@ -513,9 +551,9 @@ def _is_link_statement(text: str) -> bool:
     Prerequisite lines name sources without ever running the linker, and the
     per-object rules compile with -c; neither needs the module's definitions.
     """
-    if " -c " in text or text.rstrip().endswith(" -c"):
+    if re.search(r"(?:^|\s)-c(?:\s|$)", text):
         return False
-    return " -o " in text
+    return re.search(r"(?:^|\s)-o\s", text) is not None
 
 
 class PortableCoreSourceSetTests(unittest.TestCase):
@@ -568,6 +606,21 @@ class PortableCoreSourceSetTests(unittest.TestCase):
         self.assertEqual(entries, self.EXPECTED_PORTABLE_SRCS)
 
 
+def _link_defines_nested_frame_stubs(text: str) -> bool:
+    """True when a source named on the link line defines the nested-frame API itself.
+
+    A self-contained selftest (psmf_media_selftest.c) supplies its own stubs, and
+    linking nested_frames.c as well would be a duplicate definition.
+    """
+    definition = re.compile(r"^\w[\w \t*]*\bsr_nested_frame_acquire\s*\(", re.MULTILINE)
+    for token in re.findall(r"src/[\w/.-]+\.c", text):
+        path = ROOT / token
+        if token != NESTED_FRAMES_C and path.is_file() and definition.search(
+                path.read_text(encoding="utf-8")):
+            return True
+    return False
+
+
 class NestedFramesLinkDependencyTests(unittest.TestCase):
     """hle.c, mpeg.c and sched.c call into nested_frames.c, so every recipe that
     links one of them must also supply it.  This is the same failure shape as
@@ -602,6 +655,8 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
             if not any(caller in text for caller in callers):
                 continue
             if any(bundle in text for bundle in NESTED_FRAMES_BUNDLES):
+                continue
+            if _link_defines_nested_frame_stubs(text):
                 continue
             offenders.append(f"Makefile:{number}: {text.strip()}")
         self.assertEqual(
