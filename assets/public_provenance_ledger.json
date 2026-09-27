@@ -2855,7 +2855,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "41b2610f35e3f2e0733cd1ce7a8eb54b3861a25e15097e7fd515bae0ca7e5cad"
+      "sha256": "2531c49f773a9c09c42c1b52fa9e9f2035172ec2c3b455a5b7c5bddf4eabf10f"
     },
     {
       "path": "src/player/package_builder.h",
@@ -5337,7 +5337,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31e2fdabbc4b80ccbc5cb008ee143d6faf5a6c33701e9ff18843fe9df61cf14f"
+      "sha256": "98b7996905b53ab4f4eca1328df2433b911073e8c921fbf90907e35e8bdb80a5"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
