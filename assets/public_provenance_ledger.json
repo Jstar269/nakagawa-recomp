@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c1ccfaa559ba2a83857e0c6af31ef443d627fdf6f9b443913c6340529a614966"
+      "sha256": "f92bbc8edacd0a3a2a6248b5142d603dbc29c6f7324f5279a308524dac8d522c"
     },
     {
       "path": "NOTICE.md",
@@ -632,7 +632,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dfc9bfd90adaaad3f1c9d7e34782970cbaddb8b2a5129bfb227be8d2aa6bd1e3"
+      "sha256": "ef7cfa65d0d6f67bab5290f183eacfee886e6faec55fd58e99151b40fc35328b"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -649,7 +649,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "2c379af4592f63e40c48d349e26a7052c6341e7b5c8e3971fe5eec04d6cf6154"
+      "sha256": "5ff2c3c00cf41a07bf9d385cb2cad7944e2e5481a769a9cbcf4c0b3db146aeda"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1339,7 +1339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "69822a918880de5e7b64f34c8c09ef8fc1e66eabca76e5bbd93f7695f8175593"
+      "sha256": "13c8fa369bec4cf13f8fdca1ade3b5d0847c15935e62b8fa1f0b408a5c6e61e8"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1402,7 +1402,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5f27923d18b90c78770e88d0ed4fe55da18b0bfe57338a53da2cc3cbff0f5a3e"
+      "sha256": "5e8ccc4c83cfb3315e35dae5718ff508c53062646c0ff317f604d435f8cc35d4"
     },
     {
       "path": "docs/YOUR_OWN_GAMES.md",
@@ -2867,7 +2867,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7f198124c85fdaec301b3a04603d7dc62de17caba3acc6a68c621f94ce7be577"
+      "sha256": "9e75f403b2af6864aa573107226bd1cff28dc770f2e7fd8b6f5480b40e836502"
     },
     {
       "path": "src/player/player_state.c",
@@ -5337,7 +5337,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31e2fdabbc4b80ccbc5cb008ee143d6faf5a6c33701e9ff18843fe9df61cf14f"
+      "sha256": "8bcac9aab1263509f021d24104837bc66c127ddadecc209c7cb382ce28dc6aa9"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -5373,7 +5373,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "15fbfc5bda8cf4c36c7d63895967839bda631c01eec9babfd03f099b795e45e1"
+      "sha256": "d9ff0f94a64383a058f24c20a64afffd27c629404d063121b67a9de62cf3cdac"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -6407,7 +6407,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db5e5a6aa94e6174b889e93e366d6c56a65638bed9c128b2390981760391218c"
+      "sha256": "65aef419c62de8bcdc6989d99b60ee1e91bffe7d117b0f8a6ad76d35bfc4705f"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -6443,7 +6443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1f2f93d908916c309503b00b65387e58cb39b7e32d1efefec6b4e75fa67a1f40"
+      "sha256": "b80720de9bf6cef7053e0d1d4a09c94e99ae772273281c00a2ae222559ce0a64"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -7142,7 +7142,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff646df09e857042951f43bbc7b622f6418e19015948f558f2de6836e764cadc"
+      "sha256": "39ec309980bf56d2a1e861969835b4557ead20da7d125140b89a9d6c3c06d9d1"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -7599,7 +7599,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e7e6f7e1708046ab3a4867d00326e688d3bef03fd4c796805235c8e9f532fbb"
+      "sha256": "1b651455a6d900450f44ad7e353765e38ec98be92f7f5bc4bf7a8bd92e3e09ab"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -7852,7 +7852,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cb3e7389757a577b2825503ee79a2f1c2ce4d2ed19b8ba581a216903a03b29c"
+      "sha256": "4f9f8440e740e65a3dd0993c3d87012a9628945df0e89a0ece1ecb1c35f0fc66"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -8272,7 +8272,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f774e9ffd805d13c0b770ed2e0470d9b1fb878850551b5598b6c604de33b4281"
+      "sha256": "e6a73f41b7a414132caab99f1f22f4ac8a4077d47e34eaa05cc9a0e7cfb35248"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -8320,7 +8320,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a5dea9d25c7494d851d74d05d0cbec8b9459885d78822ea7bc764ef80863d483"
+      "sha256": "6593dd7c11a2b28b0e36050c65bc0d855dde486d2dcc62303373403dcb0ead22"
     },
     {
       "path": "tools/test_production_smoke.py",
@@ -8705,18 +8705,6 @@
         "upstream_attribution": null
       },
       "sha256": "5ac91db96bc0dc063dece2a9356da3509a76b3906933ce508ae0797b44300f24"
-    },
-    {
-      "path": "tools/test_relocated_clone.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "relocated-clone-check",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "14392ba720f87883e7f9f7361d735756cf001564879339bff174fce7eb5e8eed"
     },
     {
       "path": "tools/test_savedata_security.py",
