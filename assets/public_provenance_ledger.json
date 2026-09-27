@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "05a1d4c8cb0b2fad5efa4cfd97820f36976326ac893e3f6e5743c55049dfc5df"
+      "sha256": "2fe90ab1979478c2f64cdd8e6b8fb4dd38734e465b9b6beb98c450f3391e9ed4"
     },
     {
       "path": "NOTICE.md",
@@ -4447,7 +4447,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17864b2898a8794b9ee69ab9ab5daf5ceed4f96eabe7a81b8e54624ac8104896"
+      "sha256": "337b6ff5efabb68dc7ee2b16357033043a8b1abd20125a904eeb8464908193f1"
     },
     {
       "path": "src/rt/guest_printf_selftest.c",
@@ -4459,7 +4459,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29796dc51bdb587c5535334479e2eaab65650f9713f0f43ab2265e9e3606b1bd"
+      "sha256": "973a0a7ec66d78c3f126d420d226a6a76c78fa081c43beb216ffb404669ea5a1"
     },
     {
       "path": "src/rt/guestmem_selftest.c",
@@ -4534,7 +4534,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "fed93811064e74abe2f856eeccfc130ef79c44c0317138d46e344e397c1fc78f"
+      "sha256": "d48a86c42a86fd4f4e50d22edc6fdffd2701363fd3735bc92076096898a6de87"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4865,7 +4865,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7abd3e1c29c9c36b921fd04fac78dd1c469afb3954c67a642240d4550cc8af4b"
+      "sha256": "74cf538bc419a8ab0e70226121fde188f7b102fb578108752ca8091393ddafc1"
     },
     {
       "path": "src/rt/savedata.c",
