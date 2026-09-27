@@ -605,6 +605,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
            "selected_runtime=%d selected_package_status=%d games=%d "
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
+           "font=%s font_reason=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
@@ -637,6 +638,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            (unsigned long long)app->prerequisites.total_bytes,
            app->is_game_running ? 1 : 0,
            (int)app->build_session.current_stage,
+           ui_font_mode(), ui_font_fallback_reason(),
            badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
            badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
            running ? 1 : 0,

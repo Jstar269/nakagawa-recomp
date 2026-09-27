@@ -552,6 +552,7 @@ jobs:
             mingw-w64-ucrt-x86_64-make
             mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-sdl3
+            mingw-w64-ucrt-x86_64-sdl3-ttf
             mingw-w64-ucrt-x86_64-vulkan-headers
             mingw-w64-ucrt-x86_64-vulkan-loader
 
@@ -688,6 +689,19 @@ jobs:
           set -euo pipefail
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 platform-ladder
+
+      # The two #309 manifests use this manifest-driven guest -> ProgramImage ->
+      # AOT package -> production runtime route. The gate names PSPDEV/PSPSDK as
+      # an external fixture toolchain and reports an explicit SKIP when absent.
+      - name: Build and run profile-zero production routes
+        if: matrix.part == 'main'
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 profile-zero-e2e
 
       # Presentation path on a source-owned guest: fill the PSP framebuffer, hand
       # it to sceDisplaySetFrameBuf and wait for vblank, once per frame. The other

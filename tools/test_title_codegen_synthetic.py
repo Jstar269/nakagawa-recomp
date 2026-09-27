@@ -41,12 +41,13 @@ class SyntheticTitleCodegenPlanTests(unittest.TestCase):
         plan = self.plan()
         self.assertEqual(plan["title_manifest_id"], "synthetic-allegrex-v1")
         self.assertEqual(plan["game_base"], 0x08800000)
-        self.assertEqual(plan["game_entry"], 0x08800000)
+        # The manifest entry is the real PSPDEV-built PRX entry (#309), not the load base.
+        self.assertEqual(plan["game_entry"], 0x088000EC)
         self.assertEqual(plan["codegen_profile"], "none")
         self.assertEqual(plan["bss_metadata_source"], "elf")
         # Generic planner emits only TITLE_EXTRA_SPANS (portable); HST legacy must not appear.
         self.assertEqual(plan["environment"]["GAME_BASE"], "0x08800000")
-        self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x08800000")
+        self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x088000ec")
         self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
         self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         self.assertEqual(plan["commands"]["codegen"], [

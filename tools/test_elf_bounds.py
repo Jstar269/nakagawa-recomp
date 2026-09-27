@@ -384,6 +384,65 @@ class ProgramImageTests(unittest.TestCase):
                 prxload.load_program_image(path, base=base)
         self.assertIn(expected_code, {finding.code for finding in context.exception.findings})
 
+    def test_standard_psp_export_entry_accepts_four_word_header(self):
+        base = 0x1000
+        data = bytearray(0x100)
+        loads = [{
+            "guest_start": base,
+            "guest_end": base + len(data),
+            "vaddr": base,
+            "memsz": len(data),
+            "filesz": len(data),
+            "off": 0,
+        }]
+        data[0x70:0x7B] = b"sceFixture\0"
+        struct.pack_into(
+            "<I2sHBBHI", data, 0x20,
+            base + 0x70, b"\x01\x00", 0, 4, 1, 1, base + 0x80,
+        )
+        struct.pack_into("<4I", data, 0x80, 0x11111111, 0x22222222,
+                         base + 0x40, base + 0x50)
+
+        findings = []
+        entries = prxload._program_image_table(
+            data, loads, base + 0x20, base + 0x30, "module.exports",
+            findings, base, "export",
+        )
+
+        self.assertEqual(findings, [])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0][1:6], ("sceFixture", 1, 0, 1, 1))
+        self.assertEqual(entries[0][6:], (base + 0x88, base + 0x8C))
+        function_values = prxload._program_image_u32_table(
+            data, loads, entries[0][6], 1, "export.functions", findings
+        )
+        functions = prxload._program_image_rebased_values(
+            function_values, base, "export.functions", findings, loads, data
+        )
+        self.assertEqual(functions, (base + 0x40,))
+
+    def test_standard_psp_export_entry_table_must_be_mapped(self):
+        base = 0x1000
+        data = bytearray(0x100)
+        loads = [{
+            "guest_start": base,
+            "guest_end": base + len(data),
+            "vaddr": base,
+            "memsz": len(data),
+            "filesz": len(data),
+            "off": 0,
+        }]
+        struct.pack_into(
+            "<I2sHBBHI", data, 0x20,
+            0, b"\x01\x00", 0, 4, 0, 1, base + 0xFC,
+        )
+        findings = []
+        prxload._program_image_table(
+            data, loads, base + 0x20, base + 0x30, "module.exports",
+            findings, base, "export",
+        )
+        self.assertIn("table-export-oob", {finding.code for finding in findings})
+
     def test_security_negative_fixtures_are_structured_and_fail_closed(self):
         self.assert_invalid(b"\x7fELF", "elf-envelope", name="truncated.elf")
 

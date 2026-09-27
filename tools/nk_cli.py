@@ -56,6 +56,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
+import stage_runtime_dlls as _runtime_dlls  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -681,6 +682,16 @@ def _stage_runtime_assets(package_dir: Path) -> None:
                 "VULKAN_SDK, SDL3_DIR, or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
             )
         shutil.copyfile(found, package_dir / "vulkan-1.dll")
+    if _windows_host():
+        # The SDL3_ttf readable-font closure (#421), through the same mechanical
+        # step the Makefile's player target uses. The prerequisite installer
+        # (#296) does not provide it yet, so a package without it still builds:
+        # the player then draws with its bitmap fallback and logs why.
+        try:
+            _runtime_dlls.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
+        except _runtime_dlls.StageError as exc:
+            print(f"warning: the readable UI font runtime was not staged: {exc}. "
+                  "The player will use its bitmap fallback font (#421).", file=sys.stderr)
 
 
 def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:
