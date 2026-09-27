@@ -7563,7 +7563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "10a201b4a5b01b6021e75c0f9dafd3d4c91b6d26c1aa40d1e258b86d9866a72b"
+      "sha256": "8ea23572eb296c54832c1bd933177306a0014c4352cdfe021ac8981ee0c4dd7f"
     },
     {
       "path": "tools/test_guest_printf.py",
@@ -8777,7 +8777,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "04944c38e3f0cbbb8e206175533f82c072166e15903f018aa45b8e6d67e4d795"
+      "sha256": "0a6733a002bfd4ab3b3ea7d741b5a8bff4b7ce43a6a5bf102a645e43e9fe395b"
     },
     {
       "path": "tools/test_title_manager_plan.py",
@@ -8789,7 +8789,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "311a7742284c6f9e7779039f21ceabbc85f24bd58cab006522a240d000428b98"
+      "sha256": "be2065d5fee914ce7ed6953a19665cc3eb1763eefcc7f3f227b2ba016810adcc"
     },
     {
       "path": "tools/test_title_manifest.py",
