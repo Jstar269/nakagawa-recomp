@@ -2377,7 +2377,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4d4444ebfa0defe66e315c808f2ae29c8b3ac3a98d254a44fa40c4f83fc3e0c"
+      "sha256": "7e4c91eb52d36301a880fc7ba5e5057b58a8e9230873bc6a694d2af09c6d6720"
     },
     {
       "path": "src/core/nk_input_profile.h",
@@ -5337,7 +5337,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31db77058dfa0bca59aa40edffa9a3d422e0139de565d93e334c8d3ef3fc277e"
+      "sha256": "873ff712677f0824e353da14498c7a2e8b4d84a5348c681406e4828bff5f982f"
     },
     {
       "path": "tests/native/test_input_settings.c",
