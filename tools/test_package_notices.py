@@ -67,6 +67,39 @@ class TestPackageNotices(unittest.TestCase):
             self.assertIn("LICENSE_TEXT_MISSING", str(ctx.exception))
             self.assertIn("FFmpeg ATRAC3+", str(ctx.exception))
 
+    def test_packaging_fails_when_one_required_linked_license_text_is_missing(self) -> None:
+        """A missing additional notice fails even when another FFmpeg text is present."""
+        inventory = package_notices.load_component_inventory()
+        ffmpeg = next(
+            component for component in inventory["native"]["linked_components"]
+            if component["id"] == "ffmpeg-atrac3p"
+        )
+        required_notice = "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt"
+        self.assertIn(required_notice, [entry["file"] for entry in ffmpeg["license_texts"]])
+
+        with tempfile.TemporaryDirectory() as fake_repo_dir:
+            fake_repo = Path(fake_repo_dir)
+            (fake_repo / "LICENSE").write_text("Project GPL text", encoding="utf-8")
+            for entry in ffmpeg["license_texts"]:
+                if entry["file"] == required_notice:
+                    continue
+                source = ROOT / entry["file"]
+                target = fake_repo / entry["file"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+
+            (self.pkg_dir / "game.exe").write_bytes(
+                b"MZ" + bytes((0, 0)) + b"dummy-exe"
+            )
+            with self.assertRaises(PackageRouteError) as ctx:
+                package_notices.generate_package_notices(
+                    self.pkg_dir, repo_root=fake_repo
+                )
+
+        self.assertEqual(ctx.exception.code, "PACKAGE_LICENSE_TEXT_MISSING")
+        self.assertIn(required_notice, str(ctx.exception))
+        self.assertIn("FFmpeg ATRAC3+ subset", str(ctx.exception))
+
     def test_notices_bundle_generation_with_in_tree_license_texts(self) -> None:
         """Bundle generation reads the checked-in texts, not a host toolchain."""
         # Synthetic package contents
@@ -107,6 +140,20 @@ class TestPackageNotices(unittest.TestCase):
             self.assertNotIn("\\", comp["source_path"])  # POSIX forward slashes
             self.assertTrue((notices_dir / comp["license_file"]).is_file())
 
+        ffmpeg = next(
+            c for c in index_json["components"]
+            if c["name"] == "FFmpeg ATRAC3+ subset"
+        )
+        mips_notice_name = "FFmpeg-ATRAC3P-FFMPEG_MIPS_FFT.txt"
+        self.assertEqual(ffmpeg["spdx_id"], "LGPL-2.1-or-later")
+        self.assertEqual(ffmpeg["additional_license_files"], [mips_notice_name])
+        mips_notice = notices_dir / mips_notice_name
+        self.assertEqual(
+            mips_notice.read_text(encoding="utf-8").strip(),
+            (ROOT / "THIRD_PARTY_LICENSES" / "FFMPEG_MIPS_FFT.txt")
+            .read_text(encoding="utf-8").strip(),
+        )
+
         sdl = next(c for c in index_json["components"] if c.get("binary") == "SDL3.dll")
         self.assertEqual(sdl["source_path"], "third_party/licenses/sdl3/LICENSE.txt")
         self.assertEqual(
@@ -128,6 +175,7 @@ class TestPackageNotices(unittest.TestCase):
         combined_text = (self.pkg_dir / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
         self.assertIn("Sam Lantinga", combined_text)
         self.assertIn("GNU LESSER GENERAL PUBLIC LICENSE", combined_text)
+        self.assertIn("MIPS Technologies, Inc.", combined_text)
         self.assertIn("mingw-w64 project", combined_text)
 
     def test_toolchain_licenses_are_the_fallback_when_in_tree_text_is_absent(self) -> None:

@@ -313,7 +313,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "52da67df6cfe3fe2200d0896ea01a772e58be229accc1b257210119f2ff9403f"
+      "sha256": "9ee24023f3ccc8aadf39c8dae6737c803278d9b6253fdf62419399bd272ddc58"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -362,6 +362,15 @@
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "7f8e4bf527a9c2f387485429f0bf1cf7982dfb70c7d3e87cc53086dd5ebf202c"
     },
     {
       "path": "THIRD_PARTY_LICENSES/FreeType-FTL.txt",
@@ -649,7 +658,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ed70fb3213a21a626f52c533be34809b42dd0d256efe5e2fdcca8d3aef46ff0a"
+      "sha256": "198d110cc612345222262f02a80b0320e20746aa0df746be8fb1b3e6e3b22009"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -682,7 +691,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e2be7894080faaa779c285596202af272b1fd286fead67b9de2861b8e8ed6768"
+      "sha256": "1911069683671922ca02e8f149253adae345627022852d12dfbdd13c73dc001d"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -6503,7 +6512,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "125877fa9932c020ebaf3c2cac3c87c480aa5b71570e27c4fcb5c066b2ad82ae"
+      "sha256": "da95a4c57d5b72d3c7cac6e09bcb7a520e171fcfeebe3e10e5be97f4ca980fa1"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -8272,7 +8281,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a155a0578e1017a0110425995c4b797bb1743f9531f8c9430561116e11541bdc"
+      "sha256": "41a1497f4664daa65c3ef17578209448a9c61c29c88c703c3d9dec5ea8ed8bf4"
     },
     {
       "path": "tools/test_padscript_from_log.py",
