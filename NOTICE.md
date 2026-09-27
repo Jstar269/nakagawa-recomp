@@ -20,7 +20,11 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   notices are in `THIRD_PARTY_LICENSES/PSPSDK.txt` and `assets/upstream/`.
 - **FFmpeg n4.4 ATRAC3+ subset** — LGPL-2.1-or-later. The imported decoder and
   its license/provenance file are under `src/rt/atrac3p/`; the project wrapper
-  remains separately identified in the ledger.
+  remains separately identified in the ledger. Two byte-identical imports,
+  `libavcodec/fft_init_table.c` and `libavcodec/fft_table.h`, also carry a MIPS
+  Technologies, Inc. BSD-3-Clause notice. Its verbatim text is in
+  `THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt` and is included in the generated
+  native-package third-party notices bundle alongside the FFmpeg LGPL text.
 - **SDL3** — zlib; used by the optional host renderer/audio integration. The
   first public profile excludes the sal063-derived `src/rt/audio.c` backend and
   links `src/rt/audio_unavailable.c` instead.
