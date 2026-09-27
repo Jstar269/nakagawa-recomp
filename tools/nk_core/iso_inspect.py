@@ -1411,7 +1411,8 @@ def inspect_compatibility_preflight(
             "message": (
                 f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
                 f"A matching local key file at {key_hint} enables built-in decryption "
-                "for supported formats. The project ships no keys."
+                "for supported formats. The project ships no keys; broader ISO-to-Play "
+                "support is in the works (#308)."
             ),
             "issues": [295],
         }

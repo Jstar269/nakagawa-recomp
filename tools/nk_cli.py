@@ -960,7 +960,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 f"Encrypted executable: supply decrypted modules at {folder} (#295), or "
                 f"a matching local key file at {key_file_path(user_root)} to enable the "
-                "built-in boundary for supported formats. The project ships no keys."
+                "built-in boundary for supported formats. The project ships no keys; "
+                "broader ISO-to-Play support is in the works (#308)."
             )
         selected = str(selected_value).upper()
         selected_from_library = entry.get("selected_executable", "")
