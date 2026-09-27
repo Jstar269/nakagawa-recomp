@@ -636,6 +636,12 @@
     "name": "sceKernelReferVplStatus",
     "status": "unreviewed"
   },
+  "0x3a622550": {
+    "classification": "dedicated",
+    "handler": "h_CtrlPeekBufferPositive",
+    "name": "sceCtrlPeekBufferPositive",
+    "status": "unreviewed"
+  },
   "0x3ad58b8c": {
     "classification": "dedicated",
     "handler": "h_SuspendDispatchThread",
@@ -2169,6 +2175,12 @@
     "classification": "dedicated",
     "handler": "h_TryLockLwMutex",
     "name": "sceKernelTryLockLwMutex",
+    "status": "unreviewed"
+  },
+  "0xdc93cfef": {
+    "classification": "dedicated",
+    "handler": "h_GeGetCmd",
+    "name": "sceGeGetCmd",
     "status": "unreviewed"
   },
   "0xdcc80c2f": {

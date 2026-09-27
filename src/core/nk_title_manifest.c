@@ -220,7 +220,8 @@ static bool is_valid_filename(const char *s) {
     return true;
 }
 
-static bool is_valid_portable_path(const char *s) {
+/* Shared shape rule for relative paths. */
+static bool is_valid_relative_path(const char *s, bool allow_plus) {
     if (!s || !*s) return false;
     size_t len = strlen(s);
     if (len > 240) return false;
@@ -240,7 +241,8 @@ static bool is_valid_portable_path(const char *s) {
         if (token[tlen - 1] == '.' || token[tlen - 1] == ' ') return false;
         for (size_t i = 0; i < tlen; i++) {
             char c = token[i];
-            if (!isalnum((unsigned char)c) && c != '.' && c != '_' && c != '-') return false;
+            if (!isalnum((unsigned char)c) && c != '.' && c != '_' && c != '-' &&
+                !(allow_plus && c == '+')) return false;
         }
         /* Check Windows reserved */
         char base[16];
@@ -261,6 +263,22 @@ static bool is_valid_portable_path(const char *s) {
         token = strtok(NULL, "/");
     }
     return true;
+}
+
+/* Title-manifest "make-safe" rule: components are [A-Za-z0-9._-] only. Stays in
+ * lockstep with the schema parser (assets/title_manifest.schema.json
+ * relativePath) and tools/title_manifest.py portable_path(). */
+static bool is_valid_portable_path(const char *s) {
+    return is_valid_relative_path(s, false);
+}
+
+/* Host runtime package artifacts additionally allow '+' in path components
+ * because GCC/MSYS2 runtime library names contain it (libstdc++-6.dll,
+ * libc++.so). Mirrors _safe_relative() in tools/nk_core/package_cache.py, which
+ * inventories these files into the completion manifest; traversal, separators,
+ * reserved device names and a trailing dot or space stay rejected. */
+static bool is_valid_artifact_path(const char *s) {
+    return is_valid_relative_path(s, true);
 }
 
 /* filesystem.disc_image is only handed to the runtime (PSP_ISO), never to Make, so its
@@ -2308,7 +2326,7 @@ static bool package_path_is_symlink(const char *path) {
 
 static bool package_direct_file(const char *package_root, const char *relative,
                                 char *out_path, size_t out_size) {
-    if (!relative || !is_valid_portable_path(relative)) return false;
+    if (!relative || !is_valid_artifact_path(relative)) return false;
     char joined[NK_MAX_PATH * 2];
     if (!package_join_path(joined, sizeof(joined), package_root, relative) ||
         !nk_platform_file_exists(joined) ||
@@ -2460,7 +2478,7 @@ static bool package_completion_identity(const char *package_root,
             PackageFileIdentity artifact_identity;
             ok = record && record->type == JSON_OBJECT &&
                  package_string(obj_get(record, "path"), &relative) &&
-                 is_valid_portable_path(relative) &&
+                 is_valid_artifact_path(relative) &&
                  package_direct_file(package_root, relative, artifact_path,
                                      sizeof(artifact_path)) &&
                  package_file_identity(artifact_path, &artifact_identity);
@@ -2792,7 +2810,7 @@ static bool package_validate_contract(const JsonNode *package,
     const JsonNode *executable = obj_get(package, "executable");
     if (!package_check_object(executable, "$.executable", executable_keys, executable_required, error, error_size)) return false;
     if (!package_string(obj_get(executable, "path"), exe_relative) ||
-        !is_valid_portable_path(*exe_relative) ||
+        !is_valid_artifact_path(*exe_relative) ||
         !package_sha256(obj_get(executable, "sha256"), exe_hash) ||
         !package_string(obj_get(executable, "guest_entry"), NULL)) {
         snprintf(error, error_size, "package executable path/hash is invalid or escapes its package");
@@ -2807,7 +2825,7 @@ static bool package_validate_contract(const JsonNode *package,
     for (size_t i = 0; i < objects->u.arr.count; i++) {
         const JsonNode *object = objects->u.arr.items[i];
         if (!package_check_object(object, "$.generated_objects[]", object_keys, object_required, error, error_size) ||
-            !package_string(obj_get(object, "path"), &value) || !is_valid_portable_path(value) ||
+            !package_string(obj_get(object, "path"), &value) || !is_valid_artifact_path(value) ||
             !package_sha256(obj_get(object, "sha256"), NULL)) {
             if (error && error_size && !error[0]) snprintf(error, error_size, "$.generated_objects contains an invalid record");
             return false;
@@ -2836,7 +2854,7 @@ static bool package_validate_contract(const JsonNode *package,
             return false;
         }
         if ((strcmp(kind, "title-data-root") == 0 || strcmp(kind, "runtime-resource-locator") == 0) &&
-            (!package_string(obj_get(asset, "path"), &value) || !is_valid_portable_path(value) ||
+            (!package_string(obj_get(asset, "path"), &value) || !is_valid_artifact_path(value) ||
              !package_string(obj_get(asset, "provisioning"), NULL))) {
             snprintf(error, error_size, "local data asset record is invalid");
             return false;
@@ -3039,7 +3057,7 @@ static bool package_validate_completion(const char *package_root,
         if (!package_check_object(record, "completion-manifest.artifacts[]", artifact_keys,
                                   artifact_keys, error, error_size) ||
             !package_string(obj_get(record, "path"), &relative) ||
-            !is_valid_portable_path(relative) ||
+            !is_valid_artifact_path(relative) ||
             !package_sha256(obj_get(record, "sha256"), &expected_hash)) {
             if (error && error_size && !error[0]) snprintf(error, error_size,
                 "Runtime package completion manifest contains an invalid artifact path near '%s'.",

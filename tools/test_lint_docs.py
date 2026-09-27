@@ -246,7 +246,8 @@ class TestDocTruthInvariants(unittest.TestCase):
             root = pathlib.Path(temp_dir)
             doc_dir = root / "docs"
             doc_dir.mkdir()
-            baseline = doc_dir / "TOOLCHAIN_BASELINE_2026-08.md"
+            baseline = doc_dir / "archive" / "TOOLCHAIN_BASELINE_2026-08.md"
+            baseline.parent.mkdir()
             baseline.write_text("# Toolchain baseline\n", encoding="utf-8")
             self.assertTrue(lint_toolchain_baseline_marker(root))
             baseline.write_text(

@@ -36,6 +36,7 @@ typedef struct TestGlyph {
     uint32_t row_order;
     uint32_t shadow_id;
     uint32_t shadow_row_order;
+    uint16_t composite[3];
     int32_t inline_pairs[3][2];
     uint8_t bitmap[256];
     size_t bitmap_size;
@@ -43,6 +44,7 @@ typedef struct TestGlyph {
 
 typedef struct TestConfig {
     uint32_t revision;
+    uint32_t base_header;
     uint32_t first_glyph;
     uint32_t glyph_count;
     uint32_t char_map_count;
@@ -52,6 +54,7 @@ typedef struct TestConfig {
     uint8_t metric_counts[4];
     int32_t table_pairs[4][TEST_MAX_TABLE][2];
     uint32_t shadow_count;
+    uint32_t shadow_bits;
     uint16_t shadow_codes[TEST_MAX_MAP];
     uint16_t revision3_counts[2];
     TestGlyph glyphs[TEST_MAX_GLYPHS];
@@ -196,9 +199,16 @@ static int test_reserve(TestFont *font, size_t count, size_t *offset) {
     return 1;
 }
 
+static size_t test_payload_size(const TestGlyph *glyph) {
+    return glyph->row_order == 3u ? 6u : glyph->bitmap_size;
+}
+
 static int test_build_font(TestFont *font, const TestConfig *config) {
     size_t cursor;
-    size_t header_size = config->revision == 3u ? TEST_REV3_HEADER_SIZE : TEST_HEADER_SIZE;
+    size_t header_size = config->revision == 3u && config->base_header == 0u ?
+                         TEST_REV3_HEADER_SIZE : TEST_HEADER_SIZE;
+    size_t shadow_bits = config->shadow_bits != 0u ? config->shadow_bits :
+                         (config->shadow_count == 0u ? 0u : 16u);
     size_t length;
     size_t table_offset[4];
     size_t glyph_start;
@@ -209,7 +219,9 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
     if (config->glyph_count == 0u || config->glyph_count > TEST_MAX_GLYPHS ||
         config->char_map_count > TEST_MAX_MAP || config->revision > 3u ||
         config->first_glyph + config->glyph_count - 1u > 0xffffu ||
-        config->shadow_count > TEST_MAX_MAP) {
+        config->shadow_count > TEST_MAX_MAP ||
+        (config->shadow_count == 0u && shadow_bits != 0u && shadow_bits != 16u) ||
+        (config->shadow_count != 0u && shadow_bits != 16u)) {
         return 0;
     }
     font->size = header_size;
@@ -247,8 +259,8 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
         font->bytes[0x102u + table] = config->metric_counts[table];
     }
     test_put_u32(font->bytes + 0x16cu, config->shadow_count);
-    test_put_u32(font->bytes + 0x170u, config->shadow_count == 0u ? 0u : 16u);
-    if (config->revision == 3u) {
+    test_put_u32(font->bytes + 0x170u, (uint32_t)shadow_bits);
+    if (config->revision == 3u && config->base_header == 0u) {
         test_put_u16(font->bytes + 0x18cu, config->revision3_counts[0]);
         test_put_u16(font->bytes + 0x194u, config->revision3_counts[1]);
         test_put_u32(font->bytes + 0x188u, 7u);
@@ -271,17 +283,17 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
         }
     }
     if (!test_reserve(font, test_packed_size(config->shadow_count,
-                                              config->shadow_count == 0u ? 0u : 16u),
+                                              (uint32_t)shadow_bits),
                       &cursor)) {
         return 0;
     }
     font->size = cursor + test_packed_size(config->shadow_count,
-                                            config->shadow_count == 0u ? 0u : 16u);
+                                           (uint32_t)shadow_bits);
     for (table = 0; table < config->shadow_count; ++table) {
         test_put_u16(font->bytes + cursor + (size_t)table * 2u,
                      config->shadow_codes[table]);
     }
-    if (config->revision == 3u) {
+    if (config->revision == 3u && config->base_header == 0u) {
         size_t bytes = ((size_t)config->revision3_counts[0] +
                         config->revision3_counts[1]) * 4u;
         if (!test_reserve(font, bytes, &cursor)) return 0;
@@ -302,6 +314,7 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
     for (glyph_id = 0; glyph_id < config->glyph_count; ++glyph_id) {
         const TestGlyph *glyph = &config->glyphs[glyph_id];
         size_t record_size = test_metric_record_size(glyph);
+        size_t payload_size = test_payload_size(glyph);
         size_t record_offset;
         size_t cursor_at;
         uint32_t shadow_offset = 0u;
@@ -314,7 +327,7 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
         font->glyph_record_sizes[glyph_id] = record_size;
         font->glyph_bitmap_offsets[glyph_id] = record_offset + record_size;
         if (glyph->shadow_id != 0u) {
-            shadow_offset = (uint32_t)(record_size + glyph->bitmap_size);
+            shadow_offset = (uint32_t)(record_size + payload_size);
         }
         if (!test_reserve(font, record_size, &cursor_at)) return 0;
         test_set_field(font->bytes + record_offset, record_size, 0u, 14u, shadow_offset);
@@ -342,9 +355,15 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
         }
         font->bytes[cursor_at++] = glyph->indexes[3];
         if (cursor_at != record_offset + record_size) return 0;
-        if (!test_reserve(font, glyph->bitmap_size, &cursor_at)) return 0;
-        if (glyph->bitmap_size != 0u) {
-            memcpy(font->bytes + cursor_at, glyph->bitmap, glyph->bitmap_size);
+        if (!test_reserve(font, payload_size, &cursor_at)) return 0;
+        if (glyph->row_order == 3u) {
+            unsigned part;
+            for (part = 0; part < 3u; ++part) {
+                test_put_u16(font->bytes + font->glyph_bitmap_offsets[glyph_id] +
+                                 (size_t)part * 2u, glyph->composite[part]);
+            }
+        } else if (payload_size != 0u) {
+            memcpy(font->bytes + cursor_at, glyph->bitmap, payload_size);
         }
         if (glyph->shadow_id != 0u) {
             size_t shadow_at = record_offset + shadow_offset;
@@ -521,6 +540,10 @@ static void test_open_headers_and_sections(void) {
     test_default_config(&config);
     CHECK(test_build_font(&font, &config));
     test_put_u32(font.bytes + 0x170u, 16u);
+    pgf = test_open(&font);
+    CHECK(pgf != NULL && pgf_has_char(pgf, 65));
+    pgf_close(pgf);
+    test_put_u32(font.bytes + 0x170u, 8u);
     CHECK(test_open(&font) == NULL);
     test_default_config(&config);
     config.shadow_count = 1u;
@@ -874,13 +897,189 @@ static void test_shadow_and_character_info(void) {
     CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR) == 0);
     pgf_close(pgf);
 
+    /* A row-order-3 record's bitmap offset holds three character codes, not an
+       RLE stream, so a payload that cannot supply six bytes is invalid. */
     test_default_config(&config);
     config.glyphs[0].row_order = 3u;
     CHECK(test_build_font(&font, &config));
+    font.size = font.glyph_bitmap_offsets[0] + 1u;
+    CHECK(test_open(&font) == NULL);
+}
+
+/* Row order 3: the record's bitmap offset holds three little-endian character
+   codes that resolve through the direct character map and are overlaid. Glyph 0
+   is the composite; glyphs 1..3 are its raster components. */
+static void test_composite_config(TestConfig *config) {
+    test_default_config(config);
+    config->glyph_count = 4u;
+    config->char_map_count = 4u;
+    config->char_map_bits = 3u;
+    config->map_values[3] = 3u;
+    config->metric_counts[3] = 2u;
+    config->table_pairs[3][1][0] = 512;
+    config->table_pairs[3][1][1] = 768;
+    config->glyphs[0].width = 3u;
+    config->glyphs[0].height = 4u;
+    config->glyphs[0].adjustment_x = -5;
+    config->glyphs[0].adjustment_y = 7;
+    config->glyphs[0].row_order = 3u;
+    config->glyphs[0].indexes[3] = 1u;
+    config->glyphs[0].composite[0] = 66u;
+    config->glyphs[0].composite[1] = 67u;
+    config->glyphs[0].composite[2] = 68u;
+    /* Component 1, row order 1: rows (4,1) and (0,0). */
+    config->glyphs[1].width = 2u;
+    config->glyphs[1].height = 2u;
+    config->glyphs[1].bitmap[0] = 0x48u;
+    config->glyphs[1].bitmap[1] = 0x01u;
+    config->glyphs[1].bitmap[2] = 0x00u;
+    config->glyphs[1].bitmap_size = 3u;
+    /* Component 2, row order 1: rows (0,6) and (0,3). */
+    config->glyphs[2].width = 2u;
+    config->glyphs[2].height = 2u;
+    config->glyphs[2].bitmap[0] = 0x08u;
+    config->glyphs[2].bitmap[1] = 0x06u;
+    config->glyphs[2].bitmap[2] = 0x03u;
+    config->glyphs[2].bitmap_size = 3u;
+    /* Component 3, row order 2: rows (7,0) and (0,2). */
+    config->glyphs[3].width = 2u;
+    config->glyphs[3].height = 2u;
+    config->glyphs[3].row_order = 2u;
+    config->glyphs[3].bitmap[0] = 0x78u;
+    config->glyphs[3].bitmap[1] = 0x00u;
+    config->glyphs[3].bitmap[2] = 0x02u;
+    config->glyphs[3].bitmap_size = 3u;
+}
+
+static void test_composite_glyphs(void) {
+    static const uint8_t expected[4] = {7u, 6u, 0u, 3u};
+    static const uint8_t expected_half[6] = {3u, 3u, 3u, 0u, 1u, 1u};
+    TestConfig config;
+    TestFont font;
+    PGF *pgf;
+    uint8_t *buffer = test_guest(TEST_BUFFER_ADDR);
+
+    test_composite_config(&config);
+    CHECK(test_build_font(&font, &config));
     pgf = test_open(&font);
     CHECK(pgf != NULL);
+    CHECK(pgf_has_char(pgf, 65));
+    CHECK(pgf_has_char(pgf, 66));
+    /* The composite reports its own record's metrics, not a component's. */
     CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
-    CHECK(pgf_draw_glyph_by_id(pgf, 0, TEST_IMAGE_ADDR) == 0);
+    CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x00u) == 3u);
+    CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x04u) == 4u);
+    CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x08u) == -5);
+    CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x0cu) == 7);
+    CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x30u) == 512);
+    CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x34u) == 768);
+    CHECK(pgf_get_char_info(pgf, 66, 0, TEST_INFO_ADDR));
+    CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x00u) == 2u);
+    CHECK((int32_t)test_u32(test_guest(TEST_INFO_ADDR) + 0x30u) == 384);
+
+    /* fx = fy = 0: three components overlay, the first one overwriting. */
+    memset(buffer, 0xee, sizeof(expected_half));
+    test_reset_dirty();
+    test_set_image(2u, 0, 0, 2u, 2u, 2u, TEST_BUFFER_ADDR);
+    CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+    CHECK(memcmp(buffer, expected, sizeof(expected)) == 0);
+    CHECK(dirty_count == 6u);
+    CHECK(dirty_spans[0].address == TEST_BUFFER_ADDR && dirty_spans[0].size == 2u);
+    CHECK(dirty_spans[1].address == TEST_BUFFER_ADDR + 2u && dirty_spans[1].size == 2u);
+    CHECK(dirty_spans[2].address == TEST_BUFFER_ADDR && dirty_spans[2].size == 2u);
+    CHECK(dirty_spans[4].address == TEST_BUFFER_ADDR && dirty_spans[4].size == 2u);
+
+    /* fx = 32: every component grows one footprint column. */
+    memset(buffer, 0xee, sizeof(expected_half));
+    test_reset_dirty();
+    test_set_image(2u, 32, 0, 3u, 2u, 3u, TEST_BUFFER_ADDR);
+    CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+    CHECK(memcmp(buffer, expected_half, sizeof(expected_half)) == 0);
+    CHECK(dirty_count == 6u);
+    CHECK(dirty_spans[0].size == 3u);
+
+    /* A packed 4-bit destination keeps partner nibbles through both rules. */
+    memset(buffer, 0x6bu, 2u);
+    test_reset_dirty();
+    test_set_image(1u, 0, 0, 2u, 2u, 1u, TEST_BUFFER_ADDR);
+    CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+    CHECK(buffer[0] == 0x76u && buffer[1] == 0x03u);
+    pgf_close(pgf);
+
+    /* A composite is invalid when its payload, components, or reference graph
+       is not, and each case fails closed at open with no handle. */
+    test_composite_config(&config);
+    CHECK(test_build_font(&font, &config));
+    font.size = font.glyph_bitmap_offsets[0] + 4u;
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.glyphs[0].composite[0] = 64u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.glyphs[0].composite[0] = 69u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.map_values[1] = 7u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.map_values[1] = 4u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.glyphs[0].composite[0] = 65u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.glyphs[1].row_order = 3u;
+    config.glyphs[1].composite[0] = 66u;
+    config.glyphs[1].composite[1] = 66u;
+    config.glyphs[1].composite[2] = 66u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.glyphs[0].composite[0] = 69u;
+    config.glyphs[0].composite[1] = 66u;
+    config.glyphs[0].composite[2] = 66u;
+    config.glyphs[1].row_order = 3u;
+    config.glyphs[1].composite[0] = 65u;
+    config.glyphs[1].composite[1] = 65u;
+    config.glyphs[1].composite[2] = 65u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.glyphs[2].width = 0u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+    test_composite_config(&config);
+    config.glyphs[2].row_order = 0u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
+
+    /* Every component is preflighted before the first pixel: a third component
+       whose last row leaves the guest arena fails the whole draw. */
+    test_composite_config(&config);
+    config.glyphs[1].height = 1u;
+    config.glyphs[2].height = 1u;
+    config.glyphs[3].height = 3u;
+    config.glyphs[3].bitmap[0] = 0x78u;
+    config.glyphs[3].bitmap[1] = 0x00u;
+    config.glyphs[3].bitmap[2] = 0x20u;
+    config.glyphs[3].bitmap[3] = 0x00u;
+    config.glyphs[3].bitmap_size = 4u;
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    memset(test_guest(0x0bfffffcu), 0xc7, 4u);
+    test_reset_dirty();
+    test_set_image(2u, 0, 0, 2u, 4u, 4u, 0x0bfffffcu);
+    CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR) == 0);
+    CHECK(test_guest(0x0bfffffcu)[0] == 0xc7u &&
+          test_guest(0x0bfffffcu)[1] == 0xc7u &&
+          test_guest(0x0bfffffcu)[2] == 0xc7u &&
+          test_guest(0x0bfffffcu)[3] == 0xc7u && dirty_count == 0u);
     pgf_close(pgf);
 }
 
@@ -1363,6 +1562,72 @@ static int test_write_file(const char *path, const uint8_t *bytes, size_t size) 
     return written == size;
 }
 
+/* The supported revision and shadow-width variants: an empty shadow map that
+   declares the documented 16-bit width, and a revision-3 font whose header has
+   no 412-byte extension. Both decode on the ordinary direct-map path. */
+static void test_revision_and_shadow_variants(void) {
+    TestConfig config;
+    TestFont base;
+    TestFont variant;
+    PGF *pgf;
+    uint8_t base_info[TEST_CHAR_INFO_SIZE];
+    uint8_t variant_info[TEST_CHAR_INFO_SIZE];
+    unsigned revision;
+
+    test_default_config(&config);
+    config.revision = 2u;
+    CHECK(test_build_font(&base, &config));
+    pgf = test_open(&base);
+    CHECK(pgf != NULL);
+    CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
+    memcpy(base_info, test_guest(TEST_INFO_ADDR), sizeof(base_info));
+    pgf_close(pgf);
+
+    /* An empty shadow map accepts the documented entry width. */
+    test_default_config(&config);
+    config.shadow_bits = 16u;
+    CHECK(test_build_font(&variant, &config));
+    pgf = test_open(&variant);
+    CHECK(pgf != NULL);
+    CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
+    CHECK(memcmp(test_guest(TEST_INFO_ADDR), base_info, sizeof(base_info)) == 0);
+    pgf_close(pgf);
+
+    /* A 412-byte header still requires revision 3, and revision 4 is refused
+       with either header size. */
+    for (revision = 0; revision <= 2u; ++revision) {
+        test_default_config(&config);
+        config.revision = 3u;
+        config.revision3_counts[0] = 2u;
+        CHECK(test_build_font(&variant, &config));
+        test_put_u32(variant.bytes + 8u, revision);
+        CHECK(test_open(&variant) == NULL);
+    }
+    test_default_config(&config);
+    config.revision = 3u;
+    config.base_header = 1u;
+    CHECK(test_build_font(&variant, &config));
+    test_put_u32(variant.bytes + 8u, 4u);
+    CHECK(test_open(&variant) == NULL);
+    test_put_u32(variant.bytes + 8u, 3u);
+    pgf = test_open(&variant);
+    CHECK(pgf != NULL);
+    pgf_close(pgf);
+
+    /* Revision 3 with no extension produces the same guest records as the
+       otherwise identical revision-2 font. */
+    test_default_config(&config);
+    config.revision = 3u;
+    config.base_header = 1u;
+    CHECK(test_build_font(&variant, &config));
+    pgf = test_open(&variant);
+    CHECK(pgf != NULL);
+    CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
+    memcpy(variant_info, test_guest(TEST_INFO_ADDR), sizeof(variant_info));
+    CHECK(memcmp(variant_info, base_info, sizeof(base_info)) == 0);
+    pgf_close(pgf);
+}
+
 /* One deterministic source-owned synthetic PGF stands in for the converter
    output the project does not ship yet (#313): identical config bytes on every
    run, no firmware font and no retail bytes. It is staged as a host file so
@@ -1375,6 +1640,9 @@ static void test_production_file_path_metrics_and_render(void) {
     static const char *const good_path = "synthetic-converter-output.pgf";
     static const char *const bad_magic_path = "synthetic-converter-output-badmagic.pgf";
     static const char *const short_path = "synthetic-converter-output-short.pgf";
+    static const char *const composite_path = "synthetic-composite-output.pgf";
+    static const char *const bad_composite_path =
+        "synthetic-composite-output-absent.pgf";
     TestConfig config;
     TestFont font;
     TestFont repeat;
@@ -1437,14 +1705,42 @@ static void test_production_file_path_metrics_and_render(void) {
     (void)remove(good_path);
     (void)remove(bad_magic_path);
     (void)remove(short_path);
+
+    /* The composite form takes the same host file path, and a composite whose
+       payload names an absent character fails closed through it. */
+    test_composite_config(&config);
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_write_file(composite_path, font.bytes, font.size));
+    pgf = pgf_open(composite_path);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        buffer = test_guest(TEST_BUFFER_ADDR);
+        memset(buffer, 0xee, 4u);
+        test_reset_dirty();
+        test_set_image(2u, 0, 0, 2u, 2u, 2u, TEST_BUFFER_ADDR);
+        CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+        CHECK(memcmp(buffer, (uint8_t[4]){7u, 6u, 0u, 3u}, 4u) == 0);
+        CHECK(dirty_count == 6u);
+        pgf_close(pgf);
+    }
+    test_composite_config(&config);
+    config.glyphs[0].composite[2] = 0u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_write_file(bad_composite_path, font.bytes, font.size));
+    CHECK(pgf_open(bad_composite_path) == NULL);
+    (void)remove(composite_path);
+    (void)remove(bad_composite_path);
 }
 
 static void test_deterministic_mutations(void) {
     TestConfig config;
     TestFont font;
     uint32_t state = 0x6d2b79f5u;
+    uint32_t composite_state = 0x1b7a93c5u;
     unsigned accepted = 0u;
     unsigned rejected = 0u;
+    unsigned composite_accepted = 0u;
+    unsigned composite_rejected = 0u;
     unsigned iteration;
 
     test_default_config(&config);
@@ -1474,6 +1770,35 @@ static void test_deterministic_mutations(void) {
         font.bytes[offset] ^= mask;
     }
     CHECK(accepted != 0u && rejected != 0u);
+
+    /* The same sweep over a composite font, whose components are followed one
+       level deep and whose invalid payloads must fail closed. */
+    test_composite_config(&config);
+    CHECK(test_build_font(&font, &config));
+    for (iteration = 0; iteration < 10000u; ++iteration) {
+        size_t offset;
+        uint8_t mask;
+        PGF *pgf;
+        composite_state ^= composite_state << 13;
+        composite_state ^= composite_state >> 17;
+        composite_state ^= composite_state << 5;
+        offset = (size_t)(composite_state % font.size);
+        mask = (uint8_t)(1u << ((composite_state >> 24) & 7u));
+        font.bytes[offset] ^= mask;
+        pgf = test_open(&font);
+        if (pgf) {
+            ++composite_accepted;
+            (void)pgf_has_char(pgf, 65);
+            (void)pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR);
+            test_reset_dirty();
+            (void)pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR);
+            pgf_close(pgf);
+        } else {
+            ++composite_rejected;
+        }
+        font.bytes[offset] ^= mask;
+    }
+    CHECK(composite_accepted != 0u && composite_rejected != 0u);
 }
 
 int main(int argc, char **argv) {
@@ -1499,6 +1824,8 @@ int main(int argc, char **argv) {
     test_open_headers_and_sections();
     test_maps_pointers_and_metrics();
     test_shadow_and_character_info();
+    test_composite_glyphs();
+    test_revision_and_shadow_variants();
     test_font_information_and_lifetime();
     test_draw_rle_formats_and_placement();
     test_draw_rejections_and_dirty_spans();

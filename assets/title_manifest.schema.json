@@ -505,11 +505,21 @@
               "items": {
                 "type": "object", "additionalProperties": false,
                 "required": ["id", "status", "evidence_class", "assertion"],
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {"status": {"const": "implemented"}},
+                      "required": ["status"]
+                    },
+                    "then": {"required": ["gate"]}
+                  }
+                ],
                 "properties": {
                   "id": {"$ref": "#/$defs/identifier"},
                   "status": {"enum": ["planned", "implemented", "blocked"]},
                   "evidence_class": {"enum": ["PSP_HARDWARE", "PRODUCTION_DISPATCH", "PRODUCTION_HELPER", "MODEL_REFERENCE", "HOST_DIFFERENTIAL", "SOURCE_SHAPE"]},
-                  "assertion": {"type": "string", "minLength": 1, "maxLength": 512}
+                  "assertion": {"type": "string", "minLength": 1, "maxLength": 512},
+                  "gate": {"$ref": "#/$defs/identifier"}
                 }
               }
             }

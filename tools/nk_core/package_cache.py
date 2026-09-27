@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 import sysconfig
 import tempfile
@@ -81,13 +82,44 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_pairs)
 
 
+_ARTIFACT_COMPONENT_RE = re.compile(r"[A-Za-z0-9._+-]+")
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
 def _safe_relative(value: Any) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
+    """Validate one cache/package artifact relative path.
+
+    Mirrors is_valid_artifact_path() in src/core/nk_title_manifest.c so the
+    completion manifest never records a path the native package validator
+    rejects: components are [A-Za-z0-9._+-] (the '+' is required by GCC/MSYS2
+    runtime library names such as libstdc++-6.dll), with no traversal,
+    separators, reserved device names, or trailing dot/space.
+    """
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > 240
+        or "\\" in value
+        or ":" in value
+        or value.startswith("/")
+        or value.endswith("/")
+        or "//" in value
+    ):
         raise PackageCacheError("cache artifact path is not a portable relative path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise PackageCacheError("cache artifact path escapes the package")
-    return path.as_posix()
+    for part in value.split("/"):
+        if part in {"", ".", ".."}:
+            raise PackageCacheError("cache artifact path escapes the package")
+        if (
+            not _ARTIFACT_COMPONENT_RE.fullmatch(part)
+            or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+        ):
+            raise PackageCacheError("cache artifact path is not a portable relative path")
+    return value
 
 
 def _resolve_within(root: Path, relative: str) -> Path:
