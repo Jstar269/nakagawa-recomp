@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3e196669f1d23b8d0bb41225d848cb02e3265904e84da39671ec7cb563cbb820"
+      "sha256": "46cf0d0ea678d6b463d6f5ab810cc6e165f61d0c0110b3435f4f523f256df284"
     },
     {
       "path": "NOTICE.md",
@@ -7202,7 +7202,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff646df09e857042951f43bbc7b622f6418e19015948f558f2de6836e764cadc"
+      "sha256": "31c667d6276a74dedd5d305e573df0f7869780d161db7100eaa71124bb54a2a5"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -7659,7 +7659,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e7e6f7e1708046ab3a4867d00326e688d3bef03fd4c796805235c8e9f532fbb"
+      "sha256": "0a0b4ff898360b75ced24a0eecd056dff98e0fc234f8549e3447daa28b6f2c31"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -9600,11 +9600,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
-    "candidate_tree": "d209c13abe5ea1ef2fe04b3badc48ff30fcf1845",
+    "trusted_tree": "7da0c370c0727b2e44c5be0145a25c484a711f71",
+    "candidate_tree": "e43a09d4f63019080117f9bf381b605d99f7d8f4",
     "refreshed_paths": [
-      ".pre-commit-config.yaml",
-      "tools/test_ci_paths.py"
+      "Makefile",
+      "tools/test_build_truth.py",
+      "tools/test_flight_build_identity.py"
     ]
   }
 }
