@@ -1644,6 +1644,41 @@ def check_runtime_package_cache(
             remediation=remediation,
         )
         return
+    package_path = package_dir / "package.json"
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package identity cannot be read",
+            path=package_path,
+            remediation=remediation,
+        )
+        return
+    current_identity = package_cache.read_local_title_input_identity(user_data_root, disc_id.upper())
+    package_identity = package.get("title_input_identity") if isinstance(package, dict) else None
+    if current_identity is None:
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package has no current local title input identity",
+            path=package_dir,
+            detail="The exact revision binding is in the works (#315).",
+            remediation=remediation,
+        )
+        return
+    identity_changes = package_cache.title_input_identity_changes(
+        package_identity, current_identity
+    )
+    if identity_changes:
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package identity does not match the current local inputs",
+            path=package_dir,
+            detail=(", ".join(identity_changes) +
+                    "; exact revision binding is in the works (#315)."),
+            remediation=remediation,
+        )
+        return
     if expected_key is not None:
         previous_key = package_cache.package_cache_key(package_dir)
         decision = package_cache.compare_cache_keys(previous_key, expected_key)

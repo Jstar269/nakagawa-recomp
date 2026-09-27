@@ -288,6 +288,8 @@ def _canonical_disc_id(value: str) -> str:
 def inspect_iso(
     iso_path: Path | str,
     registry: Optional[TitleRegistry] = None,
+    *,
+    user_data_root: Path | str | None = None,
 ) -> IsoMetadata:
     """Inspect a PSP ISO image and match it against supported title profiles."""
     path = Path(iso_path)
@@ -314,6 +316,7 @@ def inspect_iso(
             title = "Unknown PSP Title"
             version = "1.00"
             identity_structured = False
+            sfo_facts: dict[str, str] = {}
         else:
             sfo_lba, sfo_size = sfo_entry
             if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
@@ -323,6 +326,11 @@ def inspect_iso(
             disc_id = _canonical_disc_id(sfo_dict.get("DISC_ID", ""))
             title = sfo_dict.get("TITLE", "")
             version = sfo_dict.get("DISC_VERSION", "1.00")
+            sfo_facts = {
+                key: sfo_dict[key]
+                for key in ("DISC_ID", "TITLE", "DISC_VERSION", "APP_VER", "PSP_SYSTEM_VER", "CATEGORY")
+                if key in sfo_dict
+            }
             identity_structured = True
             if not title:
                 title = f"PSP Title ({disc_id})"
@@ -339,6 +347,35 @@ def inspect_iso(
             region = "ASIA"
 
         matched = reg.lookup_by_disc_id(disc_id) if identity_structured else None
+        qualification_error = ""
+        if matched is not None and matched.require_local_compatibility_record:
+            from . import package_cache
+
+            recorded = (
+                package_cache.read_local_title_input_identity(user_data_root, disc_id)
+                if user_data_root is not None else None
+            )
+            current_region = region if region in {"JP", "NA", "EU", "KR", "ASIA", "OTHER"} else "OTHER"
+            if recorded is None:
+                qualification_error = (
+                    f"Unqualified revision (SFO DISC_VERSION {version}) for manifest/profile "
+                    f"'{matched.id}': an explicit local compatibility record is required. "
+                    "Revision qualification is in the works (#315)."
+                )
+            else:
+                prior = recorded["disc"]
+                if (recorded["manifest"]["id"] != matched.id or
+                    prior["id"] != disc_id or prior["region"] != current_region or
+                    prior["disc_version"] != version or recorded["param_sfo"] != sfo_facts):
+                    changed = (
+                        "SFO revision changed" if prior["disc_version"] != version
+                        else "manifest/profile or PARAM.SFO facts changed"
+                    )
+                    qualification_error = (
+                        f"Unqualified revision (SFO DISC_VERSION {version}): {changed}; "
+                        "an explicit local compatibility record is required. "
+                        "Revision qualification is in the works (#315)."
+                    )
 
         return IsoMetadata(
             disc_id=disc_id,
@@ -348,6 +385,15 @@ def inspect_iso(
             volume_id=volume_id,
             size_bytes=size_bytes,
             matched_profile=matched,
+            param_sfo_facts=sfo_facts,
+            container_metadata={
+                "format": "iso9660",
+                "volume_id": volume_id,
+                "size_bytes": size_bytes,
+                "pvd_sector": PVD_SECTOR,
+                "sector_size": SECTOR_SIZE,
+            },
+            qualification_error=qualification_error,
         )
 
 

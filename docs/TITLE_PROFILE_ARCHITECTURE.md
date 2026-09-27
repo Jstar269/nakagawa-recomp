@@ -30,6 +30,13 @@ The authoritative public shape is [`assets/title_manifest.schema.json`](../asset
 
 The schema covers manifest identity and kind, retail disc identity, executable layout, module inventory, filesystem roots, game/HLE/code-generation identifiers, feature requirements, compatibility-manifest and verification references, and notes. Optional `runtime_contract` and `profile_zero` blocks have additional machine-checked constraints; `profile_zero` is limited to synthetic manifests. Their exact required fields belong to the schema and validator, not to a second prose-defined schema.
 
+A retail disc may set `disc.require_local_compatibility_record` when its
+revision needs an explicit local qualification. That switch contains no retail
+hashes: the user's package builder records exact executable/module inputs under
+the per-user data root. A missing or changed record is reported as an
+`Unqualified revision` boundary; the registry does not select a nearby profile
+or infer compatibility from DISC_ID alone. See [issue #315](https://github.com/Jstar269/nakagawa-recomp/issues/315) and the [runtime package identity contract](RUNTIME_PACKAGING_ARCHITECTURE.md#5-local-aot-package-contract-v2).
+
 ### Temporary compatibility configuration
 
 The current schema also permits an optional, typed `runtime_bindings` block for specific compatibility seams. These bindings are not structural facts about a disc and do not establish generic PSP semantics. They are bounded configuration consumed by the runtime; `required_runtime_bindings` names the binding families the selected profile depends on so a missing required family fails validation. These mechanisms remain compatibility debt and are expected to retire as the underlying generic behavior becomes correct. [Issue #363](https://github.com/Jstar269/nakagawa-recomp/issues/363) tracks that work; [`TITLE_CODEGEN_PLAN.md`](TITLE_CODEGEN_PLAN.md) documents validation and runtime consumption, and [`PORTING.md`](PORTING.md) inventories the remaining title coupling.
