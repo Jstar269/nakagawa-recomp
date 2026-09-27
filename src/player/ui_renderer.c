@@ -1411,6 +1411,13 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                              1.2f, hero_w - 64.0f, COLOR_TEXT_MUTED);
     }
 
+    /* Action row geometry, needed by the specs rail below so the two never
+     * overlap: the per-title mapping choice joins the action row on a wide hero
+     * and takes a row of its own directly above it on a narrow one. */
+    float btn_y = hero_y + hero_h - 62.0f;
+    bool scope_on_action_row = (hero_w >= 960.0f);
+    float scope_y = scope_on_action_row ? btn_y : btn_y - 42.0f;
+
     /* Quick Specs Rail: three columns on wide heroes, stacked on narrow.
      * Skipped entirely on compact heroes (see above). */
     if (!compact_hero && !game->is_experimental) {
@@ -1418,8 +1425,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     float rail_h = 60.0f;
     bool stacked_specs = hero_w < 700.0f;
     if (stacked_specs) rail_h = 108.0f;
-    if (rail_y + rail_h > hero_y + hero_h - 80.0f) {
-        rail_h = hero_y + hero_h - 80.0f - rail_y;
+    float rail_bottom = hero_y + hero_h - 80.0f;
+    if (!scope_on_action_row && rail_bottom > scope_y - 4.0f) rail_bottom = scope_y - 4.0f;
+    if (rail_y + rail_h > rail_bottom) {
+        rail_h = rail_bottom - rail_y;
         if (rail_h < 40.0f) rail_h = 40.0f;
     }
     draw_rounded_fill(ren, hero_x + 32.0f, rail_y, hero_w - 64.0f, rail_h, 6.0f, (SDL_Color){ 16, 21, 26, 255 });
@@ -1488,8 +1497,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } /* end specs rail (skipped on compact heroes) */
 
     /* Action Buttons. Focus order: 0 = primary, 1 = add, 2 = remove,
-     * then paging stops. The unavailable pill is never a focus stop. */
-    float btn_y = hero_y + hero_h - 62.0f;
+     * 3 = per-title controller mapping, then paging stops. The unavailable pill
+     * is never a focus stop. (btn_y and scope_y are set above, next to the
+     * specs rail that has to stay clear of them.) */
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
     if (app->is_game_running) {
@@ -1555,6 +1565,39 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             }
         }
         focus++;
+    }
+
+    /* Per-title controller mapping (#520). The label states which mapping this
+     * disc runs, so the choice never has to be guessed at. */
+    {
+        const char *scope_disc = player_app_selected_disc_id(app);
+        bool per_title = input_settings_has_title_mapping(&app->input_settings, scope_disc);
+        char scope_label[64];
+        snprintf(scope_label, sizeof(scope_label), "MAPPING: %s",
+                 per_title ? "THIS GAME" : "GLOBAL");
+        float scope_x = scope_on_action_row ? (hero_x + 708.0f) : hero_x + 32.0f;
+        float scope_h = scope_on_action_row ? 54.0f : 34.0f;
+        bool scope_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, scope_x, scope_y, 220.0f, scope_h,
+                                scope_label, per_title, in, scope_focused)) {
+            /* Editing a per-title mapping never touches the global one: the
+             * switch seeds a disc-owned copy of the global mapping the first
+             * time, and the entry is only persisted by SAVE PROFILE. */
+            input_settings_toggle_scope(&app->input_settings, scope_disc);
+            printf("[PLAYER] Controller mapping for %s: %s\n",
+                   scope_disc ? scope_disc : "(none)",
+                   input_settings_is_title_scope(&app->input_settings)
+                       ? "own mapping (edit in Controller Settings)"
+                       : "global mapping");
+        }
+        focus++;
+    }
+
+    if (app->input_profile_notice[0]) {
+        draw_text_ellipsized(ren, hero_x + 32.0f,
+                             scope_on_action_row ? btn_y - 24.0f : scope_y - 22.0f,
+                             app->input_profile_notice, 0.9f, hero_w - 64.0f,
+                             COLOR_AMBER);
     }
 
     /* Lower Library Strip.
@@ -2382,7 +2425,25 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
                   0.95f, COLOR_TEXT_DIM);
     }
 
-    float content_y = card_y + 98.0f;
+    /* Which mapping is being edited. Every edit below applies to this mapping
+     * and to no other, so the scope is stated, never implied (#520). */
+    {
+        char scope_line[192];
+        if (input_settings_is_title_scope(&app->input_settings)) {
+            snprintf(scope_line, sizeof(scope_line),
+                     "Editing: %s only \xe2\x80\x94 this disc's own mapping (the global mapping is untouched)",
+                     input_settings_scope_label(&app->input_settings));
+        } else {
+            snprintf(scope_line, sizeof(scope_line),
+                     "Editing: global mapping \xe2\x80\x94 every disc that has no mapping of its own");
+        }
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 94.0f, scope_line,
+                             0.95f, card_w - 64.0f,
+                             input_settings_is_title_scope(&app->input_settings)
+                                 ? COLOR_LIME : COLOR_TEXT_MUTED);
+    }
+
+    float content_y = card_y + 112.0f;
     if (input_settings_has_conflicts(&app->input_settings)) {
         const char *conf = input_settings_get_conflict_summary(&app->input_settings);
         draw_rounded_outline(ren, card_x + 32.0f, content_y, card_w - 64.0f, 24.0f, 4.0f, COLOR_RED);
@@ -2638,6 +2699,24 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
             player_app_set_view(app, VIEW_SETTINGS);
         }
         focus++;
+        y += 44.0f;
+
+        /* Global / this-game choice, last so the focus order of every other
+         * control in this view is unchanged (#520). */
+        if (player_app_selected_disc_id(app)) {
+            char scope_label[96];
+            snprintf(scope_label, sizeof(scope_label), "USE %s MAPPING",
+                     input_settings_is_title_scope(&app->input_settings) ? "GLOBAL" : "THIS GAME");
+            bool scope_focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, card_x + 32.0f, y, 240.0f, 36.0f,
+                                    scope_label,
+                                    input_settings_is_title_scope(&app->input_settings),
+                                    in, scope_focused)) {
+                input_settings_toggle_scope(&app->input_settings,
+                                            player_app_selected_disc_id(app));
+            }
+            focus++;
+        }
 
         (void)focus;
         render_footer_hints(ren, app);
@@ -2830,6 +2909,23 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
         player_app_set_view(app, VIEW_SETTINGS);
     }
     focus++;
+
+    /* Global / this-game choice, last so the focus order of every other control
+     * in this view is unchanged (#520). */
+    if (player_app_selected_disc_id(app)) {
+        char scope_label[96];
+        snprintf(scope_label, sizeof(scope_label), "USE %s MAPPING",
+                 input_settings_is_title_scope(&app->input_settings) ? "GLOBAL" : "THIS GAME");
+        bool scope_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 576.0f, bottom_y, 200.0f, 38.0f,
+                                scope_label,
+                                input_settings_is_title_scope(&app->input_settings),
+                                in, scope_focused)) {
+            input_settings_toggle_scope(&app->input_settings,
+                                        player_app_selected_disc_id(app));
+        }
+        focus++;
+    }
 
     (void)focus;
     render_footer_hints(ren, app);

@@ -277,6 +277,10 @@ typedef struct {
     InputSettingsState input_settings;
     bool host_buttons_live[NK_HOST_BUTTON_COUNT];
     int16_t host_axes_live[NK_HOST_AXIS_COUNT];
+    /* Why the last launch could not hand the runtime the mapping this disc
+     * asked for, or an empty string. Drawn on the library card so a disc that
+     * silently launched on the global mapping is never a mystery. */
+    char input_profile_notice[192];
 
     /* Settings persistence */
     char settings_path[MAX_PATH_LEN];
@@ -368,6 +372,10 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
    they have just added must look it up rather than assume it was appended. */
 int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id);
 
+/* Disc ID of the selected library card, or NULL when no card is selected. The
+   per-title controller mapping choice (#520) needs one to name. */
+const char *player_app_selected_disc_id(const PlayerApp *app);
+
 /* Move the library selection by `delta` entries, clamped to the library. */
 void player_app_move_selection(PlayerApp *app, int delta);
 
@@ -391,6 +399,19 @@ void player_app_stop_game(PlayerApp *app);
  * spawning a child. */
 void player_app_apply_settings_to_session(const PlayerSettings *settings,
                                           NkRuntimeConfig *config);
+
+/**
+ * Copy the effective host input mapping for `game` into the prepared session's
+ * runtime configuration as the NK_INPUT_PROFILE path the child will load.
+ *
+ * A disc with its own per-title mapping gets that mapping written to
+ * <config>/input_profiles/<disc_id>.json and pointed at; every other disc is
+ * handed the global profile path. Two discs in one session therefore use
+ * different mappings without anyone editing a global file (#520). A mapping that
+ * cannot be resolved is reported in `input_profile_notice` and the session keeps
+ * the profile path it already had, rather than launching with a silent surprise.
+ */
+NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRecord *game);
 
 /* Advance the running-game session state machine one tick at `now_ms`.
  *

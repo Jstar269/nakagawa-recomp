@@ -299,6 +299,13 @@ int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id) {
     return -1;
 }
 
+const char *player_app_selected_disc_id(const PlayerApp *app) {
+    if (!app) return NULL;
+    if (app->selected_game_index < 0 || app->selected_game_index >= app->game_count) return NULL;
+    if (!app->games[app->selected_game_index].disc_id[0]) return NULL;
+    return app->games[app->selected_game_index].disc_id;
+}
+
 int player_app_visible_library_cards(const PlayerApp *app) {
     if (!app) return 1;
     /* Cards are 260 wide on a 280 pitch, inset 32 from the left edge and given
@@ -316,9 +323,10 @@ int player_app_focus_count(const PlayerApp *app) {
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
-                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, then the
-                 * paging stops when the library overflows. The unavailable
-                 * pill is never a stop. */
+                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, the
+                 * per-title controller mapping choice, then the paging stops
+                 * when the library overflows. The unavailable pill is never a
+                 * stop. */
                 int count = 0;
                 const GameRecord *game = (app->selected_game_index >= 0 &&
                                           app->selected_game_index < app->game_count)
@@ -333,6 +341,7 @@ int player_app_focus_count(const PlayerApp *app) {
                                   pkg_status == NK_RUNTIME_PACKAGE_STALE);
                 if (game && (game_ready || app->is_game_running || can_build)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
+                count += game ? 1 : 0; /* global / this-game controller mapping */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
             }
@@ -374,8 +383,9 @@ int player_app_focus_count(const PlayerApp *app) {
             }
             /* 14 digital controls rebind buttons + deadzone [-]/[+] (2) +
              * trigger threshold [-]/[+] (2) + guided calibration (1) + save (1) + reset (1) + back (1),
-             * in draw order. */
-            return 22;
+             * in draw order, plus the global / this-game mapping choice when a
+             * library disc is available to name. */
+            return player_app_selected_disc_id(app) ? 23 : 22;
         case VIEW_ERROR:
             return 1;
         case VIEW_SETUP_WIZARD:
@@ -1136,6 +1146,7 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     /* Apply user settings via typed runtime configuration */
     player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
+    player_app_apply_input_profile_to_session(app, game);
     if (app->boot_event_file_path[0]) {
         snprintf(app->launch_session.boot_event_file_path,
                  sizeof(app->launch_session.boot_event_file_path), "%s",
@@ -1207,6 +1218,41 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->vsync = settings->vsync;
     config->fullscreen = settings->fullscreen;
     config->master_volume = settings->master_volume;
+}
+
+NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRecord *game) {
+    if (!app) return NK_ERROR_GENERIC;
+    app->input_profile_notice[0] = '\0';
+    if (!game || !game->disc_id[0]) return NK_ERROR_GENERIC;
+
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
+    if (!input_settings_has_title_mapping(&app->input_settings, game->disc_id)) {
+        /* No per-title entry: the disc runs the global mapping, which is the
+         * file the player already owns and the runtime already resolves. */
+        if (app->input_settings.profile_path[0]) {
+            snprintf(app->launch_session.config.input_profile_path,
+                     sizeof(app->launch_session.config.input_profile_path), "%s",
+                     app->input_settings.profile_path);
+        }
+        return NK_OK;
+    }
+
+    char path[NK_MAX_PATH] = {0};
+    char reason[96] = {0};
+    NkResult res = input_settings_write_disc_profile(&app->input_settings, game->disc_id,
+                                                     path, sizeof(path), diag, sizeof(diag));
+    if (res != NK_OK) {
+        snprintf(reason, sizeof(reason), "%.95s", diag);
+        snprintf(app->input_profile_notice, sizeof(app->input_profile_notice),
+                 "Mapping for %s could not be handed to the game (%.48s); it starts on the global mapping (#520).",
+                 game->disc_id, reason[0] ? reason : "unknown reason");
+        printf("[PLAYER] %s\n", app->input_profile_notice);
+        return res;
+    }
+
+    snprintf(app->launch_session.config.input_profile_path,
+             sizeof(app->launch_session.config.input_profile_path), "%s", path);
+    return NK_OK;
 }
 
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
