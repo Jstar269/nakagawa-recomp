@@ -25,7 +25,7 @@ when:
   5. the classifier report is not byte-deterministic.
 
 Deliberately NOT a failure: a private title importing missing/unsupported
-functions. Private audits are a separate local run (docs/IMPORT_AUDIT.md)
+functions. Private audits are a separate local run (docs/archive/IMPORT_AUDIT.md)
 whose reports stay untracked.
 """
 

@@ -88,11 +88,13 @@ tex_*.pgm
 # of this section -- never commit it.
 nidseq_mine.txt
 # tools/capture_native_screenshots.py defaults to writing into docs/ui-baseline,
-# a TRACKED documentation directory, and it photographs whatever library the
-# developer actually has. On a maintainer's machine that is the real library, so
-# the captures show retail disc ids and title names. They are runtime captures of
-# private input, not documentation assets; docs/ui-baseline/README.md records
-# that they are retained internally and never published. They must not be
+# a documentation output directory with no tracked assets (the dated inventory
+# lives at docs/archive/ui-baseline/README.md), and it photographs whatever
+# library the developer actually has. On a maintainer's machine that is the real
+# library, so the captures show retail disc ids and title names. They are
+# runtime captures of private input, not documentation assets;
+# docs/archive/ui-baseline/README.md records that they are retained internally
+# and never published. They must not be
 # stageable by an ordinary `git add -A`, which is a documented step of the
 # provenance refresh. publish_audit does reject them as POLICY_UNCLASSIFIED if
 # they are ever staged, but that is the last line of defence, not the first.
