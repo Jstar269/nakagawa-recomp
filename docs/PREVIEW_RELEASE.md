@@ -76,6 +76,7 @@ mingw32-make --no-print-directory selftest
 mingw32-make --no-print-directory sched-selftest
 mingw32-make --no-print-directory hle-thread-selftest
 mingw32-make --no-print-directory public-safe-verify
+mingw32-make --no-print-directory shader-verify
 mingw32-make --no-print-directory player
 mingw32-make --no-print-directory display-smoke
 ```
@@ -84,11 +85,16 @@ mingw32-make --no-print-directory display-smoke
 
 Run the following after the native smoke and player build, from a clean candidate checkout on the exact integrated release commit. The public-safe export command filters the source with `assets/public_source_profile.json`; it must pass the maintainer-controlled publication inputs before the result can be called a release asset. The package retains the source tree under `source/`, so the player can resolve its BUILD PACKAGE CLI from the installed layout.
 
+The toolchain observation records the full source commit, whether the checkout was clean, the release-manifest version and SHA-256, and hashes for the compiler, Make, Python, SDL3 link/runtime files, and optional `glslc` when present. `glslc` is not a standard release-build input because checked-in shader embeddings are used; its absence is acceptable only when the checked-in shader verification passes and no shader regeneration is required. This observation binds an environment snapshot to a candidate; it does not by itself prove a reproducible build or hosted/private acceptance.
+
+At candidate freeze, the maintainer-selected trust anchor is the detailed `IMPLEMENTATION_PROVENANCE.json` from the external authority repository, never a candidate-committed public ledger. Verify the frozen main commit's admissions, commit and push truthful authority changes, then copy the ledger from that exact authority commit to an external immutable file. Record the full candidate SHA, authority commit SHA, and copied ledger SHA-256 together in #278. Set `NAKAGAWA_TRUSTED_PUBLIC_LEDGER` to that detailed copy and do not edit or regenerate it. Different source bytes require a fresh freeze and binding. The export audit consumes a public `entries` projection; the commands below independently generate and verify that projection from the selected detailed authority instead of trusting the candidate's copy.
+
 ```powershell
 $Version = '0.0.1'
+$FrozenCandidateSha = (git rev-parse HEAD).Trim()
 $CandidateSha = (git rev-parse --short=12 HEAD).Trim()
 $ArtifactRoot = Join-Path $env:TEMP "nakagawa-recomp-$Version-$CandidateSha"
-$TrustedLedger = $env:NAKAGAWA_TRUSTED_PUBLIC_LEDGER
+$DetailedLedger = $env:NAKAGAWA_TRUSTED_PUBLIC_LEDGER
 $Stage = Join-Path $ArtifactRoot "nakagawa-recomp-$Version-windows-x64"
 $ToolchainIdentity = Join-Path $ArtifactRoot 'toolchain.json'
 $Bin = Join-Path $Stage 'bin'
@@ -99,11 +105,23 @@ $Zip = Join-Path $ArtifactRoot "nakagawa-recomp-$Version-windows-x64.zip"
 if (Test-Path -LiteralPath $ArtifactRoot) {
     throw "Candidate output already exists; choose a new artifact directory: $ArtifactRoot"
 }
-if (-not $TrustedLedger -or -not (Test-Path -LiteralPath $TrustedLedger -PathType Leaf)) {
-    throw 'Set NAKAGAWA_TRUSTED_PUBLIC_LEDGER to the maintainer-supplied trusted public ledger copy.'
+if (-not $DetailedLedger -or -not (Test-Path -LiteralPath $DetailedLedger -PathType Leaf)) {
+    throw 'Set NAKAGAWA_TRUSTED_PUBLIC_LEDGER to the frozen external detailed authority ledger copy.'
 }
+$TrustScratch = Join-Path ([System.IO.Path]::GetTempPath()) ('nk-release-trust-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $TrustScratch | Out-Null
+$TrustBaseline = Join-Path $TrustScratch 'authority-baseline.json'
+$TrustControls = Join-Path $TrustScratch 'verified-controls'
+python tools/provenance_attest_verify.py --repo . --base $FrozenCandidateSha `
+    --trusted-ledger $DetailedLedger --emit-authority-baseline $TrustBaseline
+if ($LASTEXITCODE -ne 0) { throw 'Frozen authority baseline generation failed.' }
+python tools/provenance_attest_verify.py --repo . --base $FrozenCandidateSha `
+    --candidate $FrozenCandidateSha --require-immutable-revisions --ephemeral `
+    --trusted-ledger $DetailedLedger --trusted-baseline $TrustBaseline --output-dir $TrustControls
+if ($LASTEXITCODE -ne 0) { throw 'Frozen candidate trusted attestation failed.' }
+$TrustedLedger = Join-Path $TrustControls 'public_provenance_ledger.json'
 New-Item -ItemType Directory -Path $ArtifactRoot, $Source -Force | Out-Null
-python tools/record_toolchain.py --output $ToolchainIdentity
+python tools/record_toolchain.py --require-clean-tree --output $ToolchainIdentity
 python tools/build_public_export.py --public-safe-profile --export-dir $Source --trusted-ledger $TrustedLedger
 
 New-Item -ItemType Directory -Path $Bin, $PackageDocs -Force | Out-Null
@@ -122,7 +140,11 @@ python tools/generate_sbom.py --package-dir $Bin `
     --spdx-out (Join-Path $Stage 'SBOM.spdx.json') `
     --spdx3-out (Join-Path $Stage 'SBOM.spdx3.jsonld') `
     --cyclonedx-out (Join-Path $Stage 'SBOM.cyclonedx.json')
-python tools/verify_sbom.py --observed-toolchain $ToolchainIdentity --spdx (Join-Path $Stage 'SBOM.spdx.json')
+python tools/verify_sbom.py --expected-release-version $Version `
+    --observed-toolchain $ToolchainIdentity `
+    --spdx (Join-Path $Stage 'SBOM.spdx.json') `
+    --spdx3 (Join-Path $Stage 'SBOM.spdx3.jsonld') `
+    --cyclonedx (Join-Path $Stage 'SBOM.cyclonedx.json')
 
 Get-ChildItem -LiteralPath $Stage -Recurse -File -Force |
     Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |

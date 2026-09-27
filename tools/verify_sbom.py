@@ -135,6 +135,7 @@ def verify_release_locks(
     fetch_live_metadata: bool = False,
     metadata_timeout: float = 30.0,
     observed_toolchain: Path | dict | str | None = None,
+    expected_release_version: str | None = None,
 ) -> list[str]:
     """Validate the declared Python dependency lock and toolchain policy."""
     verify_release_locks.last_validated_py_lock = None
@@ -156,6 +157,18 @@ def verify_release_locks(
     observed_data: dict | None = None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return ["Release manifest must be a JSON object"]
+        errors.extend(_manifest_root_identity_errors(data))
+        manifest_version = data.get("version")
+        if expected_release_version is not None:
+            if not isinstance(expected_release_version, str) or not expected_release_version.strip():
+                errors.append("expected release version must be a non-empty string")
+            elif manifest_version != expected_release_version:
+                errors.append(
+                    f"release manifest root version {manifest_version!r} does not match "
+                    f"expected release version {expected_release_version!r}"
+                )
         errors.extend(verify_provenance_families(data))
         locks = data.get("release_locks", {})
         if not locks.get("status"):
@@ -304,6 +317,114 @@ def _lock_relationship_errors(spdx_data: dict) -> list[str]:
     ]
 
 
+def _manifest_root_identity_errors(manifest_data: object) -> list[str]:
+    """Require non-empty release-root identity fields before comparing an SBOM."""
+    if not isinstance(manifest_data, dict):
+        return ["Release manifest must be a JSON object"]
+    errors: list[str] = []
+    for key in ("name", "version"):
+        value = manifest_data.get(key)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"release manifest root {key} must be a non-empty string")
+    return errors
+
+
+def _spdx_root_version_errors(spdx_data: dict, manifest_data: dict) -> list[str]:
+    """Bind the SPDX root package name and version to the release manifest."""
+    identity_errors = _manifest_root_identity_errors(manifest_data)
+    if identity_errors:
+        return identity_errors
+    root_id = "SPDXRef-Package-nakagawa-recomp"
+    packages = spdx_data.get("packages")
+    if not isinstance(packages, list):
+        return ["SPDX SBOM has no package inventory for the release root"]
+    roots = [package for package in packages
+             if isinstance(package, dict) and package.get("SPDXID") == root_id]
+    if len(roots) != 1:
+        return [f"SPDX SBOM must contain exactly one release root package {root_id}; found {len(roots)}"]
+    root = roots[0]
+    errors: list[str] = []
+    expected_name = manifest_data.get("name")
+    expected_version = manifest_data.get("version")
+    if root.get("name") != expected_name:
+        errors.append(
+            f"SPDX root package name {root.get('name')!r} does not match release manifest name {expected_name!r}"
+        )
+    if root.get("versionInfo") != expected_version:
+        errors.append(
+            f"SPDX root package version {root.get('versionInfo')!r} does not match "
+            f"release manifest version {expected_version!r}"
+        )
+    return errors
+
+
+def verify_additional_sbom_root_versions(
+    spdx3_path: Path | None,
+    cyclonedx_path: Path | None,
+    manifest_path: Path,
+) -> list[str]:
+    """Check optional SPDX 3 and CycloneDX root versions against the manifest."""
+    errors: list[str] = []
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [f"Failed to parse release manifest {manifest_path}: {exc}"]
+    if not isinstance(manifest_data, dict):
+        return ["Release manifest must be a JSON object"]
+    identity_errors = _manifest_root_identity_errors(manifest_data)
+    if identity_errors:
+        return identity_errors
+    expected_name = manifest_data.get("name")
+    expected_version = manifest_data.get("version")
+
+    if spdx3_path is not None:
+        try:
+            document = json.loads(spdx3_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            errors.append(f"Failed to parse SPDX 3 SBOM {spdx3_path}: {exc}")
+        else:
+            graph = document.get("@graph") if isinstance(document, dict) else None
+            root_id = (
+                f"{generate_sbom.DOCUMENT_NAMESPACE_BASE}-{expected_version}"
+                "#Package-nakagawa-recomp"
+            )
+            roots = [item for item in graph if isinstance(item, dict)
+                     and item.get("@id") == root_id
+                     and item.get("@type") == "spdx:Package"] if isinstance(graph, list) else []
+            if len(roots) != 1:
+                errors.append(f"SPDX 3 SBOM must contain exactly one release root package; found {len(roots)}")
+            else:
+                if roots[0].get("spdx:name") != expected_name:
+                    errors.append(
+                        f"SPDX 3 root package name {roots[0].get('spdx:name')!r} does not match "
+                        f"release manifest name {expected_name!r}"
+                    )
+                if roots[0].get("spdx:packageVersion") != expected_version:
+                    errors.append(
+                        f"SPDX 3 root package version {roots[0].get('spdx:packageVersion')!r} does not match "
+                        f"release manifest version {expected_version!r}"
+                    )
+
+    if cyclonedx_path is not None:
+        try:
+            document = json.loads(cyclonedx_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            errors.append(f"Failed to parse CycloneDX SBOM {cyclonedx_path}: {exc}")
+        else:
+            components = document.get("components") if isinstance(document, dict) else None
+            roots = [item for item in components if isinstance(item, dict)
+                     and item.get("type") == "application" and item.get("name") == expected_name] \
+                if isinstance(components, list) else []
+            if len(roots) != 1:
+                errors.append(f"CycloneDX SBOM must contain exactly one release root application; found {len(roots)}")
+            elif roots[0].get("version") != expected_version:
+                errors.append(
+                    f"CycloneDX root application version {roots[0].get('version')!r} does not match "
+                    f"release manifest version {expected_version!r}"
+                )
+    return errors
+
+
 def _python_hash_evidence_errors(spdx_data: dict, py_packages: list[dict]) -> list[str]:
     errors: list[str] = []
     spdx_packages = [package for package in spdx_data.get("packages", []) if isinstance(package, dict)]
@@ -438,6 +559,7 @@ def verify_sbom_matches(
         spdx_data = json.loads(spdx_path.read_text(encoding="utf-8"))
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         errors.extend(verify_provenance_families(manifest_data))
+        errors.extend(_spdx_root_version_errors(spdx_data, manifest_data))
         try:
             metadata = generate_sbom.resolve_pypi_release_index(
                 release_index_path, fetch_live=fetch_live_metadata,
@@ -533,13 +655,20 @@ def main(argv: list[str] | None = None) -> int:
         "--observed-toolchain", type=Path, default=None,
         help="Path to observed toolchain JSON to verify against toolchain_policy",
     )
+    parser.add_argument(
+        "--expected-release-version", default=None,
+        help="Require the release manifest root version to match this approved candidate version",
+    )
     parser.add_argument("--spdx", type=Path, help="Path to SPDX 2.3 JSON SBOM to verify")
+    parser.add_argument("--spdx3", type=Path, help="Path to SPDX 3.0.1 JSON-LD SBOM")
+    parser.add_argument("--cyclonedx", type=Path, help="Path to CycloneDX 1.5 JSON SBOM")
     args = parser.parse_args(argv)
     errors = verify_release_locks(
         args.manifest, release_index_path=args.release_index,
         fetch_live_metadata=args.fetch_live_metadata,
         metadata_timeout=args.metadata_timeout,
         observed_toolchain=args.observed_toolchain,
+        expected_release_version=args.expected_release_version,
     )
     verified_digests: dict = {"python": None}
     if args.spdx:
@@ -556,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
             metadata_timeout=args.metadata_timeout,
         )
         errors.extend(match_errors)
+    if args.spdx3 or args.cyclonedx:
+        errors.extend(verify_additional_sbom_root_versions(args.spdx3, args.cyclonedx, args.manifest))
     if errors:
         seen = set()
         for err in errors:
@@ -566,6 +697,10 @@ def main(argv: list[str] | None = None) -> int:
     checked_items = ["Release dependency lockfile", "artifact hashes", "toolchain policy"]
     if args.observed_toolchain:
         checked_items.append("observed toolchain")
+    if args.expected_release_version:
+        checked_items.append("expected release version")
+    if args.spdx3 or args.cyclonedx:
+        checked_items.append("additional SBOM root versions")
     if args.spdx:
         checked_items.append("SBOM elements")
         py_digest = verified_digests["python"]
