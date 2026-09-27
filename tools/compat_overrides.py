@@ -17,11 +17,10 @@ in the tree:
     host_stubs.HST_SIMPLE_STUBS, and the
     per-address custom stubs between the "--- CUSTOM STUBS START/END ---"
     markers in emit_function's driver loop.
-  - src/rt/recomp.c: the g_exact_hooks[]/g_range_hooks[] DispatchHook tables.
+  - src/rt/recomp.c: any live dispatch hook table (currently none; #362 retired
+    both exact trace entries and all broad target predicates).
   - src/rt/hle.c: guest addresses used as addresses (MEM_R*/MEM_W*/dispatch/
-    ge_call_guest*), grouped in HLE_GUEST_ADDRESS_GROUPS (added 2026-08-20;
-    before that, hle.c was in neither the automatic extraction nor the manual
-    groups, so its title addresses sat outside this inventory entirely).
+    ge_call_guest*), historically grouped in RETIRED_HLE_DIAGNOSTIC_GROUPS.
 CI fails if any source contains an address this manifest does not list, or
 if this manifest lists an address the source no longer contains (stale entry).
 
@@ -289,8 +288,11 @@ HST_SIMPLE_STUBS = [
          test="none"),
 ]
 
-# --- src/rt/recomp.c: g_exact_hooks[] / g_range_hooks[] DispatchHook tables -
-DISPATCH_HOOKS = [
+# --- src/rt/recomp.c: retired #362 exact diagnostic hooks -----------------
+# Decision (c) for every entry: the hook added no PSP behavior or proof that
+# generic lookup could not provide. The source entries were deleted; operators
+# can now use generic SR_TRACE_PC/SR_WATCH instrumentation when needed.
+RETIRED_DISPATCH_HOOKS = [
     dict(address=0x000104b0, category="diagnostic", name="ALLOC_REQ",
          reason="SR_ALLOC_TRACE-gated log of malloc requests; always falls through unchanged",
          test="none"),
@@ -322,7 +324,32 @@ DISPATCH_HOOKS = [
          reason="see 0x102e1c (PLT_WALK_1)",
          test="none"),
 ]
+DISPATCH_HOOKS = []  # Trace-only hooks were deleted from generic dispatch.
 DISPATCH_RANGE_HOOKS = []  # Issue #362: no generic target-pattern swallowing.
+RETIRED_DISPATCH_TARGETS = [
+    # Decision (c) for every entry: delete. Former broad resource predicates and exact
+    # success/no-op cases are preserved only as a guard inventory; each now reaches
+    # ordinary lookup and fails closed.
+    0x33000010, 0x44000010, 0x55000010, 0x88000010,
+    0x5b0ca3f8, 0x27dfcb14, 0x656a6f72, 0x00000000,
+    0x32305f34, 0x002cf338, 0x0b000100, 0x0000100c,
+]
+
+# The old INIT_WALKER_GUARD was attached to these caller PCs, but its r16 restore
+# changed guest-visible state. Decision (a): remove the title-address guard and
+# preserve MIPS callee-saved registers at every returning AOT CALL boundary.
+RETIRED_INIT_WALKER_GUARD = dict(
+    caller_pcs=[0x00000f98, 0x00000fdc],
+    decision="b",
+    source="src/rt/title_config.c:sr_title_config_preserve_callee_saved_at_calls",
+    reason="#363 debt, HST only: the flagship needs a returning dispatch CALL to restore "
+           "$s0-$s7/$fp (the old guard restored $s0 at these two caller PCs). Real hardware "
+           "does not restore them, so every other title keeps its callee's register writes; "
+           "the restore is armed only by the validated HST title configuration, and no "
+           "caller address remains in generic dispatch. Retire it once the flagship's "
+           "clobber is root-caused.",
+    test="make dispatch-isolation-selftest (a generic title sees its callee's writes)",
+)
 
 # --- src/rt/sched.c and src/rt/recomp.c: behavior-altering scheduler hooks --
 # Documented manually (not mechanically cross-checked by test_compat_manifest.py --
@@ -375,17 +402,25 @@ SCHEDULER_HOOKS = [
                 "unconfigured build applies none of this. Retire together with the launcher "
                 "binding once the guest's reent bring-up needs no host participation.",
          test="make sched-selftest (generic build allocates UID 0x111 and asserts it is ordinary)"),
-    dict(address=0x002cf338, category="temporary_compatibility_patch", name="master reent fallback address",
-         source="src/rt/sched.c:g_master_reent initializer",
-         reason="g_master_reent starts at a title guest address so threads created before "
-                "any launcher registration have a reent to inherit. It is guarded by an "
-                "in-range and non-zero-content check, so it is inert in a build without that "
-                "title's data, but it is still a title guest address compiled into generic "
-                "runtime code and is NOT covered by the runtime_bindings surface. Retire by "
-                "making the pre-registration window explicit (or by binding it) rather than "
-                "by deleting the default, which would silently change the inheritance of "
-                "every thread created before the launcher registers.",
-         test="none"),
+]
+
+# HST-only guest Newlib addresses now live behind the validated HST title-config
+# accessor. They are not generic scheduler overrides and are absent from sched.c.
+TITLE_CONFIGURED_SCHEDULER_COMPAT = [
+    dict(address=0x002cf338, category="temporary_compatibility_patch",
+         name="master reent fallback address",
+         source="src/rt/title_config.c:sr_title_config_reent_bindings",
+         title_scope="hst-ucus98701",
+         reason="provides the pre-launcher Newlib master only for the validated HST profile; "
+                "generic and fixture builds receive no address",
+         test="tools/test_hle_title_isolation.py and flagship verification"),
+    dict(address=0x0030aa88, category="temporary_compatibility_patch",
+         name="guest thread reent table root",
+         source="src/rt/title_config.c:sr_title_config_reent_bindings",
+         title_scope="hst-ucus98701",
+         reason="seeds and maintains the guest's legacy per-thread reent hash only for the "
+                "validated HST profile; generic builds perform no guest-table access",
+         test="tools/test_hle_title_isolation.py and flagship verification"),
 ]
 
 # --- src/rt/recomp.c: dispatch bindings owned by TITLE CONFIGURATION ----------
@@ -438,12 +473,14 @@ OVERRIDES = (
 )
 
 # --- purely diagnostic hook GROUPS -------------------------------------------
-# Read-only, env-gated (default off), no control-flow or guest-memory writes.
-# Not individually enumerated (there are dozens of one-line trace points across
-# sched.c) and not covered by the automated completeness gate -- listed here
-# for transparency. If any of these ever gains a side effect, move it into
-# DISPATCH_HOOKS/SCHEDULER_HOOKS above with a real category.
-DIAGNOSTIC_GROUPS = [
+# Live title diagnostic groups must identify one production function. The
+# DiagnosticGroupConsistencyTests gate checks that slice for guest-state,
+# scheduler-state, and control-flow writes before the group can be admitted.
+# All HST-specific probes below were retired by #361; generic observations use
+# SR_TRACE_PC/SR_WATCH.
+# RETIRED below by #361, decision (c): probes were deleted from generic runtime;
+# use generic SR_TRACE_PC/SR_WATCH facilities when a trace is needed.
+RETIRED_DIAGNOSTIC_GROUPS = [
     dict(name="boot_diag_trace_points",
          source="src/rt/sched.c:boot_diag/sr_boot_probe (SR_BOOT_DIAG)",
          addresses=[0x001039d8, 0x0008250c, 0x00082530, 0x0003dfd0, 0x0003d828, 0x0003e050,
@@ -463,11 +500,20 @@ DIAGNOSTIC_GROUPS = [
     dict(name="audio_trace", source="src/rt/sched.c:audio_trace (unconditional, single fprintf)",
          addresses=[0x000872cc],
          reason="logs PlayStream call arguments; read-only"),
-    dict(name="init_walker_diagnostics", source="src/rt/recomp.c:dispatch (INIT_WALKER_GUARD / INIT_ARRAY_WALK / WALKER_RET)",
-         addresses=[0x00000f98, 0x00000fdc],
-         reason="saves/restores r16 around a dispatch and logs the init-array walk; the "
-                "save/restore is a no-op by construction (restores exactly what it saved)"),
+    dict(name="recomp_dispatch_probes", source="src/rt/recomp.c:dispatch diagnostics and PLT-miss recovery",
+         addresses=[0x00002ced08, 0x0034a84c, 0x00000fa0, 0x00000214,
+                    0x000650e0, 0x000651b0, 0x0000100c, 0x00001000, 0x000010ff],
+         reason="HST-specific dispatch, table, VFPU, and unresolved-PLT probes; these "
+                "must leave generic runtime source and use SR_TRACE_PC/SR_WATCH when needed"),
+    dict(name="sched_additional_probes", source="src/rt/sched.c:thread, boot, spin, and queue diagnostics",
+         addresses=[0x00331b80, 0x0033316c, 0x00333170, 0x00331c50, 0x00331c54,
+                    0x00010c70, 0x002cf6d4, 0x002cf6dc, 0x0030b000, 0x0030aa84,
+                    0x0030ab8c, 0x0001b500, 0x0001b800, 0x00011090, 0x0001119c,
+                    0x00048360, 0x000483a0, 0x00310fec, 0x00310ff0],
+         reason="additional HST-only scheduler observations found during the #361 source census; "
+                "generic SR_TRACE_PC/SR_WATCH replaces the bespoke probes"),
 ]
+DIAGNOSTIC_GROUPS = []
 
 
 # --- src/rt/hle.c: guest addresses used as addresses ------------------------
@@ -511,7 +557,9 @@ DIAGNOSTIC_GROUPS = [
 # by issue #98 (compatibility-override surface) and the readiness record in
 # docs/PORTING.md.  This previously cited #20, which is a merged pull request
 # about sceSasCore routing -- so the surface had no tracker at all.
-HLE_GUEST_ADDRESS_GROUPS = [
+# RETIRED_HLE_DIAGNOSTIC_GROUPS below are #361 decision (c): bespoke reads,
+# snapshots, and dumps were removed; use generic SR_TRACE_PC/SR_WATCH instead.
+RETIRED_HLE_DIAGNOSTIC_GROUPS = [
     dict(name="guest_bss_snapshots", category="diagnostic",
          title2_bucket="DIAGNOSTIC_ONLY",
          title_scope="hst-ucus98701",
@@ -566,6 +614,7 @@ HLE_GUEST_ADDRESS_GROUPS = [
          accidental_inheritance="no -- diagnostic output only",
          test="none"),
 ]
+HLE_GUEST_ADDRESS_GROUPS = []
 
 # Migrated to typed title configuration (issue #98). These four groups were
 # EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before 2026-08-27 and are now

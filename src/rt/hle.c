@@ -421,94 +421,7 @@ static uint32_t s_heap_base = 0;          /* partition floor: heap value at init
 static uint32_t s_heap_last_bump = 0;     /* mirror of last s_heap value, for the main-thread diagnostic */
 uint32_t user_partition_last_heap(void) { return s_heap_last_bump ? s_heap_last_bump : s_heap; }
 
-/* ---- diagnostic: snapshot state at libc "should be called from main thread" prints ----
- * The libc runtime on PSP caches sceKernelGetThreadId() into a BSS slot during
- * _init_libc and every subsequent guarded syscall (__cxa_guard_acquire, _malloc_r,
- * atexit, __assert) compares the current thread's UID against that cached value. When
- * they do not match it prints "libc:%s: should be called from main thread".
- *
- * At the moment that fires we want the *exact* combination that broke the check:
- *   - cur_uid the scheduler reports right now (gets cached via s_cur by the cooperative
- *     scheduler; can be 0 if the assertion runs during a transitional window)
- *   - the cached BSS slots the libc/libgcc helpers read (just past sr_load_segment's
- *     reported end at 0x0030a020 -- libc_main_thid sits in this tail)
- *   - the most recent allocation address handed out, so a BSS-aliasing alloc is
- *     immediately visible in the log.
- *
- * Snapshotting wraps a single fprintf so the trace stays readable; one struct per fire. */
-typedef struct {
-    uint32_t pc, ra;
-    uint32_t a0, a1;            /* printf format msg ptr at A0 + libc fn-name at A1 */
-    uint32_t cur_uid;
-    uint32_t bss_tail[12];      /* [0x0030a020..0x0030a04c], eight core slots */
-    uint32_t bss_main_ids[3];   /* [0x0030a054..0x0030a05c], suspect libc_main_thid probes */
-    uint32_t bss_higher[3];     /* [0x0031a03c..0x0031a044], gp-relative frame table head */
-    uint32_t heap_bump_ptr;     /* last s_heap value user_partition_init / alloc_block set */
-    uint32_t heap_alloc_addr;   /* most recent rounded-up allocation address */
-} MainThreadDiag;
-
-static MainThreadDiag sr_last_mt_diag;
 static uint32_t sr_last_alloc_addr = 0;     /* last heap allocation rounded address */
-
-/* Run as: sr_capture_mainthread_diag(s, &sr_last_mt_diag); re-used by both the printf
- * and ExitThread hooks so a second snapshot lands beside the first without another struct. */
-static MainThreadDiag *sr_capture_mainthread_diag(CpuState *s, MainThreadDiag *d) {
-    if (!sr_title_config_diagnostics_enabled()) return d;
-    uint32_t sp = s->r[29];
-    d->pc  = s->pc;
-    d->ra  = MEM_R32(sp + 4u);
-    d->a0  = s->r[4];
-    d->a1  = s->r[5];
-    d->cur_uid = sched_current_uid();
-    d->bss_tail[ 0] = MEM_R32(0x0030a020u); d->bss_tail[ 1] = MEM_R32(0x0030a024u);
-    d->bss_tail[ 2] = MEM_R32(0x0030a028u); d->bss_tail[ 3] = MEM_R32(0x0030a02cu);
-    d->bss_tail[ 4] = MEM_R32(0x0030a030u); d->bss_tail[ 5] = MEM_R32(0x0030a034u);
-    d->bss_tail[ 6] = MEM_R32(0x0030a038u); d->bss_tail[ 7] = MEM_R32(0x0030a03cu);
-    d->bss_tail[ 8] = MEM_R32(0x0030a040u); d->bss_tail[ 9] = MEM_R32(0x0030a044u);
-    d->bss_tail[10] = MEM_R32(0x0030a048u); d->bss_tail[11] = MEM_R32(0x0030a04cu);
-    d->bss_main_ids[0] = MEM_R32(0x0030a054u);
-    d->bss_main_ids[1] = MEM_R32(0x0030a058u);
-    d->bss_main_ids[2] = MEM_R32(0x0030a05cu);
-    d->bss_higher[0] = MEM_R32(0x0031a03cu);
-    d->bss_higher[1] = MEM_R32(0x0031a040u);
-    d->bss_higher[2] = MEM_R32(0x0031a044u);
-    d->heap_bump_ptr   = user_partition_last_heap();
-    d->heap_alloc_addr = sr_last_alloc_addr;
-    return d;
-}
-
-static void sr_dump_mainthread_diag(const char *prefix, const MainThreadDiag *d) {
-    if (!sr_title_config_diagnostics_enabled()) return;
-    fprintf(stderr,
-        "==%s== pc=0x%08x ra=0x%08x a0=0x%08x a1=0x%08x cur_uid=0x%x\n"
-        "  bss[0x0030a000..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a010..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a020..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a030..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a040..+0x10]=%08x %08x %08x %08x  /* guest module/EH-metadata registry */\n"
-        "  bss[0x0030a054..+0x0c]=%08x %08x %08x\n"
-        "  bss[0x0031a03c..+0x0c]=%08x %08x %08x  /* gp-relative frame table head */\n"
-        "  heap_bump_ptr=0x%08x heap_last_alloc=0x%08x %s\n",
-        prefix,
-        d->pc, d->ra, d->a0, d->a1, d->cur_uid,
-        MEM_R32(0x0030a000u), MEM_R32(0x0030a004u), MEM_R32(0x0030a008u), MEM_R32(0x0030a00cu),
-        MEM_R32(0x0030a010u), MEM_R32(0x0030a014u), MEM_R32(0x0030a018u), MEM_R32(0x0030a01cu),
-        d->bss_tail[0], d->bss_tail[1], d->bss_tail[2], d->bss_tail[3],
-        d->bss_tail[4], d->bss_tail[5], d->bss_tail[6], d->bss_tail[7],
-        d->bss_tail[8], d->bss_tail[9], d->bss_tail[10], d->bss_tail[11],
-        d->bss_main_ids[0], d->bss_main_ids[1], d->bss_main_ids[2],
-        d->bss_higher[0], d->bss_higher[1], d->bss_higher[2],
-        d->heap_bump_ptr, d->heap_alloc_addr,
-        (d->heap_alloc_addr < sr_loaded_end())
-            ? " <-- last alloc overlaps the loaded image/BSS!" : "");
-    if (d->bss_tail[8]) {
-        fprintf(stderr, "  deref[0x0030a040] -> MEM[0x%08x] = 0x%08x\n", d->bss_tail[8], MEM_R32(d->bss_tail[8]));
-    }
-    if (d->bss_tail[9]) {
-        fprintf(stderr, "  deref[0x0030a044] -> MEM[0x%08x] = 0x%08x\n", d->bss_tail[9], MEM_R32(d->bss_tail[9]));
-    }
-}
-
 /* Start the user partition after the complete flat image, including zero-filled BSS.
  * tools/prxload.py preserves the original ~PSP header's segment-memory sizes when a
  * stripped ELF has lost them. An explicit override may move the base higher, but may
@@ -739,14 +652,6 @@ static uint32_t alloc_block(uint32_t size) {
         s_blocks[slot].next      = next;
     }
 
-    /* Telemetry: emit structured line so WebUI /api/recomp/allocs can parse the live block chain.
-     * Format: ALLOC_BLOCK uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0
-     * Gated on SR_POSTUMD so release/perf runs are not affected. */
-    if (getenv("SR_POSTUMD")) {
-        fprintf(stderr, "ALLOC_BLOCK: uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0\n",
-                uid, addr, size, prev, next);
-        fflush(stderr);
-    }
     return uid;
 }
 
@@ -890,11 +795,6 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     s_blocks[slot].prev      = prev;
     s_blocks[slot].next      = next;
 
-    if (getenv("SR_POSTUMD")) {
-        fprintf(stderr, "ALLOC_BLOCK: uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0\n",
-                uid, addr, eff, prev, next);
-        fflush(stderr);
-    }
     return uid;
 }
 
@@ -1782,10 +1682,6 @@ static uint32_t h_StartThread(CpuState *s) {
     if (result == 0) sched_preempt();
     return result;
 }
-/* Forward decls of hle-internal diagnostic helpers (defined below). Used by h_ExitThread. */
-extern void sr_postumd_advance(int active_after);
-extern void sr_postumd_signal_shutdown(uint64_t captured_count);
-extern uint64_t sr_postumd_reads(void);
 extern void sr_exitsnap_capture(CpuState *s);
 extern void sr_exitsnap_dump_latest(const char *tag);
 static int s_exit_delete_request;
@@ -1828,18 +1724,9 @@ static uint32_t h_ExitThread(CpuState *s) {
     if (sched_uid_is_worker(uid)) {
         sr_exitsnap_capture(s);
         sr_exitsnap_dump_latest("worker-exit-pre");
-        sr_postumd_signal_shutdown(sr_postumd_reads());
     }
     fprintf(stderr, "HLE: ExitThread cur_uid=0x%x ra=0x%08x (death_wish=%d)\n",
             uid, s->r[31], death_wish);
-    if (sr_title_config_diagnostics_enabled()) {
-        fprintf(stderr,
-                "  re-snapshot: cur_uid=0x%x libc_main_id[0x0030a040]=0x%08x [0x0030a058]=0x%08x "
-                "frame_head[0x0031a03c]=0x%08x last_alloc=0x%08x\n",
-                sched_current_uid(),
-                MEM_R32(0x0030a040u), MEM_R32(0x0030a058u),
-                MEM_R32(0x0031a03cu), sr_last_alloc_addr);
-    }
     fprintf(stderr,
             "  regs uid=0x%x: pc=0x%08x sp=0x%08x gp=0x%08x k0=0x%08x k0+4=0x%08x k0+0x38c=0x%08x "
             "v0=0x%08x a0=0x%08x t0..t3=0x%08x/0x%08x/0x%08x/0x%08x s0..s3=0x%08x/0x%08x/0x%08x/0x%08x\n",
@@ -3277,10 +3164,6 @@ static uint32_t h_ExitGame(CpuState *s) {
                 s->pc, s->r[31], s->r[29], s->r[28], s->r[2], s->r[4], s->r[5]);
         fprintf(stderr, "  insn[vblank-cb-begin]=0x%08x insn[vblank-cb-next]=0x%08x\n",
                 s->pc ? MEM_R32(s->pc) : 0, s->pc ? MEM_R32(s->pc + 4) : 0);
-        if (sr_title_config_diagnostics_enabled()) {
-            fprintf(stderr, "  exit-context[0x310a034]=0x%08x [0x002cf6b4]=0x%08x\n",
-                    MEM_R32(0x310a034u), MEM_R32(0x002cf6b4u));
-        }
         fflush(stderr);
         /* Give the host a chance to drain. Without this, stdio buffers get truncated by
          * _exit; the operator sees ~16 KB of trailing context instead of 1 MB. */
@@ -3290,26 +3173,6 @@ static uint32_t h_ExitGame(CpuState *s) {
     }
     sr_trace_close(); fflush(NULL); Sleep(50); _exit(code);
     return code; /* unreachable, keeps the handler signature honest */
-}
-
-/* I4: post-umd.ufl tracker. Counter + active flag; stepped by h_IoRead after the
- *   head read of umd.ufl completes, peeked by h_IoOpen for subsequent IoOpens,
- *   flushed by h_ExitThread on the worker's first pre-shutdown syscall.
- *   Activated by SR_POSTUMD env (default off). The local copies here live at file
- *   scope so h_IoRead/h_IoOpen can see them without extern hop. */
-static uint64_t s_postumd_count = 0;
-static int      s_postumd_active = 0;
-uint64_t sr_postumd_reads(void) { return s_postumd_count; }
-void sr_postumd_advance(int active_after) {
-    s_postumd_count++;
-    if (active_after) s_postumd_active = 1;
-}
-void sr_postumd_signal_shutdown(uint64_t captured_count) {
-    if (!s_postumd_active && captured_count == 0) return;
-    s_postumd_active = 0;
-    fprintf(stderr, "POSTUMD: shutdown signal after %llu post-umd IoReads (worker turn finalized)\n",
-            (unsigned long long)captured_count);
-    fflush(stderr);
 }
 
 /* I3: deepest-frame register snapshot when the worker (uid 0x115) is about to exit. The
@@ -3515,11 +3378,12 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
          * left these diagnostics permanently silent). A build with no worker/launcher
          * binding has no role to report, so both branches stay quiet. */
         if (sched_current_is_worker() && sr_title_config_diagnostics_enabled()) {
-            fprintf(stderr, "DEBUG: CpuSuspendIntr worker=0x%x: r16 (s0)=0x%x, r26 (k0)=0x%x, k0+4=0x%x, MEM(0x002cf6b4)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
-                    sched_current_uid(), s->r[16], s->r[26], s->r[26] ? MEM_R32(s->r[26] + 4) : 0, MEM_R32(0x002cf6b4u), s->r[31], s->r[29]);
-            for (int i = 0; i < 20; i++) {
+            fprintf(stderr, "DEBUG: CpuSuspendIntr worker=0x%x: r16 (s0)=0x%x, "
+                    "r26 (k0)=0x%x, k0+4=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
+                    sched_current_uid(), s->r[16], s->r[26],
+                    s->r[26] ? MEM_R32(s->r[26] + 4) : 0, s->r[31], s->r[29]);
+            for (int i = 0; i < 20; i++)
                 fprintf(stderr, " +%d:0x%x", i * 4, MEM_R32(s->r[29] + i * 4));
-            }
             fprintf(stderr, "\n");
         }
         if (sched_current_is_launcher() && sr_title_config_diagnostics_enabled()) {
@@ -3545,8 +3409,9 @@ static uint32_t h_CpuResumeIntr(CpuState *s) {
             fprintf(stderr, "\n");
         }
         if (sched_current_is_launcher() && sr_title_config_diagnostics_enabled()) {
-            fprintf(stderr, "DEBUG: CpuResumeIntr launcher=0x%x: r2 (v0)=0x%x, r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x, MEM(0x0030aa88)=0x%x\n",
-                    sched_current_uid(), s->r[2], s->r[16], s->r[17], s->r[26], s->r[31], MEM_R32(0x0030aa88u));
+            fprintf(stderr, "DEBUG: CpuResumeIntr launcher=0x%x: r2 (v0)=0x%x, "
+                    "r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x\n",
+                    sched_current_uid(), s->r[2], s->r[16], s->r[17], s->r[26], s->r[31]);
         }
     }
     sched_resume_interrupts(A0);
@@ -7486,10 +7351,6 @@ static uint32_t h_KernelPrintf(CpuState *s) {
             arg[0] = '\0';
     }
     fprintf(stderr, "GAMELOG: format='%s' a1=0x%08x a2=0x%08x a3=0x%08x arg='%s'\n", msg, A1, A2, A3, arg);
-    if (strstr(msg, "should be called from main thread")) {
-        sr_capture_mainthread_diag(s, &sr_last_mt_diag);
-        sr_dump_mainthread_diag("MAIN_THREAD_ASSERT", &sr_last_mt_diag);
-    }
     return 0;
 }
 
@@ -8642,16 +8503,6 @@ static uint32_t h_IoOpen(CpuState *s) {
     uint32_t flags = A1;
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "HLE_IoOpen: opening '%s' flags=0x%x\n", path, flags);
-    /* I4 mirror: every IoOpen after umd.ufl Read-completes is suspect of 'missing-game-file'
-     * and pre-empts engine_Shutdown. Print path + uid of caller. */
-    if (getenv("SR_POSTUMD")) {
-        extern uint64_t sr_postumd_reads(void);
-        if (sr_postumd_reads() > 0) {
-            fprintf(stderr, "POSTUMD: Open(%s) flags=0x%x caller_uid=0x%x cur_uid=0x%x pc=0x%08x ra=0x%08x\n",
-                    path, flags, A0 ? A0 : 0, sched_current_uid(), s->pc, s->r[31]);
-            fflush(stderr);
-        }
-    }
     if (getenv("SR_PATHHEX")) {
         int bad = 0; for (int i = 0; path[i]; i++) if ((unsigned char)path[i] < 0x20 || (unsigned char)path[i] >= 0x7f) bad = 1;
         if (bad || path[0] == 0) {
@@ -8890,65 +8741,6 @@ static uint32_t h_IoRead(CpuState *s) {
         if (n++ < 4000)
             fprintf(stderr, "Read vbl=%u fd=%u off=%u size=%u dst=0x%08x -> %u\n",
                     s_vcount_fwd, fd, f->off - done, count, dst, done);
-    }
-    /* I4 diagnostic: every Read on the worker (uid 0x115) AFTER dst==0x30b8d0 (umd.ufl
-     * buffer) arms tracking. We record path+dst for every subsequent Read so we can see
-     * if engine_Shutdown pre-empted a missing-file IoOpen. SR_POSTUMD env-gates; default
-     * off by default so normal runs don't get spammed. */
-    if (getenv("SR_POSTUMD") && sr_title_config_diagnostics_enabled() &&
-        sched_current_is_worker()) {
-        if (dst == 0x0030b8d0u) {
-            sr_postumd_advance(1);   /* arm */
-            fprintf(stderr, "POSTUMD: armed at first umd.ufl Read fd=%u size=%u dst=0x%08x -> %u\n",
-                    fd, count, dst, done);
-            fflush(stderr);
-        } else if (s_postumd_active) {
-            sr_postumd_advance(0);
-            if (s_postumd_count <= 64) {
-                fprintf(stderr, "POSTUMD: Read fd=%u off_after=%u size=%u dst=0x%08x -> %u\n",
-                        fd, f->off, count, dst, done);
-                fflush(stderr);
-            }
-        }
-    }
-    /* Phase 2.A diagnostic: classify the umd.ufl payload the worker (uid 0x115) reads
-     * into the guest buffer at 0x0030b8d0 (411568 bytes). The magic tells us which
-     * decoder path we need -- raw PRX (rebase in host), scrambled (decrypt first), or
-     * plain data (loader never executes it). One-shot so we don't spam the trace.
-     *
-     * Pivot: Phase 2.A revealed this buffer is a CSV path-manifest, not a PRX. The
-     * guest launcher walks it to validate inner-file boundaries against ISO UMD disc
-     * queries. Sample rows here so we can match the tokenizer the engine uses. */
-    if (sr_title_config_diagnostics_enabled() && dst == 0x0030b8d0u &&
-        count == 411568u && getenv("SR_UMDDUMP")) {
-        static int dumped = 0;
-        if (!dumped) {
-            dumped = 1;
-            fprintf(stderr, "UMD_DUMP: umd.ufl head @ 0x0030b8d0 (fd=%u):\n", fd);
-            for (int off = 0; off < 64; off++) {
-                fprintf(stderr, "  +0x%03x:", (unsigned)off);                for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", MEM_R8((uint32_t)(0x0030b8d0u + (uint32_t)off + (uint32_t)i)));
-                fprintf(stderr, " ");
-                for (int i = 0; i < 16; i++) {
-                    uint8_t c = MEM_R8((uint32_t)(0x0030b8d0u + (uint32_t)off + (uint32_t)i));
-                    fprintf(stderr, "%c", (c >= 0x20 && c < 0x7f) ? (char)c : '.');
-                }
-                fprintf(stderr, "\n");
-            }
-            fprintf(stderr, "UMD_DUMP: trailing 64 bytes of the buffer:\n");
-            uint32_t base = 0x0030b8d0u;
-            uint32_t len = 411568u;
-            for (int off = (int)(len - 64); off < (int)len; off += 16) {
-                fprintf(stderr, "  +0x%06x:", (unsigned)off);
-                for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", MEM_R8(base + (uint32_t)off + (uint32_t)i));
-                fprintf(stderr, " ");
-                for (int i = 0; i < 16; i++) {
-                    uint8_t c = MEM_R8(base + (uint32_t)off + (uint32_t)i);
-                    fprintf(stderr, "%c", (c >= 0x20 && c < 0x7f) ? (char)c : '.');
-                }
-                fprintf(stderr, "\n");
-            }
-            fflush(stderr);
-        }
     }
     return done;
 }
