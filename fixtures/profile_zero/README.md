@@ -26,19 +26,18 @@ directory. They contain no retail or private bytes.
 ## Reproduce (requires PSPDEV/PSPSDK)
 
 From the repository root, with `psp-config`, `psp-gcc`, `psp-prxgen`, and
-`pack-pbp` on `PATH` (here: the WSL Ubuntu install at `/usr/local/pspdev/bin`,
+`pack-pbp` on `PATH` (the committed bytes came from a WSL Ubuntu PSPDEV install,
 `psp-gcc (GCC) 15.2.0`, PSPSDK pinned by `assets/upstream/pspdev.lock.json`):
 
 ```bash
-mkdir -p /tmp/profile-zero-build
+out="$(mktemp -d)"
 make --no-print-directory \
   -f "$PWD/fixtures/profile_zero/Makefile" \
-  -C /tmp/profile-zero-build \
+  -C "$out" \
   VPATH="$PWD/fixtures/profile_zero" \
   TARGET=profile_zero_guest \
   EBOOT.PBP
-sha256sum /tmp/profile-zero-build/EBOOT.PBP \
-          /tmp/profile-zero-build/profile_zero_guest.prx
+sha256sum "$out/EBOOT.PBP" "$out/profile_zero_guest.prx"
 ```
 
 `make` resolves `-f` after `-C`, so the `-f` and `VPATH` paths must be
