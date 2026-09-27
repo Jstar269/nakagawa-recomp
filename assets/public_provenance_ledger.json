@@ -632,7 +632,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dfc9bfd90adaaad3f1c9d7e34782970cbaddb8b2a5129bfb227be8d2aa6bd1e3"
+      "sha256": "ef7cfa65d0d6f67bab5290f183eacfee886e6faec55fd58e99151b40fc35328b"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -1339,7 +1339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "57bc6b16fc0940038b0e0f43d26f276aefcf6cd718ff86c869fba572a1d18869"
+      "sha256": "13c8fa369bec4cf13f8fdca1ade3b5d0847c15935e62b8fa1f0b408a5c6e61e8"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2867,7 +2867,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7f198124c85fdaec301b3a04603d7dc62de17caba3acc6a68c621f94ce7be577"
+      "sha256": "9e75f403b2af6864aa573107226bd1cff28dc770f2e7fd8b6f5480b40e836502"
     },
     {
       "path": "src/player/player_state.c",
@@ -5337,7 +5337,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31e2fdabbc4b80ccbc5cb008ee143d6faf5a6c33701e9ff18843fe9df61cf14f"
+      "sha256": "8bcac9aab1263509f021d24104837bc66c127ddadecc209c7cb382ce28dc6aa9"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -5373,7 +5373,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "15fbfc5bda8cf4c36c7d63895967839bda631c01eec9babfd03f099b795e45e1"
+      "sha256": "d9ff0f94a64383a058f24c20a64afffd27c629404d063121b67a9de62cf3cdac"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -6443,7 +6443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1f2f93d908916c309503b00b65387e58cb39b7e32d1efefec6b4e75fa67a1f40"
+      "sha256": "b80720de9bf6cef7053e0d1d4a09c94e99ae772273281c00a2ae222559ce0a64"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -8272,7 +8272,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f774e9ffd805d13c0b770ed2e0470d9b1fb878850551b5598b6c604de33b4281"
+      "sha256": "e6a73f41b7a414132caab99f1f22f4ac8a4077d47e34eaa05cc9a0e7cfb35248"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -8320,7 +8320,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a5dea9d25c7494d851d74d05d0cbec8b9459885d78822ea7bc764ef80863d483"
+      "sha256": "6593dd7c11a2b28b0e36050c65bc0d855dde486d2dcc62303373403dcb0ead22"
     },
     {
       "path": "tools/test_production_smoke.py",
