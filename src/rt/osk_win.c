@@ -8,7 +8,16 @@
  * gets FINISHED once the user confirms. A modal Win32 dialog (built from an in-memory
  * DLGTEMPLATE: prompt, edit box, OK/Cancel) collects the text; the caller writes it back into
  * the guest OSK fields as UTF-16.
+ *
+ * This dialog is Win32-only, so the file is the OSK backend for _WIN32 alone. On a host
+ * without it the same entry point refuses, which is the runtime's existing
+ * no-dialog compatibility result: the field is reported UNCHANGED, the utility
+ * still walks INIT -> VISIBLE -> QUIT -> FINISHED -> NONE, and a scripted
+ * answer (SR_OSK_SCRIPT / SR_OSK_TEXT, handled in hle.c before this seam) keeps
+ * working. Nothing here can fabricate a keystroke the guest never received.
  */
+
+#ifdef _WIN32
 
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
@@ -94,3 +103,20 @@ int sr_osk_input(const WCHAR *desc, const WCHAR *initial, WCHAR *out, int cap) {
     INT_PTR r = DialogBoxIndirectParamW(GetModuleHandleW(NULL), t, owner, osk_proc, (LPARAM)&ctx);
     return r == 1;
 }
+
+#else /* !_WIN32 */
+
+#include <wchar.h>
+
+/* No native dialog exists on this host. Returning 0 reports the field as
+ * cancelled/unchanged, which is what the runtime already does for a keyboard
+ * it cannot present; the guest's own utility-state machine still advances. */
+int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
+    (void)desc;
+    (void)initial;
+    (void)out;
+    (void)cap;
+    return 0;
+}
+
+#endif /* _WIN32 */

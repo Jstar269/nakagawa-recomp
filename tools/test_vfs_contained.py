@@ -77,7 +77,7 @@ class TestContainedDeleteSelftest(unittest.TestCase):
         if "backend=windows-verified-handle" in out:
             expected_checks = 239  # +6: invalid UTF-8 leaf refusal (Windows only)
         elif "backend=posix-descriptor-relative" in out:
-            expected_checks = 237
+            expected_checks = 311  # includes the Linux guest path and file-operation matrix
         else:
             self.fail("selftest did not identify a supported containment backend:\n" + out)
         self.assertIn(f": {expected_checks} checks, 0 skipped hostile case(s)", out)
@@ -166,6 +166,14 @@ class TestSeamPortability(unittest.TestCase):
                       "the required feature profile must be stated in the header itself")
         self.assertIn("defined(O_DIRECTORY)", text,
                       "backend selection must be a capability probe, not a platform guess")
+
+    def test_linux_guest_file_io_uses_the_containment_seam(self):
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        self.assertIn("ms0_fopen_guest_utf8(path, mode, &open_status)", hle)
+        self.assertIn("sr_cd_rename_file(&root, old_rel, new_rel)", hle)
+        self.assertIn("sr_cd_mkdir_leaf(&root, rel)", hle)
+        self.assertIn("sr_cd_delete_file(&root, rel)", hle)
+        self.assertIn("return sr_cd_psp_error(status);", hle)
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
