@@ -533,7 +533,7 @@ def validate_runtime_contract(value: Any, path: str) -> dict[str, Any]:
 
 
 def validate_profile_zero(value: Any, path: str) -> dict[str, Any]:
-    """Validate the source-owned Wave-1 profile-zero scaffold."""
+    """Validate source-owned profile-zero cases and their proving-gate claims."""
     value = obj(value, path, {"schema_version", "runnable", "source_program", "build", "acceptance"})
     require(value, path, "schema_version", "runnable", "source_program", "build", "acceptance")
     if uint(value["schema_version"], f"{path}.schema_version") != 1:
@@ -580,7 +580,7 @@ def validate_profile_zero(value: Any, path: str) -> dict[str, Any]:
     case_ids: set[str] = set()
     for index, item in enumerate(array(acceptance["cases"], f"{path}.acceptance.cases", 32)):
         item_path = f"{path}.acceptance.cases[{index}]"
-        item = obj(item, item_path, {"id", "status", "evidence_class", "assertion"})
+        item = obj(item, item_path, {"id", "status", "evidence_class", "assertion", "gate"})
         require(item, item_path, "id", "status", "evidence_class", "assertion")
         case_id = identifier(item["id"], f"{item_path}.id")
         if case_id in case_ids:
@@ -594,12 +594,17 @@ def validate_profile_zero(value: Any, path: str) -> dict[str, Any]:
             fail(f"{item_path}.evidence_class", "unknown evidence class")
         if evidence_class in PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES:
             fail(f"{item_path}.evidence_class", "profile zero cannot contain private-title evidence")
-        cases.append({
+        case = {
             "id": case_id,
             "status": case_status,
             "evidence_class": evidence_class,
             "assertion": text(item["assertion"], f"{item_path}.assertion", 512),
-        })
+        }
+        if "gate" in item:
+            case["gate"] = identifier(item["gate"], f"{item_path}.gate")
+        elif case_status == "implemented":
+            fail(f"{item_path}.gate", "implemented acceptance cases must name their proving gate")
+        cases.append(case)
     if not cases:
         fail(f"{path}.acceptance.cases", "must contain at least one case")
     cases.sort(key=lambda item: item["id"])

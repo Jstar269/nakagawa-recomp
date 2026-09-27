@@ -269,6 +269,9 @@ class RunEntryIsPlanOwned(unittest.TestCase):
 
     def test_run_entry_is_the_configured_fallback_entry(self) -> None:
         manifest = self.manifest()
+        # The runnable fixture boots its real entry (fallback == entry), so give this copy a
+        # distinct fallback: the plan must take the run entry from runtime_bindings.
+        manifest["runtime_bindings"]["fallback_entry"] = manifest["executable"]["entry"] + 0x1000
         fallback = manifest["runtime_bindings"]["fallback_entry"]
         self.assertNotEqual(fallback, manifest["executable"]["entry"],
                             "fixture cannot distinguish the two if they are equal")

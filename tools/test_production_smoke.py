@@ -1760,10 +1760,12 @@ class TestSanitizedBringup(unittest.TestCase):
             catalog_manifest=catalog_manifest,
         )
 
-        self.assertEqual(status, 1)
-        self.assertEqual(report["reached_stage"], "codegen")
-        self.assertEqual(report["failure_class"], "CODEGEN_FAILED")
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["failure_class"], "NONE")
         self.assertEqual(report["stages"]["prepare_import"]["status"], "PASS")
+        self.assertEqual(report["stages"]["codegen"]["status"], "PASS")
+        self.assertEqual(report["stages"]["build_package"]["status"], "PASS")
         staged_module = (
             work_root / "work" / "user-data" / "cache" / "bringup" /
             "ULUS99998" / "modules" / "encrypted.prx"
