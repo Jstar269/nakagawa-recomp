@@ -8558,7 +8558,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                 ok = 0;
             } else {
                 struct stat st;
-                if (lstat(child_utf8, &st) != 0) {
+                /* Classify and probe the entry relative to the open directory, so no path is
+                 * re-resolved between the check and the open. */
+                if (fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
                     fprintf(stderr, "host_data: entry could not be classified (errno=%d)\n", errno);
                     ok = 0;
                 } else if (S_ISLNK(st.st_mode)) {
@@ -8583,7 +8585,8 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                     fprintf(stderr, "host_data: refusing non-regular entry %s\n", child_utf8);
                     ok = 0;
                 } else {
-                    int probe_fd = open(child_utf8, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+                    int probe_fd = openat(dirfd(dir), entry->d_name,
+                                          O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
                     struct stat probe_st;
                     int probe_ok = probe_fd >= 0 && fstat(probe_fd, &probe_st) == 0 &&
                                    S_ISREG(probe_st.st_mode) &&
