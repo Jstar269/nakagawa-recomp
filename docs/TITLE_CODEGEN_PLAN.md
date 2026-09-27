@@ -114,11 +114,13 @@ core acceptance. Existing HST manifests remain valid without this field while th
 manager continues to use its legacy, privately bound path; migration is additive,
 not a production switch.
 
-The public synthetic manifest additionally carries `profile_zero`, which points to
-source-owned PSPDEV/PSPSDK input and a portable Make build path. Its acceptance
-cases distinguish planned production-dispatch/helper evidence from the currently
-implemented source-shape ProgramImage test. `runnable: false` is intentional until
-the actual end-to-end AOT/runtime route is wired and asserted.
+The two public synthetic manifests also carry `profile_zero`, which points to the
+shared source-owned PSPDEV/PSPSDK fixture and a portable Make build path. Every
+implemented acceptance case names `profile-zero-e2e`, which builds the fixture,
+validates ProgramImage and AOT package outputs, launches the headless production
+runtime, and asserts the seven declared source-shape, dispatch, and helper cases.
+The manifests are runnable only while every case is implemented and has a proving
+gate; missing PSPDEV/runtime build dependencies make the gate report SKIP.
 
 Current fail-closed limits are deliberate:
 

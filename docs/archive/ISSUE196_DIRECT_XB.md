@@ -142,7 +142,7 @@ metadata only, not a selection policy.
 
 ## Prototype capability
 
-[`tools/xb_probe.py`](../tools/xb_probe.py) is a source-owned, read-only parser:
+[`tools/xb_probe.py`](../../tools/xb_probe.py) is a source-owned, read-only parser:
 
 ```powershell
 python tools/xb_probe.py <private-file.xb> --lookup data/menu/text/CommonText_Acce.to

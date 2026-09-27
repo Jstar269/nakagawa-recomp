@@ -347,7 +347,15 @@ developer runs locally, without private inputs:
 
 - `windows_runtime` links the native player (`mingw32-make player`), runs the
   complete platform ladder (`mingw32-make --no-print-directory platform-ladder`),
-  and runs the production smoke with its executable staged into a fresh
+  and runs `profile-zero-e2e` for the two profile-zero manifests. That gate builds
+  the source-owned PSPDEV guest, validates its ProgramImage, generates a public
+  AOT package, launches it through the headless production runtime, and checks
+  all seven named guest-service cases for each manifest. It runs in the existing
+  25-minute `windows_runtime` job and took about 123 seconds locally for both package
+  builds and runtime launches. PSPDEV/PSPSDK and public runtime link dependencies
+  are external; when either is unavailable, the test reports an explicit `SKIP`
+  with the missing-toolchain/dependency reason. The job
+  also runs the production smoke with its executable staged into a fresh
   directory outside the build tree (`production-smoke-staged`).
 - `hygiene`'s "Exercise public-export generation and candidate audit" step runs
   on `security_publication` changes and every manual `workflow_dispatch`. One

@@ -130,6 +130,7 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
+static uint32_t s_ge_command[256];
 static int s_ge_inited = 0;
 static GeCpuProfileStats s_cpu_profile_stats;
 static int s_cpu_profile = -1;
@@ -335,6 +336,7 @@ static float decode_float24(uint32_t data) {
 }
 
 static void ge_state_init(void) {
+    memset(s_ge_command, 0, sizeof(s_ge_command));
     ge.scis_x2 = 479; ge.scis_y2 = 271;
     ge.maxz = 0xFFFF;
     ge.tex_scale_u = ge.tex_scale_v = 1.0f;
@@ -342,6 +344,12 @@ static void ge_state_init(void) {
     ge.amb_alpha = 0xFF;   /* lit alpha multiplies by this; 0 would blank lit geometry pre-init */
     ge.morph_weight[0] = 1.0f;
     s_ge_inited = 1;
+}
+
+uint32_t ge_get_cmd(uint32_t cmd) {
+    if (cmd > 0xffu) return 0u;
+    if (!s_ge_inited) ge_state_init();
+    return s_ge_command[cmd];
 }
 
 /* ---- Depth buffer ----
@@ -3583,6 +3591,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         }
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
+        s_ge_command[cmd] = data;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
         switch (cmd) {
