@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +49,7 @@ TOOLS = ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+import nk_cli  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_psp_container,
     create_test_iso_with_executables,
@@ -101,6 +103,151 @@ def synthetic_manifest() -> dict:
         "feature_requirements": ["allegrex-core", "psp-hle"],
         "verification_profile": "synthetic-public",
     }
+
+
+class TestPackageRuntimeDependencies(unittest.TestCase):
+    def test_embeddable_cli_restores_tools_directory_to_import_path(self):
+        tools_directory = str(Path(nk_cli.__file__).resolve().parent)
+        with patch.object(nk_cli.sys, "path", []):
+            nk_cli._ensure_cli_module_path()
+            self.assertEqual(nk_cli.sys.path, [tools_directory])
+
+    def test_codegen_plan_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "title_codegen_plan.py"
+        code = (
+            "import runpy, sys\n"
+            f"script = {str(script)!r}\n"
+            "sys.argv = [script, '--help']\n"
+            "runpy.run_path(script, run_name='__main__')\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("usage:", completed.stdout.lower())
+
+    def test_title_runtime_config_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "title_runtime_config.py"
+        code = (
+            "import runpy, sys\n"
+            f"script = {str(script)!r}\n"
+            "sys.argv = [script, '--help']\n"
+            "runpy.run_path(script, run_name='__main__')\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("usage:", completed.stdout.lower())
+
+    def test_codegen_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "codegen.py"
+        code = (
+            "import importlib.util, sys\n"
+            f"script = {str(script)!r}\n"
+            "spec = importlib.util.spec_from_file_location('embedded_codegen', script)\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "sys.modules[spec.name] = module\n"
+            "spec.loader.exec_module(module)\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+
+    def test_prxload_and_imports_restore_tools_directory_for_embedded_python(self):
+        for name in ("prxload.py", "imports.py"):
+            with self.subTest(script=name):
+                script = TOOLS / name
+                code = (
+                    "import importlib.util, sys\n"
+                    f"script = {str(script)!r}\n"
+                    "spec = importlib.util.spec_from_file_location('embedded_tool', script)\n"
+                    "module = importlib.util.module_from_spec(spec)\n"
+                    "sys.modules[spec.name] = module\n"
+                    "spec.loader.exec_module(module)\n"
+                )
+                completed = subprocess.run(
+                    [sys.executable, "-I", "-c", code], cwd=ROOT,
+                    capture_output=True, text=True, timeout=20,
+                )
+                self.assertEqual(completed.returncode, 0,
+                                 completed.stdout + completed.stderr)
+
+    def test_runtime_package_uses_the_configured_sdl3_provider(self):
+        with tempfile.TemporaryDirectory(prefix="nk-sdl3-package-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            runtime = provider / "bin" / "SDL3.dll"
+            iconv = provider / "bin" / "libiconv-2.dll"
+            vulkan = provider / "bin" / "vulkan-1.dll"
+            runtime.parent.mkdir(parents=True)
+            runtime.write_bytes(b"source-owned synthetic SDL3 test payload")
+            iconv.write_bytes(b"source-owned synthetic iconv test payload")
+            vulkan.write_bytes(b"source-owned synthetic Vulkan test payload")
+            package = root / "package"
+            package.mkdir()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "",
+                "VULKAN_SDK": str(provider),
+            }):
+                with patch("nk_cli._windows_host", return_value=True):
+                    nk_cli._stage_runtime_assets(package)
+            self.assertEqual((package / "SDL3.dll").read_bytes(), runtime.read_bytes())
+            self.assertEqual((package / "libiconv-2.dll").read_bytes(), iconv.read_bytes())
+            self.assertEqual((package / "vulkan-1.dll").read_bytes(), vulkan.read_bytes())
+
+    def test_runtime_package_fails_closed_without_vulkan_loader(self):
+        with tempfile.TemporaryDirectory(prefix="nk-vulkan-package-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            sdl = provider / "bin" / "SDL3.dll"
+            sdl.parent.mkdir(parents=True)
+            sdl.write_bytes(b"source-owned synthetic SDL3 test payload")
+            (provider / "bin" / "libiconv-2.dll").write_bytes(
+                b"source-owned synthetic iconv test payload"
+            )
+            package = root / "package"
+            package.mkdir()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "",
+                "VULKAN_SDK": str(root / "missing-sdk"),
+            }):
+                with patch("nk_cli._windows_host", return_value=True), patch("nk_cli.shutil.which", return_value=None):
+                    with self.assertRaisesRegex(nk_cli.PackageBuildError, "vulkan-1.dll"):
+                        nk_cli._stage_runtime_assets(package)
+
+    @unittest.skipUnless(os.name == "nt", "Windows UCRT path precedence")
+    def test_runtime_build_keeps_an_available_downloaded_toolchain_first(self):
+        with tempfile.TemporaryDirectory(prefix="nk-ucrt-path-") as temporary:
+            toolchain_bin = Path(temporary) / "ucrt64" / "bin"
+            toolchain_bin.mkdir(parents=True)
+            (toolchain_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            with patch.dict(os.environ, {"PATH": str(toolchain_bin)}):
+                env = nk_cli._runtime_build_environment()
+            self.assertEqual(env["PATH"].split(os.pathsep, 1)[0], str(toolchain_bin))
+
+    @unittest.skipUnless(os.name == "nt", "Windows embedded Python path")
+    def test_runtime_build_exposes_its_interpreter_after_the_downloaded_toolchain(self):
+        with tempfile.TemporaryDirectory(prefix="nk-package-python-path-") as temporary:
+            root = Path(temporary)
+            toolchain_bin = root / "ucrt64" / "bin"
+            python_bin = root / "python"
+            toolchain_bin.mkdir(parents=True)
+            python_bin.mkdir()
+            (toolchain_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            interpreter = python_bin / "python.exe"
+            interpreter.write_bytes(b"synthetic executable path marker")
+            with patch.dict(os.environ, {"PATH": str(toolchain_bin) + os.pathsep + r"C:\Windows"}):
+                with patch("nk_cli.sys.executable", str(interpreter)):
+                    path = nk_cli._runtime_build_environment()["PATH"].split(os.pathsep)
+            self.assertEqual(path[:2], [str(toolchain_bin), str(python_bin)])
 
 
 def tracked_status() -> str:

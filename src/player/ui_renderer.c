@@ -1157,6 +1157,10 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
 
     /* Settings Button. Mouse-driven; keyboard/gamepad users press S/START
      * (see the footer hints) so the topbar never needs a focus stop. */
+    if (app->active_view == VIEW_SETTINGS &&
+        draw_button(ren, w - 278.0f, 16.0f, 124.0f, 32.0f, "BUILD TOOLS", false, in)) {
+        player_app_open_prerequisite_about(app);
+    }
     if (draw_button(ren, w - 140.0f, 16.0f, 116.0f, 32.0f, "SETTINGS", false, in)) {
         if (app->active_view == VIEW_SETTINGS) {
             player_app_set_view(app, VIEW_LIBRARY);
@@ -2073,11 +2077,25 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
 
+        float manage_y = y + 50.0f;
+        bool about_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, manage_y, 190.0f, 36.0f,
+                                "ABOUT & LICENSES", false, in, about_focused)) {
+            player_app_open_prerequisite_about(app);
+        }
+        focus++;
+        bool remove_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 238.0f, manage_y, 330.0f, 36.0f,
+                                "REMOVE DOWNLOADED BUILD TOOLS", false, in, remove_focused)) {
+            player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+        }
+        focus++;
+
         /* Close in flow: always visible, never overlapping. Grow the card
          * downward to hold it when the window allows. Only the extension
          * is painted: repainting the whole card here would cover the
          * sections drawn above. */
-        float close_y = y + 50.0f;
+        float close_y = y + 100.0f;
         float want_bottom = close_y + 46.0f + 16.0f;
         if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
             float old_bottom = card_y + card_h;
@@ -2210,6 +2228,20 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     }
     focus++;
 
+    float manage_y = card_y + card_h - 72.0f;
+    bool about_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, card_x + 250.0f, manage_y, 190.0f, 46.0f,
+                            "ABOUT & LICENSES", false, in, about_focused)) {
+        player_app_open_prerequisite_about(app);
+    }
+    focus++;
+    bool remove_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, card_x + 452.0f, manage_y, 330.0f, 46.0f,
+                            "REMOVE DOWNLOADED BUILD TOOLS", false, in, remove_focused)) {
+        player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+    }
+    focus++;
+
     /* Save path lives under the gamepad block: column one grew a second
      * toggle row, so its old slot now belongs to reduce-motion. */
     draw_text(ren, col2_x, pad_y + 92.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
@@ -2219,7 +2251,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Close */
     bool close_focused = (app->focus_index == focus);
-    float close_y = card_y + card_h - 72.0f;
+    float close_y = manage_y;
     if (draw_button_focused(ren, card_x + 32.0f, close_y, 200.0f, 46.0f, "SAVE & CLOSE", true, in, close_focused)) {
         player_app_save_settings(app, NULL);
         player_app_set_view(app, VIEW_LIBRARY);
@@ -2823,6 +2855,209 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     }
 }
 
+static void render_prerequisite_consent(SDL_Renderer *ren, PlayerApp *app,
+                                        const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = w - 48.0f;
+    if (card_w > 1180.0f) card_w = 1180.0f;
+    if (card_w < 360.0f) card_w = w - 24.0f;
+    float card_h = h - 36.0f;
+    if (card_h > 660.0f) card_h = 660.0f;
+    if (card_h < 420.0f) card_h = h - 16.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    if (card_y < 8.0f) card_y = 8.0f;
+
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 28.0f, card_y + 20.0f, "ONE-TIME BUILD TOOL DOWNLOAD", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 28.0f, card_y + 50.0f,
+                         "Download the pinned tools needed to build this package?",
+                         1.65f, card_w - 56.0f, COLOR_TEXT_WHITE);
+    draw_text_ellipsized(ren, card_x + 28.0f, card_y + 80.0f,
+                         "Nothing is downloaded until you choose DOWNLOAD. Your answer applies to this build only.",
+                         0.92f, card_w - 56.0f, COLOR_TEXT_MUTED);
+
+    size_t count = app->prerequisites.items.count;
+    float buttons_y = card_y + card_h - 68.0f;
+    float total_y = buttons_y - 28.0f;
+    float list_y = card_y + 114.0f;
+    float line_height = count ? (total_y - list_y - 10.0f) / (float)count : 18.0f;
+    if (line_height > 17.0f) line_height = 17.0f;
+    if (line_height < 11.0f) line_height = 11.0f;
+    for (size_t i = 0; i < count; i++) {
+        const PackagePrerequisite *item = &app->prerequisites.items.items[i];
+        const char *license = strcmp(item->license, "NOASSERTION") == 0
+            ? "NOASSERTION (#304 license review in the works)" : item->license;
+        char row[640];
+        snprintf(row, sizeof(row), "%s %s | %s | %llu bytes | %s",
+                 item->name, item->version, item->host,
+                 (unsigned long long)item->size_bytes, license);
+        draw_text_ellipsized(ren, card_x + 30.0f,
+                             list_y + (float)i * line_height, row,
+                             0.72f, card_w - 60.0f, COLOR_TEXT_WHITE);
+    }
+    char total[160];
+    snprintf(total, sizeof(total), "TOTAL DOWNLOAD SIZE: %llu bytes across %d components",
+             (unsigned long long)app->prerequisites.total_bytes,
+             app->prerequisites.item_count);
+    draw_text_ellipsized(ren, card_x + 28.0f, total_y, total, 0.9f,
+                         card_w - 56.0f, COLOR_AMBER);
+
+    bool download_focused = app->focus_index == 0;
+    if (draw_button_focused(ren, card_x + 28.0f, buttons_y, 184.0f, 42.0f,
+                            "DOWNLOAD", true, in, download_focused)) {
+        player_app_prereq_accept(app, app->prerequisites.bootstrap_python);
+    }
+    bool cancel_focused = app->focus_index == 1;
+    if (draw_button_focused(ren, card_x + 226.0f, buttons_y, 184.0f, 42.0f,
+                            "CANCEL", false, in, cancel_focused)) {
+        player_app_prereq_cancel(app);
+    }
+    render_footer_hints(ren, app);
+}
+
+static void render_prerequisite_progress(SDL_Renderer *ren, PlayerApp *app,
+                                         const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = dialog_card_w(w, 820.0f);
+    float card_h = 390.0f;
+    if (card_h > h - 32.0f) card_h = h - 32.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    if (card_y < 48.0f) card_y = 48.0f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "INSTALLING BUILD TOOLS", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 64.0f,
+                         "The files are checked before they are installed.",
+                         1.55f, card_w - 64.0f, COLOR_TEXT_WHITE);
+    const char *item = app->prerequisites.current_item[0]
+        ? app->prerequisites.current_item
+        : (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP
+            ? "cpython-embed-amd64" : "Starting the verified fetcher");
+    char item_line[256];
+    snprintf(item_line, sizeof(item_line), "CURRENT ITEM: %s", item);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 122.0f,
+                         item_line, 1.05f, card_w - 64.0f, COLOR_TEXT_WHITE);
+    char item_bytes[192];
+    snprintf(item_bytes, sizeof(item_bytes), "Item: %llu / %llu bytes",
+             (unsigned long long)app->prerequisites.item_received_bytes,
+             (unsigned long long)app->prerequisites.item_total_bytes);
+    draw_text(ren, card_x + 32.0f, card_y + 154.0f, item_bytes, 1.0f, COLOR_TEXT_MUTED);
+    char total_bytes[192];
+    snprintf(total_bytes, sizeof(total_bytes), "Total: %llu / %llu bytes",
+             (unsigned long long)app->prerequisites.total_received_bytes,
+             (unsigned long long)app->prerequisites.total_bytes);
+    draw_text(ren, card_x + 32.0f, card_y + 184.0f, total_bytes, 1.0f, COLOR_TEXT_MUTED);
+    float percent = app->prerequisites.total_bytes
+        ? (float)((double)app->prerequisites.total_received_bytes * 100.0 /
+                  (double)app->prerequisites.total_bytes) : 0.0f;
+    if (percent > 100.0f) percent = 100.0f;
+    draw_progress_bar(ren, card_x + 32.0f, card_y + 220.0f,
+                      card_w - 64.0f, 18.0f, percent);
+    bool cancel_focused = app->focus_index == 0;
+    if (draw_button_focused(ren, card_x + 32.0f, card_y + card_h - 60.0f,
+                            190.0f, 44.0f, "CANCEL", false, in, cancel_focused)) {
+        player_app_prereq_cancel(app);
+    }
+    render_footer_hints(ren, app);
+}
+
+static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
+                                      const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = w - 48.0f;
+    if (card_w > 1120.0f) card_w = 1120.0f;
+    if (card_w < 360.0f) card_w = w - 24.0f;
+    float card_h = h - 40.0f;
+    if (card_h > 650.0f) card_h = 650.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 30.0f, card_y + 24.0f, "ABOUT / THIRD-PARTY NOTICES", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 30.0f, card_y + 58.0f,
+                         "Downloaded build components and their licenses",
+                         1.65f, card_w - 60.0f, COLOR_TEXT_WHITE);
+    float list_y = card_y + 104.0f;
+    int shown = 0;
+    float row_height = 16.0f;
+    for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+        const PackagePrerequisite *item = &app->prerequisites.items.items[i];
+        if (!item->installed) continue;
+        const char *license = strcmp(item->license, "NOASSERTION") == 0
+            ? "NOASSERTION (#304 license review in the works)" : item->license;
+        char row[384];
+        snprintf(row, sizeof(row), "%s %s | %s", item->name,
+                 item->version, license);
+        draw_text_ellipsized(ren, card_x + 32.0f, list_y + (float)shown * row_height,
+                             row, 0.78f, card_w - 64.0f, COLOR_TEXT_WHITE);
+        shown++;
+    }
+    if (shown == 0) {
+        draw_text(ren, card_x + 32.0f, list_y,
+                  "No downloaded build tools are installed in this app-data folder.",
+                  1.0f, COLOR_TEXT_MUTED);
+    }
+    float buttons_y = card_y + card_h - 62.0f;
+    bool open_focused = app->focus_index == 0;
+    if (shown > 0 && draw_button_focused(ren, card_x + 30.0f, buttons_y,
+            230.0f, 42.0f, "OPEN LICENSE TEXTS", false, in, open_focused)) {
+        char data_root[NK_MAX_PATH];
+        if (app->runtime_root[0]) snprintf(data_root, sizeof(data_root), "%s", app->runtime_root);
+        else nk_platform_get_app_data_dir(data_root, sizeof(data_root));
+        int n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
+                         "%s%cprerequisites%cnotices", data_root,
+                         nk_platform_path_separator(), nk_platform_path_separator());
+        app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+    }
+    bool back_focused = app->focus_index == (shown > 0 ? 1 : 0);
+    if (draw_button_focused(ren, card_x + card_w - 216.0f, buttons_y,
+                            184.0f, 42.0f, "BACK TO SETTINGS", true, in, back_focused)) {
+        player_app_set_view(app, VIEW_SETTINGS);
+    }
+    render_footer_hints(ren, app);
+}
+
+static void render_confirm_remove_tools(SDL_Renderer *ren, PlayerApp *app,
+                                        const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = dialog_card_w(w, 700.0f);
+    float card_h = 340.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "CONFIRM REMOVAL", COLOR_AMBER);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 70.0f,
+                         "Remove downloaded build tools?", 1.8f,
+                         card_w - 64.0f, COLOR_TEXT_WHITE);
+    draw_text_wrapped(ren, card_x + 32.0f, card_y + 118.0f, card_w - 64.0f,
+                      "This removes the prerequisites folder from app data. Your game library, ISO files, saves, and built packages are kept.",
+                      1.05f, COLOR_TEXT_MUTED, 3);
+    float buttons_y = card_y + card_h - 62.0f;
+    bool remove_focused = app->focus_index == 0;
+    if (draw_button_focused(ren, card_x + 32.0f, buttons_y, 220.0f, 44.0f,
+                            "REMOVE TOOLS", false, in, remove_focused)) {
+        player_app_remove_prerequisites(app);
+    }
+    bool cancel_focused = app->focus_index == 1;
+    if (draw_button_focused(ren, card_x + 270.0f, buttons_y, 180.0f, 44.0f,
+                            "CANCEL", true, in, cancel_focused)) {
+        player_app_set_view(app, VIEW_SETTINGS);
+    }
+    render_footer_hints(ren, app);
+}
+
 /* --- View: Error Dialog --- */
 static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
@@ -2871,10 +3106,15 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     bool focused = (app->focus_index == 0);
     float btn_y = card_y + card_h - 58.0f;
     if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
-        player_app_set_view(app, app->last_error.return_view);
-        if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
-            strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
-            app->request_file_picker = true;
+        if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
+            app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
+            player_app_prereq_retry(app);
+        } else {
+            player_app_set_view(app, app->last_error.return_view);
+            if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+                strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
+                app->request_file_picker = true;
+            }
         }
     }
 }
@@ -3383,6 +3623,18 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_BUILDING_PACKAGE:
             render_building_package(renderer, app, input);
+            break;
+        case VIEW_PREREQ_CONSENT:
+            render_prerequisite_consent(renderer, app, input);
+            break;
+        case VIEW_PREREQ_PROGRESS:
+            render_prerequisite_progress(renderer, app, input);
+            break;
+        case VIEW_PREREQ_ABOUT:
+            render_prerequisite_about(renderer, app, input);
+            break;
+        case VIEW_CONFIRM_REMOVE_TOOLS:
+            render_confirm_remove_tools(renderer, app, input);
             break;
         default:
             render_empty_library(renderer, app, input);
