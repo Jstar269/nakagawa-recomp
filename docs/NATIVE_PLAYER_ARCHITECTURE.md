@@ -60,7 +60,7 @@ The player must never be forced to install MSYS2, Python, PowerShell 7, Git, or 
 
 Where genuine LLE fidelity requires resources not found on the game disc (specifically, Sony firmware PGF fonts from `flash0:/font/`), the UI must **never fake success or silently substitute inferior host approximations**.
 Instead, the player UI honestly informs the user:
-> *"Authentic font rendering requires PSP firmware font assets. Place your `jpn0.pgf` in `%LOCALAPPDATA%/nakagawa/system/font/` or click 'Continue with Synthetic Preview Font'."*
+> *"Authentic font rendering requires PSP firmware font assets. Place your `jpn0.pgf` in `%LOCALAPPDATA%\Nakagawa\fonts\` or click 'Continue with Synthetic Preview Font'."*
 
 ---
 
@@ -119,7 +119,8 @@ validation, module decryption, and overlay parity remain unbuilt.
                                 │ Filesystem / Process
 ┌───────────────────────────────▼────────────────────────┐
 │                   OPERATING SYSTEM                     │
-│   Windows (%LOCALAPPDATA%) · Linux (XDG) · macOS       │
+│   Windows (LOCALAPPDATA / FOLDERID_LocalAppData / APPDATA) │
+│   Linux (XDG) · macOS (Application Support)            │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -197,7 +198,7 @@ Instead of exposing raw exception stack traces or compiler lines, errors provide
 - `ISO_UNREADABLE`: *"The selected file could not be read. Ensure the image is a valid ISO9660 disc."*
 - `STAGED_EXECUTABLE_INVALID`: *"The staged executable does not match the selected title's ELF/load contract."*
 - `LIBRARY_WRITE_FAILED`: *"The game was staged, but the library record could not be saved."*
-- `MISSING_FIRMWARE_FONT`: *"Authentic typography requires jpn0.pgf in %LOCALAPPDATA%/nakagawa/system/font/."*
+- `MISSING_FIRMWARE_FONT`: *"Authentic typography requires jpn0.pgf in %LOCALAPPDATA%\Nakagawa\fonts\."*
 
 ---
 

@@ -9,7 +9,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import socket
 import sys
 import tempfile
@@ -34,6 +34,17 @@ def _zip_payload() -> bytes:
         archive.writestr("python314/LICENSE.txt", "Python license text\n")
         archive.writestr("python314/python.exe", b"synthetic fixture\n")
     return stream.getvalue()
+
+
+class _MockPosixPath(PurePosixPath):
+    __slots__ = ()
+
+    @classmethod
+    def home(cls) -> _MockPosixPath:
+        return cls(os.environ["HOME"])
+
+    def is_dir(self) -> bool:
+        return False
 
 
 class _PayloadHandler(BaseHTTPRequestHandler):
@@ -93,6 +104,69 @@ class TestPrerequisiteFetcher(unittest.TestCase):
             "archive_format": "zip",
             "install_subdir": "python",
         }
+
+    def test_windows_data_root_does_not_fall_back_to_userprofile(self) -> None:
+        import nk_cli
+        import package_notices
+        from nk_core import fonts
+
+        with patch.dict(os.environ, {
+            "LOCALAPPDATA": "",
+            "APPDATA": "",
+            "USERPROFILE": str(self.root / "profile"),
+        }, clear=True), patch.object(os, "name", "nt"):
+            with self.assertRaises(PrerequisiteFetchError) as raised:
+                default_data_root()
+            with self.assertRaisesRegex(nk_cli.PackageBuildError, "DATA_DIR_UNAVAILABLE"):
+                nk_cli.default_user_data_root()
+            with self.assertRaisesRegex(PrerequisiteFetchError, "DATA_DIR_UNAVAILABLE"):
+                fonts.default_user_data_root()
+            self.assertIsNone(package_notices._prerequisite_toolchain_root())
+
+        self.assertIn("DATA_DIR_UNAVAILABLE", str(raised.exception))
+        self.assertIn("LOCALAPPDATA", str(raised.exception))
+        self.assertIn("APPDATA", str(raised.exception))
+
+    def test_python_data_root_callers_share_the_platform_rule(self) -> None:
+        import nk_cli
+        import nk_doctor_checks
+        import nk_doctor_core
+        import nk_core.prereq_fetcher as prereq_fetcher
+        import package_notices
+        from nk_core import fonts
+
+        home = self.root / "profile"
+        environment = {
+            "LOCALAPPDATA": "",
+            "APPDATA": "",
+            "XDG_DATA_HOME": str(self.root / "xdg"),
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+        }
+        expected = _MockPosixPath(str(home)) / "Library" / "Application Support" / "NakagawaRecomp" / "data"
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(os, "name", "posix"), \
+             patch.object(sys, "platform", "darwin"), \
+             patch.object(prereq_fetcher, "Path", _MockPosixPath), \
+             patch.object(nk_cli, "Path", _MockPosixPath), \
+             patch.object(fonts, "Path", _MockPosixPath), \
+             patch.object(package_notices, "Path", _MockPosixPath), \
+             patch.object(nk_doctor_checks, "Path", _MockPosixPath):
+            roots = {
+                "prerequisite fetcher": default_data_root(),
+                "CLI": nk_cli.default_user_data_root(),
+                "fonts": fonts.default_user_data_root(),
+            }
+            toolchain_root = package_notices._prerequisite_toolchain_root()
+            self.assertIsNotNone(toolchain_root)
+            roots["package notices"] = toolchain_root.parents[2]
+            report = nk_doctor_core.Report(_MockPosixPath("/repo"), "repo")
+            nk_doctor_checks.check_data_directory(report)
+            roots["Doctor"] = next(
+                result.path for result in report.results if result.code == "DATA_DIR_ROOT"
+            )
+
+        self.assertEqual(roots, {name: expected for name in roots})
 
     def test_happy_path_extracts_only_verified_payload_and_records_license(self) -> None:
         item = self.item()

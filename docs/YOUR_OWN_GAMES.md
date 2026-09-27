@@ -82,7 +82,11 @@ card:
 └── <module>.prx     (only modules the player or build says are required)
 ```
 
-On Windows, `<user data>` is `%LOCALAPPDATA%\Nakagawa\data`. A usable file
+On Windows, `<user data>` normally is `%LOCALAPPDATA%\Nakagawa\data`. The
+player resolves `%LOCALAPPDATA%` first, then Windows `FOLDERID_LocalAppData`,
+then `%APPDATA%`; it never falls back to the profile root. If the old
+`%USERPROFILE%\Nakagawa\data` exists and the current root does not, the player
+and Doctor report its exact path so you can move it manually. A usable file
 starts with the ELF signature bytes `7F 45 4C 46`. A file that starts with
 `~PSP` or `~SCE` is still encrypted, and the player will say so. The player
 picks up the folder automatically the next time it checks the game.

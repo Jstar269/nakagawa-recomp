@@ -11,8 +11,9 @@ import json
 import os
 from pathlib import Path
 import struct
-import sys
 from typing import Any, Dict, Optional, Set, Tuple
+
+from .prereq_fetcher import default_data_root as default_user_data_root
 
 # Expected PSP firmware PGF font names derived from runtime s_font_specs (hle.c)
 # and PSP flash0:/font/ firmware layouts (jpn0.pgf, kr0.pgf, ltn0-15.pgf).
@@ -29,19 +30,6 @@ class FontValidationError(ValueError):
 
 class FontImportError(RuntimeError):
     """Raised when font import cannot find or stage font files."""
-
-
-def default_user_data_root() -> Path:
-    """Return canonical per-user application data root matching C nk_platform_get_path."""
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.environ.get("USERPROFILE")
-        if not base:
-            base = str(Path.home() / "AppData" / "Local")
-        return Path(base) / "Nakagawa" / "data"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "NakagawaRecomp" / "data"
-    xdg = os.environ.get("XDG_DATA_HOME")
-    return Path(xdg) / "nakagawa-recomp" if xdg else Path.home() / ".local" / "share" / "nakagawa-recomp"
 
 
 def get_font_cache_dir(user_data_root: Optional[Path] = None) -> Path:

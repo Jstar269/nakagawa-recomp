@@ -147,6 +147,7 @@ int main(int argc, char **argv) {
             "-I", str(ROOT / "src" / "core" / "generated"),
             str(self.harness_c),
         ] + [str(s) for s in core_srcs] + [
+            *(["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []),
             "-o", str(self.exe_path),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)

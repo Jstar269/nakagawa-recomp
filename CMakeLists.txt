@@ -47,6 +47,9 @@ else()
 endif()
 
 add_library(nakagawa_core STATIC ${CORE_SOURCES})
+if(WIN32)
+    target_link_libraries(nakagawa_core PUBLIC shell32 ole32 uuid)
+endif()
 
 target_include_directories(nakagawa_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core

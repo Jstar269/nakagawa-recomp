@@ -110,7 +110,7 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     if (!root) {
         if (!nk_platform_get_app_data_dir(default_root, sizeof(default_root))) {
             if (reason && reason_size) snprintf(reason, reason_size,
-                "Per-user data directory is unavailable; package discovery cannot run.");
+                "DATA_DIR_UNAVAILABLE: the Windows Local AppData known folder, LOCALAPPDATA, or APPDATA could not be resolved; package discovery cannot run.");
             return NK_RUNTIME_PACKAGE_MISSING;
         }
         root = default_root;
@@ -1060,7 +1060,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
     } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             "The per-user data directory is unavailable, so there is nowhere to build the package or install its tools.",
+                             "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA before building the package or installing tools.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
@@ -1249,7 +1249,7 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
     PackagePrerequisiteList list;
     if (!player_app_data_root(app, data_root, sizeof(data_root))) {
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             "The app-data directory is unavailable, so installed build tools cannot be inspected.",
+                             "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA before inspecting installed tools.",
                              "Return to Settings", VIEW_SETTINGS);
         return false;
     }
@@ -1291,7 +1291,7 @@ void player_app_remove_prerequisites(PlayerApp *app) {
     char message[512];
     if (!player_app_data_root(app, data_root, sizeof(data_root))) {
         snprintf(code, sizeof(code), "DATA_DIR_UNAVAILABLE");
-        snprintf(message, sizeof(message), "The app-data directory is unavailable. No files were removed.");
+        snprintf(message, sizeof(message), "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA. No files were removed.");
     } else if (package_builder_remove_downloaded_tools(data_root, code, sizeof(code),
                                                        message, sizeof(message))) {
         for (size_t i = 0; i < app->prerequisites.items.count; i++)

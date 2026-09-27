@@ -565,6 +565,9 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
         perf_csv = sandbox / f"{name}-perf.csv"
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = str(local_appdata)
+        # Keep the fixture isolated by making the Shell Known Folder lookup
+        # unavailable in this child, so it exercises the LOCALAPPDATA fallback.
+        environment["USERPROFILE"] = str(local_appdata.parent / "missing-profile")
         environment["SR_BOOT_EVENT_FILE"] = str(boot_log)
         environment["SR_PERF"] = "1"
         environment["SR_PERF_CSV"] = str(perf_csv)

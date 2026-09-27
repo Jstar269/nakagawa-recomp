@@ -57,6 +57,7 @@ class TitleManifestParityTests(unittest.TestCase):
             "src/core/nk_title_manifest.c", "src/core/nk_json.c", "src/core/generated/nk_title_catalog.c",
             PLATFORM_SRC,
             "tests/native/test_manifest_parser.c",
+            *(["-lshell32", "-lole32", "-luuid"] if _WINDOWS else []),
             "-o", str(cls.native_exe)
         ]
         subprocess.check_call(cmd, cwd=ROOT)

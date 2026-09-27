@@ -168,7 +168,7 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode) {
     return file;
 }
 
-bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
+static bool resolve_posix_path(NkPathType type, char *out_path, size_t max_len) {
     if (!out_path || max_len == 0) return false;
 
 #if defined(__APPLE__)
@@ -246,13 +246,27 @@ bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
     }
 #endif
 
-    if (written <= 0 || (size_t)written >= max_len) return false;
-    nk_platform_mkdir_p(out_path);
+    return written > 0 && (size_t)written < max_len;
+}
+
+bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
+    if (!resolve_posix_path(type, out_path, max_len)) return false;
+    (void)nk_platform_mkdir_p(out_path);
     return true;
+}
+
+bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len) {
+    return resolve_posix_path(NK_PATH_DATA, out_path, max_len);
 }
 
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
     return nk_platform_get_path(NK_PATH_DATA, out_path, max_len);
+}
+
+bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len) {
+    (void)out_path;
+    (void)max_len;
+    return false;
 }
 
 bool nk_platform_spawn_process(

@@ -1072,7 +1072,9 @@ int main(int argc, char **argv) {
             "-I", str(REPO_ROOT / "src" / "core"),
             "-I", str(REPO_ROOT / "src" / "core" / "generated"),
             str(harness_c),
-        ] + [str(s) for s in core_srcs] + ["-o", str(out)]
+        ] + [str(s) for s in core_srcs] + (
+            ["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []
+        ) + ["-o", str(out)]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
             raise RuntimeError(f"failed to build native launch parity harness:\n{res.stderr}\n{res.stdout}")
@@ -1304,6 +1306,7 @@ int main(int argc, char **argv) {
                 str(REPO_ROOT / "src" / "core" / "nk_json.c"),
                 str(src_dir / "generated" / "nk_title_catalog.c"),
                 str(platform_src),
+                *(["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []),
                 "-o", str(out),
             ]
             res = subprocess.run(cc, capture_output=True, text=True)
@@ -1523,7 +1526,9 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
             "-I", str(REPO_ROOT / "src" / "core"),
             "-I", str(REPO_ROOT / "src" / "core" / "generated"),
             str(harness_c),
-        ] + [str(s) for s in core_srcs] + ["-o", str(out)]
+        ] + [str(s) for s in core_srcs] + (
+            ["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []
+        ) + ["-o", str(out)]
         res = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"mutant compile failed: {res.stderr}")
 

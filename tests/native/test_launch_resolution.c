@@ -341,10 +341,86 @@ static void make_game(NkGameEntry *game, const char *iso_path) {
     snprintf(game->iso_path, sizeof(game->iso_path), "%s", iso_path);
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+static void test_windows_data_directory_candidate_order(void) {
+    char base[128] = "untouched";
+    assert(nk_platform_resolve_windows_data_base(
+        "C:\\Known Local", "C:\\Local Env", "C:\\Roaming Env",
+        base, sizeof(base)));
+    assert(strcmp(base, "C:\\Local Env") == 0);
+
+    assert(nk_platform_resolve_windows_data_base(
+        "C:\\Known Local", "", "C:\\Roaming Env", base, sizeof(base)));
+    assert(strcmp(base, "C:\\Known Local") == 0);
+
+    assert(nk_platform_resolve_windows_data_base(
+        NULL, "", "C:\\Roaming Env", base, sizeof(base)));
+    assert(strcmp(base, "C:\\Roaming Env") == 0);
+
+    strcpy(base, "untouched");
+    assert(!nk_platform_resolve_windows_data_base(
+        NULL, "", NULL, base, sizeof(base)));
+    assert(strcmp(base, "untouched") == 0);
+
+    bool local_was_set = false;
+    bool roaming_was_set = false;
+    bool userprofile_was_set = false;
+    char *saved_local = capture_environment_value("LOCALAPPDATA", &local_was_set);
+    char *saved_roaming = capture_environment_value("APPDATA", &roaming_was_set);
+    char *saved_userprofile = capture_environment_value(
+        "USERPROFILE", &userprofile_was_set);
+    set_environment_value("LOCALAPPDATA", "");
+    set_environment_value("APPDATA", "");
+    set_environment_value("USERPROFILE", "C:\\Legacy Root Fixture");
+    char legacy_root[128];
+    assert(nk_platform_get_legacy_app_data_dir(
+        legacy_root, sizeof(legacy_root)));
+    assert(strcmp(legacy_root,
+                  "C:\\Legacy Root Fixture\\Nakagawa\\data") == 0);
+    restore_environment_value("USERPROFILE", saved_userprofile,
+                              userprofile_was_set);
+    restore_environment_value("LOCALAPPDATA", saved_local, local_was_set);
+    restore_environment_value("APPDATA", saved_roaming, roaming_was_set);
+    free(saved_local);
+    free(saved_roaming);
+    free(saved_userprofile);
+}
+#endif
+
+#if !defined(_WIN32) && !defined(_WIN64)
+static void test_posix_data_directory_rule(void) {
+    bool home_was_set = false;
+    bool xdg_was_set = false;
+    char *saved_home = capture_environment_value("HOME", &home_was_set);
+    char *saved_xdg = capture_environment_value("XDG_DATA_HOME", &xdg_was_set);
+    set_environment_value("HOME", "/synthetic/profile");
+    set_environment_value("XDG_DATA_HOME", "/synthetic/xdg");
+
+    char data_root[256];
+    assert(nk_platform_resolve_app_data_dir(data_root, sizeof(data_root)));
+    assert(strcmp(data_root, "/synthetic/xdg/nakagawa-recomp") == 0);
+    set_environment_value("XDG_DATA_HOME", "");
+    assert(nk_platform_resolve_app_data_dir(data_root, sizeof(data_root)));
+    assert(strcmp(data_root,
+                  "/synthetic/profile/.local/share/nakagawa-recomp") == 0);
+
+    restore_environment_value("HOME", saved_home, home_was_set);
+    restore_environment_value("XDG_DATA_HOME", saved_xdg, xdg_was_set);
+    free(saved_home);
+    free(saved_xdg);
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return write_launch_environment_probe();
     }
+
+#if defined(_WIN32) || defined(_WIN64)
+    test_windows_data_directory_candidate_order();
+#else
+    test_posix_data_directory_rule();
+#endif
 
     char cache_dir[512];
     assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));

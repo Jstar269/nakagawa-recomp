@@ -28,6 +28,12 @@ Results may be submitted using the [Smoke Test Report issue template](https://gi
    - Logs: `%LOCALAPPDATA%\Nakagawa\logs`
 3. Verify the directory `%LOCALAPPDATA%\Nakagawa` is either absent or contains no pre-existing `settings.json`, `library.json`, or cached titles.
 
+These are the normal Local AppData locations. If `%LOCALAPPDATA%` is unset,
+the player asks Windows for `FOLDERID_LocalAppData` and then uses `%APPDATA%`;
+it never writes into `%USERPROFILE%` directly. An existing legacy
+`%USERPROFILE%\Nakagawa\data` is reported for manual migration and is not
+moved or deleted by the player.
+
 **Expected result:** Pass if the environment starts completely clean with no residual settings or library state.
 
 ### Step 2: Start the player

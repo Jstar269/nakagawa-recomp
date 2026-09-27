@@ -207,7 +207,7 @@ LINK_MAP_ARG = $(if $(strip $(LINK_MAP)),$(LINK_MAP_VALUE),)
 # than unified to one.
 ifeq ($(OS),Windows_NT)
 VULKAN_LIB_NAME := -lvulkan-1
-WIN_ONLY_LIBS   := -lmfplat -lgdi32 -lole32 -lwinmm
+WIN_ONLY_LIBS   := -lmfplat -lgdi32 -lole32 -lshell32 -luuid -lwinmm
 # -Wl,--no-insert-timestamp keeps the PE image byte-reproducible on the
 # MinGW/COFF linker. GNU ld publishes no such option -- an ELF link is already
 # timestamp-free -- so the flag is Windows-only and the Linux link line carries
@@ -540,7 +540,8 @@ endif
 
 ifeq ($(OS),Windows_NT)
 PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
-PLAYER_EXTRA_LIBS   := -lshell32 -lwinhttp -lbcrypt
+PLAYER_PLATFORM_LIBS := -lshell32 -lole32 -luuid
+PLAYER_EXTRA_LIBS   := $(PLAYER_PLATFORM_LIBS) -lwinhttp -lbcrypt
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 # The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
 # must derive from the shared VULKAN_SDK resolution above (explicit override,
@@ -569,6 +570,7 @@ EXE_EXT             := .exe
 ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
+PLAYER_PLATFORM_LIBS :=
 PLAYER_EXTRA_LIBS   :=
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 PLAYER_VULKAN_INC   := $(VULKAN_INC_FLAGS)
@@ -2271,7 +2273,7 @@ input-settings-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
-		tests/native/test_input_settings.c -o build/test_input_settings$(EXE_EXT)
+		tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_settings$(EXE_EXT)
 
 package-builder-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
@@ -2293,19 +2295,19 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_pgf_public$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_core_catalog.c -o build/test_core_catalog$(EXE_EXT)
+		tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o build/test_core_catalog$(EXE_EXT)
 	./build/test_core_catalog$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_parsers_hostile.c -o build/test_parsers_hostile$(EXE_EXT)
+		tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o build/test_parsers_hostile$(EXE_EXT)
 	./build/test_parsers_hostile$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_manifest_parser.c -o build/test_manifest_parser$(EXE_EXT)
+		tests/native/test_manifest_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_manifest_parser$(EXE_EXT)
 	./build/test_manifest_parser$(EXE_EXT) --check
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_launch_resolution.c -o build/test_launch_resolution$(EXE_EXT)
+		tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o build/test_launch_resolution$(EXE_EXT)
 	./build/test_launch_resolution$(EXE_EXT)
 	$(MAKE) --no-print-directory player-state-test-bin
 	./build/test_player_state$(EXE_EXT)
@@ -2315,27 +2317,27 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_package_builder$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
-		tests/native/test_xb_parser.c -o build/test_xb_parser$(EXE_EXT)
+		tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_xb_parser$(EXE_EXT)
 	./build/test_xb_parser$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
-		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
+		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o build/test_fuzz_parsers$(EXE_EXT)
 	./build/test_fuzz_parsers$(EXE_EXT) --iters 100
 	$(MAKE) --no-print-directory psmf-producer-selftest PSMF_FUZZ_ITERS=100
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_input_profile.c -o build/test_input_profile$(EXE_EXT)
+		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_profile$(EXE_EXT)
 	./build/test_input_profile$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_win32_process.c -o build/test_win32_process$(EXE_EXT)
+		tests/native/test_win32_process.c $(PLAYER_PLATFORM_LIBS) -o build/test_win32_process$(EXE_EXT)
 	./build/test_win32_process$(EXE_EXT)
 else
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_posix_process.c -o build/test_posix_process$(EXE_EXT)
+		tests/native/test_posix_process.c $(PLAYER_PLATFORM_LIBS) -o build/test_posix_process$(EXE_EXT)
 	./build/test_posix_process$(EXE_EXT)
 endif
 
@@ -2350,7 +2352,7 @@ fuzz-parsers:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
-		tests/native/test_fuzz_parsers.c -o build/test_fuzz_parsers$(EXE_EXT)
+		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o build/test_fuzz_parsers$(EXE_EXT)
 	./build/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
 	$(MAKE) --no-print-directory psmf-producer-selftest \
 		PSMF_FUZZ_ITERS=$(FUZZ_ITERS) FUZZ_SAN_FLAGS="$(FUZZ_SAN_FLAGS)"

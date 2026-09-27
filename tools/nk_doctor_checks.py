@@ -18,6 +18,7 @@ import sys
 import uuid
 
 from nk_core import package_cache
+from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
 from nk_doctor_core import (
     EXPECTED_VFPU_FILES,
     PRIVATE_EXTENSIONS,
@@ -128,6 +129,52 @@ def _windows_version_info() -> tuple[int | None, int | None]:
         return int(version.build), int(version.product_type)
     except (AttributeError, OSError, TypeError, ValueError):
         return None, None
+
+
+def _report_legacy_data_directory(report: Report, data_root: Path | None) -> None:
+    profile = os.environ.get("USERPROFILE")
+    if platform.system() != "Windows" or not profile:
+        return
+
+    legacy_root = Path(profile) / "Nakagawa" / "data"
+    if not legacy_root.is_dir() or (data_root is not None and data_root.is_dir()):
+        return
+    current = str(data_root) if data_root is not None else "unavailable"
+    report.warn(
+        "LEGACY_DATA_DIR_FOUND",
+        "Legacy per-user data exists and needs a manual move",
+        path=legacy_root,
+        detail=f"Current per-user data root: {current}",
+        remediation=(
+            f"Resolve the current per-user data root, then move the contents of "
+            f"{legacy_root} manually. Doctor does not move or delete user data."
+        ),
+    )
+
+
+def check_data_directory(report: Report) -> None:
+    """Report the shared per-user data root and any unmigrated legacy root."""
+    try:
+        data_root = default_data_root()
+    except PrerequisiteFetchError as exc:
+        report.fail(
+            "DATA_DIR_UNAVAILABLE",
+            str(exc),
+            remediation=(
+                "Set LOCALAPPDATA or APPDATA on Windows, or XDG_DATA_HOME or HOME "
+                "on POSIX, then rerun Doctor."
+            ),
+        )
+        _report_legacy_data_directory(report, None)
+        return
+
+    report.info(
+        "DATA_DIR_ROOT",
+        "Resolved per-user data root",
+        path=data_root,
+        metadata={"exists": data_root.is_dir()},
+    )
+    _report_legacy_data_directory(report, data_root)
 
 
 def check_platform(report: Report) -> None:

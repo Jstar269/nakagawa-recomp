@@ -24,8 +24,71 @@ import nk_doctor_checks  # noqa: E402
 import nk_doctor_core  # noqa: E402
 import shader_embed  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
+from nk_core.prereq_fetcher import PrerequisiteFetchError  # noqa: E402
 
 _CHECKS_MODULE = nk_doctor_checks
+
+
+class DataDirectoryTests(unittest.TestCase):
+    def test_doctor_reports_resolved_root_and_legacy_location(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            legacy_root = profile / "Nakagawa" / "data"
+            legacy_root.mkdir(parents=True)
+            resolved_root = Path(temp) / "ApplicationData" / "Nakagawa" / "data"
+            report = nk_doctor.Report(Path(temp) / "repo", "repo")
+
+            with mock.patch.dict(os.environ, {"USERPROFILE": str(profile)}, clear=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+                 mock.patch.object(nk_doctor_checks, "default_data_root", return_value=resolved_root):
+                nk_doctor_checks.check_data_directory(report)
+
+            root_results = [result for result in report.results if result.code == "DATA_DIR_ROOT"]
+            legacy_results = [result for result in report.results if result.code == "LEGACY_DATA_DIR_FOUND"]
+            self.assertEqual(len(root_results), 1)
+            self.assertEqual(root_results[0].path, str(resolved_root))
+            self.assertEqual(len(legacy_results), 1)
+            self.assertEqual(legacy_results[0].path, str(legacy_root))
+            self.assertIn(str(resolved_root), legacy_results[0].detail or "")
+            self.assertFalse(resolved_root.exists())
+
+    def test_doctor_does_not_report_legacy_location_when_new_root_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            (profile / "Nakagawa" / "data").mkdir(parents=True)
+            resolved_root = Path(temp) / "ApplicationData" / "Nakagawa" / "data"
+            resolved_root.mkdir(parents=True)
+            report = nk_doctor.Report(Path(temp) / "repo", "repo")
+
+            with mock.patch.dict(os.environ, {"USERPROFILE": str(profile)}, clear=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+                 mock.patch.object(nk_doctor_checks, "default_data_root", return_value=resolved_root):
+                nk_doctor_checks.check_data_directory(report)
+
+            self.assertFalse(any(result.code == "LEGACY_DATA_DIR_FOUND" for result in report.results))
+
+    def test_doctor_reports_legacy_location_when_current_root_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            legacy_root = profile / "Nakagawa" / "data"
+            legacy_root.mkdir(parents=True)
+            report = nk_doctor.Report(Path(temp) / "repo", "repo")
+
+            with mock.patch.dict(os.environ, {"USERPROFILE": str(profile)}, clear=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+                 mock.patch.object(
+                     nk_doctor_checks,
+                     "default_data_root",
+                     side_effect=PrerequisiteFetchError("DATA_DIR_UNAVAILABLE"),
+                 ):
+                nk_doctor_checks.check_data_directory(report)
+
+            codes = [result.code for result in report.results]
+            legacy_results = [result for result in report.results if result.code == "LEGACY_DATA_DIR_FOUND"]
+            self.assertIn("DATA_DIR_UNAVAILABLE", codes)
+            self.assertEqual(len(legacy_results), 1)
+            self.assertEqual(legacy_results[0].path, str(legacy_root))
+            self.assertIn("unavailable", legacy_results[0].detail or "")
 
 
 # Scripts the CONSUMER package build runs. They target the Windows PowerShell
