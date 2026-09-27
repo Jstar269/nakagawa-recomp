@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3e196669f1d23b8d0bb41225d848cb02e3265904e84da39671ec7cb563cbb820"
+      "sha256": "46cf0d0ea678d6b463d6f5ab810cc6e165f61d0c0110b3435f4f523f256df284"
     },
     {
       "path": "NOTICE.md",
@@ -7202,7 +7202,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff646df09e857042951f43bbc7b622f6418e19015948f558f2de6836e764cadc"
+      "sha256": "5dd155cb03853094139f6ce680930f688431df0b2e9e3a675a87fe0276dd4ad5"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -7659,7 +7659,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e7e6f7e1708046ab3a4867d00326e688d3bef03fd4c796805235c8e9f532fbb"
+      "sha256": "0a0b4ff898360b75ced24a0eecd056dff98e0fc234f8549e3447daa28b6f2c31"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -9597,5 +9597,15 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
+    "candidate_tree": "a3a240078577dde2840109e376209c29cd28aaf0",
+    "refreshed_paths": [
+      "Makefile",
+      "tools/test_build_truth.py",
+      "tools/test_flight_build_identity.py"
+    ]
+  }
 }
