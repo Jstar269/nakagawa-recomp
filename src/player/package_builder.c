@@ -1749,7 +1749,13 @@ static void read_new_progress_lines(PackageBuildSession *session) {
 void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms) {
     if (!session || !session->is_building) return;
 
-    if (session->start_time_ms > 0 && current_time_ms >= session->start_time_ms) {
+    /* The clock starts at the first poll of a running build: the start routines
+     * reset start_time_ms to 0 and nothing else set it, so Elapsed stayed 0.0 s. */
+    if (session->start_time_ms == 0) {
+        session->start_time_ms = current_time_ms ? current_time_ms : 1u;
+        session->elapsed_ms = 0;
+    }
+    if (current_time_ms >= session->start_time_ms) {
         session->elapsed_ms = (uint32_t)(current_time_ms - session->start_time_ms);
     }
 

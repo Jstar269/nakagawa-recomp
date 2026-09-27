@@ -83,6 +83,22 @@ static void test_progress_line_parsing(void) {
     assert(!package_builder_parse_progress_line("{truncated", 10, &ev));
 }
 
+/* Elapsed time runs while a build is active: the first poll starts the clock and
+ * later polls advance it (it stayed at 0.0 s because nothing set the start time). */
+static void test_elapsed_time_advances_while_building(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: elapsed time advances while building\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST00001", "Elapsed Clock");
+    session.is_building = true;
+    session.start_time_ms = 0;
+    package_builder_poll(&session, 5000u);
+    assert(session.elapsed_ms == 0);
+    package_builder_poll(&session, 7500u);
+    assert(session.elapsed_ms == 2500);
+    package_builder_poll(&session, 9100u);
+    assert(session.elapsed_ms == 4100);
+}
+
 static void test_state_machine_transitions(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 2: state machine transitions\n");
     PackageBuildSession session;
@@ -579,6 +595,7 @@ int main(int argc, char *argv[]) {
         return run_build_package_route(argv[2], argv[3], argv[4], argv[5]);
     }
     test_progress_line_parsing();
+    test_elapsed_time_advances_while_building();
     test_state_machine_transitions();
     test_output_line_circular_buffer();
     test_python_and_cli_discovery();
