@@ -102,7 +102,7 @@ def _build_and_run(
     if _WINDOWS:
         # The same host libraries the player links (Makefile PLAYER_EXTRA_LIBS):
         # package_builder.c fetches verified prerequisites through WinHTTP/BCrypt.
-        link_cmd.extend(("-lshell32", "-lwinhttp", "-lbcrypt"))
+        link_cmd.extend(("-lshell32", "-lole32", "-luuid", "-lwinhttp", "-lbcrypt"))
 
     build = subprocess.run(link_cmd, cwd=ROOT, capture_output=True, text=True)
     test_case.assertEqual(

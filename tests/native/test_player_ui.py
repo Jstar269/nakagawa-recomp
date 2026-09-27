@@ -105,6 +105,7 @@ class NativePlayerUiTests(unittest.TestCase):
         runtime_ready: bool = False,
         invalid_profile: bool = False,
         drop_invalid_iso: bool = False,
+        legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
@@ -114,6 +115,9 @@ class NativePlayerUiTests(unittest.TestCase):
             userprofile = scratch / "profile"
             for directory in (appdata, localappdata, userprofile):
                 directory.mkdir()
+            legacy_root = userprofile / "Nakagawa" / "data"
+            if legacy_data:
+                legacy_root.mkdir(parents=True)
             profile = scratch / "controller-profile.json"
             if invalid_profile:
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
@@ -191,7 +195,20 @@ class NativePlayerUiTests(unittest.TestCase):
                 "profile_exists": profile.is_file(),
                 "stdout": completed.stdout,
                 "stderr": completed.stderr,
+                "legacy_root": legacy_root,
+                "legacy_root_exists": legacy_root.is_dir(),
             }
+
+    def test_legacy_data_root_is_reported_once_without_moving_it(self) -> None:
+        run = self.run_player("empty", legacy_data=True)
+        stderr = run["stderr"]
+        legacy_root = run["legacy_root"]
+        assert isinstance(stderr, str)
+        assert isinstance(legacy_root, Path)
+        expected_old_path = str(legacy_root.parent.parent) + "\\Nakagawa\\data"
+        marker = f'LEGACY_DATA_DIR_FOUND: old_path="{expected_old_path}"'
+        self.assertEqual(stderr.count(marker), 1, stderr)
+        self.assertTrue(run["legacy_root_exists"])
 
     def test_empty_library_wizard_picker_and_font_confirmation(self) -> None:
         run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"))

@@ -127,8 +127,8 @@ static bool ui_font_file_exists(const char *path) {
  * guest semantics). First existing file wins. */
 static bool ui_font_find_system_font(char *out_path, size_t out_len) {
 #if defined(_WIN32) || defined(_WIN64)
-    /* Check user-provided open-source fonts first (%LOCALAPPDATA%\nakagawa\fonts\),
-     * followed by Windows system fonts (%WINDIR%\Fonts\).
+    /* Check user-provided open-source fonts first (the fonts sibling of the
+     * canonical per-user data root), followed by Windows system fonts (%WINDIR%\Fonts\).
      * Open-source font guidelines:
      * - Native UI & Setup Wizard: Inter, Roboto Flex, Rubik (SIL OFL)
      * - In-Game HUD: M PLUS Rounded 1c, Rubik, Nunito (SIL OFL)
@@ -141,10 +141,24 @@ static bool ui_font_find_system_font(char *out_path, size_t out_len) {
         "KosugiMaru-Regular.ttf",
         NULL
     };
-    const char *appdata = getenv("LOCALAPPDATA");
-    if (appdata && *appdata) {
+    char data_root[MAX_PATH_LEN];
+    char app_fonts_root[MAX_PATH_LEN];
+    bool have_app_fonts_root = false;
+    if (nk_platform_resolve_app_data_dir(data_root, sizeof(data_root))) {
+        /* Windows and macOS keep data under <vendor>/data, so fonts sit beside
+         * it in <vendor>/fonts; the XDG root is the vendor directory itself. */
+        char *leaf = strrchr(data_root, nk_platform_path_separator());
+        if (leaf && strcmp(leaf + 1, "data") == 0) *leaf = '\0';
+        int written = snprintf(app_fonts_root, sizeof(app_fonts_root),
+                               "%s%cfonts", data_root,
+                               nk_platform_path_separator());
+        have_app_fonts_root = written > 0 &&
+            (size_t)written < sizeof(app_fonts_root);
+    }
+    if (have_app_fonts_root) {
         for (int i = 0; kOpenSourceFiles[i]; i++) {
-            snprintf(out_path, out_len, "%s\\nakagawa\\fonts\\%s", appdata, kOpenSourceFiles[i]);
+            snprintf(out_path, out_len, "%s%c%s", app_fonts_root,
+                     nk_platform_path_separator(), kOpenSourceFiles[i]);
             if (ui_font_file_exists(out_path)) return true;
         }
     }

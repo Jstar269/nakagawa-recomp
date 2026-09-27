@@ -28,6 +28,7 @@ from nk_doctor_checks import (
     check_agent_identity,
     check_build_products,
     check_build_profile,
+    check_data_directory,
     check_long_paths,
     check_platform,
     check_private_inputs,
@@ -154,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = args.root.resolve()
     report = Report(root, args.scope)
+    check_data_directory(report)
 
     manifest_arg = args.title_manifest
     manifest_data: dict[str, object] | None = None

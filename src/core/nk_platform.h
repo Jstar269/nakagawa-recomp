@@ -46,8 +46,24 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode);
 /* Structured path routing */
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);
 
-/* Get canonical user data directory for Nakagawa (APPDATA on Win32, XDG on Linux, AppSupport on macOS) */
+/* Resolve the canonical per-user data directory without creating it. */
+bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len);
+/* Get/create the canonical per-user data directory. */
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len);
+/* Resolve the pre-canonical Windows profile location used by older builds.
+ * Returns false on non-Windows hosts or when USERPROFILE is unavailable. */
+bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len);
+#if defined(_WIN32) || defined(_WIN64)
+/* Unit-testable Windows base selection: LOCALAPPDATA, Known Folder, APPDATA.
+ * USERPROFILE is deliberately not a candidate. */
+bool nk_platform_resolve_windows_data_base(
+    const char *known_local_app_data,
+    const char *local_app_data,
+    const char *roaming_app_data,
+    char *out_base,
+    size_t max_len
+);
+#endif
 
 /* Resolve `path` to an absolute path in `out_path`.
  *

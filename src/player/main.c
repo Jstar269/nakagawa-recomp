@@ -956,19 +956,10 @@ static bool staging_paths_for_disc(const char *disc_id, char *staging_root,
         staging_size == 0 || final_size == 0) return false;
     char games_root[4096];
     int games_written;
-#if defined(_WIN32) || defined(_WIN64)
-    const char *base = getenv("LOCALAPPDATA");
-    if (!base || !base[0]) base = getenv("APPDATA");
-    if (!base || !base[0]) base = getenv("USERPROFILE");
-    if (!base || !base[0]) return false;
-    games_written = snprintf(games_root, sizeof(games_root), "%s%cNakagawa%cgames",
-                             base, nk_platform_path_separator(), nk_platform_path_separator());
-#else
     char app_data[NK_MAX_PATH];
     if (!nk_platform_get_app_data_dir(app_data, sizeof(app_data))) return false;
     games_written = snprintf(games_root, sizeof(games_root), "%s%cgames",
                                  app_data, nk_platform_path_separator());
-#endif
     if (games_written < 0 || (size_t)games_written >= sizeof(games_root)) return false;
     int staging_written = snprintf(staging_root, staging_size, "%s%c.staging_%s",
                                    games_root, nk_platform_path_separator(), disc_id);
@@ -1289,6 +1280,28 @@ static bool player_prerequisite_data_root(const PlayerApp *app,
     return nk_platform_get_app_data_dir(out, out_size);
 }
 
+static void player_report_legacy_data_root(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    static bool reported = false;
+    if (reported) return;
+    reported = true;
+
+    char data_root[32768] = "";
+    char legacy_root[32768];
+    bool has_data_root = nk_platform_resolve_app_data_dir(data_root, sizeof(data_root));
+    if (!nk_platform_get_legacy_app_data_dir(legacy_root, sizeof(legacy_root)) ||
+        !nk_platform_dir_exists(legacy_root) ||
+        (has_data_root && nk_platform_dir_exists(data_root))) {
+        return;
+    }
+    fprintf(stderr,
+        "LEGACY_DATA_DIR_FOUND: old_path=\"%s\" new_path=\"%s\". "
+        "Move the old data manually; the player will not move or delete it.\n",
+        legacy_root,
+        has_data_root ? data_root : "unavailable; set LOCALAPPDATA or APPDATA");
+#endif
+}
+
 static const char *player_prerequisite_display_name(const PlayerApp *app,
                                                      const char *item_id) {
     if (!app || !item_id) return item_id ? item_id : "";
@@ -1307,7 +1320,7 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
     char data_root[NK_MAX_PATH];
     if (!player_prerequisite_data_root(app, data_root, sizeof(data_root))) {
         player_app_prereq_fail(app, "DATA_DIR_UNAVAILABLE",
-            "The per-user app-data folder is unavailable. Choose a writable Windows profile and retry.");
+            "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA and retry.");
         return;
     }
 
@@ -1466,6 +1479,8 @@ int main(int argc, char *argv[]) {
     argc = wargc;
     argv = u8_argv;
 #endif
+
+    player_report_legacy_data_root();
 
     PlayerApp app;
     player_app_init(&app);

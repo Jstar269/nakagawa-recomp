@@ -80,6 +80,9 @@ class BuildSystemParityTests(unittest.TestCase):
         self.assertIn("SDL3", self.cmake_text)
         self.assertIn("shell32", self.makefile_text)
         self.assertIn("shell32", self.cmake_text)
+        for library in ("ole32", "uuid"):
+            self.assertIn(library, self.makefile_text)
+            self.assertIn(library, self.cmake_text)
 
     def test_test_targets_parity(self) -> None:
         """Verify all native core test targets exist in both build systems."""

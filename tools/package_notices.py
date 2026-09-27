@@ -24,6 +24,8 @@ import subprocess
 import sys
 from typing import Any
 
+from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
+
 ROOT = Path(__file__).resolve().parent.parent
 
 #: Machine-readable source of truth for every third-party component that can enter
@@ -184,20 +186,14 @@ def is_system_dll(name: str) -> bool:
 def _prerequisite_toolchain_root() -> Path | None:
     """The pinned-prerequisite installer's UCRT64 root, when installed (#296/#547).
 
-    Mirrors ``nk_core.prereq_fetcher.default_data_root()`` (kept dependency-free):
     the installer extracts each MSYS2 package under ``<data root>/prerequisites/msys64``,
     so its toolchain root is ``<data root>/prerequisites/msys64/ucrt64`` with
     ``bin/`` and ``share/licenses/`` coming from the packages themselves.
     """
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.environ.get("USERPROFILE")
-        if not base:
-            return None
-        data_root = Path(base) / "Nakagawa" / "data"
-    elif os.name == "posix" and os.environ.get("XDG_DATA_HOME"):
-        data_root = Path(os.environ["XDG_DATA_HOME"]) / "nakagawa-recomp"
-    else:
-        data_root = Path.home() / ".local" / "share" / "nakagawa-recomp"
+    try:
+        data_root = default_data_root()
+    except PrerequisiteFetchError:
+        return None
     return data_root / "prerequisites" / "msys64" / "ucrt64"
 
 

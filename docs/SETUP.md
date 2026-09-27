@@ -243,7 +243,7 @@ When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight c
 └── <module>.prx
 ```
 
-On Windows, the default per-user data directory is `%LOCALAPPDATA%\Nakagawa\data` (resolving to `<user data>/titles/<DISC_ID>/decrypted/`). When a valid plain MIPS ELF32 `EBOOT.elf` is placed in this folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). If an experimental profile was created while the disc executable was still encrypted (binding no executable), supplying `EBOOT.elf` in this folder is automatically used by `nk_cli build-package` without requiring re-import.
+On Windows, the normal per-user data directory is `%LOCALAPPDATA%\Nakagawa\data`. The player and the Python tools both use `%LOCALAPPDATA%` first; when it is unset, the player also asks Windows for `FOLDERID_LocalAppData`. Both fall back to `%APPDATA%` and fail with `DATA_DIR_UNAVAILABLE` if neither application-data location resolves. `USERPROFILE` alone is never used as a data root. If the legacy `%USERPROFILE%\Nakagawa\data` exists while the current root does not, the player and Doctor report its exact path; move its contents manually. When a valid plain MIPS ELF32 `EBOOT.elf` is placed in the current folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). If an experimental profile was created while the disc executable was still encrypted (binding no executable), supplying `EBOOT.elf` in this folder is automatically used by `nk_cli build-package` without requiring re-import.
 
 Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be named either after their file name on the disc (for example `psmf.prx`) or after their manifest module name (for example `scePsmf_library.prx`). When a module is encrypted, invalid, or missing, error messages display both names (for example `psmf.prx (scePsmf_library.prx)`). The project ships no keys; the built-in boundary below fills this folder from your own key file when one is present ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 
@@ -308,7 +308,7 @@ The `<folder>` argument can point directly to the directory containing your `.pg
 
 Available options:
 
-- `--user-data-root <path>`: Override the target per-user data directory (default: `%LOCALAPPDATA%\Nakagawa\data` on Windows, `~/Library/Application Support/NakagawaRecomp/data` on macOS, `$XDG_DATA_HOME/nakagawa-recomp` or `~/.local/share/nakagawa-recomp` on Linux).
+- `--user-data-root <path>`: Override the target per-user data directory (default: `%LOCALAPPDATA%`, then `%APPDATA%`, under `Nakagawa\data` on Windows; `~/Library/Application Support/NakagawaRecomp/data` on macOS; `$XDG_DATA_HOME/nakagawa-recomp` or `~/.local/share/nakagawa-recomp` on other POSIX systems).
 - `--json`: Emit a machine-readable JSON report of the imported files, sizes, and SHA-256 digests.
 
 The import command scans the source directory, performs structural validation on every PGF candidate (verifying header size, little-endian offsets, the `PGF0` magic signature at `header_offset + 4`, non-negative revision and version fields, and `first_glyph <= last_glyph` index order), and stages validated fonts into the versioned cache directory:
