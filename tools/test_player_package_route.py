@@ -638,7 +638,9 @@ class TestRuntimeDllStaging(unittest.TestCase):
 
     def write_fake_dlls(self, bin_dir: Path) -> None:
         bin_dir.mkdir(parents=True)
-        for name in self.GRAPH:
+        # Real file names: roots are looked up by their canonical case, and a
+        # case-sensitive host (the Linux CI runner) must find them too.
+        for name in ("SDL3.dll", "SDL3_ttf.dll", "libfreetype-6.dll", "libpng16-16.dll", "zlib1.dll"):
             (bin_dir / name).write_bytes(b"MZ\0\0synthetic-" + name.encode())
 
     def test_staging_copies_ttf_closure_and_licence_files(self) -> None:
