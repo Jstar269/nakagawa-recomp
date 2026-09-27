@@ -867,6 +867,13 @@ static void test_per_title_fail_closed(void) {
     assert(!nk_input_profile_disc_id_safe(""));
     assert(!nk_input_profile_disc_id_safe(".."));
     assert(nk_input_profile_disc_id_safe("UCUS98701"));
+    assert(!nk_input_profile_disc_id_safe("NUL"));
+    assert(!nk_input_profile_disc_id_safe("con.json"));
+    assert(!nk_input_profile_disc_id_safe("Com1"));
+    assert(!nk_input_profile_disc_id_safe("LPT9.x"));
+    assert(!nk_input_profile_disc_id_safe("UCUS98701."));
+    assert(nk_input_profile_disc_id_safe("COM10"));
+    assert(nk_input_profile_disc_id_safe("CONSOLE"));
     assert(nk_input_profile_disc_id_safe("TEST00006"));
 
     /* Two entries for the same disc are ambiguous, so the document is refused. */

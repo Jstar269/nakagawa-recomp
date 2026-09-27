@@ -1154,6 +1154,22 @@ bool nk_input_profile_disc_id_safe(const char *disc_id) {
     }
     /* A name made only of dots names "." or "..", never a file of its own. */
     if (strcmp(disc_id, ".") == 0 || strcmp(disc_id, "..") == 0) return false;
+    /* Windows drops a trailing dot, so "X." would alias "X". */
+    if (disc_id[len - 1] == '.') return false;
+    /* Windows reserves device names regardless of extension ("NUL", "com1.json"). */
+    char stem[NK_MAX_DISC_ID_LEN];
+    size_t stem_len = strcspn(disc_id, ".");
+    memcpy(stem, disc_id, stem_len);
+    stem[stem_len] = '\0';
+    static const char * const reserved[] = {"CON", "PRN", "AUX", "NUL", NULL};
+    for (size_t i = 0; reserved[i]; i++) {
+        if (nk_ascii_casecmp(stem, reserved[i]) == 0) return false;
+    }
+    if (stem_len == 4 && stem[3] >= '1' && stem[3] <= '9') {
+        char device[4] = {stem[0], stem[1], stem[2], '\0'};
+        if (nk_ascii_casecmp(device, "COM") == 0 ||
+            nk_ascii_casecmp(device, "LPT") == 0) return false;
+    }
     return true;
 }
 
