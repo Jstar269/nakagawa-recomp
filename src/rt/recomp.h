@@ -427,6 +427,11 @@ uint32_t sr_bitrev(uint32_t x);
 
 /* PSP-EABI bridge used by the generated guest sprintf entry. */
 void sr_guest_sprintf(CpuState *s);
+/* Format the guest string at `fmt` with variadic words starting in register
+ * `first_reg` into a bounded host buffer (NUL-terminated; never guest-visible).
+ * Returns the full formatted length, as printf does. */
+int sr_guest_format_host(CpuState *s, uint32_t fmt, uint32_t first_reg,
+                         char *buf, int cap);
 
 /* VFPU source/destination prefix application (ARCHITECTURE section 6.4), ported from
  * PPSSPP. sr_vread reads n lanes from physical indices idx[], then applies a source

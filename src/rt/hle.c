@@ -7338,20 +7338,16 @@ void sr_hle_test_module_reset(void) {
 #endif
 
 static uint32_t h_KernelPrintf(CpuState *s) {
-    char msg[512];
-    if (!guest_cstr(A0, msg, sizeof(msg)))
+    char fmt_check[1024];   /* the whole format must be readable, NUL-terminated guest text */
+    if (!guest_cstr(A0, fmt_check, sizeof(fmt_check)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    char arg[256] = "";
-    /* PSP user-space pointers reside at 0x08000000..0x0BFFFFFF. The old check
-     * `s->r[5] < 0x08000000u` was perfectly inverted: it accepted kernel/low
-     * addresses and rejected real user strings. Only log the format argument if
-     * it points into mapped guest user RAM. */
-    if (s->r[5] && s->r[5] >= 0x08000000u && s->r[5] < 0x0C000000u && sr_inrange(s->r[5])) {
-        if (!guest_cstr(s->r[5], arg, sizeof(arg)))
-            arg[0] = '\0';
-    }
-    fprintf(stderr, "GAMELOG: format='%s' a1=0x%08x a2=0x%08x a3=0x%08x arg='%s'\n", msg, A1, A2, A3, arg);
-    return 0;
+    /* printf formats its variadic words ($5 onward) and returns the formatted
+     * length. The PSP debug console is the host log here; the guest sees only the
+     * return value. */
+    char line[1024];
+    int written = sr_guest_format_host(s, A0, 5u, line, (int)sizeof(line));
+    fprintf(stderr, "GAMELOG: %s\n", line);
+    return (uint32_t)written;
 }
 
 #define SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES 0x80020320u
