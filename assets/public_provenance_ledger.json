@@ -4863,7 +4863,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e2a4c6bbfbb95d8c2cf03a7280ca4f64eaee76cc2a6f64717035cdc2aac69e7"
+      "sha256": "5f8d20d361a35e5544509ff3ae41dd2b006ee146f836201af208cb5c1db43256"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -4887,7 +4887,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25b857c3c6848f96d8e7199a0b2f86c0f852a6ac55245c1d83064e57a58c7d25"
+      "sha256": "535517fa8506afbbac997a8f2306a2ed5eb20773b70920acde7d7a56bb09cfd0"
     },
     {
       "path": "src/rt/recomp.c",
@@ -9597,5 +9597,14 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
+    "candidate_tree": "f026554a7696f56f18d61eff1fa6e803200ffe43",
+    "refreshed_paths": [
+      "src/rt/psmf_producer.c",
+      "src/rt/psmf_producer_selftest.c"
+    ]
+  }
 }
