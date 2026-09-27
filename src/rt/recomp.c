@@ -2154,6 +2154,10 @@ void sr_trace_close(void) {
 
 void sr_begin_impl(CpuState *s, uint32_t pc, uint32_t op) {
     if (!s_fp) return;
+    /* An armed SR_TRACE_PC window gates the snapshot, not the other way round: the
+     * gate costs one range compare per guest instruction and the snapshot runs only
+     * for in-window instructions. With no window this test is a single load. */
+    if (sr_trace_window_armed() && !sr_trace_window_begin_instruction(pc)) return;
     memcpy(s_r, s->r, sizeof(s_r));
     memcpy(s_fi, s->fi, sizeof(s_fi));
     memcpy(s_vi, s->v, sizeof(s_vi));
@@ -2163,6 +2167,7 @@ void sr_begin_impl(CpuState *s, uint32_t pc, uint32_t op) {
 
 void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
     if (!s_fp) return;
+    if (sr_trace_window_armed() && !sr_trace_window_begin_instruction(s_pc)) return;
     char line[4096];
     size_t n = 0;
     n = sr_buf_append(line, sizeof(line), n, "%llu pc=0x%08x op=0x%08x",
@@ -2201,8 +2206,24 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
         n = sr_buf_append(line, sizeof(line), n, " m32[0x%08x]=0x%08x",
                           mem_addr, MEM_R32(mem_addr));
     if (n >= sizeof(line)) n = sizeof(line) - 1;
-    line[n] = '\n';
-    fwrite(line, 1, n + 1, s_fp);
+    if (sr_trace_window_armed()) {
+        /* A windowed record carries the canonical line plus the ABSOLUTE value of the
+         * registers the operator named, because the diff alone cannot show a value
+         * that was written before the window opened. */
+        const SrTraceWindowIndices *idx = sr_trace_window_indices();
+        char rec[2048];
+        size_t m = sr_buf_append(rec, sizeof(rec), 0, "%.*s", (int)n, line);
+        for (unsigned i = 0; idx && i < idx->vn; i++)
+            m = sr_buf_append(rec, sizeof(rec), m, " abs v%u=0x%08x", idx->v[i], s->vi[idx->v[i]]);
+        for (unsigned i = 0; idx && i < idx->fn; i++)
+            m = sr_buf_append(rec, sizeof(rec), m, " abs f%u=0x%08x", idx->f[i], s->fi[idx->f[i]]);
+        if (m >= sizeof(rec)) m = sizeof(rec) - 1;
+        rec[m] = '\0';
+        sr_trace_window_record(s_pc, rec);
+    } else {
+        line[n] = '\n';
+        fwrite(line, 1, n + 1, s_fp);
+    }
     s_step++;
     if (s_step > 50000000ULL) {
         fprintf(stderr, "sr_end: trace exceeded 50M steps\n");

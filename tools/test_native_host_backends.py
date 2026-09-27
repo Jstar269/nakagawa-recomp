@@ -45,6 +45,16 @@ CORE_SOURCES = [
     "src/core/nk_json.c",
     "src/core/nk_font.c",
     "src/core/nk_input_profile.c",
+    "src/core/nk_psp_crypto.c",
+    "src/core/nk_psp_keystore.c",
+    "src/core/nk_psp_aes.c",
+    "src/core/nk_psp_sha1.c",
+    "src/core/nk_psp_ec.c",
+    "src/core/nk_psp_kirk.c",
+    "src/core/nk_psp_prx.c",
+    "src/core/nk_psp_kle.c",
+    "src/core/nk_psp_inflate.c",
+    "src/core/nk_psp_container.c",
     "src/core/generated/nk_title_catalog.c",
 ]
 
@@ -90,7 +100,9 @@ def _build_and_run(
     link_cmd.extend(str(owner._objects[source]) for source in extra_sources)
     link_cmd.append(str(owner._objects[test_source]))
     if _WINDOWS:
-        link_cmd.append("-lshell32")
+        # The same host libraries the player links (Makefile PLAYER_EXTRA_LIBS):
+        # package_builder.c fetches verified prerequisites through WinHTTP/BCrypt.
+        link_cmd.extend(("-lshell32", "-lwinhttp", "-lbcrypt"))
 
     build = subprocess.run(link_cmd, cwd=ROOT, capture_output=True, text=True)
     test_case.assertEqual(

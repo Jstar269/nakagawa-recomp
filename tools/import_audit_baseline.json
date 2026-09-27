@@ -570,6 +570,12 @@
     "name": "sceKernelSetCompiledSdkVersion600_602",
     "status": "complete"
   },
+  "0x358ca1bb": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion606",
+    "status": "complete"
+  },
   "0x35dbd746": {
     "classification": "dedicated",
     "handler": "h_IoWaitAsyncCB",
@@ -628,6 +634,12 @@
     "classification": "dedicated",
     "handler": "h_ReferVplStatus",
     "name": "sceKernelReferVplStatus",
+    "status": "unreviewed"
+  },
+  "0x3a622550": {
+    "classification": "dedicated",
+    "handler": "h_CtrlPeekBufferPositive",
+    "name": "sceCtrlPeekBufferPositive",
     "status": "unreviewed"
   },
   "0x3ad58b8c": {
@@ -1448,6 +1460,12 @@
     "name": "sceKernelCancelSema",
     "status": "unreviewed"
   },
+  "0x91de343c": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion500_505",
+    "status": "complete"
+  },
   "0x91e4f6a7": {
     "classification": "dedicated",
     "handler": "h_LibcClock",
@@ -2159,6 +2177,12 @@
     "name": "sceKernelTryLockLwMutex",
     "status": "unreviewed"
   },
+  "0xdc93cfef": {
+    "classification": "dedicated",
+    "handler": "h_GeGetCmd",
+    "name": "sceGeGetCmd",
+    "status": "unreviewed"
+  },
   "0xdcc80c2f": {
     "classification": "dedicated",
     "handler": "h_FontGetCharInfo",
@@ -2296,6 +2320,12 @@
     "handler": "h_PowerSetClockFrequency350",
     "name": "scePowerSetClockFrequency350",
     "status": "unreviewed"
+  },
+  "0xebd5c3e6": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion395",
+    "status": "complete"
   },
   "0xec0a693f": {
     "classification": "dedicated",

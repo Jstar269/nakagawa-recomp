@@ -5,7 +5,8 @@
 > cryptography, middleware, and firmware work is not implemented merely because
 > it appears in a resolution column. The current player performs bounded ISO/PARAM.SFO
 > inspection, staged XB extraction, and package build/launch for supported inputs; it
-> does not decrypt retail containers. The runtime now also serves guest reads from the
+> decrypts the disc `EBOOT.BIN` only through the built-in boundary with the user's own
+> key file (#295). The runtime now also serves guest reads from the
 > read-only archive-backed VFS (#298) when `SR_DATAROOT` holds `.xb` archives.
 
 ## 1. Architectural Correction & Superseded Recommendations

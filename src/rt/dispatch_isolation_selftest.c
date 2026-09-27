@@ -122,6 +122,7 @@ static int g_failures = 0;
 #define INTERP_EXEC_START 0x00600000u
 #define INTERP_EXEC_END   (INTERP_EXEC_START + 20u)
 #define INTERP_DATA_ADDR  0x00601000u
+#define WATCH_AOT_PC      0x00608004u
 #define INTERP_REJECT_ADDR 0x00602000u
 #define INTERP_UNOWNED_AOT_ADDR 0x00603000u
 #define INTERP_PARTIAL_AOT_ADDR 0x00604000u
@@ -234,6 +235,7 @@ static void test_valid_aot_miss_executes_guest_bytes(void) {
     for (size_t i = 0; i < sizeof program / sizeof program[0]; i++)
         MEM_W32(INTERP_EXEC_START + (uint32_t)(i * 4u), program[i]);
     MEM_W32(INTERP_DATA_ADDR, 0xfeedfaceu);
+    const uint64_t watch_before = sr_watch_match_count();
 
 #ifdef SR_HAS_EXEC_SPAN_REGISTRY
     /* The implementation slice must add this explicit contract. Keeping the call
@@ -263,6 +265,8 @@ static void test_valid_aot_miss_executes_guest_bytes(void) {
     CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x00001234u,
           "valid executable miss did not perform the guest store (mem=0x%08x)",
           MEM_R32(INTERP_DATA_ADDR));
+    CHECK(!SR_WATCH_ACTIVE() || sr_watch_match_count() == watch_before + 1u,
+          "interpreter store did not trigger exactly one SR_WATCH hit");
     CHECK(s.r[2] == 0x00001235u,
           "valid executable miss did not execute load + return delay slot (v0=0x%08x)",
           s.r[2]);
@@ -278,6 +282,25 @@ static void test_valid_aot_miss_executes_guest_bytes(void) {
           "AOT handoff observed wrong state (v0=0x%08x pc=0x%08x mem=0x%08x)",
           g_interp_handoff_v0, g_interp_handoff_pc, g_interp_handoff_mem);
     sr_exec_span_reset();
+}
+
+/* This native body is the source-owned AOT side of the watchpoint regression:
+ * codegen emits this same MEM_W32_PC helper for a translated `sw`. */
+static void synthetic_aot_watch_body(CpuState *s) {
+    (void)s;
+    MEM_W32_PC(INTERP_DATA_ADDR, 0x89abcdefu, WATCH_AOT_PC);
+}
+
+static void test_aot_store_watch_synthetic_guest(void) {
+    if (!SR_WATCH_ACTIVE()) return;
+    const uint64_t watch_before = sr_watch_match_count();
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    synthetic_aot_watch_body(&s);
+    CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x89abcdefu,
+          "synthetic AOT body did not perform its guest store");
+    CHECK(sr_watch_match_count() == watch_before + 1u,
+          "AOT store did not trigger exactly one SR_WATCH hit");
 }
 
 static int g_call_continuation_hits = 0;
@@ -1193,6 +1216,8 @@ static void test_stale_hook_redirects_to_interpreter(void) {
 
 int main(int argc, char **argv) {
     sr_mem_init();
+    sr_watch_configure();
+    sr_watch_note_vblank(7u);
     atomic_store(&sr_timeslice, 0);
 
     if (argc == 2 && strcmp(argv[1], "--unregistered-dispatch-child") == 0) {
@@ -1211,6 +1236,7 @@ int main(int argc, char **argv) {
     test_generic_build_configures_no_collection();
     test_configured_build_declares_both_collections();
     test_valid_aot_miss_executes_guest_bytes();
+    test_aot_store_watch_synthetic_guest();
     test_aot_call_returns_before_native_continuation();
     test_interpreter_tail_transfers_remain_untyped();
     test_interpreter_rejects_unowned_and_invalid_fetches();
