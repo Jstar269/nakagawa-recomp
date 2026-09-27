@@ -137,6 +137,33 @@ class TitleManifestParityTests(unittest.TestCase):
                 self.assertFalse(py_ok, f"Python should reject missing {req}")
                 self.assertFalse(c_ok, f"Native should reject missing {req}")
 
+    def test_local_compatibility_record_flag_parity(self):
+        manifest = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        manifest["kind"] = "retail"
+        manifest.pop("profile_zero", None)
+        manifest["disc"] = {
+            "id": "TEST00001", "region": "OTHER", "revision_policy": "exact-disc-id",
+            "require_local_compatibility_record": True,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "revision-policy.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            py_ok, py_message = self._run_python(path)
+            c_ok, c_message = self._run_native(path, allow_override=True)
+            self.assertTrue(py_ok, py_message)
+            self.assertTrue(c_ok, c_message)
+
+            manifest["disc"]["require_local_compatibility_record"] = "true"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            py_ok, py_message = self._run_python(path)
+            c_ok, c_message = self._run_native(path, allow_override=True)
+            self.assertFalse(py_ok, py_message)
+            self.assertFalse(c_ok, c_message)
+            self.assertIn("boolean", py_message)
+            self.assertIn("boolean", c_message)
+
     def test_hostile_mutations_parity(self):
         """Both parsers must fail closed on hostile mutations."""
         valid_json = {

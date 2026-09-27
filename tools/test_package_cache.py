@@ -34,6 +34,20 @@ class PackageCacheTests(unittest.TestCase):
             "modules": [],
             "psp_header": None,
         }
+        self.identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container={
+                "format": "iso9660", "volume_id": "CACHE_TEST",
+                "size_bytes": 2048, "pvd_sector": 16, "sector_size": 2048,
+            },
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -41,6 +55,7 @@ class PackageCacheTests(unittest.TestCase):
     def key(self, **overrides):
         values = {
             "input_hashes": self.inputs,
+            "title_input_identity": self.identity,
             "codegen_options": {"profile": "none", "funcs_per_chunk": 2000},
             "analyzer_sha256": "3" * 64,
             "codegen_sha256": "4" * 64,
@@ -53,6 +68,17 @@ class PackageCacheTests(unittest.TestCase):
         values.update(overrides)
         return package_cache.build_cache_key(**values)
 
+    def test_retail_input_identity_cannot_be_written_inside_checkout(self) -> None:
+        with self.assertRaisesRegex(
+            title_codegen_plan.PackageRouteError, "per-user data root"
+        ):
+            title_codegen_plan._ensure_private_identity_output(
+                {"kind": "retail"}, ROOT / "build" / "local-package"
+            )
+        title_codegen_plan._ensure_private_identity_output(
+            {"kind": "synthetic"}, ROOT / "build" / "synthetic-package"
+        )
+
     def test_cache_decision_names_each_invalidation_tier(self) -> None:
         current = self.key()
         self.assertEqual(package_cache.compare_cache_keys(current, current).action, "reuse")
@@ -64,6 +90,37 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertEqual(executable_change.action, "aot-regenerate")
         self.assertIn("aot:executable_sha256", executable_change.reasons)
+
+        changed_module = {"name": "fixture.prx", "sha256": "6" * 64}
+        changed_modules = [changed_module]
+        changed_module_identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=changed_modules,
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container=self.identity["container"],
+        )
+        changed_module_inputs = dict(self.inputs, modules=[{
+            "name": "fixture.prx", "load_address": "0x08810000", "sha256": "6" * 64,
+        }])
+        module_change = package_cache.compare_cache_keys(
+            current,
+            self.key(
+                input_hashes=changed_module_inputs,
+                title_input_identity=changed_module_identity,
+            ),
+        )
+        self.assertEqual(module_change.action, "aot-regenerate")
+        self.assertIn("aot:modules_sha256", module_change.reasons)
+        self.assertIn("aot:title_input_identity_sha256", module_change.reasons)
+        self.assertEqual(
+            package_cache.title_input_identity_changes(self.identity, changed_module_identity),
+            ("module fixture.prx changed",),
+        )
 
         options_change = package_cache.compare_cache_keys(
             current, self.key(codegen_options={"profile": "none", "funcs_per_chunk": 1})
@@ -143,6 +200,12 @@ class PackageCacheTests(unittest.TestCase):
             "2" * 64,
             None,
             None,
+            package_cache.build_title_input_identity(
+                manifest={"id": "synthetic-cache-test", "schema_version": 1},
+                executable_name="EBOOT.BIN",
+                executable_sha256="2" * 64,
+                modules=[],
+            ),
             public_safe=True,
         )
         cli_key_priv = nk_cli._current_package_cache_key(
@@ -151,6 +214,12 @@ class PackageCacheTests(unittest.TestCase):
             "2" * 64,
             None,
             None,
+            package_cache.build_title_input_identity(
+                manifest={"id": "synthetic-cache-test", "schema_version": 1},
+                executable_name="EBOOT.BIN",
+                executable_sha256="2" * 64,
+                modules=[],
+            ),
             public_safe=False,
         )
         self.assertNotEqual(
@@ -172,6 +241,13 @@ class PackageCacheTests(unittest.TestCase):
             key, {"profile": "none", "funcs_per_chunk": 2000}
         )
         package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
             "cache": cache,
             "inputs": self.inputs,
             "executable": {
@@ -195,6 +271,7 @@ class PackageCacheTests(unittest.TestCase):
         user_root = self.root / "user-data"
         published = user_root / "packages" / "TEST00001"
         shutil.copytree(package_dir, published)
+        package_cache.write_local_title_input_identity(user_root, self.identity)
         report = Report(self.root, "products")
         check_runtime_package_cache(
             report,
@@ -204,6 +281,21 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertTrue(any(result.detail and "native:compiler_identity" in result.detail
                             for result in report.results))
+
+        changed_identity = dict(self.identity)
+        changed_identity["main_executable"] = {
+            "name": "EBOOT.BIN", "sha256": "9" * 64,
+        }
+        package_cache.write_local_title_input_identity(user_root, changed_identity)
+        mismatch_report = Report(self.root, "products")
+        check_runtime_package_cache(mismatch_report, user_root, "TEST00001")
+        mismatch = next(
+            item for item in mismatch_report.results
+            if item.code == "RUNTIME_PACKAGE_CACHE"
+        )
+        self.assertEqual(mismatch.status, "FAIL")
+        self.assertIn("main executable changed", mismatch.detail or "")
+        self.assertIn("in the works (#315)", mismatch.detail or "")
 
         completion_path = package_dir / package_cache.COMPLETION_MANIFEST
         completion = json.loads(completion_path.read_text(encoding="utf-8"))
@@ -251,6 +343,13 @@ class PackageCacheTests(unittest.TestCase):
             key, {"profile": "none", "funcs_per_chunk": 2000}
         )
         package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
             "cache": cache,
             "inputs": self.inputs,
             "executable": {
@@ -321,6 +420,12 @@ class PackageCacheTests(unittest.TestCase):
         input_hashes = title_codegen_plan._hash_package_inputs(
             manifest_path, elf_path, [], {}, None
         )
+        identity = package_cache.build_title_input_identity(
+            manifest=manifest,
+            executable_name="synthetic.elf",
+            executable_sha256=executable_hash,
+            modules=[],
+        )
         environment = dict(os.environ)
         for mode in (None, True, False):
             with mock.patch.object(
@@ -328,9 +433,11 @@ class PackageCacheTests(unittest.TestCase):
             ):
                 cli_key = nk_cli._current_package_cache_key(
                     manifest, manifest_path, executable_hash, None, None, public_safe=mode
+                    , title_input_identity=identity
                 )
             planner_key = title_codegen_plan._cache_key_for_build(
                 input_hashes=input_hashes,
+                title_input_identity=identity,
                 plan=plan,
                 selected_optional=set(),
                 funcs_per_chunk=2000,

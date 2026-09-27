@@ -444,9 +444,9 @@ static void write_runtime_package_fixture(const char *user_root,
                                           const char *seed_executable_path) {
     char packages[768], package_dir[896], executable[1100], image[1100];
     char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
-    char aot_components_json[2048], native_components_json[2048];
-    char aot_hash_input[2050], native_hash_input[2050];
-    char aot_digest[65], native_digest[65], modules_digest[65];
+    char aot_components_json[2048], native_components_json[2048], identity_json[2048];
+    char aot_hash_input[2050], native_hash_input[2050], identity_hash_input[2050];
+    char aot_digest[65], native_digest[65], modules_digest[65], identity_digest[65];
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
     snprintf(packages, sizeof(packages), "%s%cpackages", user_root,
@@ -470,6 +470,31 @@ static void write_runtime_package_fixture(const char *user_root,
     char executable_hash[65];
     fixture_sha_file(executable, executable_hash);
 
+    const char *region = strncmp(disc_id, "UL", 2) == 0 ? "NA" : "TEST";
+    int identity_length = snprintf(identity_json, sizeof(identity_json),
+        "{\"container\":null,\"disc\":{\"disc_version\":null,\"id\":\"%s\","
+        "\"region\":\"%s\"},\"format\":\"nakagawa-title-input-identity\","
+        "\"main_executable\":{\"name\":\"EBOOT.BIN\",\"sha256\":\"%s\"},"
+        "\"manifest\":{\"id\":\"%s\",\"schema_version\":1},"
+        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":1}",
+        disc_id, region, input_executable_sha256, title_id);
+    assert(identity_length > 0 && (size_t)identity_length < sizeof(identity_json));
+    int identity_hash_length = snprintf(identity_hash_input,
+        sizeof(identity_hash_input), "%s\n", identity_json);
+    assert(identity_hash_length > 0 &&
+           (size_t)identity_hash_length < sizeof(identity_hash_input));
+    fixture_sha_bytes(identity_hash_input, (size_t)identity_hash_length, identity_digest);
+
+    char identities[768], identity_dir[896], identity_path[1100];
+    snprintf(identities, sizeof(identities), "%s%ctitle-input-identities", user_root,
+             nk_platform_path_separator());
+    snprintf(identity_dir, sizeof(identity_dir), "%s%c%s", identities,
+             nk_platform_path_separator(), disc_id);
+    assert(nk_platform_mkdir_p(identity_dir));
+    snprintf(identity_path, sizeof(identity_path), "%s%ctitle-input-identity.json",
+             identity_dir, nk_platform_path_separator());
+    write_text_file(identity_path, identity_json);
+
     fixture_sha_bytes("[]\n", 3, modules_digest);
     int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
         "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
@@ -477,8 +502,9 @@ static void write_runtime_package_fixture(const char *user_root,
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
         "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1}",
-        0, codegen_options_digest, 0, input_executable_sha256, 0, modules_digest);
+        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, input_executable_sha256, 0, modules_digest,
+        identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
         "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
@@ -493,12 +519,12 @@ static void write_runtime_package_fixture(const char *user_root,
     fixture_sha_bytes(aot_hash_input, (size_t)aot_hash_length, aot_digest);
     fixture_sha_bytes(native_hash_input, (size_t)native_hash_length, native_digest);
     int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
-        "{\"schema_version\":1,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
+        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
         "\"native\":{\"digest\":\"%s\",\"components\":%s}}",
         aot_digest, aot_components_json, native_digest, native_components_json);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
-        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":1,\"key\":%s,"
+        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
         "\"current_epoch\":1,\"generated_code_reusable\":true}}",
         cache_key_json);
@@ -519,12 +545,13 @@ static void write_runtime_package_fixture(const char *user_root,
     write_text_file(report_path, report_json);
 
     int package_length = snprintf(package_json, sizeof(package_json),
-        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,\"cache\":%s,"
+        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":2,\"cache\":%s,"
         "\"title\":{\"id\":\"%s\",\"display_name\":\"Synthetic fixture\","
         "\"kind\":\"retail\",\"manifest_sha256\":\"%064d\","
         "\"protected_digest\":\"%064d\"},"
         "\"inputs\":{\"manifest\":{\"sha256\":\"%064d\"},"
         "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"title_input_identity\":%s,"
         "\"runtime\":{\"abi\":\"CpuState\",\"abi_version\":%u,"
         "\"abi_header_sha256\":\"%064d\",\"run_entry\":\"0x00000000\","
         "\"runtime_contract\":null,\"runtime_bindings\":{},"
@@ -532,8 +559,8 @@ static void write_runtime_package_fixture(const char *user_root,
         "\"executable\":{\"path\":\"%s\",\"sha256\":\"%s\","
         "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
         "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
-        cache_json, title_id, 0, 0, 0, input_executable_sha256, (unsigned)abi_version,
-        0, executable_relative_path, executable_hash);
+        cache_json, title_id, 0, 0, 0, input_executable_sha256, identity_json,
+        (unsigned)abi_version, 0, executable_relative_path, executable_hash);
     assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
     char package_path[1100];
     snprintf(package_path, sizeof(package_path), "%s%cpackage.json", package_dir,
@@ -552,13 +579,13 @@ static void write_runtime_package_fixture(const char *user_root,
              (int)stem_length, executable_relative_path);
     char completion_json[4096];
     int completion_length = snprintf(completion_json, sizeof(completion_json),
-        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":1,"
-        "\"status\":\"complete\",\"cache_key\":%s,\"artifacts\":["
+        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":2,"
+        "\"status\":\"complete\",\"cache_key\":%s,\"title_input_identity\":%s,\"artifacts\":["
         "{\"path\":\"package.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"build-report.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"%s\",\"sha256\":\"%s\"},"
         "{\"path\":\"%s\",\"sha256\":\"%s\"}]}\n",
-        cache_key_json, package_hash, report_hash, executable_relative_path,
+        cache_key_json, identity_json, package_hash, report_hash, executable_relative_path,
         executable_hash, image_relative, image_hash);
     assert(completion_length > 0 && (size_t)completion_length < sizeof(completion_json));
     char completion_path[1100];
@@ -1051,6 +1078,76 @@ int main(int argc, char **argv) {
         assert(cfg.master_volume == 55);
     }
 
+    /* 9c. The host input mapping the launched runtime receives is the one the
+     * selected disc asked for: its own per-title mapping when it has one, the
+     * global profile otherwise (#520). */
+    printf("[PLAYER_STATE_TEST] Subtest 9c: per-title mapping reaches the launch session\n");
+    fflush(stdout);
+    {
+        PlayerApp *mapped = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(mapped != NULL);
+        nk_library_init(&mapped->library);
+        input_settings_init(&mapped->input_settings);
+        snprintf(mapped->input_settings.profile_path,
+                 sizeof(mapped->input_settings.profile_path),
+                 "build/test_launch_global_profile.json");
+
+        GameRecord tennis;
+        memset(&tennis, 0, sizeof(tennis));
+        snprintf(tennis.disc_id, sizeof(tennis.disc_id), "UCUS98701");
+        snprintf(tennis.title_name, sizeof(tennis.title_name), "Mapping Fixture");
+
+        /* No per-title entry: the disc runs the global profile. */
+        assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path,
+                      "build/test_launch_global_profile.json") == 0);
+        assert(mapped->input_profile_notice[0] == '\0');
+
+        /* Give that disc its own mapping. */
+        assert(input_settings_set_scope(&mapped->input_settings, "UCUS98701"));
+        NkBindingSource left_stick;
+        left_stick.type = NK_BINDING_HOST_BUTTON;
+        left_stick.index = NK_HOST_BUTTON_LEFT_STICK;
+        assert(input_settings_assign_binding(&mapped->input_settings,
+                                             INPUT_CONTROL_BTN_CROSS, left_stick));
+        assert(input_settings_save(&mapped->input_settings, NULL) == NK_OK);
+
+        /* The session now names a profile file of its own for that disc, and the
+         * file the child would load is the disc's mapping, not the global one. */
+        assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
+        const char *profile_path = mapped->launch_session.config.input_profile_path;
+        assert(strstr(profile_path, "UCUS98701") != NULL);
+        assert(strcmp(profile_path, "build/test_launch_global_profile.json") != 0);
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+        NkInputProfile handed;
+        assert(nk_input_profile_load(&handed, profile_path, diag, sizeof(diag)) == NK_OK);
+        assert(handed.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+        assert(handed.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == NK_INPUT_DEFAULT_DEADZONE_INNER);
+
+        /* Another disc still gets the global profile: two mappings, one session. */
+        GameRecord boxing;
+        memset(&boxing, 0, sizeof(boxing));
+        snprintf(boxing.disc_id, sizeof(boxing.disc_id), "ULUS10041");
+        assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path,
+                      "build/test_launch_global_profile.json") == 0);
+
+        /* A disc ID the document has no entry for is not an error, and NULL
+         * arguments are safe no-ops that change nothing. */
+        char before[NK_MAX_PATH];
+        snprintf(before, sizeof(before), "%s",
+                 mapped->launch_session.config.input_profile_path);
+        assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path, before) == 0);
+        assert(player_app_apply_input_profile_to_session(mapped, NULL) != NK_OK);
+        assert(player_app_apply_input_profile_to_session(NULL, &tennis) != NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path, before) == 0);
+
+        remove(profile_path);
+        remove("build/test_launch_global_profile.json");
+        free(mapped);
+    }
+
     /* 10. Focus clamps into range so keyboard/gamepad activation can never
      * target a control the view no longer draws. */
     printf("[PLAYER_STATE_TEST] Subtest 10: focus clamps\n");
@@ -1129,26 +1226,26 @@ int main(int argc, char **argv) {
         stops->games[0] = entry;
         stops->game_count = 1;
         stops->selected_game_index = 0;
-        assert(player_app_focus_count(stops) == 2); /* incompatible package: add + remove */
+        assert(player_app_focus_count(stops) == 3); /* incompatible package: add + remove + mapping */
 
         stops->games[0].is_prepared = true;
-        assert(player_app_focus_count(stops) == 2); /* no validated package: add + remove */
+        assert(player_app_focus_count(stops) == 3); /* no validated package: add + remove + mapping */
 
         stops->is_game_running = true;
-        assert(player_app_focus_count(stops) == 3); /* stop + add + remove */
+        assert(player_app_focus_count(stops) == 4); /* stop + add + remove + mapping */
 
         /* Overflow adds the two paging stops. */
         stops->is_game_running = false;
         stops->window_width = 640;
         assert(player_app_visible_library_cards(stops) == 2);
         stops->game_count = 1;
-        assert(player_app_focus_count(stops) == 2);
+        assert(player_app_focus_count(stops) == 3); /* add + remove + mapping */
         seed_entry(&entry, "FCS00002", "Second");
         stops->games[1] = entry;
         seed_entry(&entry, "FCS00003", "Third");
         stops->games[2] = entry;
         stops->game_count = 3;
-        assert(player_app_focus_count(stops) == 4);
+        assert(player_app_focus_count(stops) == 5); /* + both paging stops */
 
         /* A title with missing package offers the BUILD PACKAGE button */
         stops->window_width = 1280;
@@ -1156,7 +1253,7 @@ int main(int argc, char **argv) {
         seed_entry(&entry, "ULUS10041", "Street Supremacy");
         snprintf(entry.title_id, sizeof(entry.title_id), "ulus-10041");
         stops->games[0] = entry;
-        assert(player_app_focus_count(stops) == 3); /* build package + add + remove */
+        assert(player_app_focus_count(stops) == 4); /* build package + add + remove + mapping */
 
         stops->active_view = VIEW_BUILDING_PACKAGE;
         assert(player_app_focus_count(stops) == 1); /* cancel build */
@@ -1183,7 +1280,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_CONFIRM_REMOVE_TOOLS;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
-        assert(player_app_focus_count(stops) == 22);
+        assert(player_app_focus_count(stops) == 23); /* + the global / this-game choice */
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
         assert(player_app_focus_count(stops) == 1);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_EXTREMES;
@@ -1191,7 +1288,12 @@ int main(int argc, char **argv) {
         stops->input_settings.calib.stage = CALIBRATION_STAGE_RESULT;
         assert(player_app_focus_count(stops) == 2);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_INACTIVE;
+        assert(player_app_focus_count(stops) == 23);
+        /* With no library disc there is nothing to name, so the choice is not a
+         * focus stop and the count is the pre-#520 one. */
+        stops->selected_game_index = -1;
         assert(player_app_focus_count(stops) == 22);
+        stops->selected_game_index = 0;
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 

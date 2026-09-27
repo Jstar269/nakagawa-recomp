@@ -398,6 +398,42 @@ class NativePlayerUiTests(unittest.TestCase):
                 expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
                 self.assertEqual(frames[1]["picker"], expected_picker)
 
+    def test_per_title_controller_mapping_choice(self) -> None:
+        """A disc can get its own mapping, or go back to the global one."""
+        # The library card carries the choice: three tabs reach it, because the
+        # primary action, add and remove come first and paging never applies to
+        # a one-title library.
+        card = self.run_player("library", ("KEY_TAB", "KEY_TAB", "KEY_TAB", "KEY_RETURN"))
+        card_frames = card["frames"]
+        assert isinstance(card_frames, list)
+        self.assertEqual(card_frames[0]["input_scope"], "global")
+        self.assertEqual(card_frames[0]["input_titles"], "0")
+        self.assertEqual(card_frames[4]["input_scope"], "TEST00005")
+        self.assertEqual(card_frames[4]["input_titles"], "1")
+        self.assertNotEqual(card_frames[0]["pixels"], card_frames[4]["pixels"])
+
+        # The same control in Controller Settings, which says which mapping it
+        # is editing, and which is the 23rd focus stop of that view.
+        settings = self.run_player(
+            "controller", tuple(["KEY_TAB"] * 22 + ["KEY_RETURN"])
+        )
+        settings_frames = settings["frames"]
+        assert isinstance(settings_frames, list)
+        self.assertEqual(settings_frames[0]["input_scope"], "global")
+        self.assertEqual(settings_frames[0]["focus_count"], "23")
+        self.assertEqual(settings_frames[23]["input_scope"], "TEST00005")
+        self.assertNotEqual(settings_frames[0]["pixels"], settings_frames[23]["pixels"])
+
+        # Toggling back returns the disc to the global mapping.
+        back = self.run_player(
+            "controller", tuple(["KEY_TAB"] * 22 + ["KEY_RETURN"] * 2)
+        )
+        back_frames = back["frames"]
+        assert isinstance(back_frames, list)
+        self.assertEqual(back_frames[23]["input_scope"], "TEST00005")
+        self.assertEqual(back_frames[24]["input_scope"], "global")
+        self.assertEqual(back_frames[24]["input_titles"], "0")
+
     def test_quit_from_library_runs_through_sdl_event_loop(self) -> None:
         run = self.run_player("library", ("KEY_ESCAPE",))
         frames = run["frames"]

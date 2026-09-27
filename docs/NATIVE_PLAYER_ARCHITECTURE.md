@@ -217,12 +217,13 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
 - **Deadzone & Trigger Calibration**: Dedicated steppers adjust stick inner deadzone (range 0–32766) and trigger threshold (range 0–32767) in bounded increments.
 - **Live Input Monitor**: A real-time visualizer panel displays active host button presses, numerical stick coordinates, and an interactive 2D deadzone box so users can immediately observe calibration effects.
 - **Safe Navigation & Defaults**: Keyboard Escape always backs out or cancels capture, preventing navigation lockouts. "RESET DEFAULTS" restores the baseline profile.
-- **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the profile via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime.
+- **Per-Title Mapping Choice**: the screen states which mapping it is editing, and a "USE GLOBAL MAPPING" / "USE THIS GAME MAPPING" control switches scope for the selected library disc ([#520](https://github.com/Jstar269/nakagawa-recomp/issues/520)). A disc's own mapping is seeded from the global one, so the first edit in that scope changes only what the user changed; choosing the global mapping again drops that disc's entry. The library card carries the same choice as a "MAPPING: GLOBAL" / "MAPPING: THIS GAME" button.
+- **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the whole profile document (the global mapping plus the per-disc entries, profile schema 2) via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime. An interrupted write leaves the previous file intact, and an invalid entry is refused before anything is written.
 - **Guided Stick & Trigger Calibration**: A multi-stage calibration wizard ("CALIBRATE STICK & TRIGGERS") guides the user through:
   1. *Resting state*: sampling resting analog stick and trigger axes for 1000 ms to establish neutral/center points.
   2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
   3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
-  Values are stored in the unified `input_profile.json` (schema 1 backward compatible) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
+  Values are stored in the unified `input_profile.json` (schema 2, schema 1 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
 - **In the Works**: In-game pause overlay controller configuration remains in the works (pause menu requires guest-clock semantics; out of scope for this milestone).
 
 ---

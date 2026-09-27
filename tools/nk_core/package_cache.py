@@ -19,8 +19,10 @@ from typing import Any, Mapping
 
 CACHE_FORMAT = "nakagawa-aot-cache"
 COMPLETION_FORMAT = "nakagawa-aot-cache-completion"
-CACHE_SCHEMA_VERSION = 1
-COMPLETION_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
+COMPLETION_SCHEMA_VERSION = 2
+TITLE_INPUT_IDENTITY_FORMAT = "nakagawa-title-input-identity"
+TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 1
 ANALYZER_CODEGEN_SEMANTICS_EPOCH = "analyzer-codegen-v1"
 GENERATED_CODE_ABI_EPOCH = 1
 RUNTIME_ABI_EPOCH = 1
@@ -31,6 +33,7 @@ CACHE_ROOT_PARTS = ("cache", "packages")
 COMPLETION_MANIFEST = "completion-manifest.json"
 DEFAULT_MAX_CACHE_ENTRIES = 8
 CACHE_LIMIT_ENV = "NK_AOT_CACHE_MAX_ENTRIES"
+LOCAL_IDENTITIES_DIR = "title-input-identities"
 
 
 class PackageCacheError(ValueError):
@@ -67,6 +70,204 @@ def sha256_file(path: Path) -> str:
 
 def _digest(value: Any) -> str:
     return sha256_bytes(canonical_json(value).encode("utf-8"))
+
+
+def build_title_input_identity(
+    *,
+    manifest: Mapping[str, Any],
+    executable_name: str,
+    executable_sha256: str,
+    modules: list[Mapping[str, Any]],
+    psp_header_sha256: str | None = None,
+    psp_header_magic: str | None = None,
+    disc_id: str | None = None,
+    region: str | None = None,
+    disc_version: str | None = None,
+    param_sfo: Mapping[str, Any] | None = None,
+    container: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the private, versioned identity record for one package input set."""
+    module_records = [
+        {"name": item.get("name"), "sha256": item.get("sha256")}
+        for item in sorted(modules, key=lambda item: str(item.get("name", "")))
+    ]
+    identity = {
+        "format": TITLE_INPUT_IDENTITY_FORMAT,
+        "schema_version": TITLE_INPUT_IDENTITY_SCHEMA_VERSION,
+        "manifest": {
+            "id": manifest.get("id"),
+            "schema_version": manifest.get("schema_version"),
+        },
+        "disc": {
+            "id": disc_id.upper() if isinstance(disc_id, str) else None,
+            "region": region,
+            "disc_version": disc_version,
+        },
+        "param_sfo": dict(param_sfo) if param_sfo is not None else None,
+        "container": dict(container) if container is not None else None,
+        "main_executable": {"name": executable_name, "sha256": executable_sha256},
+        "modules": module_records,
+        "psp_header": (
+            {"sha256": psp_header_sha256, "magic": psp_header_magic}
+            if psp_header_sha256 is not None else None
+        ),
+    }
+    validate_title_input_identity(identity)
+    return identity
+
+
+def validate_title_input_identity(value: Any) -> dict[str, Any]:
+    """Validate the local identity schema without exposing or logging hashes."""
+    root_keys = {
+        "format", "schema_version", "manifest", "disc", "param_sfo",
+        "container", "main_executable", "modules", "psp_header",
+    }
+    if not isinstance(value, dict) or set(value) != root_keys:
+        raise PackageCacheError("title input identity fields do not match schema v1")
+    if value.get("format") != TITLE_INPUT_IDENTITY_FORMAT or value.get("schema_version") != TITLE_INPUT_IDENTITY_SCHEMA_VERSION:
+        raise PackageCacheError("title input identity format or schema is unsupported")
+    manifest = value.get("manifest")
+    if not isinstance(manifest, dict) or set(manifest) != {"id", "schema_version"}:
+        raise PackageCacheError("title input identity manifest record is invalid")
+    if not isinstance(manifest.get("id"), str) or not manifest["id"]:
+        raise PackageCacheError("title input identity manifest ID is invalid")
+    if type(manifest.get("schema_version")) is not int or manifest["schema_version"] < 1:
+        raise PackageCacheError("title input identity manifest schema is invalid")
+    disc = value.get("disc")
+    if not isinstance(disc, dict) or set(disc) != {"id", "region", "disc_version"}:
+        raise PackageCacheError("title input identity disc record is invalid")
+    disc_id = disc.get("id")
+    if disc_id is not None and (
+        not isinstance(disc_id, str) or re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id) is None
+    ):
+        raise PackageCacheError("title input identity DISC_ID is invalid")
+    region = disc.get("region")
+    if region is not None and region not in {"JP", "NA", "EU", "KR", "ASIA", "OTHER", "TEST", "HOMEBREW"}:
+        raise PackageCacheError("title input identity region is invalid")
+    version = disc.get("disc_version")
+    if version is not None and (not isinstance(version, str) or not version or len(version) > 32):
+        raise PackageCacheError("title input identity DISC_VERSION is invalid")
+    sfo = value.get("param_sfo")
+    if sfo is not None:
+        if not isinstance(sfo, dict) or set(sfo) - {
+            "DISC_ID", "TITLE", "DISC_VERSION", "APP_VER", "PSP_SYSTEM_VER", "CATEGORY",
+        }:
+            raise PackageCacheError("title input identity PARAM.SFO facts are invalid")
+        if any(not isinstance(item, str) or len(item) > 256 for item in sfo.values()):
+            raise PackageCacheError("title input identity PARAM.SFO fact is invalid")
+    container = value.get("container")
+    if container is not None:
+        if not isinstance(container, dict) or set(container) != {
+            "format", "volume_id", "size_bytes", "pvd_sector", "sector_size",
+        }:
+            raise PackageCacheError("title input identity container metadata is invalid")
+        if not isinstance(container.get("format"), str) or not isinstance(container.get("volume_id"), str):
+            raise PackageCacheError("title input identity container label is invalid")
+        for field in ("size_bytes", "pvd_sector", "sector_size"):
+            if type(container.get(field)) is not int or container[field] < 0:
+                raise PackageCacheError(f"title input identity container {field} is invalid")
+    executable = value.get("main_executable")
+    if not isinstance(executable, dict) or set(executable) != {"name", "sha256"}:
+        raise PackageCacheError("title input identity main executable record is invalid")
+    if not isinstance(executable.get("name"), str) or not executable["name"]:
+        raise PackageCacheError("title input identity main executable name is invalid")
+    _input_sha(executable, "title input identity main executable")
+    modules = value.get("modules")
+    if not isinstance(modules, list):
+        raise PackageCacheError("title input identity modules must be an array")
+    names: set[str] = set()
+    for item in modules:
+        if not isinstance(item, dict) or set(item) != {"name", "sha256"}:
+            raise PackageCacheError("title input identity module record is invalid")
+        name = item.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            raise PackageCacheError("title input identity module name is invalid or repeated")
+        names.add(name)
+        _input_sha(item, f"title input identity module {name}")
+    header = value.get("psp_header")
+    if header is not None:
+        if not isinstance(header, dict) or set(header) != {"sha256", "magic"}:
+            raise PackageCacheError("title input identity PSP header record is invalid")
+        _input_sha(header, "title input identity PSP header")
+        if header.get("magic") is not None and not isinstance(header["magic"], str):
+            raise PackageCacheError("title input identity PSP header magic is invalid")
+    return value
+
+
+def title_input_identity_digest(value: Any) -> str:
+    return _digest(validate_title_input_identity(value))
+
+
+def title_input_identity_changes(previous: Any, current: Any) -> tuple[str, ...]:
+    """Return human-readable identity classes; never include hashes or source bytes."""
+    try:
+        old = validate_title_input_identity(previous)
+        new = validate_title_input_identity(current)
+    except PackageCacheError:
+        return ("identity record changed",)
+    changes: list[str] = []
+    if old["manifest"] != new["manifest"]:
+        changes.append("manifest/profile changed")
+    if old["disc"]["id"] != new["disc"]["id"]:
+        changes.append("DISC_ID changed")
+    if old["disc"]["region"] != new["disc"]["region"]:
+        changes.append("region changed")
+    if (old["disc"]["disc_version"] != new["disc"]["disc_version"] or
+        (old["param_sfo"] or {}).get("DISC_VERSION") != (new["param_sfo"] or {}).get("DISC_VERSION") or
+        (old["param_sfo"] or {}).get("APP_VER") != (new["param_sfo"] or {}).get("APP_VER")):
+        changes.append("SFO revision changed")
+    if old["param_sfo"] != new["param_sfo"] and "SFO revision changed" not in changes:
+        changes.append("PARAM.SFO facts changed")
+    if old["main_executable"] != new["main_executable"]:
+        changes.append("main executable changed")
+    old_modules = {item["name"]: item["sha256"] for item in old["modules"]}
+    new_modules = {item["name"]: item["sha256"] for item in new["modules"]}
+    for name in sorted(set(old_modules) | set(new_modules)):
+        if old_modules.get(name) != new_modules.get(name):
+            changes.append(f"module {name} changed")
+    if old["container"] != new["container"]:
+        changes.append("container metadata changed")
+    if old["psp_header"] != new["psp_header"]:
+        changes.append("PSP header changed")
+    return tuple(changes)
+
+
+def local_title_input_identity_path(user_data_root: Path | str, disc_id: str) -> Path:
+    if re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id or "") is None:
+        raise PackageCacheError("title input identity DISC_ID is invalid")
+    return Path(user_data_root).expanduser().resolve(strict=False) / LOCAL_IDENTITIES_DIR / disc_id / "title-input-identity.json"
+
+
+def write_local_title_input_identity(
+    user_data_root: Path | str, identity: Mapping[str, Any]
+) -> Path:
+    normalized = validate_title_input_identity(dict(identity))
+    disc_id = normalized["disc"]["id"]
+    if not disc_id:
+        raise PackageCacheError("synthetic package identity has no user ISO record")
+    user_root = Path(user_data_root).expanduser().resolve(strict=False)
+    repository_root = Path(__file__).resolve().parents[2]
+    if not cache_root_is_private(user_root, repository_root):
+        raise PackageCacheError("title input identity must be stored outside the public repository")
+    destination = local_title_input_identity_path(user_root, disc_id)
+    for directory in (destination.parent.parent, destination.parent):
+        if directory.is_symlink():
+            raise PackageCacheError("title input identity directory is a symlink")
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if user_root not in destination.parent.resolve(strict=True).parents:
+        raise PackageCacheError("title input identity path escaped the user data directory")
+    _atomic_write(destination, canonical_json(normalized).encode("utf-8"))
+    return destination
+
+
+def read_local_title_input_identity(user_data_root: Path | str, disc_id: str) -> dict[str, Any] | None:
+    path = local_title_input_identity_path(user_data_root, disc_id)
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        return validate_title_input_identity(_read_json(path))
+    except (OSError, ValueError, PackageCacheError):
+        return None
 
 
 def _no_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -347,6 +548,7 @@ def _normal_modules(value: Any) -> list[dict[str, Any]]:
 def build_cache_key(
     *,
     input_hashes: Mapping[str, Any],
+    title_input_identity: Mapping[str, Any] | None = None,
     codegen_options: Mapping[str, Any],
     analyzer_sha256: str,
     codegen_sha256: str,
@@ -364,6 +566,10 @@ def build_cache_key(
     executable_sha256 = _input_sha(input_hashes.get("executable"), "executable")
     manifest_sha256 = _input_sha(input_hashes.get("manifest"), "manifest")
     modules = _normal_modules(input_hashes.get("modules"))
+    identity_digest = (
+        title_input_identity_digest(dict(title_input_identity))
+        if title_input_identity is not None else None
+    )
     psp_header = input_hashes.get("psp_header")
     psp_header_sha256 = None
     if psp_header is not None:
@@ -377,6 +583,7 @@ def build_cache_key(
         "executable_sha256": executable_sha256,
         "manifest_sha256": manifest_sha256,
         "modules_sha256": _digest(modules),
+        "title_input_identity_sha256": identity_digest,
         "psp_header_sha256": psp_header_sha256,
         "analyzer_codegen_epoch": analyzer_codegen_epoch,
         "analyzer_sha256": analyzer_sha256,
@@ -489,7 +696,8 @@ def compare_cache_keys(
     reasons: list[str] = []
     generated_reusable = True
     for component in (
-        "executable_sha256", "manifest_sha256", "modules_sha256", "psp_header_sha256",
+        "executable_sha256", "manifest_sha256", "modules_sha256", "title_input_identity_sha256",
+        "psp_header_sha256",
         "analyzer_codegen_epoch", "analyzer_sha256", "codegen_sha256",
         "codegen_options_sha256", "generated_code_abi_epoch",
     ):
@@ -562,16 +770,25 @@ def write_completion_manifest(
     package_dir: Path,
     key: Mapping[str, Any],
     *,
+    title_input_identity: Mapping[str, Any] | None = None,
     backends: str | None = None,
     limits: list[str] | None = None,
 ) -> Path:
     package_dir = package_dir.resolve(strict=False)
     artifacts = _artifact_records(package_dir)
+    if title_input_identity is None:
+        try:
+            package = _read_json(package_dir / "package.json")
+        except (OSError, ValueError) as exc:
+            raise PackageCacheError("package input identity is unavailable") from exc
+        title_input_identity = package.get("title_input_identity") if isinstance(package, dict) else None
+    identity = validate_title_input_identity(dict(title_input_identity)) if title_input_identity is not None else None
     document: dict[str, Any] = {
         "format": COMPLETION_FORMAT,
         "schema_version": COMPLETION_SCHEMA_VERSION,
         "status": "complete",
         "cache_key": key,
+        "title_input_identity": identity,
         "artifacts": artifacts,
     }
     if backends is not None:
@@ -599,8 +816,8 @@ def validate_completion_manifest(
         return False, f"completion manifest is unreadable: {exc}", None
     if not isinstance(document, dict):
         return False, "completion manifest must be a JSON object", None
-    allowed = {"format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits"}
-    required = {"format", "schema_version", "status", "cache_key", "artifacts"}
+    allowed = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts", "backends", "limits"}
+    required = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts"}
     doc_keys = set(document)
     if not required.issubset(doc_keys) or not doc_keys.issubset(allowed):
         return False, "completion manifest fields do not match the cache contract", None
@@ -618,6 +835,16 @@ def validate_completion_manifest(
         return False, str(exc), None
     if expected_key is not None and key != expected_key:
         return False, "completion manifest cache key does not match the package", None
+    try:
+        identity = validate_title_input_identity(document["title_input_identity"])
+    except PackageCacheError as exc:
+        return False, str(exc), None
+    try:
+        aot_components, _ = _key_components(key, "aot")
+    except PackageCacheError as exc:
+        return False, str(exc), None
+    if aot_components.get("title_input_identity_sha256") != title_input_identity_digest(identity):
+        return False, "completion manifest title input identity does not match the cache key", None
     artifacts = document["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
         return False, "completion manifest artifact list is empty", None
@@ -673,6 +900,8 @@ def validate_package_cache(
         return False, f"package metadata is unreadable: {exc}"
     if not isinstance(package, dict) or not isinstance(report, dict):
         return False, "package metadata must contain JSON objects"
+    if package.get("format") != "nakagawa-aot-package" or package.get("schema_version") != 2:
+        return False, "package format or schema is unsupported"
     cache = package.get("cache")
     key = _key_from_document(package)
     if not isinstance(cache, dict) or key is None:
@@ -713,6 +942,12 @@ def validate_package_cache(
     inputs = package.get("inputs", {})
     if not isinstance(inputs, dict):
         return False, "package input metadata is invalid"
+    try:
+        identity = validate_title_input_identity(package.get("title_input_identity"))
+    except PackageCacheError as exc:
+        return False, str(exc)
+    if title_input_identity_digest(identity) != components.get("title_input_identity_sha256"):
+        return False, "package title input identity disagrees with cache key"
     executable_input = inputs.get("executable", {})
     manifest_input = inputs.get("manifest", {})
     if not isinstance(executable_input, dict) or not isinstance(manifest_input, dict):
@@ -727,6 +962,19 @@ def validate_package_cache(
         return False, "package module input metadata is invalid"
     if modules_digest != components.get("modules_sha256"):
         return False, "package module digest disagrees with cache key"
+    title = package.get("title")
+    if not isinstance(title, dict) or identity["manifest"]["id"] != title.get("id"):
+        return False, "package title input identity does not match its manifest/profile"
+    if identity["main_executable"]["sha256"] != executable_input.get("sha256"):
+        return False, "package title input identity does not match the main executable"
+    identity_modules = {item["name"]: item["sha256"] for item in identity["modules"]}
+    package_modules = {
+        item.get("name"): item.get("sha256")
+        for item in inputs.get("modules", [])
+        if isinstance(item, Mapping)
+    }
+    if identity_modules != package_modules:
+        return False, "package title input identity does not match its module inputs"
     psp_header = inputs.get("psp_header")
     expected_psp_header = components.get("psp_header_sha256")
     if psp_header is None:
@@ -768,11 +1016,13 @@ def validate_package_cache(
         if not object_file.is_file() or sha256_file(object_file) != item.get("sha256"):
             return False, f"package generated object digest is stale: {object_path}"
         required.add(object_path)
-    valid, reason, _ = validate_completion_manifest(
+    valid, reason, completion = validate_completion_manifest(
         package_dir,
         expected_key=expected_key,
         required_paths=required,
     )
     if not valid:
         return False, reason
+    if completion is None or completion.get("title_input_identity") != identity:
+        return False, "completion manifest title input identity does not match package.json"
     return True, ""

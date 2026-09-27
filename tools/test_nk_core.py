@@ -169,6 +169,52 @@ class NkCoreTests(unittest.TestCase):
         self.assertFalse(meta.is_supported)
         self.assertIsNone(meta.matched_profile)
 
+    def test_unknown_revision_requires_an_explicit_local_identity(self) -> None:
+        from nk_core.package_cache import build_title_input_identity, write_local_title_input_identity
+        from test_iso_parity import create_test_iso
+        import title_manifest
+
+        manifest = _legacy_retail_manifest()
+        manifest["id"] = "synthetic-revision-profile"
+        manifest["disc"] = {
+            "id": "TEST00001",
+            "region": "OTHER",
+            "revision_policy": "exact-disc-id",
+            "require_local_compatibility_record": True,
+        }
+        manifest_dir = self.temp_dir / "manifests"
+        manifest_dir.mkdir()
+        manifest_path = manifest_dir / "revision.json"
+        manifest_path.write_text(
+            title_manifest.canonical_json(title_manifest.validate_manifest(manifest)),
+            encoding="utf-8",
+        )
+        registry = TitleRegistry(include_defaults=False)
+        registry.load_from_directory(manifest_dir, enforce_public_policy=False)
+
+        user_root = self.temp_dir / "user-data"
+        known_identity = build_title_input_identity(
+            manifest=manifest,
+            executable_name="EBOOT.BIN",
+            executable_sha256="a" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="OTHER",
+            disc_version="1.00",
+            param_sfo={
+                "DISC_ID": "TEST00001", "TITLE": "Test Game", "DISC_VERSION": "1.00",
+            },
+        )
+        write_local_title_input_identity(user_root, known_identity)
+
+        unknown_iso = self.temp_dir / "unknown-revision.iso"
+        create_test_iso(unknown_iso, disc_id="TEST00001", version="1.01")
+        metadata = inspect_iso(unknown_iso, registry, user_data_root=user_root)
+        self.assertFalse(metadata.is_supported)
+        self.assertIn("Unqualified revision", metadata.qualification_error)
+        self.assertIn("SFO revision changed", metadata.qualification_error)
+        self.assertIn("in the works (#315)", metadata.qualification_error)
+
     def test_iso_inspection_malformed(self) -> None:
         # File too small
         tiny_file = self.temp_dir / "tiny.iso"
