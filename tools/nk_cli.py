@@ -1533,6 +1533,38 @@ def _write_bringup_report(report: dict, path: Path) -> None:
     os.replace(temporary, path)
 
 
+def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list[dict]) -> None:
+    """Write raw unsupported import NIDs for the private compatibility sweep only."""
+    resolved_work_dir = work_dir.resolve(strict=False)
+    resolved_path = path.expanduser().resolve(strict=False)
+    if not resolved_path.is_relative_to(resolved_work_dir):
+        raise ValueError("private sweep import report must stay under the bring-up work directory")
+    rows = []
+    for item in imports:
+        nid = item.get("nid")
+        if isinstance(nid, str):
+            digits = nid[2:] if nid[:2].casefold() == "0x" else ""
+            if (
+                not digits
+                or len(digits) > 8
+                or any(char not in "0123456789abcdefABCDEF" for char in digits)
+            ):
+                continue
+            nid = int(digits, 16)
+        if not isinstance(nid, int) or isinstance(nid, bool) or not 0 <= nid <= 0xFFFFFFFF:
+            continue
+        rows.append({
+            "library": item.get("library"),
+            "nid": f"0x{nid:08x}",
+            "nid_name": item.get("name"),
+        })
+    payload = {"schema_version": 1, "unsupported_imports": rows}
+    _write_private_file(
+        resolved_path,
+        (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+    )
+
+
 def _bringup_human_summary(report: dict) -> str:
     uses_cfw_original = any(
         check.get("code") == "MODIFIED_DUMP_CFW_LOADER"
@@ -1856,9 +1888,15 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     """Run the consumer route while writing only schema-checked safe evidence."""
     report = _new_bringup_report()
     report_path = Path(args.report).expanduser().resolve(strict=False)
+    private_sweep_import_report: Path | None = None
     try:
         work_dir = _user_data_root(Path(args.work_dir))
         work_dir.mkdir(parents=True, exist_ok=True)
+        requested_private_report = getattr(args, "private_sweep_import_report", None)
+        if requested_private_report is not None:
+            private_sweep_import_report = Path(requested_private_report).expanduser().resolve(strict=False)
+            if not private_sweep_import_report.is_relative_to(work_dir):
+                raise PackageBuildError("Private sweep import report must stay under the bring-up work directory.")
         user_root = _user_data_root(work_dir / "user-data")
         if not user_root.is_relative_to(work_dir):
             raise PackageBuildError("Bring-up user data escaped the selected work directory.")
@@ -2108,6 +2146,16 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         report["counts"]["functions"] = int(analysis_summary["analyzed_functions"])
         report["counts"]["instructions"] = _count_instructions(sources)
         report["unsupported_imports"] = _public_import_rows(unsupported_imports)
+        if private_sweep_import_report is not None:
+            try:
+                _write_private_sweep_import_report(
+                    private_sweep_import_report, work_dir, unsupported_imports
+                )
+            except OSError:
+                # The private sidecar is optional telemetry. The sweep records
+                # that its NID detail was unavailable without changing the
+                # production bring-up result.
+                pass
     except Exception:
         _fail_bringup(report, "analyze", "ANALYSIS_FAILED", [296],
                       int((time.perf_counter() - started) * 1000))
@@ -2394,6 +2442,8 @@ def main() -> int:
                            help="Hard launch limit in seconds (1..120; default 20)")
     p_bringup.add_argument("--instruction-trace", action="store_true",
                            help="Write guest instruction trace under --work-dir")
+    p_bringup.add_argument("--private-sweep-import-report", type=Path, default=None,
+                           help=argparse.SUPPRESS)
     p_bringup.set_defaults(func=cmd_bringup)
 
     args = parser.parse_args()
