@@ -1210,7 +1210,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d0d5f391dc09e9d010bcd0eeacae2faf94953c00e86a6d7f4b4d1bc445dc0d71"
+      "sha256": "2dc4df8310432b80856afd2a08dbd9b221afb66dc98bf331b1ac62a32a93ab44"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -1321,7 +1321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "edcb05c0254f8d47f8a63b546ed45a7c3915627b1e23b5eb7b53bcdf7eb8a703"
+      "sha256": "169761a40e0ae79f2ae6085f66ddc5407d97684cd37637ce7697c9f66429a7e9"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -8305,7 +8305,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d59a1707056ecd36b3f8435b2e0fb62dd5b1bc57267153f876b2478272ce5f87"
+      "sha256": "e4d36426f3c3129edf217d654ea891233edbe9ed0f38566abe030eb78df46215"
     },
     {
       "path": "tools/test_perf_summary_diff.py",
@@ -9606,5 +9606,15 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "dc772d2dca77d82df4582cdcf480414f6b86838e",
+    "candidate_tree": "818e81a621c9d27428f5344edd738d6c251362b0",
+    "refreshed_paths": [
+      "docs/PARSER_SAFETY_INVENTORY.json",
+      "docs/README.md",
+      "tools/test_parse_fuzz.py"
+    ]
+  }
 }
