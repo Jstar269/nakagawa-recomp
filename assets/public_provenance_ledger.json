@@ -649,7 +649,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "8016f5bfc1efe432828fb2b1791f359e58389510d46e883ca67f2a8312c9e206"
+      "sha256": "a0f855a192b84f52060354a07da8599f9e254b6fe191ca91bbf864013989612b"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -6144,6 +6144,18 @@
       "sha256": "b01ad02946e94cfd28069a89490b541b2214d6e5c806f5b81c89cd48f111697e"
     },
     {
+      "path": "tools/library_sweep.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "library-sweep-runner",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "662a3d45a1ec7380340a3450be1cfaae1c446f990ba2aa9c3dc7baa1dc3a3817"
+    },
+    {
       "path": "tools/lint_docs.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6263,7 +6275,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f1d8cc8365105d2f057e38c55bb1cfe69f59c6a2c5fa069cbe49ac0f479dbe10"
+      "sha256": "dec92fcd361635279280a5402a83cc2383216547958d0508517a07b9ef59c930"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8021,6 +8033,18 @@
         "upstream_attribution": null
       },
       "sha256": "eb2aedb0d3e647b83f4fc2dc682003d900c57c9ecf43460218bcff926946ae9c"
+    },
+    {
+      "path": "tools/test_library_sweep.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "library-sweep-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c5913eb113457afbcab02d55aa96b29bc42c97aa71e0df31c632fdf778969b03"
     },
     {
       "path": "tools/test_lint_docs.py",
