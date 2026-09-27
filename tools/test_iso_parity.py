@@ -915,12 +915,16 @@ int main(int argc, char **argv) {{
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
             module_path = Path(command[command.index("--module-dir") + 1])
+            identity = json.loads(Path(
+                command[command.index("--title-input-identity-file") + 1]
+            ).read_text(encoding="utf-8"))
             cache_key = nk_cli._current_package_cache_key(
                 manifest,
                 Path(command[1]),
                 hashlib.sha256(eboot_bytes).hexdigest(),
                 module_path,
                 None,
+                identity,
             )
             executable = build_dir / "synthetic.exe"
             image = build_dir / "synthetic_image.bin"
@@ -933,6 +937,8 @@ int main(int argc, char **argv) {{
                 nk_cli._package_codegen_options(manifest, os.environ),
             )
             package = {
+                "format": "nakagawa-aot-package",
+                "schema_version": 2,
                 "cache": cache,
                 "title": {"id": title_id},
                 "inputs": {
@@ -945,6 +951,7 @@ int main(int argc, char **argv) {{
                     }],
                     "psp_header": None,
                 },
+                "title_input_identity": identity,
                 "executable": {
                     "path": executable.name,
                     "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
@@ -961,7 +968,9 @@ int main(int argc, char **argv) {{
             (build_dir / "build-report.json").write_text(
                 json.dumps(report), encoding="utf-8"
             )
-            nk_cli.package_cache.write_completion_manifest(build_dir, cache_key)
+            nk_cli.package_cache.write_completion_manifest(
+                build_dir, cache_key, title_input_identity=identity
+            )
             return subprocess.CompletedProcess(command, 0, "", "")
 
         args = type("BuildArgs", (), {

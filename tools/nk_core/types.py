@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 
 class PrepStage(str, Enum):
@@ -101,6 +101,7 @@ class TitleProfile:
     codegen_profile: str = "default"
     min_iso_bytes: int = 10 * 1024 * 1024  # 10 MB minimum
     game_name: str = ""
+    require_local_compatibility_record: bool = False
 
     def matches_disc_id(self, disc_id: str) -> bool:
         norm = disc_id.strip().upper().replace("-", "").replace("_", "")
@@ -120,10 +121,13 @@ class IsoMetadata:
     volume_id: str = ""
     size_bytes: int = 0
     matched_profile: Optional[TitleProfile] = None
+    param_sfo_facts: Mapping[str, str] = field(default_factory=dict)
+    container_metadata: Mapping[str, Any] = field(default_factory=dict)
+    qualification_error: str = ""
 
     @property
     def is_supported(self) -> bool:
-        return self.matched_profile is not None
+        return self.matched_profile is not None and not self.qualification_error
 
 
 @dataclass

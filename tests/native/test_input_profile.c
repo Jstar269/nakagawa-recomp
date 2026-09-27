@@ -25,7 +25,7 @@ static void test_default_equals_current_mapping(void) {
     NkInputProfile profile;
     nk_input_profile_init_default(&profile);
 
-    assert(profile.schema_version == 1);
+    assert(profile.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
     assert(profile.trigger_threshold == 8192);
     assert(profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 7849);
     assert(profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_outer == 0);
@@ -212,7 +212,7 @@ static void test_strict_load_failures(void) {
     assert(res != NK_OK);
     assert(diag[0] != '\0');
     assert(strstr(diag, "malformed JSON") != NULL || strstr(diag, "offset") != NULL);
-    assert(profile.schema_version == 1);
+    assert(profile.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
     assert(profile.trigger_threshold == NK_INPUT_DEFAULT_TRIGGER_THRESHOLD);
 
     /* 2. Out of range trigger threshold */
@@ -388,8 +388,8 @@ static void test_future_version_refused(void) {
 
     const char *future_json =
         "{\n"
-        "  \"schema_version\": 2,\n"
-        "  \"device\": { \"guid\": \"guid_v2\", \"name_hint\": \"Future Controller\" },\n"
+        "  \"schema_version\": 3,\n"
+        "  \"device\": { \"guid\": \"guid_v3\", \"name_hint\": \"Future Controller\" },\n"
         "  \"calibration\": {\n"
         "    \"trigger_threshold\": 8192,\n"
         "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
@@ -401,9 +401,9 @@ static void test_future_version_refused(void) {
 
     NkResult res = nk_input_profile_parse_json(&profile, future_json, strlen(future_json), diag, sizeof(diag));
     assert(res != NK_OK);
-    assert(strstr(diag, "unsupported future schema_version 2") != NULL);
+    assert(strstr(diag, "unsupported future schema_version 3") != NULL);
     /* Safe defaults fallback */
-    assert(profile.schema_version == 1);
+    assert(profile.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
     assert(profile.trigger_threshold == NK_INPUT_DEFAULT_TRIGGER_THRESHOLD);
 
     /* Write future file to disk and verify loading from disk does not downgrade or overwrite it */
@@ -415,7 +415,7 @@ static void test_future_version_refused(void) {
 
     res = nk_input_profile_load(&profile, file_path, diag, sizeof(diag));
     assert(res != NK_OK);
-    assert(strstr(diag, "unsupported future schema_version 2") != NULL);
+    assert(strstr(diag, "unsupported future schema_version 3") != NULL);
 
     /* Verify the file on disk is still the future version and has not been overwritten */
     f = fopen(file_path, "rb");
@@ -424,7 +424,7 @@ static void test_future_version_refused(void) {
     size_t rb_bytes = fread(readback, 1, sizeof(readback) - 1, f);
     fclose(f);
     readback[rb_bytes] = '\0';
-    assert(strstr(readback, "\"schema_version\": 2") != NULL);
+    assert(strstr(readback, "\"schema_version\": 3") != NULL);
 
     remove(file_path);
     printf("[INPUT_PROFILE_TEST] Subtest 4 PASSED!\n");
@@ -576,6 +576,388 @@ static void test_save_load_round_trip(void) {
 }
 
 /* -----------------------------------------------------------------------------
+ * Subtest 7: Per-Title Map, Selection, and Global Fallback
+ * -------------------------------------------------------------------------- */
+
+static void test_per_title_selection_and_fallback(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 7: per-title map, selection and fallback...\n");
+
+    char diag[256];
+    NkInputProfileFile doc;
+    nk_input_profile_file_init_default(&doc);
+    assert(doc.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
+    assert(doc.title_count == 0);
+
+    /* The global mapping: CROSS on the host south button. */
+    assert(doc.global.psp_buttons[NK_PSP_BTN_CROSS].primary.type == NK_BINDING_HOST_BUTTON);
+    assert(doc.global.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_SOUTH);
+
+    /* A disc's own mapping starts as a validated copy, then differs. The host
+     * buttons it takes are ones the global mapping leaves free, because a
+     * mapping that double-binds a host button is refused, not silently kept. */
+    NkInputProfile tennis;
+    nk_input_profile_init_default(&tennis);
+    tennis.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_GUIDE;
+    tennis.axes[NK_PSP_AXIS_ANALOG_Y].inverted = true;
+    assert(nk_input_profile_file_set_title(&doc, "UCUS98701", &tennis, diag, sizeof(diag)) == NK_OK);
+    assert(doc.title_count == 1);
+    assert(strcmp(doc.title_disc_id[0], "UCUS98701") == 0);
+    assert(doc.global.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_SOUTH);
+
+    /* A second disc gets its own entry: two mappings in one document. */
+    NkInputProfile boxing;
+    nk_input_profile_init_default(&boxing);
+    boxing.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_LEFT_STICK;
+    assert(nk_input_profile_file_set_title(&doc, "ULUS10041", &boxing, diag, sizeof(diag)) == NK_OK);
+    assert(doc.title_count == 2);
+
+    /* Saving and reloading preserves both entries and the global mapping. */
+    const char *file_path = "build/test_per_title_profile.json";
+    assert(nk_input_profile_file_save(&doc, file_path, diag, sizeof(diag)) == NK_OK);
+    assert(nk_platform_file_exists(file_path));
+
+    NkInputProfileFile loaded;
+    assert(nk_input_profile_file_load(&loaded, file_path, diag, sizeof(diag)) == NK_OK);
+    assert(loaded.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
+    assert(loaded.title_count == 2);
+    assert(nk_input_profile_file_find_title(&loaded, "UCUS98701") == 0);
+    assert(nk_input_profile_file_find_title(&loaded, "ULUS10041") == 1);
+    assert(nk_input_profile_file_find_title(&loaded, "ULES99999") == -1);
+    assert(loaded.title[0].psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
+    assert(loaded.title[0].axes[NK_PSP_AXIS_ANALOG_Y].inverted);
+    assert(loaded.title[1].psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+    assert(loaded.global.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_SOUTH);
+
+    /* Selection: a disc with an entry gets it, any other disc gets the global
+     * mapping, and the case of a disc ID does not decide. */
+    char resolve_diag[256];
+    const NkInputProfile *resolved =
+        nk_input_profile_file_resolve(&loaded, "UCUS98701", resolve_diag, sizeof(resolve_diag));
+    assert(resolved == &loaded.title[0]);
+    assert(resolve_diag[0] == '\0');
+    resolved = nk_input_profile_file_resolve(&loaded, "ucus98701", resolve_diag, sizeof(resolve_diag));
+    assert(resolved == &loaded.title[0]);
+    resolved = nk_input_profile_file_resolve(&loaded, "ULES99999", resolve_diag, sizeof(resolve_diag));
+    assert(resolved == &loaded.global);
+    assert(resolve_diag[0] == '\0');
+    resolved = nk_input_profile_file_resolve(&loaded, NULL, resolve_diag, sizeof(resolve_diag));
+    assert(resolved == &loaded.global);
+
+    /* The resolved entries really do hand the guest different buttons. */
+    bool host_buttons[NK_HOST_BUTTON_COUNT];
+    int16_t host_axes[NK_HOST_AXIS_COUNT];
+    memset(host_buttons, 0, sizeof(host_buttons));
+    memset(host_axes, 0, sizeof(host_axes));
+    host_buttons[NK_HOST_BUTTON_LEFT_STICK] = true;
+    assert(nk_input_profile_eval_buttons(resolved /* ULUS10041 */, host_buttons, host_axes) == 0);
+    host_buttons[NK_HOST_BUTTON_LEFT_STICK] = false;
+    host_buttons[NK_HOST_BUTTON_GUIDE] = true;
+    assert(nk_input_profile_eval_buttons(&loaded.global, host_buttons, host_axes) == 0);
+    resolved = nk_input_profile_file_resolve(&loaded, "UCUS98701", resolve_diag, sizeof(resolve_diag));
+    assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == NK_PSP_BTN_CROSS_BIT);
+    host_buttons[NK_HOST_BUTTON_GUIDE] = false;
+    resolved = nk_input_profile_file_resolve(&loaded, "ULUS10041", resolve_diag, sizeof(resolve_diag));
+    assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == 0);
+    host_buttons[NK_HOST_BUTTON_LEFT_STICK] = true;
+    assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == NK_PSP_BTN_CROSS_BIT);
+
+    /* Removing an entry returns that disc to the global mapping. */
+    assert(nk_input_profile_file_remove_title(&loaded, "UCUS98701"));
+    assert(loaded.title_count == 1);
+    resolved = nk_input_profile_file_resolve(&loaded, "UCUS98701", resolve_diag, sizeof(resolve_diag));
+    assert(resolved == &loaded.global);
+    assert(!nk_input_profile_file_remove_title(&loaded, "UCUS98701"));
+
+    remove(file_path);
+    printf("[INPUT_PROFILE_TEST] Subtest 7 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
+ * Subtest 8: Schema 1 Files Still Load (Migration)
+ * -------------------------------------------------------------------------- */
+
+static void test_schema_one_migration(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 8: schema 1 file migrates without loss...\n");
+
+    const char *v1_json =
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"device\": { \"guid\": \"v1_guid\", \"name_hint\": \"Schema One Pad\" },\n"
+        "  \"calibration\": {\n"
+        "    \"trigger_threshold\": 4096,\n"
+        "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 3000 },\n"
+        "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 3000 }\n"
+        "  },\n"
+        "  \"psp_bindings\": [ { \"control\": \"cross\", \"primary\": \"west\" } ],\n"
+        "  \"navigation_bindings\": [ { \"action\": \"confirm\", \"primary\": \"south\" } ]\n"
+        "}";
+
+    char diag[256];
+    NkInputProfileFile doc;
+    assert(nk_input_profile_file_parse_json(&doc, v1_json, strlen(v1_json),
+                                            diag, sizeof(diag)) == NK_OK);
+    /* Migrated: the current schema, no per-title entries, same mapping. */
+    assert(doc.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
+    assert(doc.title_count == 0);
+    assert(strcmp(doc.global.guid, "v1_guid") == 0);
+    assert(strcmp(doc.global.name_hint, "Schema One Pad") == 0);
+    assert(doc.global.trigger_threshold == 4096);
+    assert(doc.global.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 3000);
+    assert(doc.global.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_WEST);
+    assert(doc.global.nav_bindings[NK_NAV_ACTION_CONFIRM].primary.index == NK_HOST_BUTTON_SOUTH);
+    assert(doc.global.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
+
+    /* A per_title map cannot be smuggled into a schema 1 document. */
+    const char *v1_with_titles =
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"device\": { \"guid\": \"v1_guid\", \"name_hint\": \"Schema One Pad\" },\n"
+        "  \"calibration\": {\n"
+        "    \"trigger_threshold\": 4096,\n"
+        "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 3000 },\n"
+        "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 3000 }\n"
+        "  },\n"
+        "  \"psp_bindings\": [],\n"
+        "  \"navigation_bindings\": [],\n"
+        "  \"per_title\": []\n"
+        "}";
+    assert(nk_input_profile_file_parse_json(&doc, v1_with_titles, strlen(v1_with_titles),
+                                            diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "cannot carry a per_title map") != NULL);
+
+    /* Re-saving a migrated document writes the current schema. */
+    const char *migrated_path = "build/test_migrated_profile.json";
+    assert(nk_input_profile_file_save(&doc, NULL, diag, sizeof(diag)) != NK_OK); /* no path */
+    assert(nk_input_profile_file_parse_json(&doc, v1_json, strlen(v1_json),
+                                            diag, sizeof(diag)) == NK_OK);
+    assert(nk_input_profile_file_save(&doc, migrated_path, diag, sizeof(diag)) == NK_OK);
+
+    FILE *f = fopen(migrated_path, "rb");
+    assert(f != NULL);
+    char readback[4096];
+    size_t rb = fread(readback, 1, sizeof(readback) - 1, f);
+    fclose(f);
+    readback[rb] = '\0';
+    assert(strstr(readback, "\"schema_version\": 2") != NULL);
+    assert(strstr(readback, "\"per_title\"") != NULL);
+
+    NkInputProfileFile reloaded;
+    assert(nk_input_profile_file_load(&reloaded, migrated_path, diag, sizeof(diag)) == NK_OK);
+    assert(reloaded.title_count == 0);
+    assert(reloaded.global.trigger_threshold == 4096);
+    remove(migrated_path);
+
+    printf("[INPUT_PROFILE_TEST] Subtest 8 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
+ * Subtest 9: Invalid Per-Title Entries Fail Closed
+ * -------------------------------------------------------------------------- */
+
+static void test_per_title_fail_closed(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 9: invalid per-title entries fail closed...\n");
+
+    char diag[256];
+    NkInputProfileFile doc;
+
+    /* An entry whose bindings conflict with each other is refused, and the whole
+     * document falls back to defaults rather than applying half of it. */
+    const char *conflicting_entry =
+        "{\n"
+        "  \"schema_version\": 2,\n"
+        "  \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "  \"calibration\": {\n"
+        "    \"trigger_threshold\": 8192,\n"
+        "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "  },\n"
+        "  \"psp_bindings\": [],\n"
+        "  \"navigation_bindings\": [],\n"
+        "  \"per_title\": [\n"
+        "    {\n"
+        "      \"disc_id\": \"UCUS98701\",\n"
+        "      \"profile\": {\n"
+        "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "        \"calibration\": {\n"
+        "          \"trigger_threshold\": 8192,\n"
+        "          \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "          \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "        },\n"
+        "        \"psp_bindings\": [\n"
+        "          { \"control\": \"cross\", \"primary\": \"south\" },\n"
+        "          { \"control\": \"circle\", \"primary\": \"south\" }\n"
+        "        ],\n"
+        "        \"navigation_bindings\": []\n"
+        "      }\n"
+        "    }\n"
+        "  ]\n"
+        "}";
+    assert(nk_input_profile_file_parse_json(&doc, conflicting_entry, strlen(conflicting_entry),
+                                            diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "UCUS98701") != NULL);
+    assert(strstr(diag, "conflicting binding") != NULL);
+    assert(doc.title_count == 0);
+    assert(doc.global.trigger_threshold == NK_INPUT_DEFAULT_TRIGGER_THRESHOLD);
+    assert(strcmp(doc.global.guid, "default") == 0);
+
+    /* An out-of-range value inside an entry refuses the document the same way. */
+    const char *out_of_range_entry =
+        "{\n"
+        "  \"schema_version\": 2,\n"
+        "  \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "  \"calibration\": {\n"
+        "    \"trigger_threshold\": 8192,\n"
+        "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "  },\n"
+        "  \"psp_bindings\": [],\n"
+        "  \"navigation_bindings\": [],\n"
+        "  \"per_title\": [\n"
+        "    {\n"
+        "      \"disc_id\": \"ULUS10041\",\n"
+        "      \"profile\": {\n"
+        "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "        \"calibration\": {\n"
+        "          \"trigger_threshold\": 99999,\n"
+        "          \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "          \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "        },\n"
+        "        \"psp_bindings\": [],\n"
+        "        \"navigation_bindings\": []\n"
+        "      }\n"
+        "    }\n"
+        "  ]\n"
+        "}";
+    assert(nk_input_profile_file_parse_json(&doc, out_of_range_entry, strlen(out_of_range_entry),
+                                            diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "ULUS10041") != NULL);
+    assert(strstr(diag, "trigger_threshold") != NULL);
+    assert(doc.title_count == 0);
+
+    /* A disc ID that could name a file outside the profile directory is refused
+     * before it ever reaches the filesystem. */
+    const char *unsafe_disc =
+        "{\n"
+        "  \"schema_version\": 2,\n"
+        "  \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "  \"calibration\": {\n"
+        "    \"trigger_threshold\": 8192,\n"
+        "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "  },\n"
+        "  \"psp_bindings\": [],\n"
+        "  \"navigation_bindings\": [],\n"
+        "  \"per_title\": [\n"
+        "    { \"disc_id\": \"../escape\", \"profile\": {\n"
+        "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "        \"calibration\": {\n"
+        "          \"trigger_threshold\": 8192,\n"
+        "          \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "          \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "        },\n"
+        "        \"psp_bindings\": [],\n"
+        "        \"navigation_bindings\": [] } }\n"
+        "  ]\n"
+        "}";
+    assert(nk_input_profile_file_parse_json(&doc, unsafe_disc, strlen(unsafe_disc),
+                                            diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "disc_id") != NULL);
+    assert(doc.title_count == 0);
+    assert(!nk_input_profile_disc_id_safe("../escape"));
+    assert(!nk_input_profile_disc_id_safe(""));
+    assert(!nk_input_profile_disc_id_safe(".."));
+    assert(nk_input_profile_disc_id_safe("UCUS98701"));
+    assert(!nk_input_profile_disc_id_safe("NUL"));
+    assert(!nk_input_profile_disc_id_safe("con.json"));
+    assert(!nk_input_profile_disc_id_safe("Com1"));
+    assert(!nk_input_profile_disc_id_safe("LPT9.x"));
+    assert(!nk_input_profile_disc_id_safe("UCUS98701."));
+    assert(nk_input_profile_disc_id_safe("COM10"));
+    assert(nk_input_profile_disc_id_safe("CONSOLE"));
+    assert(nk_input_profile_disc_id_safe("TEST00006"));
+
+    /* Two entries for the same disc are ambiguous, so the document is refused. */
+    const char *duplicate_disc =
+        "{\n"
+        "  \"schema_version\": 2,\n"
+        "  \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "  \"calibration\": {\n"
+        "    \"trigger_threshold\": 8192,\n"
+        "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "  },\n"
+        "  \"psp_bindings\": [],\n"
+        "  \"navigation_bindings\": [],\n"
+        "  \"per_title\": [\n"
+        "    { \"disc_id\": \"UCUS98701\", \"profile\": {\n"
+        "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "        \"calibration\": {\n"
+        "          \"trigger_threshold\": 8192,\n"
+        "          \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "          \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "        },\n"
+        "        \"psp_bindings\": [],\n"
+        "        \"navigation_bindings\": [] } },\n"
+        "    { \"disc_id\": \"ucus98701\", \"profile\": {\n"
+        "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+        "        \"calibration\": {\n"
+        "          \"trigger_threshold\": 8192,\n"
+        "          \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+        "          \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+        "        },\n"
+        "        \"psp_bindings\": [],\n"
+        "        \"navigation_bindings\": [] } }\n"
+        "  ]\n"
+        "}";
+    assert(nk_input_profile_file_parse_json(&doc, duplicate_disc, strlen(duplicate_disc),
+                                            diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "duplicate per_title entry") != NULL);
+    assert(doc.title_count == 0);
+
+    /* Storing an invalid mapping into a document is refused, and the document
+     * keeps exactly the entries it had. */
+    nk_input_profile_file_init_default(&doc);
+    NkInputProfile good;
+    nk_input_profile_init_default(&good);
+    good.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_GUIDE;
+    assert(nk_input_profile_file_set_title(&doc, "UCUS98701", &good, diag, sizeof(diag)) == NK_OK);
+    NkInputProfile bad = good;
+    bad.psp_buttons[NK_PSP_BTN_CIRCLE] = bad.psp_buttons[NK_PSP_BTN_CROSS];
+    assert(nk_input_profile_file_set_title(&doc, "ULUS10041", &bad, diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "conflicting binding") != NULL);
+    assert(doc.title_count == 1);
+    assert(nk_input_profile_file_find_title(&doc, "ULUS10041") == -1);
+    assert(nk_input_profile_file_set_title(&doc, "ULUS/10041", &good, diag, sizeof(diag)) != NK_OK);
+    assert(doc.title_count == 1);
+
+    /* The table is bounded: a full document refuses another disc rather than
+     * dropping one silently. */
+    for (int i = 0; doc.title_count < NK_INPUT_MAX_PER_TITLE; i++) {
+        char disc_id[NK_MAX_DISC_ID_LEN];
+        snprintf(disc_id, sizeof(disc_id), "FILL%05d", i);
+        assert(nk_input_profile_file_set_title(&doc, disc_id, &good, diag, sizeof(diag)) == NK_OK);
+    }
+    assert(doc.title_count == NK_INPUT_MAX_PER_TITLE);
+    assert(nk_input_profile_file_set_title(&doc, "ONET00TOOMANY", &good, diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "table is full") != NULL);
+    assert(doc.title_count == NK_INPUT_MAX_PER_TITLE);
+    assert(nk_input_profile_file_find_title(&doc, "UCUS98701") == 0);
+
+    /* A save with an invalid in-memory entry never replaces the file on disk. */
+    const char *keep_path = "build/test_per_title_keep.json";
+    assert(nk_input_profile_file_save(&doc, keep_path, diag, sizeof(diag)) == NK_OK);
+    doc.title[1].psp_buttons[NK_PSP_BTN_CIRCLE] = doc.title[1].psp_buttons[NK_PSP_BTN_CROSS];
+    assert(nk_input_profile_file_save(&doc, keep_path, diag, sizeof(diag)) != NK_OK);
+    assert(strstr(diag, "per-title mapping") != NULL);
+    NkInputProfileFile on_disk;
+    assert(nk_input_profile_file_load(&on_disk, keep_path, diag, sizeof(diag)) == NK_OK);
+    assert(on_disk.title_count == NK_INPUT_MAX_PER_TITLE);
+    remove(keep_path);
+
+    printf("[INPUT_PROFILE_TEST] Subtest 9 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
  * Main Runner
  * -------------------------------------------------------------------------- */
 
@@ -590,6 +972,9 @@ int main(void) {
     test_future_version_refused();
     test_conflict_detection();
     test_save_load_round_trip();
+    test_per_title_selection_and_fallback();
+    test_schema_one_migration();
+    test_per_title_fail_closed();
 
     printf("=================================================================\n");
     printf("ALL HOST INPUT PROFILE TESTS PASSED SUCCESSFULLY!\n");

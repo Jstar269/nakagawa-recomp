@@ -170,6 +170,10 @@
             "type": "string",
             "pattern": "^[A-Z]{4}[0-9]{5}$"
           }
+        },
+        "require_local_compatibility_record": {
+          "description": "Require an exact user-local title input identity record before this revision can build or launch.",
+          "type": "boolean"
         }
       },
       "allOf": [

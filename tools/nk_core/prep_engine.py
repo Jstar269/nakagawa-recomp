@@ -164,7 +164,14 @@ class PreparationEngine:
             emit(PrepStage.INSPECTING_ISO, "Inspecting disc image", completed=0, total=100)
             cancel_token.check()
 
-            iso_meta = inspect_iso(iso, self.registry)
+            iso_meta = inspect_iso(iso, self.registry, user_data_root=self.base_dir)
+            if iso_meta.qualification_error:
+                return PreparationResult(
+                    success=False,
+                    disc_id=iso_meta.disc_id,
+                    error_code="ISO_UNQUALIFIED_REVISION",
+                    error_message=iso_meta.qualification_error,
+                )
             if not iso_meta.is_supported or not iso_meta.matched_profile:
                 return PreparationResult(
                     success=False,

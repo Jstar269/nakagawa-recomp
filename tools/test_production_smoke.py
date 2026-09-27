@@ -40,6 +40,7 @@ from test_iso_parity import (  # noqa: E402
     create_test_iso_with_executables,
 )
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
+from nk_core import package_cache  # noqa: E402
 from nk_core.types import TitleProfile  # noqa: E402
 
 
@@ -856,7 +857,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         report = json.loads(report_bytes)
 
         self.assertEqual(package["format"], "nakagawa-aot-package")
-        self.assertEqual(package["schema_version"], 1)
+        self.assertEqual(package["schema_version"], 2)
         self.assertEqual(package["title"]["id"], self.manifest["id"])
         self.assertEqual(package["runtime"]["abi"], "CpuState")
         self.assertEqual(package["runtime"]["abi_version"], 2)
@@ -901,6 +902,9 @@ class TestProductionSmokePackage(unittest.TestCase):
         user_root = self.root / "player-user-data"
         package_dir = user_root / "packages" / "ULUS99998"
         shutil.copytree(self.build_dir, package_dir)
+        package_cache.write_local_title_input_identity(
+            user_root, package["title_input_identity"]
+        )
         executable_hash = hashlib.sha256((self.fixture_dir / "guest.prx").read_bytes()).hexdigest()
         profile_dir = user_root / "experimental" / "ULUS99998"
         profile_dir.mkdir(parents=True)
