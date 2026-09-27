@@ -54,7 +54,7 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
   fail-closed HLE manifest from `src/rt/hle.c` (`hle_manifest.py` +
   `hle_registry_meta.py`), classification baseline drift, and synthetic malformed-ELF
   fixtures (`import_fixtures.py`, `psp_import_table.py`). `import_audit.py` classifies a
-  developer-supplied private ELF locally — see [`docs/IMPORT_AUDIT.md`](../docs/IMPORT_AUDIT.md).
+  developer-supplied private ELF locally — see [`docs/archive/IMPORT_AUDIT.md`](../docs/archive/IMPORT_AUDIT.md).
 - **`lint_docs.py`** — deterministic offline documentation-freshness gate. It scans tracked Markdown
   and rejects current-facing stale-status patterns while preserving explicitly historical evidence.
   The shared pre-commit/pre-push hooks run it automatically.
@@ -64,7 +64,7 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
   It is deliberately separate from the offline pre-commit hook so lack of network access cannot make
   ordinary local commits nondeterministically fail.
 - **`xb_probe.py <archive.xb> [--lookup <inner-key>]`** — bounded, read-only direct-XB
-  metadata/lookup prototype (see [`docs/ISSUE196_DIRECT_XB.md`](../docs/ISSUE196_DIRECT_XB.md)). It uses synthetic tests in `test_xb_probe.py`,
+  metadata/lookup prototype (see [`docs/archive/ISSUE196_DIRECT_XB.md`](../docs/archive/ISSUE196_DIRECT_XB.md)). It uses synthetic tests in `test_xb_probe.py`,
   never dumps archive contents by default, and does not participate in production HLE lookup.
 - **`extract_xb.py <xbdata-dir>`** — batch XB extractor with no third-party dependency
   (see [`docs/SETUP.md`](../docs/SETUP.md)). The whole pipeline is repository-owned:

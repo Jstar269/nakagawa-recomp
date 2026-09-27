@@ -12,7 +12,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 
 ### Key Accomplishments
 
-1. **Historical UI Baseline Retained**: `docs/ui-baseline/` marks the retired browser screens as historical and records the native player baseline.
+1. **Historical UI Baseline Retained**: `docs/archive/ui-baseline/` marks the retired browser screens as historical and records the native player baseline.
 2. **Standalone Native Player Implemented (`src/player/`)**:
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
@@ -51,7 +51,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 
 ## 2. Visual Baseline vs. Native Player Results
 
-### Baseline Web Interface (Archived in `docs/ui-baseline/`)
+### Baseline Web Interface (Archived in `docs/archive/ui-baseline/`)
 
 - `01_web_player_mode.png`: Web Player Landing
 - `02_web_studio_iso_loader.png`: ISO Loader (Browser drag-and-drop, sandbox-constrained)

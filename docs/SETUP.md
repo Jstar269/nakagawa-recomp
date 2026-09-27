@@ -207,7 +207,7 @@ independently of how many archives were found.
 [libxb](https://github.com/kiwi515/libxb) is not used by the build, runtime, or
 extractor. Its formerly audited `0.2.0` snapshot and the measured comparison boundary
 are retained as historical evidence in
-[`ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md); no optional checkout is required.
+[`ISSUE196_DIRECT_XB.md`](archive/ISSUE196_DIRECT_XB.md); no optional checkout is required.
 
 `third_party/` and `place_game_here/` are local-only and ignored by Git. If you use `tools/validate_assets.py`, its optional `tools/reference_hashes.json` reference file is also local-only; it is not required by the normal build.
 
@@ -488,6 +488,36 @@ Short presses are latched until one PSP controller sample consumes them, so norm
 even while a frame is slow.
 
 The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
+
+### Public synthetic verification routes
+
+These routes verify the toolchain and the pipeline without any proprietary game
+input. Run them from a shell whose `PATH` includes the MSYS2 UCRT64 tools: a
+UCRT64 terminal, or PowerShell after `$env:Path = "C:\msys64\ucrt64\bin;$env:Path"`.
+
+```powershell
+.\nk_manager.ps1 -Action Test            # selftest gate (make selftest)
+mingw32-make player                      # build/nakagawa_player.exe, the native player
+mingw32-make production-smoke            # complete two-phase pipeline smoke test
+mingw32-make platform-ladder             # relocations, scheduler, scalar FPU, filesystem
+mingw32-make cosim-selftest              # differential AOT vs. interpreter cosimulation
+mingw32-make showcase showcase-smoke     # build the showcase demos, then run both headlessly
+```
+
+- The **differential cosimulation harness** verifies semantic parity between
+  AOT-generated code and the fail-closed interpreter floor.
+- The **platform ladder** exercises relocations, scheduler threading, scalar FPU,
+  and filesystem semantics across synthetic workloads.
+- The **production and display smoke fixtures** (`mingw32-make production-smoke`,
+  `mingw32-make display-smoke`) test the complete two-phase build pipeline and
+  display bring-up without proprietary inputs; `mingw32-make display-smoke-player`
+  also launches the fixture through the native player.
+- The **source-owned showcase demos** are project-authored PSP programs that
+  traverse the whole pipeline into validated packages the player discovers on
+  its own ([`SHOWCASE.md`](SHOWCASE.md)).
+
+What hosted CI runs, and what each check proves, is defined in [`CI.md`](CI.md);
+the pipeline itself is described in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ### Player BUILD PACKAGE prerequisites
 
