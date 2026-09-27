@@ -367,10 +367,14 @@ def inspect_iso(
                 if (recorded["manifest"]["id"] != matched.id or
                     prior["id"] != disc_id or prior["region"] != current_region or
                     prior["disc_version"] != version or recorded["param_sfo"] != sfo_facts):
-                    changed = (
-                        "SFO revision changed" if prior["disc_version"] != version
-                        else "manifest/profile or PARAM.SFO facts changed"
-                    )
+                    if prior["disc_version"] != version:
+                        changed = "SFO revision changed"
+                    elif recorded["manifest"]["id"] != matched.id:
+                        changed = "manifest/profile changed"
+                    elif prior["id"] != disc_id or prior["region"] != current_region:
+                        changed = "DISC_ID or region changed"
+                    else:
+                        changed = "PARAM.SFO facts changed"
                     qualification_error = (
                         f"Unqualified revision (SFO DISC_VERSION {version}): {changed}; "
                         "an explicit local compatibility record is required. "

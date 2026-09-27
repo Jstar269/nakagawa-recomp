@@ -1182,7 +1182,7 @@ def build_package(
             header = input_hashes.get("psp_header")
             title_input_identity = package_cache.build_title_input_identity(
                 manifest=normalized,
-                executable_name="main executable",
+                executable_name=game_elf.name,
                 executable_sha256=input_hashes["executable"]["sha256"],
                 modules=input_hashes["modules"],
                 psp_header_sha256=header["sha256"] if isinstance(header, dict) else None,
