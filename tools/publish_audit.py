@@ -944,6 +944,21 @@ def _forbidden_path(path: str) -> str | None:
     return None
 
 
+def _approved_binary_matches(reason: str, disp: str, manifest_comp: dict | None,
+                             sha256: str) -> bool:
+    """A prohibited-extension path passes only as a reviewed release-manifest binary.
+
+    Project-authored build output (for example the profile-zero PSPDEV fixture,
+    #557) may carry a guest-executable suffix. It is accepted only when the release
+    manifest records it as ``approved_binary`` and its bytes match the pinned
+    SHA-256, so a different file under an approved name is still reported.
+    """
+    if not reason.startswith("prohibited extension") or disp != "approved_binary":
+        return False
+    pinned = ((manifest_comp or {}).get("hashes") or {}).get("sha256", "")
+    return bool(pinned) and bool(sha256) and pinned.lower() == sha256.lower()
+
+
 def is_keystore_content(rel: str, text: str | None) -> bool:
     """True when the bytes look like a local-only KeyStore (issue #295).
 
@@ -1583,7 +1598,8 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
 #: into a one-line diagnosis.
 TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg",
                                           ".gif", ".ico", ".pdf", ".zip", ".ttf",
-                                          ".otf", ".woff", ".woff2", ".spv", ".wav"})
+                                          ".otf", ".woff", ".woff2", ".spv", ".wav",
+                                          ".prx", ".pbp", ".elf"})
 
 
 def _text_hygiene_is_text_suffix(path: str) -> bool:
@@ -2492,6 +2508,8 @@ def audit_entries_with_semantics(
             entry_findings.append(f)
 
         reason = _forbidden_path(rel)
+        if reason and _approved_binary_matches(reason, disp, manifest_comp, sha256):
+            reason = None
         if reason:
             f = Finding("PATH", rel, reason)
             entry_findings.append(f)

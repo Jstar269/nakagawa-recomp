@@ -18,6 +18,11 @@
 *.[iI][sS][oO]
 *.[pP][rR][xX]
 *.[pP][bB][pP]
+# Source-owned profile-zero fixture (#557): committed PSPDEV build output that
+# profile-zero-e2e consumes on hosts without PSPDEV. Project-authored bytes from
+# fixtures/profile_zero/{main.c,Makefile}, never retail game data.
+!/fixtures/profile_zero/prebuilt/*.prx
+!/fixtures/profile_zero/prebuilt/*.PBP
 # Firmware font payloads: the runtime loads sceFont glyphs from SR_FONTDIR or from the
 # executable's sibling `font` directory, and copy_build_assets.ps1 stages this directory next to
 # the binary on every build, so font/ is the operator's drop point. The payloads are never
