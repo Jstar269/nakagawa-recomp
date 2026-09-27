@@ -78,6 +78,14 @@ typedef struct SrTitleRuntimeSyncWrapper {
     uint32_t leave;
 } SrTitleRuntimeSyncWrapper;
 
+/* Profile-only Newlib state bindings retained for the HST title. The addresses live
+ * in title_config.c behind the validated HST profile gate; generic runtime code sees
+ * them only through this typed accessor. */
+typedef struct SrTitleReentBindings {
+    uint32_t master_reent_addr;
+    uint32_t guest_thread_table_addr;
+} SrTitleReentBindings;
+
 typedef struct SrTitleRuntimeConfig {
     unsigned    valid;                        /* OR of the SR_TITLE_CFG_* bits above */
     uint32_t    fallback_entry;               /* module-start fallback when the image entry is uncompiled */
@@ -154,6 +162,13 @@ int sr_title_config_runtime_sync(uint32_t *config_base, uint32_t *sema_name_ptr,
 /* Convenience: find the wrapper pair for a specific mode. Returns 1 on hit. */
 int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
                                                   uint32_t *enter, uint32_t *leave);
+/* HST-only legacy Newlib registration addresses. Returns 0 for generic and fixture
+ * profiles. */
+int sr_title_config_reent_bindings(SrTitleReentBindings *out);
+
+/* HST-only #363 compatibility debt: 1 when a returning dispatch CALL must restore
+ * the callee-saved registers. Returns 0 for generic and fixture profiles. */
+int sr_title_config_preserve_callee_saved_at_calls(void);
 
 /* Single-address compat flags. Returns 1 when configured. */
 int sr_title_config_libfont_ready_flag_addr(uint32_t *out);
