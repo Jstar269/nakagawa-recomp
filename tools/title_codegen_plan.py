@@ -1178,6 +1178,11 @@ def build_package(
                     "PACKAGE_INVALID_IDENTITY", f"title input identity is invalid: {exc}"
                 ) from exc
         else:
+            # A direct planner build has no ISO, so it has no PARAM.SFO, container
+            # or DISC_VERSION facts to record; those fields stay null. The consumer
+            # route (nk_cli build-package) inspects the ISO and always passes a full
+            # identity through --title-input-identity-file, and only that route
+            # writes the local record that launch and Doctor compare against.
             disc = normalized.get("disc", {})
             header = input_hashes.get("psp_header")
             title_input_identity = package_cache.build_title_input_identity(
