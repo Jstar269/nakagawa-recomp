@@ -749,8 +749,8 @@ class TestRuntimeDllStaging(unittest.TestCase):
             self.assertEqual(stage.call_args.kwargs["roots"], ("SDL3_ttf.dll",))
 
     def test_package_without_the_font_closure_builds_and_names_the_fallback(self) -> None:
-        """The prerequisite installer (#296) has no SDL3_ttf yet: the package still
-        builds with its required runtimes, and the missing font closure is reported."""
+        """A toolchain without the SDL3_ttf closure still builds the package with its
+        required runtimes: the missing font closure stays a warning, never fatal."""
         import contextlib
         import io
         from unittest import mock

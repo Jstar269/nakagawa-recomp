@@ -536,8 +536,10 @@ errors and offer a retry.
 
 The pinned candidate download set is recorded in
 [`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
-and 25 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3, Vulkan headers/loader,
-and their runtime dependencies), totaling 89,547,599 bytes. Package hashes and
+and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
+readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
+Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
+totaling 100,499,173 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
 python.org's release page. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
