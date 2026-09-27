@@ -105,6 +105,7 @@ class NativePlayerUiTests(unittest.TestCase):
         runtime_ready: bool = False,
         invalid_profile: bool = False,
         drop_invalid_iso: bool = False,
+        env_extra: dict[str, str] | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -134,6 +135,8 @@ class NativePlayerUiTests(unittest.TestCase):
                     "NK_INPUT_PROFILE": str(profile),
                 }
             )
+            if env_extra:
+                env.update(env_extra)
 
             args = [str(PLAYER_EXE), f"--view={view}"]
             event_script = list(events)
@@ -187,6 +190,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 "bmp": bmp,
                 "profile_exists": profile.is_file(),
                 "stdout": completed.stdout,
+                "stderr": completed.stderr,
             }
 
     def test_empty_library_wizard_picker_and_font_confirmation(self) -> None:
@@ -419,6 +423,29 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "library")
         self.assertEqual(frames[-1]["running"], "0")
+
+    def test_font_fallback_reason_is_reported(self) -> None:
+        """Every frame names the active text path and, on fallback, why (#421)."""
+        forced = self.run_player("library", (), env_extra={"NK_UI_NO_TTF": "1"})
+        forced_frames = forced["frames"]
+        assert isinstance(forced_frames, list)
+        for frame in forced_frames:
+            self.assertEqual(frame["font"], "bitmap")
+            self.assertEqual(frame["font_reason"], "forced-off")
+        self.assertIn("NK_UI_NO_TTF", str(forced["stderr"]))
+
+        normal = self.run_player("library", ())
+        normal_frames = normal["frames"]
+        assert isinstance(normal_frames, list)
+        for frame in normal_frames:
+            self.assertIn(frame["font"], ("ttf", "bitmap"))
+            if frame["font"] == "ttf":
+                self.assertEqual(frame["font_reason"], "NONE")
+            else:
+                # A fallback without a named reason is exactly the silent
+                # degradation this contract forbids.
+                self.assertNotEqual(frame["font_reason"], "NONE")
+                self.assertTrue(frame["font_reason"])
 
 
 if __name__ == "__main__":
