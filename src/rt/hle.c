@@ -4833,6 +4833,12 @@ static char *sr_utf8_join_alloc(const char *left, const char *right, char separa
  * sr_ms0_root/sr_ms0_resolve so one guest path maps to one host path. Foreign
  * devices (disc0:, ...) fail closed (NULL). Empty file guests are rejected;
  * empty directory guests resolve to the root itself. */
+#ifdef _WIN32
+#define SR_HOST_PATH_SEP '\\'
+#else
+#define SR_HOST_PATH_SEP '/'
+#endif
+
 static char *host_path_alloc(const char *guest) {
     if (!guest || !guest[0]) return NULL;
     const char *root = sr_ms0_root();
@@ -4842,11 +4848,7 @@ static char *host_path_alloc(const char *guest) {
     size_t cap = root_len + guest_len + 2u;
     char *path = (char *)malloc(cap);
     if (!path) return NULL;
-#ifdef _WIN32
-    if (!sr_ms0_resolve(root, guest, path, cap, '\\')) {
-#else
-    if (!sr_ms0_resolve(root, guest, path, cap, '/')) {
-#endif
+    if (!sr_ms0_resolve(root, guest, path, cap, SR_HOST_PATH_SEP)) {
         free(path);
         return NULL;
     }
@@ -4862,11 +4864,7 @@ static char *host_dir_path_alloc(const char *guest) {
     size_t cap = root_len + guest_len + 2u;
     char *out = (char *)malloc(cap);
     if (!out) return NULL;
-#ifdef _WIN32
-    if (!sr_ms0_resolve(root, guest, out, cap, '\\')) {
-#else
-    if (!sr_ms0_resolve(root, guest, out, cap, '/')) {
-#endif
+    if (!sr_ms0_resolve(root, guest, out, cap, SR_HOST_PATH_SEP)) {
         free(out);
         return NULL;
     }
@@ -8585,13 +8583,17 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                     fprintf(stderr, "host_data: refusing non-regular entry %s\n", child_utf8);
                     ok = 0;
                 } else {
-                    FILE *probe = fopen(child_utf8, "rb");
-                    if (!probe) {
+                    int probe_fd = open(child_utf8, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+                    struct stat probe_st;
+                    int probe_ok = probe_fd >= 0 && fstat(probe_fd, &probe_st) == 0 &&
+                                   S_ISREG(probe_st.st_mode) &&
+                                   probe_st.st_dev == st.st_dev && probe_st.st_ino == st.st_ino;
+                    if (probe_fd >= 0) close(probe_fd);
+                    if (!probe_ok) {
                         fprintf(stderr, "host_data: indexed file readability check failed "
                                         "(entry=%zu errno=%d)\n", index->count, errno);
                         ok = 0;
                     } else {
-                        fclose(probe);
                         int variant = -1;
                         if ((uint64_t)st.st_size > UINT32_MAX) {
                             fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
@@ -9168,19 +9170,22 @@ static int data_loose_file_open(const char *key, FILE **file_out,
     if (!s_data_root_utf8 || !key || !key[0]) return 0;
     char *path = data_loose_path_alloc(key);
     if (!path) return -1;
-    struct stat st, link;
-    int is_link = lstat(path, &link) == 0 && S_ISLNK(link.st_mode);
-    if (stat(path, &st) != 0) {
-        free(path);
-        return 0;
-    }
-    if (S_ISDIR(st.st_mode) || is_link || !S_ISREG(st.st_mode)) {
-        free(path);
+    /* Open first and judge the opened file: O_NOFOLLOW refuses a symlink (ELOOP), fstat
+     * refuses a directory or special file, so no check can be raced by a path swap. */
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int open_errno = errno;
+    free(path);
+    if (fd < 0) return (open_errno == ENOENT || open_errno == ENOTDIR) ? 0 : -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
         return -1;
     }
-    FILE *file = fopen(path, "rb");
-    free(path);
-    if (!file) return -1;
+    FILE *file = fdopen(fd, "rb");
+    if (!file) {
+        close(fd);
+        return -1;
+    }
     if (!sr_stream_size_u32(file, size_out)) {
         fclose(file);
         if (size_out) *size_out = 0;
