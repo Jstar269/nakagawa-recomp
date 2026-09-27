@@ -26,6 +26,12 @@ Results may be submitted using the [Smoke Test Report issue template](https://gi
 2. Use a disposable Windows profile or launch the player with `LOCALAPPDATA` set to a new temporary directory. Do not remove an existing `%LOCALAPPDATA%\Nakagawa` tree.
 3. Verify the isolated `%LOCALAPPDATA%\Nakagawa` directory has no existing settings, library, cached titles, or logs.
 
+The player reads `%LOCALAPPDATA%` first, which is what makes this isolation work. If it is unset,
+the player asks Windows for `FOLDERID_LocalAppData` and then uses `%APPDATA%`;
+it never writes into `%USERPROFILE%` directly. An existing legacy
+`%USERPROFILE%\Nakagawa\data` is reported for manual migration and is not
+moved or deleted by the player.
+
 **Expected result:** Pass if the isolated profile starts empty and the user's existing player data remains untouched.
 
 ### Step 2: Start the player

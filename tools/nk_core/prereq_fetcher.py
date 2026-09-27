@@ -34,13 +34,28 @@ CHUNK_SIZE = 64 * 1024
 def default_data_root() -> Path:
     """Return the player's per-user data root; never place downloads by an ISO."""
     if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.environ.get("USERPROFILE")
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if not base:
-            raise PrerequisiteFetchError("DATA_DIR_UNAVAILABLE: Windows per-user data is unavailable.")
+            raise PrerequisiteFetchError(
+                "DATA_DIR_UNAVAILABLE: set LOCALAPPDATA or APPDATA; USERPROFILE alone "
+                "does not identify an application-data directory."
+            )
         return Path(base) / "Nakagawa" / "data"
+    if sys.platform == "darwin":
+        try:
+            return Path.home() / "Library" / "Application Support" / "NakagawaRecomp" / "data"
+        except RuntimeError as exc:
+            raise PrerequisiteFetchError(
+                "DATA_DIR_UNAVAILABLE: set HOME to locate per-user data."
+            ) from exc
     if os.name == "posix" and os.environ.get("XDG_DATA_HOME"):
         return Path(os.environ["XDG_DATA_HOME"]) / "nakagawa-recomp"
-    return Path.home() / ".local" / "share" / "nakagawa-recomp"
+    try:
+        return Path.home() / ".local" / "share" / "nakagawa-recomp"
+    except RuntimeError as exc:
+        raise PrerequisiteFetchError(
+            "DATA_DIR_UNAVAILABLE: set XDG_DATA_HOME or HOME to locate per-user data."
+        ) from exc
 
 
 def _safe_relative_path(value: str) -> PurePosixPath:

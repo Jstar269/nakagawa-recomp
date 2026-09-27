@@ -40,6 +40,7 @@ from nk_core import (  # noqa: E402
 )
 from nk_core import package_cache  # noqa: E402
 from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key_file_path  # noqa: E402
+from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root  # noqa: E402
 from nk_core.iso_inspect import (  # noqa: E402
     MAX_EXECUTABLE_BYTES,
     IsoInspectionError,
@@ -71,15 +72,10 @@ class PackageBuildError(ValueError):
 
 
 def default_user_data_root() -> Path:
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.environ.get("USERPROFILE")
-        if not base:
-            raise PackageBuildError("Windows user data directory is unavailable.")
-        return Path(base) / "Nakagawa" / "data"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "NakagawaRecomp" / "data"
-    xdg = os.environ.get("XDG_DATA_HOME")
-    return Path(xdg) / "nakagawa-recomp" if xdg else Path.home() / ".local" / "share" / "nakagawa-recomp"
+    try:
+        return default_data_root()
+    except PrerequisiteFetchError as exc:
+        raise PackageBuildError(str(exc)) from exc
 
 
 def _user_data_root(value: Path | None) -> Path:
@@ -1404,9 +1400,12 @@ def cmd_fonts_import(args: argparse.Namespace) -> int:
 
 def cmd_inspect(args: argparse.Namespace) -> int:
     try:
+        user_data_root = _user_data_root(
+            Path(args.root) if args.root is not None else None
+        )
         meta = inspect_iso(args.iso)
         preflight = inspect_compatibility_preflight(
-            args.iso, metadata=meta, runtime_root=Path(args.root)
+            args.iso, metadata=meta, runtime_root=user_data_root
         )
     except Exception as exc:
         sys.stderr.write(f"Error inspecting ISO: {exc}\n")
@@ -2496,7 +2495,7 @@ def main() -> int:
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")
     p_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    p_inspect.add_argument("--root", default=str(default_user_data_root()),
+    p_inspect.add_argument("--root", default=None,
                            help="Player per-user data directory for package, font, and decrypted-input checks")
     p_inspect.set_defaults(func=cmd_inspect)
 
