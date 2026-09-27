@@ -325,7 +325,10 @@ def load_manifest(path: Path, *, max_bytes: int = PUBLIC_MANIFEST_MAX_BYTES) -> 
 
 
 def validate_disc(value: Any, path: str) -> dict[str, Any]:
-    value = obj(value, path, {"id", "region", "revision_policy", "compatible_revisions"})
+    value = obj(value, path, {
+        "id", "region", "revision_policy", "compatible_revisions",
+        "require_local_compatibility_record",
+    })
     require(value, path, "id", "region", "revision_policy")
     disc_id = text(value["id"], f"{path}.id", 9)
     if not DISC_ID_RE.fullmatch(disc_id):
@@ -337,6 +340,9 @@ def validate_disc(value: Any, path: str) -> dict[str, Any]:
     if policy not in {"exact-disc-id", "explicit-compatible-revisions"}:
         fail(f"{path}.revision_policy", "unsupported revision policy")
     result: dict[str, Any] = {"id": disc_id, "region": region, "revision_policy": policy}
+    local_record = value.get("require_local_compatibility_record", False)
+    if boolean(local_record, f"{path}.require_local_compatibility_record"):
+        result["require_local_compatibility_record"] = True
     revisions = value.get("compatible_revisions")
     if policy == "exact-disc-id":
         if revisions is not None:

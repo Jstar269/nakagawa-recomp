@@ -1251,24 +1251,36 @@ static void test_fuzz_package(unsigned iters) {
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
     const char *aot_digest =
-        "e9937d6f8ce6f61a6039e79e815f179ef468e9d8434ecf0ed3bd90b683f2ccba";
+        "b3eb00cb06471b7a44bea245a7ef96fc5b4b79d9a6a8d6ed7ac5c71bca62c89a";
     const char *native_digest =
         "f43a16301ce14295ebe90b2c4ba7d605d681d310f98eeab008b782f4ffdbb492";
+    const char *identity_digest =
+        "b892f46111beb45d527213ad7b44bf1286fcb01a8bad842090946aeba92b65b1";
+    static const char identity_json[] =
+        "{\"container\":null,"
+        "\"disc\":{\"disc_version\":null,\"id\":null,\"region\":null},"
+        "\"format\":\"nakagawa-title-input-identity\","
+        "\"main_executable\":{\"name\":\"EBOOT.BIN\",\"sha256\":"
+        "\"f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d\"},"
+        "\"manifest\":{\"id\":\"synthetic-allegrex-v1\",\"schema_version\":1},"
+        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":1}";
     int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
-        "{\"schema_version\":1,\"aot\":{\"digest\":\"%s\",\"components\":{"
+        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":{"
         "\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
         "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
         "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1}},\"native\":{\"digest\":\"%s\","
+        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}},"
+        "\"native\":{\"digest\":\"%s\","
         "\"components\":{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
         "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}}}",
-        aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest, native_digest, 0, 0);
+        aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest,
+        identity_digest, native_digest, 0, 0);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
-        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":1,\"key\":%s,"
+        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
         "\"current_epoch\":1,\"generated_code_reusable\":true}}",
         cache_key_json);
@@ -1284,12 +1296,13 @@ static void test_fuzz_package(unsigned iters) {
         title_id, cache_json, 0, fixture_sha);
     assert(report_length > 0 && (size_t)report_length < sizeof(report_json));
     int package_length = snprintf(package_json, sizeof(package_json),
-        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,\"cache\":%s,"
+        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":2,\"cache\":%s,"
         "\"title\":{\"id\":\"%s\",\"display_name\":\"Synthetic fixture\","
         "\"kind\":\"retail\",\"manifest_sha256\":\"%064d\","
         "\"protected_digest\":\"%064d\"},"
         "\"inputs\":{\"manifest\":{\"sha256\":\"%064d\"},"
         "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"title_input_identity\":%s,"
         "\"runtime\":{\"abi\":\"CpuState\",\"abi_version\":2,"
         "\"abi_header_sha256\":\"%064d\",\"run_entry\":\"0x00000000\","
         "\"runtime_contract\":null,\"runtime_bindings\":{},"
@@ -1297,7 +1310,8 @@ static void test_fuzz_package(unsigned iters) {
         "\"executable\":{\"path\":\"%s\",\"sha256\":\"%s\","
         "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
         "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
-        cache_json, title_id, 0, 0, 0, fixture_sha, 0, executable_name, fixture_sha);
+        cache_json, title_id, 0, 0, 0, fixture_sha, identity_json, 0,
+        executable_name, fixture_sha);
     assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
     write_file_bytes(package_path, package_json, (size_t)package_length);
     write_file_bytes(report_path, report_json, (size_t)report_length);
@@ -1307,20 +1321,26 @@ static void test_fuzz_package(unsigned iters) {
     snprintf(completion_path, sizeof(completion_path), "%s%ccompletion-manifest.json",
              package_dir, nk_platform_path_separator());
     int completion_length = snprintf(completion_json, sizeof(completion_json),
-        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":1,"
-        "\"status\":\"complete\",\"cache_key\":%s,\"artifacts\":["
+        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":2,"
+        "\"status\":\"complete\",\"cache_key\":%s,\"title_input_identity\":%s,\"artifacts\":["
         "{\"path\":\"package.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"build-report.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"%s\",\"sha256\":\"%s\"},"
         "{\"path\":\"synthetic-allegrex-v1_image.bin\",\"sha256\":\"%s\"}]}\n",
-        cache_key_json, package_hash, report_hash, executable_name, fixture_sha, fixture_sha);
+        cache_key_json, identity_json, package_hash, report_hash, executable_name,
+        fixture_sha, fixture_sha);
     assert(completion_length > 0 && (size_t)completion_length < sizeof(completion_json));
     write_file_bytes(completion_path, completion_json, (size_t)completion_length);
 
     NkRuntimePackageInfo info;
-    assert(nk_title_manifest_validate_aot_package(
-               absolute_root, disc_id, title_id, false, "EBOOT.BIN", 2,
-               &info, reason, sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    NkRuntimePackageStatus initial_status = nk_title_manifest_validate_aot_package(
+        absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, 2,
+        &info, reason, sizeof(reason));
+    if (initial_status != NK_RUNTIME_PACKAGE_OK) {
+        fprintf(stderr, "[FUZZ] package v2 seed rejected (%d): %s\n",
+                (int)initial_status, reason);
+    }
+    assert(initial_status == NK_RUNTIME_PACKAGE_OK);
     assert(info.package_root[0] != '\0');
 
     uint8_t mutated[4096];
@@ -1342,7 +1362,7 @@ static void test_fuzz_package(unsigned iters) {
 
         memset(&info, 0xA5, sizeof(info));
         NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package(
-            absolute_root, disc_id, title_id, false, "EBOOT.BIN", 2,
+            absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, 2,
             &info, reason, sizeof(reason));
         if (status == NK_RUNTIME_PACKAGE_OK) {
             assert(info.package_root[0] != '\0');
@@ -1359,7 +1379,7 @@ static void test_fuzz_package(unsigned iters) {
     remove(completion_path);
     remove(executable_path);
     remove(image_path);
-    printf("[FUZZ] Package v1 JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
+    printf("[FUZZ] Package v2 JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
     fflush(stdout);
 }
 
