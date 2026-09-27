@@ -10,6 +10,12 @@ import os
 import sys
 from dataclasses import dataclass
 
+# The packaged Windows embeddable interpreter can omit this script's directory
+# from its fixed ``._pth`` search path. Restore it before importing local tools.
+_TOOLS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
+
 # Import the local analyzer
 import build_profile
 from analyze import analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans
@@ -2809,6 +2815,7 @@ def main(argv):
         except Unsupported as e:
             reason = str(e).replace('"', "'")
             text = f"void {entry_symbol(a, resume_owners)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
+            text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
             text += f'    sr_unimplemented(0x{a:08x}u, "{reason}");\n}}'
             func_texts.append(text)
             emitted.append(a)
@@ -2856,6 +2863,7 @@ def main(argv):
             except Unsupported as e:
                 reason = str(e).replace('"', "'")
                 text = f"void f_{a:08x}(CpuState *s) {{  /* untranslatable: {reason} */\n"
+                text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
                 text += f'    sr_unimplemented(0x{a:08x}u, "{reason}");\n}}'
                 func_texts.append(text)
                 emitted.append(a)

@@ -30,6 +30,7 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 
 /* Debug framework — included early so sr_w32() can call sr_check_mem_watch(). */
 #include "debug.h"
+#include "flight_recorder.h"
 #include "perf.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector (declarations only) */
 
@@ -381,7 +382,10 @@ static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
     sr_check_metadata_watch(a, v, 1, 1, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 1u, v, pc);
-    if (sr_inrange(a)) *(uint8_t *)SR_HOST(a) = v; else sr_oor(a, v, 1);
+    if (sr_inrange(a)) {
+        *(uint8_t *)SR_HOST(a) = v;
+        SR_WATCH_STORE_IF_ARMED(pc, a, v, 1u);
+    } else sr_oor(a, v, 1);
 }
 static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 2u, pc);
@@ -389,7 +393,10 @@ static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
     sr_check_metadata_watch(a, v, 1, 2, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 2u, v, pc);
-    if (sr_inrange_n(a, 2)) memcpy(SR_HOST(a), &v, sizeof v); else sr_oor(a, v, 1);
+    if (sr_inrange_n(a, 2)) {
+        memcpy(SR_HOST(a), &v, sizeof v);
+        SR_WATCH_STORE_IF_ARMED(pc, a, v, 2u);
+    } else sr_oor(a, v, 1);
 }
 static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 4u, pc);
@@ -397,7 +404,10 @@ static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
     sr_check_metadata_watch(a, v, 1, 4, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 4u, v, pc);
-    if (sr_inrange_n(a, 4)) memcpy(SR_HOST(a), &v, sizeof v); else sr_oor(a, v, 1);
+    if (sr_inrange_n(a, 4)) {
+        memcpy(SR_HOST(a), &v, sizeof v);
+        SR_WATCH_STORE_IF_ARMED(pc, a, v, 4u);
+    } else sr_oor(a, v, 1);
 }
 static inline void sr_w8 (uint32_t a, uint8_t v) { sr_w8_pc(a, v, 0); }
 static inline void sr_w16(uint32_t a, uint16_t v) { sr_w16_pc(a, v, 0); }
