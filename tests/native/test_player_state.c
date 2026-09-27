@@ -1442,6 +1442,9 @@ int main(int argc, char **argv) {
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
         assert(strstr(check->message, "not a usable MIPS ELF32") != NULL);
+        assert(strstr(check->message, "replace it with a valid decrypted EBOOT.elf") != NULL);
+        assert(strstr(check->message, "decryption is in the works") == NULL);
+        assert(check->issue_count == 0);
         assert(remove(decrypted_elf) == 0);
 
         wiz->inspecting_game.is_experimental = true;

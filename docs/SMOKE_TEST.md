@@ -1,6 +1,6 @@
 # Release Smoke Test: Native Player
 
-Status: CURRENT. This document defines the canonical 12-step pass/fail release
+Status: CURRENT. This document defines the canonical 13-step pass/fail release
 smoke test for the Nakagawa Recomp native desktop player (`build/nakagawa_player.exe`
 from a source checkout or `bin/nakagawa_player.exe` from the v0.0.1 package).
 Every release candidate must pass this test on a clean Windows 11 system before
@@ -12,23 +12,21 @@ Results may be submitted using the [Smoke Test Report issue template](https://gi
 
 - Windows 11 x64 with current Vulkan graphics drivers.
 - The compiled native player binary (`mingw32-make player` -> `build/nakagawa_player.exe`), or the packaged `bin/nakagawa_player.exe` with its adjacent `SDL3.dll`.
-- A synthetic fixture disc image or a showcase demo image when available ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309)).
-- For Step 10, the compiled display smoke fixture (`mingw32-make display-smoke`).
+- A source-owned synthetic fixture ISO or a showcase demo ISO ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309)).
+- For **BUILD PACKAGE**, either the package's consent-based prerequisite fetcher and an internet connection, or Python, GCC, and GNU Make already on `PATH`. Step 8 starts with a clean `PATH` and exercises the consent path ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)).
+- For Step 11, the compiled display smoke fixture (`mingw32-make display-smoke`).
 
 ---
 
 ## Numbered smoke test steps
 
-### Step 1: Fresh profile (clean user-data folder)
+### Step 1: Fresh isolated profile
 
 1. Close any running instances of `nakagawa_player.exe`.
-2. Back up and remove the user data and configuration directories at:
-   - Configuration: `%LOCALAPPDATA%\Nakagawa\config`
-   - Data & titles: `%LOCALAPPDATA%\Nakagawa\data`
-   - Logs: `%LOCALAPPDATA%\Nakagawa\logs`
-3. Verify the directory `%LOCALAPPDATA%\Nakagawa` is either absent or contains no pre-existing `settings.json`, `library.json`, or cached titles.
+2. Use a disposable Windows profile or launch the player with `LOCALAPPDATA` set to a new temporary directory. Do not remove an existing `%LOCALAPPDATA%\Nakagawa` tree.
+3. Verify the isolated `%LOCALAPPDATA%\Nakagawa` directory has no existing settings, library, cached titles, or logs.
 
-**Expected result:** Pass if the environment starts completely clean with no residual settings or library state.
+**Expected result:** Pass if the isolated profile starts empty and the user's existing player data remains untouched.
 
 ### Step 2: Start the player
 
@@ -69,31 +67,38 @@ Results may be submitted using the [Smoke Test Report issue template](https://gi
 
 **Expected result:** Pass if the player transitions through `VIEW_INSPECTING`, parses `PSP_GAME/PARAM.SFO` directly in C without external tools, extracts the Title and Disc ID, and displays the corresponding game card.
 
-### Step 7: Encrypted-executable message names the per-title folder
+### Step 7: Built-in decryption uses only the user's own key
 
-1. Inspect the game card for an encrypted disc image where no decrypted executable has yet been staged.
-2. Read the checklist status and instructions displayed on the card.
+1. Use a source-owned synthetic encrypted fixture and its test key if one is available. Do not use a retail ISO or retail key for this public smoke test.
+2. Verify supported executable and module files decrypt to `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypted` only when that local key is supplied.
+3. If the source-owned showcase fixture is the only available image, record this step as **NOT RUN** for decryption: its plaintext executable does not exercise the encrypted path.
 
-**Expected result:** Pass if the checklist displays the fail-closed boundary notice explicitly naming the per-title folder:
-`Encrypted executable: supply decrypted modules at <user data>\titles\<DISC_ID>\decrypted (#295). Automatic decryption is in the works.`
-The path must resolve to `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypted` and must not state that decryption succeeded.
+**Expected result:** Pass only for the source-owned encrypted fixture when the local key decrypts supported files and missing module key entries fail closed by name ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)). No key is bundled. A plaintext showcase ISO is not evidence for retail decryption.
 
-### Step 8: Build package with progress, and cancel
+### Step 8: BUILD PACKAGE and prerequisite consent
 
-1. On a title eligible for package building (such as a source-owned fixture or a showcase demo when available ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309))), click **Build Package**.
-2. Observe the package build screen (`VIEW_BUILDING_PACKAGE`): the 4-stage chips (Preflight, Extract, Compile, Package), the indeterminate progress bar, elapsed time counter, and output log lines.
-3. While building, click **CANCEL BUILD** (or press `Esc`).
+1. With `PATH` limited to Windows system directories, select the source-owned showcase title and click **BUILD PACKAGE**.
+2. Verify that one consent card lists every missing prerequisite, its version, source host, download size, licence, and total before anything is downloaded ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)).
+3. Select **DOWNLOAD** and observe per-item progress. The player downloads only pinned manifest entries from their declared official HTTPS hosts, checks each declared size and SHA-256, installs into the isolated user profile, then resumes the package build.
+4. Observe the 4-stage chips (Preflight, Extract, Compile, Package), elapsed time, output log, and successful package validation. Cancel one build with **CANCEL BUILD** (or `Esc`), verify return to the library, then rebuild and allow the package to finish.
 
-**Expected result:** Pass if the build interface displays real-time progress across the 4 stages, and clicking Cancel stops the build and returns to the library without hanging. (Stopping every process the build started, such as the compiler, is being added under #296.)
+**Expected result:** The clean-PATH route shows the complete consent list before network access; after consent, each pinned artifact verifies, installation reports progress, and BUILD PACKAGE resumes and validates. The cancel/rebuild pass also returns to the library and completes successfully. Any unsupported title or build prerequisite stops at a named card; unsupported generic title intake is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
-### Step 9: Error card wording
+### Step 9: Play the generated package
+
+1. From the showcase title card, click **PLAY** after the package validates.
+2. Observe the Nakagawa game window and verify the source-owned guest reaches its expected screen and responds to its documented controls.
+
+**Expected result:** Pass if the player launches the validated per-user runtime package, the guest presents frames, and unsupported features stop at named boundaries rather than hanging or reporting false success. This proves the synthetic route only; it does not qualify a commercial title ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309)).
+
+### Step 10: Error card wording
 
 1. Select an invalid or corrupted file (e.g. a non-ISO file renamed to `.iso`), or trigger an error state.
 2. Observe the error dialog (`VIEW_ERROR`).
 
 **Expected result:** Pass if the error dialog displays a red badge with the specific error code (e.g. `ISO_CORRUPT`), a clear human-readable title, the fail-closed boundary description naming what is missing and any tracking issue, the log file location (`LOG FILE: ...`), and a focused recovery button (e.g. "Try Another File" or "Return to Library") that restores navigation.
 
-### Step 10: F1 overlay in a running package
+### Step 11: F1 overlay in a running package
 
 1. Launch a running package (such as the source-owned display smoke fixture via `mingw32-make display-smoke-player` from a source checkout, or a showcase demo when available ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309))). The release archive does not contain generated fixture packages.
 2. In the running game window, press the `F1` key.
@@ -102,14 +107,14 @@ The path must resolve to `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypte
 
 **Expected result:** Pass if pressing `F1` toggles an in-game HUD displaying live performance telemetry from `SR_PERF` (presented FPS, frame time in ms, VBlank rate, audio status), and pressing `F1` again dismisses the overlay without affecting game execution.
 
-### Step 11: Quit
+### Step 12: Quit
 
 1. From the library or active window, press `Alt+F4`, click the window close button (`X`), or press `Esc` from the top-level view.
 2. Verify process termination in Task Manager or PowerShell (`Get-Process nakagawa_player -ErrorAction SilentlyContinue`).
 
 **Expected result:** Pass if the process exits cleanly with return code 0, all threads stop immediately, no zombie processes linger, and temporary locks are released.
 
-### Step 12: Log and report locations to attach
+### Step 13: Log and report locations to attach
 
 1. Open the build log folder: `%LOCALAPPDATA%\Nakagawa\data\logs`.
 2. If you started a build, collect:

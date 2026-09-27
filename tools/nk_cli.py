@@ -123,7 +123,7 @@ def _write_private_file(path: Path, data: bytes) -> None:
 
 def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) -> str:
     if selected not in {"EBOOT.BIN", "BOOT.BIN"}:
-        raise PackageBuildError(f"Unsupported selected executable {selected!r}; a plaintext ELF is required (#295).")
+        raise PackageBuildError(f"Unsupported selected executable {selected!r}; broader ISO-to-Play support is in the works (#308).")
     member = ("PSP_GAME", "SYSDIR", selected)
     try:
         file_size = iso_path.stat().st_size
@@ -154,7 +154,7 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
             os.replace(temporary, destination)
             return digest.hexdigest()
     except IsoInspectionError as exc:
-        raise PackageBuildError(f"Selected executable is not a plaintext ELF; decryption support is in the works (#295): {exc}") from exc
+        raise PackageBuildError(f"Selected executable could not be read as a supported plaintext ELF; broader ISO-to-Play support is in the works (#308): {exc}") from exc
     except OSError as exc:
         raise PackageBuildError(f"Could not extract the selected executable to the private cache: {exc}") from exc
 
@@ -306,7 +306,7 @@ def _copy_decrypted_elf(source: Path, destination: Path) -> str:
             temporary.unlink(missing_ok=True)
             raise PackageBuildError(
                 "User-supplied decrypted EBOOT.elf is not a usable MIPS ELF32; "
-                "the encrypted executable boundary is in the works (#295)."
+                "replace it with a valid decrypted executable or remove it to try the local-key boundary."
             )
         if os.name != "nt":
             temporary.chmod(0o600)
@@ -450,7 +450,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             if source_path.stat().st_size <= 0 or source_path.stat().st_size > MAX_EXECUTABLE_BYTES:
                 raise PackageBuildError(
                     f"Required guest PRX {name} exceeds the supported input size (#295); "
-                    "broader module intake is in the works."
+                    "broader module intake is in the works (#308)."
                 )
             try:
                 with source_path.open("rb") as module_stream:
@@ -948,9 +948,9 @@ def _build_package(args: argparse.Namespace, stage_observer,
             module_dir = decrypted_module_dir(user_root, disc_id)
             folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
             raise PackageBuildError(
-                f"Encrypted executable: supply decrypted modules at {folder} (#295). "
-                f"Automatic decryption is in the works; to enable the built-in boundary, "
-                f"supply a local key file at {key_file_path(user_root)}."
+                f"Encrypted executable: supply decrypted modules at {folder} (#295), or "
+                f"a matching local key file at {key_file_path(user_root)} to enable the "
+                "built-in boundary for supported formats. The project ships no keys."
             )
         selected = str(selected_value).upper()
         selected_from_library = entry.get("selected_executable", "")
@@ -1218,7 +1218,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         backend_limits = (
             [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ]
             if public_safe
             else []

@@ -276,6 +276,45 @@ def align_executable(executable: bytes) -> bytes:
     return bytes(patched)
 
 
+class TestReleaseDocumentation(unittest.TestCase):
+    def test_release_docs_match_current_player_boundaries(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        preview = (ROOT / "docs" / "PREVIEW_RELEASE.md").read_text(encoding="utf-8")
+        smoke = (ROOT / "docs" / "SMOKE_TEST.md").read_text(encoding="utf-8")
+        release_notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text(encoding="utf-8")
+
+        self.assertIn("PAC-MAN Championship Edition", readme)
+        self.assertIn("#556", readme)
+        self.assertIn("#308", readme)
+        self.assertNotIn("#285", readme)
+        self.assertIn("in the works", readme.lower())
+        self.assertIn("START SETUP WIZARD", readme)
+        self.assertIn("ADD ANOTHER ISO", readme)
+        self.assertNotIn("click **Add Game**", readme)
+        self.assertNotIn("No second verified title.", readme)
+        self.assertIn("consent once", readme.lower())
+        self.assertNotIn("automatic decryption is in the works", readme.lower())
+        self.assertIn("#548", readme)
+        self.assertIn("#550", readme)
+        self.assertIn("#308", release_notes)
+        self.assertNotIn("#285", release_notes)
+        self.assertIn("PGD-protected content is unsupported", release_notes)
+        self.assertIn("broader ISO-to-Play support is in the works", release_notes)
+        self.assertNotIn("PGD-protected content remains unsupported ([#295]", release_notes)
+        self.assertIn("#547", preview)
+        self.assertNotIn("automatic prerequisite installation is in the works", preview.lower())
+        self.assertIn("-ExcludeOptionalFonts", preview)
+        self.assertIn("tools/stage_runtime_dlls.py --target $Bin", preview)
+        self.assertIn("stage_runtime_dlls.py failed with exit code", preview)
+        self.assertIn("SDL3.dll", release_notes)
+        self.assertIn("SDL3_ttf", release_notes)
+        self.assertIn("#556", release_notes)
+        self.assertNotIn("SDL3_ttf` is optional and is not part of the release package", release_notes)
+        self.assertIn("prerequisite consent", smoke.lower())
+        self.assertIn("#547", smoke)
+        self.assertNotIn("consent-based installation is still in the works", smoke.lower())
+
+
 class TestPlayerPackageRoute(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-player-route-")
@@ -583,8 +622,9 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("PACKAGE_BUILD_ROUTE status=FAIL", encrypted.stdout)
         self.assertIn("[preflight] FAIL: Encrypted executable", encrypted.stdout)
         self.assertIn("supply decrypted modules at", encrypted.stdout)
-        self.assertIn("(#295)", encrypted.stdout)
-        self.assertIn("in the works", encrypted.stdout)
+        self.assertIn("local key file", encrypted.stdout)
+        self.assertNotIn("decryption support is in the works (#295)", encrypted.stdout.lower())
+        self.assertNotIn("automatic decryption is in the works", encrypted.stdout.lower())
         self.assertFalse((encrypted_root / "packages" / DISC_ID).exists())
 
         # (b) A missing prerequisite the manifest itself names: it reads BSS

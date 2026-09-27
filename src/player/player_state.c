@@ -2251,10 +2251,10 @@ void player_app_build_compatibility_preflight(
             char message[512];
             snprintf(message, sizeof(message),
                 "Encrypted executable: EBOOT.elf is not a usable MIPS ELF32; "
-                "supply decrypted modules at %.300s (#295). Automatic decryption is in the works.",
+                "replace it with a valid decrypted EBOOT.elf at %.300s.",
                 decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                                 message, issues, 1);
+                                 message, NULL, 0);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
             char boundary_detail[320] = "";
             char key_path[NK_MAX_PATH + 64];
@@ -2291,9 +2291,14 @@ void player_app_build_compatibility_preflight(
                                      message, issues, 1);
             }
         } else {
+            static const unsigned int path_issues[] = { 308 };
+            char message[512];
+            snprintf(message, sizeof(message),
+                "Encrypted executable: the per-title decrypted-data path could "
+                "not be resolved safely. Correct the user-data path and retry; "
+                "broader ISO-to-Play support is in the works (#308).");
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                "Encrypted executable. Decryption support is in the works (#295).",
-                issues, 1);
+                                 message, path_issues, 1);
         }
     } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,

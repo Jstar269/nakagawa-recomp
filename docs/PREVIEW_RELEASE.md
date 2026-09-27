@@ -35,7 +35,7 @@ The package also includes the public documentation selected by the packaging com
 This is the limitations section, not a footnote:
 
 - **Not an end-user "ISO -> click Play" product release.** This release is an experimental platform milestone, not a consumer emulator. A seamless user workflow is tracked separately under the [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) roadmap.
-- **No one-click retail preparation in this build.** The release cannot auto-decrypt a retail executable, and a package build still needs the developer toolchain (Python, GNU Make, a C compiler). A commercial game therefore needs a plain executable supplied by the user (decryption is out of scope, [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); after that, the in-product staging wizard and the library **BUILD PACKAGE** action are connected ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)), while zero-toolchain end-user recompilation routes (#296) remain under active development.
+- **Generic raw-ISO to Play coverage is still in the works.** The built-in boundary decrypts supported `EBOOT.BIN` and encrypted PRX modules when the user provides a matching local key file ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)); the project ships no keys, missing module key entries fail closed by name, and PGD-protected content remains unavailable within the broader ISO-to-Play work ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). The in-product staging wizard and **BUILD PACKAGE** action are connected ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). On a clean `PATH`, the player offers one consent to download and verify pinned build prerequisites from their declared official hosts ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)); unsupported title profiles and imports remain named boundaries under active work ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Audio output requires a connected audio device.** Public builds drive one SDL3 audio stream per sceAudio channel ([#301](https://github.com/Jstar269/nakagawa-recomp/issues/301), [#411](https://github.com/Jstar269/nakagawa-recomp/pull/411)); with no audio device the game runs silently after one message.
 - **Windows 11 x64 only.** Verified on Windows 11 x64 only. It makes no Linux ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)), macOS ([#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)), or Android ([#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)) support claim.
 - **Synthetic executables prove synthetic contracts only.** They do not prove commercial-title compatibility, complete Allegrex interpreter coverage, software/Vulkan agreement with a PSP, or physical PSP correctness.
@@ -108,8 +108,10 @@ python tools/build_public_export.py --public-safe-profile --export-dir $Source -
 
 New-Item -ItemType Directory -Path $Bin, $PackageDocs -Force | Out-Null
 Copy-Item build\nakagawa_player.exe, build\production-smoke\production_smoke.exe $Bin
-& .\copy_build_assets.ps1 -BuildDir $Bin
+& .\copy_build_assets.ps1 -BuildDir $Bin -ExcludeOptionalFonts
 if ($LASTEXITCODE -ne 0) { throw "copy_build_assets.ps1 failed with exit code $LASTEXITCODE" }
+python tools/stage_runtime_dlls.py --target $Bin
+if ($LASTEXITCODE -ne 0) { throw "stage_runtime_dlls.py failed with exit code $LASTEXITCODE" }
 Copy-Item LICENSE, NOTICE.md (Join-Path $Stage '.')
 Copy-Item README.md (Join-Path $Stage '.')
 Copy-Item docs\PREVIEW_RELEASE.md, docs\SETUP.md, docs\SMOKE_TEST.md, docs\RELEASE_NOTES_v0.0.1.md $PackageDocs
@@ -139,7 +141,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 Write-Output $Zip
 ```
 
-The package contains the native player and synthetic verification binary under `bin/`, only the host runtime DLLs found by `copy_build_assets.ps1`, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself.
+The package contains the native player and synthetic verification binary under `bin/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 

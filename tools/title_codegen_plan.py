@@ -1330,7 +1330,7 @@ def build_package(
         backend_limits = (
             [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ]
             if public_safe
             else []

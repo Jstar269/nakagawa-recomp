@@ -967,7 +967,8 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertIn("supply decrypted modules at", result.stderr)
         self.assertIn(str(Path("titles") / "ULUS99998" / "decrypted"), result.stderr)
         self.assertIn("(#295)", result.stderr)
-        self.assertIn("in the works", result.stderr)
+        self.assertIn("matching local key file", result.stderr)
+        self.assertNotIn("automatic decryption is in the works", result.stderr.lower())
         self.assertFalse((user_root / "cache").exists())
 
     def test_library_cli_extracts_plaintext_elf_before_named_build_boundary(self):
@@ -1042,7 +1043,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         report = json.loads((package_dir / "build-report.json").read_text(encoding="utf-8"))
         self.assertEqual(report.get("backends"), "public")
         self.assertIn("fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)", report.get("limits", []))
-        self.assertIn("PGD-protected data: unavailable (#295)", report.get("limits", []))
+        self.assertIn("PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)", report.get("limits", []))
 
     def test_bad_executable_is_rejected_with_a_named_reason(self):
         bad_elf = self.root / "bad.elf"
@@ -1968,7 +1969,7 @@ class TestProductStatusCopy(unittest.TestCase):
                 self.assertIn(
                     "fonts: import your own PSP fonts; the public PGF reader is "
                     "available for supported inputs (#474)", source)
-                self.assertIn("PGD-protected data: unavailable (#295)", source)
+                self.assertIn("PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)", source)
                 self.assertNotIn("public font reader in the works (#349)", source)
 
 
