@@ -369,7 +369,11 @@ static void audio_fixture_reset(void) {
     s_audio_queue_seq_len = 0;
 }
 
-int gui_on(void) { return 0; }
+static int s_test_gui_on;
+static unsigned long s_test_gui_present_calls;
+static uint32_t s_test_gui_last_addr, s_test_gui_last_stride;
+static int s_test_gui_last_fmt;
+int gui_on(void) { return s_test_gui_on; }
 void gui_pump(void) {}
 uint32_t gui_buttons(void) { return 0u; }
 void gui_consume_button_pulses(void) {}
@@ -379,7 +383,10 @@ void gui_analog(uint8_t *lx, uint8_t *ly) {
 }
 int gui_pad_present(void) { return 0; }
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
-    (void)fbaddr; (void)fmt; (void)stride;
+    s_test_gui_present_calls++;
+    s_test_gui_last_addr = fbaddr;
+    s_test_gui_last_fmt = fmt;
+    s_test_gui_last_stride = stride;
 }
 /* The host-neutral HLE selftest omits the Vulkan backend. With no live GPU target,
  * a fully validated descriptor is correctly classified as guest-authoritative.
@@ -2331,6 +2338,11 @@ static void reset_fixture(void) {
     s_exit_dispatches = 0;
     s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
     s_cpu = &s_cpu_store;
+    s_test_gui_on = 0;
+    s_test_gui_present_calls = 0;
+    s_test_gui_last_addr = 0;
+    s_test_gui_last_fmt = 0;
+    s_test_gui_last_stride = 0;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
     sr_nested_frame_reset();
@@ -8111,6 +8123,7 @@ static void test_refer_thread_status(void) {
  * separate behavioural question needing its own evidence.
  * --------------------------------------------------------------------------- */
 #define NID_SCE_CTRL_READ_BUFFER_POSITIVE 0x1f803938u
+#define NID_SCE_CTRL_PEEK_BUFFER_POSITIVE 0x3a622550u
 #define SCE_CTRL_ERROR_INVALID_SIZE 0x80000104u
 #define CTRL_SAMPLE_BYTES 16u
 #define CTRL_BTN_START 0x0008u
@@ -8132,6 +8145,13 @@ static uint32_t ctrl_dispatch(CpuState *cpu, uint32_t buf, uint32_t nbufs) {
     cpu->r[4] = buf;
     cpu->r[5] = nbufs;
     return sr_syscall(cpu, NID_SCE_CTRL_READ_BUFFER_POSITIVE);
+}
+
+static uint32_t ctrl_peek_dispatch(CpuState *cpu, uint32_t buf, uint32_t nbufs) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = buf;
+    cpu->r[5] = nbufs;
+    return sr_syscall(cpu, NID_SCE_CTRL_PEEK_BUFFER_POSITIVE);
 }
 
 /* Deliver n whole vblanks through the production path: sr_vblank_tick() is what
@@ -8232,6 +8252,30 @@ static void test_ctrl_read_buffer_contract(void) {
 
     expect(sr_hle_test_is_registered(NID_SCE_CTRL_READ_BUFFER_POSITIVE),
            "sceCtrlReadBufferPositive is a registered NID in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE),
+           "sceCtrlPeekBufferPositive is a registered NID in this build");
+
+    /* Peek returns the same fresh controller history on repeated calls and leaves
+     * the production read cursor untouched. */
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+    ctrl_tick(2u);
+    ctrl_fill_guest(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u,
+           "sceCtrlPeekBufferPositive returns fresh samples without blocking");
+    uint8_t peeked[2u * CTRL_SAMPLE_BYTES];
+    memcpy(peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(peeked));
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u &&
+               memcmp(peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(peeked)) == 0,
+           "repeated controller peeks return identical unconsumed history");
+    ctrl_fill_guest(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 65u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "an oversized controller peek is rejected rather than clamped");
+    expect(ctrl_guest_all(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
+           "a rejected controller peek writes no guest byte");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u &&
+               memcmp(peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(peeked)) == 0,
+           "the normal controller read still consumes the history previously peeked");
 
     /* --- no input -------------------------------------------------------- */
     ctrl_env("1", "", "", "");
@@ -9356,6 +9400,7 @@ static void test_nested_frame_handle_hygiene(void) {
 #define NID_SCE_GE_LIST_ENQUEUE             0xab49e76au
 #define NID_SCE_GE_LIST_SYNC                0x03444eb4u
 #define NID_SCE_GE_LIST_UPDATE_STALL_ADDR   0xe0d68148u
+#define NID_SCE_GE_GET_CMD                  0xdc93cfefu
 #define NID_SCE_GE_DRAW_SYNC                0xb287bd61u
 #define NID_SCE_GE_SET_CALLBACK             0xa4fc06a4u
 #define NID_SCE_GE_UNSET_CALLBACK           0x05db22ceu
@@ -9506,6 +9551,8 @@ static void test_ge_guest_sentinel(void) {
            "sceGeSetCallback is registered in this build");
     expect(sr_hle_test_is_registered(NID_SCE_GE_UNSET_CALLBACK),
            "sceGeUnsetCallback is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_GET_CMD),
+           "sceGeGetCmd is registered in this build");
 
     /* 2. eDRAM query contracts */
     memset(&cpu, 0, sizeof(cpu));
@@ -9669,6 +9716,15 @@ static void test_ge_guest_sentinel(void) {
     cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "sceGeDrawSync reports drawing complete");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x01u; /* GE_VADDR: last vertex pointer written by the source-owned list */
+    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == (vtx_base + 0x100u & 0x00ffffffu),
+           "sceGeGetCmd returns the last executed 24-bit command value");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x100u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == 0x800001feu,
+           "sceGeGetCmd rejects a command index outside the 8-bit command register range");
 
     /* 5. Pixel & Boundary assertions */
     uint32_t *fb = (uint32_t *)SR_HOST(fb_base);
@@ -10425,6 +10481,20 @@ static void test_dmac_semantics(void) {
 static void test_display_framebuf_latch(void) {
     reset_fixture();
     sr_hle_init();
+
+    /* A source-owned HLE guest that configures a valid framebuffer reaches the
+     * same GUI presenter call the player uses.  An address whose first byte is
+     * valid but whose complete scanout span crosses eDRAM is refused there. */
+    s_test_gui_on = 1;
+    expect(display_set(0x04000000u, 512, 3, 0) == 0u,
+           "a source-owned guest can configure a framebuffer through production HLE");
+    expect(s_test_gui_present_calls == 1u && s_test_gui_last_addr == 0x04000000u &&
+               s_test_gui_last_fmt == 3 && s_test_gui_last_stride == 512u,
+           "a valid guest framebuffer is submitted through the production GUI presenter");
+    expect(display_set(0x04180000u, 512, 3, 0) == 0u &&
+               s_test_gui_present_calls == 1u,
+           "a framebuffer span crossing eDRAM is not counted as a GUI submission");
+    s_test_gui_on = 0;
 
     const uint32_t out_addr = 0x09000000u;
     const uint32_t out_stride = out_addr + 4u;

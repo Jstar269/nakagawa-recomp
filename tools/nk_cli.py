@@ -1473,6 +1473,7 @@ def _new_bringup_report() -> dict:
         "unsupported_imports": [],
         "runtime_imports": [],
         "runtime_output_kind": "NOT_RUN",
+        "presentation": {"status": "NOT_RUN", "frame_submissions": 0},
         "process_exit_code": None,
         "counts": {
             "functions": None,
@@ -1545,9 +1546,11 @@ def _bringup_human_summary(report: dict) -> str:
         if uses_cfw_original else ""
     )
     if report["failure_class"] == "NONE":
+        submissions = report["presentation"]["frame_submissions"]
         return (
             f"{cfw_prefix}Bring-up reached {report['reached_stage']}; launch "
-            f"{report['exit_classification'].lower()}."
+            f"{report['exit_classification'].lower()}; GUI presenter received "
+            f"{submissions} frame submission(s). Visual contents are not verified."
         )
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
         return (
@@ -1590,6 +1593,8 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (runtime telemetry did not verify a PSP kernel import)"
     elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
+    elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
+        detail = " (no validated framebuffer was submitted to the GUI presenter)"
     elif report["failure_class"] == "LAUNCH_FAILED":
         kind = report.get("runtime_output_kind")
         if kind == "EMPTY":
@@ -1728,6 +1733,24 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
     return "EMPTY" if not output.strip() else "OTHER"
+
+
+_HOST_PRESENT_SUBMITTED = re.compile(
+    r"^HOST_PRESENT_SUBMITTED f=\d+ buf=0x[0-9a-fA-F]{8} "
+    r"fmt=[0-3] stride=\d+$"
+)
+
+
+def _set_bringup_presentation(report: dict, output: str) -> None:
+    """Count validated calls from the runtime into its GUI presenter."""
+    submissions = sum(
+        1 for line in output.splitlines()
+        if _HOST_PRESENT_SUBMITTED.fullmatch(line.strip())
+    )
+    report["presentation"] = {
+        "status": "FRAME_SUBMITTED" if submissions else "NO_FRAME_SUBMISSIONS",
+        "frame_submissions": submissions,
+    }
 
 
 def _flight_has_hle_import(path: Path | None) -> bool | None:
@@ -2212,7 +2235,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             package["runtime"]["run_entry"], "none",
             str(instruction_trace_path) if instruction_trace_path else "none",
             "--sched",
+            "--gui",
         ]
+        env["SR_PRESENT_TRACE"] = "1"
         timeout = max(1, min(int(args.launch_timeout), 120))
         process = subprocess.Popen(
             launch_command, cwd=package_dir, env=env,
@@ -2221,6 +2246,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
+            _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
             report["runtime_output_kind"] = _runtime_output_kind(
                 launch_output, report["runtime_imports"]
@@ -2254,8 +2280,14 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                             int((time.perf_counter() - started) * 1000),
                         )
                     else:
-                        _set_bringup_stage(report, "launch", "PASS",
-                                           int((time.perf_counter() - started) * 1000))
+                        if report["presentation"]["frame_submissions"] == 0:
+                            _fail_bringup(
+                                report, "launch", "NO_FRAME_SUBMISSIONS", [297, 308],
+                                int((time.perf_counter() - started) * 1000),
+                            )
+                        else:
+                            _set_bringup_stage(report, "launch", "PASS",
+                                               int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
                 if "no available video device" in folded or "video driver" in folded:
@@ -2287,7 +2319,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                               int((time.perf_counter() - started) * 1000))
         except subprocess.TimeoutExpired:
             process.kill()
-            process.communicate()
+            launch_output, _ = process.communicate()
+            _set_bringup_presentation(report, launch_output)
             report["exit_classification"] = "TIMED_OUT"
             _fail_bringup(report, "launch", "LAUNCH_TIMEOUT", [297],
                           int((time.perf_counter() - started) * 1000))

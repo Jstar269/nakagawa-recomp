@@ -489,6 +489,10 @@ def write_experimental_profile(
                 offset += count
         executable_sha256 = digest.hexdigest()
         elf_sha256 = executable_sha256
+    if executable_load_address is not None:
+        if executable_entry > 0xFFFFFFFF - executable_load_address:
+            raise IsoInspectionError("relocatable executable entry exceeds the guest address space")
+        executable_entry += executable_load_address
     manifest["executable"]["entry"] = executable_entry
     if executable_load_address is not None:
         manifest["executable"].update({
