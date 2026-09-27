@@ -170,6 +170,7 @@
     "third_party/licenses/vulkan-loader/LICENSE.txt",
     "third_party/licenses/winpthreads/COPYING.txt",
     "THIRD_PARTY_LICENSES/Brotli.txt",
+    "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt",
     "THIRD_PARTY_LICENSES/FreeType-FTL.txt",
     "THIRD_PARTY_LICENSES/GPL-2.0.txt",
     "THIRD_PARTY_LICENSES/GLib.txt",
