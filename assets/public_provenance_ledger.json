@@ -9606,14 +9606,5 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
-    "candidate_tree": "d209c13abe5ea1ef2fe04b3badc48ff30fcf1845",
-    "refreshed_paths": [
-      ".pre-commit-config.yaml",
-      "tools/test_ci_paths.py"
-    ]
-  }
+  ]
 }
