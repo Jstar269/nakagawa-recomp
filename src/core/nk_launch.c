@@ -712,7 +712,8 @@ NkRuntimePackageStatus nk_launch_validate_runtime_package(
     }
     return nk_title_manifest_validate_aot_package(
         user_data_root, game->disc_id, game->title_id, game->is_experimental,
-        game->selected_executable, SR_CPUSTATE_ABI_VERSION, out_info,
+        game->selected_executable, game->disc_version,
+        SR_CPUSTATE_ABI_VERSION, out_info,
         reason, reason_size);
 }
 

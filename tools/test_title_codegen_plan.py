@@ -191,9 +191,16 @@ class TitleCodegenPlanTests(unittest.TestCase):
         ), mock.patch.object(
             package_cache, "compiler_target", return_value="synthetic-target"
         ):
+            identity = package_cache.build_title_input_identity(
+                manifest={"id": "synthetic-cache-test", "schema_version": 1},
+                executable_name="EBOOT.BIN",
+                executable_sha256="2" * 64,
+                modules=[],
+            )
             title_codegen_plan._cache_key_for_build(
-                input_hashes={}, plan=self.plan(), selected_optional=set(),
-                funcs_per_chunk=64, public_safe=True, compiler_name="gcc",
+                input_hashes={}, title_input_identity=identity, plan=self.plan(),
+                selected_optional=set(), funcs_per_chunk=64, public_safe=True,
+                compiler_name="gcc",
             )
             nk_cli._current_package_cache_key(
                 self.synthetic,
@@ -201,6 +208,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
                 "synthetic-executable-hash",
                 None,
                 None,
+                identity,
                 public_safe=True,
             )
 

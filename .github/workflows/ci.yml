@@ -691,8 +691,12 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 platform-ladder
 
       # The two #309 manifests use this manifest-driven guest -> ProgramImage ->
-      # AOT package -> production runtime route. The gate names PSPDEV/PSPSDK as
-      # an external fixture toolchain and reports an explicit SKIP when absent.
+      # AOT package -> production runtime route (#557). Hosted runners carry no
+      # PSPDEV/PSPSDK, so the gate executes the route from the committed fixture
+      # in fixtures/profile_zero/prebuilt; on hosts with PSPDEV it additionally
+      # rebuilds the fixture and fails if any byte differs. Its only remaining
+      # SKIP is a missing host multimedia dependency (Vulkan SDK / SDL3), printed
+      # with the reason.
       - name: Build and run profile-zero production routes
         if: matrix.part == 'main'
         shell: msys2 {0}
