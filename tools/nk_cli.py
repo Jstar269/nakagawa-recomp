@@ -119,7 +119,7 @@ def _write_private_file(path: Path, data: bytes) -> None:
 
 def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) -> str:
     if selected not in {"EBOOT.BIN", "BOOT.BIN"}:
-        raise PackageBuildError(f"Unsupported selected executable {selected!r}; a plaintext ELF is required (#295).")
+        raise PackageBuildError(f"Unsupported selected executable {selected!r}; broader ISO-to-Play support is in the works (#308).")
     member = ("PSP_GAME", "SYSDIR", selected)
     try:
         file_size = iso_path.stat().st_size
@@ -150,7 +150,7 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
             os.replace(temporary, destination)
             return digest.hexdigest()
     except IsoInspectionError as exc:
-        raise PackageBuildError(f"Selected executable is not a plaintext ELF; decryption support is in the works (#295): {exc}") from exc
+        raise PackageBuildError(f"Selected executable could not be read as a supported plaintext ELF; broader ISO-to-Play support is in the works (#308): {exc}") from exc
     except OSError as exc:
         raise PackageBuildError(f"Could not extract the selected executable to the private cache: {exc}") from exc
 
@@ -302,7 +302,7 @@ def _copy_decrypted_elf(source: Path, destination: Path) -> str:
             temporary.unlink(missing_ok=True)
             raise PackageBuildError(
                 "User-supplied decrypted EBOOT.elf is not a usable MIPS ELF32; "
-                "the encrypted executable boundary is in the works (#295)."
+                "replace it with a valid decrypted executable or remove it to try the local-key boundary."
             )
         if os.name != "nt":
             temporary.chmod(0o600)
@@ -446,7 +446,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             if source_path.stat().st_size <= 0 or source_path.stat().st_size > MAX_EXECUTABLE_BYTES:
                 raise PackageBuildError(
                     f"Required guest PRX {name} exceeds the supported input size (#295); "
-                    "broader module intake is in the works."
+                    "broader module intake is in the works (#308)."
                 )
             try:
                 with source_path.open("rb") as module_stream:
@@ -954,9 +954,10 @@ def _build_package(args: argparse.Namespace, stage_observer,
             module_dir = decrypted_module_dir(user_root, disc_id)
             folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
             raise PackageBuildError(
-                f"Encrypted executable: supply decrypted modules at {folder} (#295). "
-                f"Automatic decryption is in the works; to enable the built-in boundary, "
-                f"supply a local key file at {key_file_path(user_root)}."
+                f"Encrypted executable: supply decrypted modules at {folder} (#295), or "
+                f"a matching local key file at {key_file_path(user_root)} to enable the "
+                "built-in boundary for supported formats. The project ships no keys; "
+                "broader ISO-to-Play support is in the works (#308)."
             )
         selected = str(selected_value).upper()
         selected_from_library = entry.get("selected_executable", "")
@@ -1298,7 +1299,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         backend_limits = (
             [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ]
             if public_safe
             else []
@@ -1629,6 +1630,38 @@ def _write_bringup_report(report: dict, path: Path) -> None:
     os.replace(temporary, path)
 
 
+def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list[dict]) -> None:
+    """Write raw unsupported import NIDs for the private compatibility sweep only."""
+    resolved_work_dir = work_dir.resolve(strict=False)
+    resolved_path = path.expanduser().resolve(strict=False)
+    if not resolved_path.is_relative_to(resolved_work_dir):
+        raise ValueError("private sweep import report must stay under the bring-up work directory")
+    rows = []
+    for item in imports:
+        nid = item.get("nid")
+        if isinstance(nid, str):
+            digits = nid[2:] if nid[:2].casefold() == "0x" else ""
+            if (
+                not digits
+                or len(digits) > 8
+                or any(char not in "0123456789abcdefABCDEF" for char in digits)
+            ):
+                continue
+            nid = int(digits, 16)
+        if not isinstance(nid, int) or isinstance(nid, bool) or not 0 <= nid <= 0xFFFFFFFF:
+            continue
+        rows.append({
+            "library": item.get("library"),
+            "nid": f"0x{nid:08x}",
+            "nid_name": item.get("name"),
+        })
+    payload = {"schema_version": 1, "unsupported_imports": rows}
+    _write_private_file(
+        resolved_path,
+        (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+    )
+
+
 def _bringup_human_summary(report: dict) -> str:
     uses_cfw_original = any(
         check.get("code") == "MODIFIED_DUMP_CFW_LOADER"
@@ -1952,9 +1985,15 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     """Run the consumer route while writing only schema-checked safe evidence."""
     report = _new_bringup_report()
     report_path = Path(args.report).expanduser().resolve(strict=False)
+    private_sweep_import_report: Path | None = None
     try:
         work_dir = _user_data_root(Path(args.work_dir))
         work_dir.mkdir(parents=True, exist_ok=True)
+        requested_private_report = getattr(args, "private_sweep_import_report", None)
+        if requested_private_report is not None:
+            private_sweep_import_report = Path(requested_private_report).expanduser().resolve(strict=False)
+            if not private_sweep_import_report.is_relative_to(work_dir):
+                raise PackageBuildError("Private sweep import report must stay under the bring-up work directory.")
         user_root = _user_data_root(work_dir / "user-data")
         if not user_root.is_relative_to(work_dir):
             raise PackageBuildError("Bring-up user data escaped the selected work directory.")
@@ -2204,6 +2243,16 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         report["counts"]["functions"] = int(analysis_summary["analyzed_functions"])
         report["counts"]["instructions"] = _count_instructions(sources)
         report["unsupported_imports"] = _public_import_rows(unsupported_imports)
+        if private_sweep_import_report is not None:
+            try:
+                _write_private_sweep_import_report(
+                    private_sweep_import_report, work_dir, unsupported_imports
+                )
+            except OSError:
+                # The private sidecar is optional telemetry. The sweep records
+                # that its NID detail was unavailable without changing the
+                # production bring-up result.
+                pass
     except Exception:
         _fail_bringup(report, "analyze", "ANALYSIS_FAILED", [296],
                       int((time.perf_counter() - started) * 1000))
@@ -2494,6 +2543,8 @@ def main() -> int:
                            help="Hard launch limit in seconds (1..120; default 20)")
     p_bringup.add_argument("--instruction-trace", action="store_true",
                            help="Write guest instruction trace under --work-dir")
+    p_bringup.add_argument("--private-sweep-import-report", type=Path, default=None,
+                           help=argparse.SUPPRESS)
     p_bringup.set_defaults(func=cmd_bringup)
 
     args = parser.parse_args()

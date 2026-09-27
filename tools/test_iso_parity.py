@@ -835,7 +835,8 @@ int main(int argc, char **argv) {{
         cli_executable = next(check for check in cli_checks
                               if check["code"] == "EXECUTABLE")
         self.assertIn(str(decrypted_dir), cli_executable["message"])
-        self.assertIn("in the works", cli_executable["message"])
+        self.assertIn("matching local key file", cli_executable["message"])
+        self.assertNotIn("automatic decryption is in the works", cli_executable["message"].lower())
         self.assertIn("#295", cli_executable["message"])
 
         decrypted_dir.mkdir(parents=True)
@@ -848,6 +849,8 @@ int main(int argc, char **argv) {{
                              if check["code"] == "EXECUTABLE")
         self.assertEqual(invalid_check["status"], "UNSUPPORTED")
         self.assertIn("invalid", invalid_check["message"].lower())
+        self.assertNotIn("in the works", invalid_check["message"].lower())
+        self.assertEqual(invalid_check["issues"], [])
 
         eboot.write_bytes(build_plain_mips_elf())
         valid = inspect_compatibility_preflight(
@@ -1074,7 +1077,7 @@ int main(int argc, char **argv) {{
                     "backends": "public" if public else "private",
                     "limits": [
                         "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                        "PGD-protected data: unavailable (#295)",
+                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
                     ] if public else [],
                 }),
                 encoding="utf-8",
@@ -1101,13 +1104,13 @@ int main(int argc, char **argv) {{
             self.assertEqual(report.get("backends"), "public")
             self.assertEqual(report.get("limits"), [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ])
             completion = json.loads((user_root / "packages" / disc_id / "completion-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(completion.get("backends"), "public")
             self.assertEqual(completion.get("limits"), [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ])
 
         # Test private mode when private backends are present

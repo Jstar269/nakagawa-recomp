@@ -896,6 +896,78 @@ class LongPathDiagnosticTests(unittest.TestCase):
         self.assertEqual(results[0].status, "WARN")
         self.assertNotEqual(results[0].status, "FAIL")
 
+    def test_long_paths_measure_root_plus_longest_tracked_path(self) -> None:
+        """A synthetic root whose longest TRACKED path is the risk, not the build output.
+
+        The build-output estimate here is short, so only the tracked path can push
+        the total past the advisory margin. This is the case a single hard-coded
+        build path cannot see: the repository is short but one tracked directory
+        is deep.
+        """
+        # Anchored at the filesystem root so the length is the same on every
+        # host: a "C:\\" literal is relative on POSIX and would absorb the cwd.
+        # The name is sized so the total lands between the advisory limit (240)
+        # and MAX_PATH (260) whatever the anchor's length ("C:\\" or "/").
+        anchor = Path.cwd().anchor
+        root = Path(anchor) / ("r" * (99 - len(anchor)))
+        deep_tracked = Path("src") / "rt" / "gpu_sdl3vk" / ("d" * 120) / "shader.c"
+        report = nk_doctor.Report(root, "build")
+        with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+             mock.patch.object(nk_doctor_checks, "longest_tracked_relative_path", return_value=None):
+            nk_doctor_checks.check_long_paths(report, root, tracked_rel=deep_tracked)
+        results = [r for r in report.results if r.code == "LONG_PATHS"]
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertEqual(result.status, "WARN")
+        self.assertEqual(result.metadata["deepest_source"], "tracked path")
+        self.assertEqual(result.metadata["deepest_relative"], deep_tracked.as_posix())
+        self.assertTrue(result.metadata["exceeds_advisory"])
+        # Compared through resolve() because the doctor measures the resolved
+        # root: on POSIX, ``Path("C:\\...")`` is relative, so an unresolved
+        # join would drop the working-directory prefix the doctor adds.
+        expected_total = len(str(root.resolve() / deep_tracked))
+        self.assertEqual(result.metadata["total_len"], expected_total)
+        self.assertIn("advisory margin", result.summary)
+        # The remediation must name the exact path at risk and the shortfall.
+        self.assertIn(str(root.resolve() / deep_tracked), result.remediation)
+        self.assertIn(
+            str(result.metadata["total_len"] - nk_doctor_checks.LONG_PATH_ADVISORY_LIMIT),
+            result.remediation,
+        )
+
+    def test_long_paths_enumerate_tracked_paths_from_the_checkout(self) -> None:
+        """The tracked side is measured from the real checkout, not a guess."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.assertIsNone(nk_doctor_checks.longest_tracked_relative_path(root))
+            subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+            deepest = Path("src") / "deep" / ("x" * 150) / "file.c"
+            target = root / deepest
+            target.parent.mkdir(parents=True)
+            target.write_text("int x;\n", encoding="ascii")
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+            found = nk_doctor_checks.longest_tracked_relative_path(root)
+            self.assertIsNotNone(found)
+            self.assertEqual(found.as_posix(), deepest.as_posix())
+
+    def test_long_paths_stay_advisory_without_a_checkout(self) -> None:
+        """No local checkout means the build-output estimate is used on its own."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report = nk_doctor.Report(root, "build")
+            with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
+                nk_doctor_checks.check_long_paths(report, root)
+            results = [r for r in report.results if r.code == "LONG_PATHS"]
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].status, "PASS")
+            self.assertEqual(results[0].metadata["deepest_source"], "build output")
+            self.assertEqual(
+                results[0].metadata["deepest_relative"],
+                nk_doctor_checks.DEEPEST_EXPECTED_BUILD_PATH.as_posix(),
+            )
+
 
 class TypographyRuntimeCheckTests(unittest.TestCase):
     """The player's SDL3_ttf runtime is a reported workspace fact, never silent (#421)."""

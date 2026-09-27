@@ -276,7 +276,10 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
 
     def test_library_card_states_include_experimental_and_ready(self) -> None:
-        missing = self.run_player("library", ())
+        # The ordinary library auto-discovers built showcase packages beside
+        # the test executable. Use the in-memory staged-but-unbuilt card so the
+        # missing-runtime state is stable whether or not `make showcase` ran.
+        missing = self.run_player("ready-library", (), runtime_ready=False)
         missing_frame = missing["frames"][0]  # type: ignore[index]
         self.assertEqual(missing_frame["selected_prepared"], "0")
         self.assertEqual(missing_frame["selected_package_status"], "1")

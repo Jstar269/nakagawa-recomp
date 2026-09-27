@@ -67,7 +67,24 @@ EXTRA_ELF_ENV_ARG  = $(if $(strip $(GAME_EXTRA_ELFS)),--env-extra-elfs,)
 #     outside that code page arrives transliterated (CJK becomes "?").
 # Both leave a nonexistent path, on which the tools fail closed rather than opening a
 # different file.
+# Declared values need no explicit export to reach recipes: a command-line value
+# is passed through automatically, and an environment value passes with it. The
+# `?=` default is different. Exporting it unconditionally put eboot.elf into every
+# recipe's environment, so a make nested inside any repository recipe (the suite
+# under `make test` or `make contrib-check`) saw origin GAME_ELF = environment,
+# which GAME_INPUT_TRACKED below reads as "the operator declared an input", and
+# the guest-input stamp was demanded for a lane that declares none. Export the
+# default only when a file backs it -- exactly the wildcard branch of
+# GAME_INPUT_TRACKED -- so a default that does not exist stays invisible to
+# recipes and to every nested make, while a default that does exist is available
+# to --env-elf the same way a declared value is.
+ifeq ($(origin GAME_ELF),file)
+ifneq ($(wildcard $(GAME_ELF)),)
 export GAME_ELF
+endif
+else
+export GAME_ELF
+endif
 export GAME_PSP_HEADER
 
 # Make separates list elements with spaces, which is itself a legal filename character,
@@ -228,6 +245,21 @@ endif
 LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS) $(POSIX_RUNTIME_LIBS)
 
 BUILD_DIR  ?= build/$(GAME_NAME)
+# Refuse a BUILD_DIR GNU Make cannot represent, before any target name is derived
+# from it and before the parse-time mkdir below runs. Make splits a target or
+# prerequisite name on whitespace, so a BUILD_DIR containing a space silently
+# becomes several targets: `clean` then removes the FIRST fragment -- a directory
+# the caller never named -- and the parse-time mkdir creates directories named
+# after the remaining fragments in the repository root. Failing closed here names
+# the boundary instead of corrupting the tree.
+#
+# The repository ROOT may contain spaces freely: BUILD_DIR defaults to the
+# relative `build/$(GAME_NAME)`, which carries none. tools/title_codegen_plan.py
+# already picks a Make-safe build root (NK_BUILD_ROOT, then the 8.3 short name)
+# for every route that accepts an operator-chosen output directory (#296).
+ifneq ($(subst $(SPACE),,$(BUILD_DIR)),$(BUILD_DIR))
+$(error BUILD_DIR '$(BUILD_DIR)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a relative BUILD_DIR under the repository root (the default `build/<game>`), or set NK_BUILD_ROOT to a folder without spaces so tools/title_codegen_plan.py can pick a Make-safe build root (issue #296).)
+endif
 # The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
 # that produced them, not to a fixed title. Without this the runtime wrote them to a
 # literal build/hst/, so every non-HST build either scribbled into another title's

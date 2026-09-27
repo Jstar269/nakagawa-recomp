@@ -832,7 +832,7 @@ committed.
 | `SR_PARTITION_TOP=HEX` | Override partition top |
 | `SR_CALLCOUNT=1` | Enable call counting |
 | `SR_CBLOG=1` | Log callback create/register/notify/dispatch to stderr |
-| `SR_PGD_KEYS=PATH` | Not read by public runtime builds: PGD-protected data is unsupported and the PGD backend is excluded ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)) |
+| `SR_PGD_KEYS=PATH` | Not read by public runtime builds: PGD-protected data is unsupported and the PGD backend is excluded; broader ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)) |
 
 There is no `SR_HLE_CONTINUE` switch. In a scheduled game run, an unimplemented NID is fatal;
 returning zero would turn an unknown operation into phantom success. Register the NID with real

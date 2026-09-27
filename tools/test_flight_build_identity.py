@@ -277,7 +277,11 @@ class MakeIdentityResolutionTests(unittest.TestCase):
         environment.update(env or {})
         result = subprocess.run(
             [make, "--no-print-directory", "-p", "-n", "clean-preview",
-             f"BUILD_DIR={(ROOT / 'build' / 'identity-probe').as_posix()}", *overrides],
+             # Relative and space-free: BUILD_DIR must stay a form GNU Make can
+             # put in a target name, or the Makefile's whitespace guard fails
+             # closed -- which is exactly what a checkout under a path with
+             # spaces would do to an absolute BUILD_DIR (#368).
+             "BUILD_DIR=build/identity-probe", *overrides],
             cwd=ROOT,
             capture_output=True,
             text=True,
