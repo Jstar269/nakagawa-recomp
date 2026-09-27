@@ -208,11 +208,24 @@ LINK_MAP_ARG = $(if $(strip $(LINK_MAP)),$(LINK_MAP_VALUE),)
 ifeq ($(OS),Windows_NT)
 VULKAN_LIB_NAME := -lvulkan-1
 WIN_ONLY_LIBS   := -lmfplat -lgdi32 -lole32 -lwinmm
+# -Wl,--no-insert-timestamp keeps the PE image byte-reproducible on the
+# MinGW/COFF linker. GNU ld publishes no such option -- an ELF link is already
+# timestamp-free -- so the flag is Windows-only and the Linux link line carries
+# nothing in its place rather than a rejected option.
+REPRODUCIBLE_LINK_FLAG := -Wl,--no-insert-timestamp
 else
 VULKAN_LIB_NAME := -lvulkan
 WIN_ONLY_LIBS   :=
+REPRODUCIBLE_LINK_FLAG :=
+# MinGW resolves the maths routines from the C runtime it always links, so the
+# Windows link line never names libm. A GNU/ELF link must name it: the runtime's
+# transcendental maths (GE rasterizer, VFPU, ATRAC3+ DSP) references libm
+# symbols and ld refuses an implicit dependency ("DSO missing from command
+# line"). Listed here, after the project libraries, exactly as -lm is on any
+# other GNU link line.
+POSIX_RUNTIME_LIBS := -lm
 endif
-LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS)
+LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS) $(POSIX_RUNTIME_LIBS)
 
 BUILD_DIR  ?= build/$(GAME_NAME)
 # The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
@@ -547,6 +560,13 @@ PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 PLAYER_VULKAN_INC   := -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
 PLAYER_VULKAN_LIB   :=
 EXE_EXT             := .exe
+# Post-link asset copy for the runtime `compile` link. On Windows this is the
+# existing PowerShell step, so the Windows link line stays byte-identical. On
+# Linux there is no SDL3.dll to stage and the runtime resolves font/ through
+# its own executable-anchored root, so the step is absent rather than emulated
+# by a second copy script. A missing asset is reported by the runtime itself
+# (font_load / data walk), never silently ignored here.
+ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_EXTRA_LIBS   :=
@@ -554,6 +574,7 @@ PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 PLAYER_VULKAN_INC   := $(VULKAN_INC_FLAGS)
 PLAYER_VULKAN_LIB   :=
 EXE_EXT             :=
+ASSET_COPY_STEP     =
 endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
@@ -729,6 +750,7 @@ PUBLIC_TARGETS := \
 	perf-benchmark \
 	showcase \
 	showcase-smoke \
+	showcase-linux \
 	display-smoke \
 	display-smoke-run \
 	display-smoke-gui \
@@ -746,6 +768,7 @@ PUBLIC_TARGETS := \
 	platform-ladder-title2 \
 	platform-ladder-title2-negative \
 	platform-ladder-clean \
+	profile-zero-e2e \
 	cosim-selftest \
 	cosim-selftest-run \
 	cosim-selftest-clean \
@@ -834,6 +857,7 @@ HELP_DESCRIPTION_production-smoke-gap := run the public AOT-gap dispatch smoke t
 HELP_DESCRIPTION_perf-benchmark := run the public source-owned SR_PERF benchmark matrix and overhead check
 HELP_DESCRIPTION_showcase := build packaged source-owned PSP showcase demos (requires PSPDEV)
 HELP_DESCRIPTION_showcase-smoke := run bundled demos headlessly with telemetry checks
+HELP_DESCRIPTION_showcase-linux := build and smoke the showcase demos on this POSIX host (Linux CI gate)
 HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run the display smoke fixture
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
@@ -851,6 +875,7 @@ HELP_DESCRIPTION_platform-ladder-fs-negative := run the negative filesystem fixt
 HELP_DESCRIPTION_platform-ladder-title2 := run the second-title platform fixture
 HELP_DESCRIPTION_platform-ladder-title2-negative := run the negative second-title fixture
 HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
+HELP_DESCRIPTION_profile-zero-e2e := run the manifest-driven profile-zero production route
 HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
 HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
 HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
@@ -1108,6 +1133,20 @@ showcase:
 showcase-smoke: showcase
 	$(PYTHON) fixtures/showcase/showcase.py smoke
 
+# The same showcase route on a POSIX host, with no WSL hop: PSPDEV builds the
+# guest PRX directly, `make all` (GAME_NAME/GAME_ELF/... exactly as the package
+# route drives it) links the runtime with gcc/SDL3/Vulkan, and the smoke runs
+# both demos headlessly. This is the Linux CI gate: it is the one target that
+# proves the recompiled runtime builds AND boots AND reaches its first frame on
+# Linux rather than only compiling.
+#
+# NK_SHOWCASE_DEMO_ROOT / NK_SHOWCASE_BUILD_ROOT move the staged output out of
+# the repository for a source tree that is not a Git checkout; a real checkout
+# uses the default ignored build/ tree.
+showcase-linux:
+	$(PYTHON) fixtures/showcase/showcase.py build
+	$(PYTHON) fixtures/showcase/showcase.py smoke
+
 # display-smoke builds the guest and asserts the presented framebuffer word
 # headlessly. display-smoke-gui is the same image in the SDL3/Vulkan window and
 # is deliberately NOT part of any aggregate gate: it needs a display.
@@ -1284,7 +1323,7 @@ platform-ladder-fs:
 
 # Negative control: same executable and guest, but the payload file is absent.
 # sceIoOpen must fail visibly and the guest must store the failure sentinel.
-platform-ladder-fs-negative:
+platform-ladder-fs-negative: platform-ladder-fs
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs --negative
 
 platform-ladder-title2:
@@ -1320,6 +1359,9 @@ platform-ladder-title2-negative:
 
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
+
+profile-zero-e2e:
+	$(PYTHON) -m unittest tools.test_profile_zero_e2e -v
 
 # The generator the codegen rule runs. Overridable so the cosim mutation
 # campaign can mutate the GENERATOR as well as the interpreter -- a
@@ -1493,7 +1535,12 @@ $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_setting
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
+# Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
+# the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
+# PATH) use the readable TTF font instead of the bitmap fallback.
+.PHONY: player
 player: $(PLAYER_EXE)
+	$(PYTHON) tools/stage_runtime_dlls.py --target $(patsubst %/,%,$(dir $(PLAYER_EXE)))
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
@@ -1597,7 +1644,7 @@ endif
 -include $(DEP_FILES)
 
 compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) -Wl,--no-insert-timestamp -o $(BUILD_DIR)/$(GAME_NAME).exe \
+	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
 		$(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(CHUNK_OBJS) \
 		$(RT_GE_O) \
@@ -1605,8 +1652,8 @@ compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUI
 		$(ATRAC3P_OBJS) \
 		$(BUILD_DIR)/atrac3p_bridge.o \
 		$(LIBS)
-	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
-	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME).exe')"
+	$(ASSET_COPY_STEP)
+	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT)')"
 
 clean:
 	$(PYTHON) -c "import shutil, sys; from pathlib import Path; p = Path(r'$(BUILD_DIR)'); [shutil.rmtree(p) if p.is_dir() else p.unlink()] if p.exists() else None"
@@ -1860,7 +1907,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nest
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
@@ -1887,13 +1934,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/archive_vfs.c src/core/nk_xb.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
@@ -1918,12 +1965,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/archive_vfs.c src/core/nk_xb.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)

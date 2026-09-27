@@ -4,7 +4,7 @@
   "schema_version": 1,
   "source_snapshot_date": "2026-09-25",
   "platform": "Windows x64, UCRT64",
-  "total_download_bytes": 89547599,
+  "total_download_bytes": 100499173,
   "artifacts": [
     {
       "id": "cpython-embed-amd64",
@@ -46,6 +46,54 @@
       },
       "license": "GPL-3.0-or-later AND GPL-2.0-or-later AND LGPL-3.0-or-later AND LGPL-2.0-or-later",
       "license_metadata": "spdx:GPL-3.0-or-later AND GPL-2.0-or-later AND LGPL-3.0-or-later AND LGPL-2.0-or-later",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
+      "id": "mingw-w64-ucrt-x86_64-brotli",
+      "name": "mingw-w64-ucrt-x86_64-brotli",
+      "version": "1.2.0-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-brotli-1.2.0-1-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-brotli-1.2.0-1-any.pkg.tar.zst",
+      "size_bytes": 453708,
+      "sha256": "9cc89665496ea504751476eafba15c71c554aaf3004babc2004f7c07ffd60514",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "MIT",
+      "license_metadata": "spdx:MIT",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
+      "id": "mingw-w64-ucrt-x86_64-bzip2",
+      "name": "mingw-w64-ucrt-x86_64-bzip2",
+      "version": "1.0.8-3",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-bzip2-1.0.8-3-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-bzip2-1.0.8-3-any.pkg.tar.zst",
+      "size_bytes": 78369,
+      "sha256": "932da2c63b23e6a4448757eb36fb198a9e51121874408270afe2c91bada513c7",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "bzip2-1.0.6",
+      "license_metadata": "custom",
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
@@ -100,6 +148,30 @@
       "status": "ready"
     },
     {
+      "id": "mingw-w64-ucrt-x86_64-freetype",
+      "name": "mingw-w64-ucrt-x86_64-freetype",
+      "version": "2.14.3-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-freetype-2.14.3-1-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-freetype-2.14.3-1-any.pkg.tar.zst",
+      "size_bytes": 630262,
+      "sha256": "f502bdf9ed07aa95e223e1aba17ce8cb2d975aab5066eec17a2d7dc4fb8a1c20",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "GPL-2.0-or-later OR FTL",
+      "license_metadata": "spdx:GPL-2.0-or-later OR FTL",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
       "id": "mingw-w64-ucrt-x86_64-gcc",
       "name": "mingw-w64-ucrt-x86_64-gcc",
       "version": "16.2.0-4",
@@ -148,6 +220,30 @@
       "status": "ready"
     },
     {
+      "id": "mingw-w64-ucrt-x86_64-glib2",
+      "name": "mingw-w64-ucrt-x86_64-glib2",
+      "version": "2.88.3-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-glib2-2.88.3-1-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-glib2-2.88.3-1-any.pkg.tar.zst",
+      "size_bytes": 5402253,
+      "sha256": "0733a674ecf5282088158b8e458cb2ad3359bf42fb7dbe9561b4bcfe0267f5bf",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "LGPL-2.1-or-later",
+      "license_metadata": "spdx:LGPL-2.1-or-later",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
       "id": "mingw-w64-ucrt-x86_64-gmp",
       "name": "mingw-w64-ucrt-x86_64-gmp",
       "version": "6.3.0-2",
@@ -166,6 +262,54 @@
       },
       "license": "NOASSERTION",
       "license_metadata": "LGPL3\nGPL",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
+      "id": "mingw-w64-ucrt-x86_64-graphite2",
+      "name": "mingw-w64-ucrt-x86_64-graphite2",
+      "version": "1.3.15-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-graphite2-1.3.15-1-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-graphite2-1.3.15-1-any.pkg.tar.zst",
+      "size_bytes": 152553,
+      "sha256": "34ca1f88bff10ef182a6b1c8e5622d5029f13b05748e361af13b552b422ea849",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "LGPL-2.1-or-later OR MPL-2.0 OR GPL-2.0-or-later OR MIT",
+      "license_metadata": "spdx:LGPL-2.1-or-later",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
+      "id": "mingw-w64-ucrt-x86_64-harfbuzz",
+      "name": "mingw-w64-ucrt-x86_64-harfbuzz",
+      "version": "14.3.0-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-harfbuzz-14.3.0-1-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-harfbuzz-14.3.0-1-any.pkg.tar.zst",
+      "size_bytes": 2277894,
+      "sha256": "cb4750f307d8f23a64a40e0115c2dd0d32c731299590e983f146d157cace68ef",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "MIT",
+      "license_metadata": "spdx:MIT",
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
@@ -286,6 +430,30 @@
       },
       "license": "LGPL-2.1-or-later\ndocumentation:spdx:GPL-3.0-or-later",
       "license_metadata": "spdx:LGPL-2.1-or-later\ndocumentation:spdx:GPL-3.0-or-later",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
+      "id": "mingw-w64-ucrt-x86_64-libpng",
+      "name": "mingw-w64-ucrt-x86_64-libpng",
+      "version": "1.6.58-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-libpng-1.6.58-1-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-libpng-1.6.58-1-any.pkg.tar.zst",
+      "size_bytes": 406891,
+      "sha256": "bbfb6eb6246b01df90d82d6cff84f0a4e98dad029a4a2753898c96fcaadb66c7",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "libpng-2.0",
+      "license_metadata": "custom",
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
@@ -436,6 +604,30 @@
       "status": "ready"
     },
     {
+      "id": "mingw-w64-ucrt-x86_64-pcre2",
+      "name": "mingw-w64-ucrt-x86_64-pcre2",
+      "version": "10.47-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-pcre2-10.47-1-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-pcre2-10.47-1-any.pkg.tar.zst",
+      "size_bytes": 1435291,
+      "sha256": "839bc4642f94c44e94e331c9092c6d186b1edc54dfdf6a81cb2062f638417023",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "BSD-3-Clause",
+      "license_metadata": "spdx:BSD-3-Clause",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
       "id": "mingw-w64-ucrt-x86_64-sdl3",
       "name": "mingw-w64-ucrt-x86_64-sdl3",
       "version": "3.4.16-1",
@@ -450,6 +642,30 @@
         "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
         "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
         "method": "official repository database %SHA256SUM%, database signature verified against the official MSYS2 keyring",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      },
+      "license": "Zlib",
+      "license_metadata": "spdx:Zlib",
+      "archive_format": "tar.zst",
+      "install_subdir": "msys64",
+      "notice_location": "archive ucrt64/share/licenses/",
+      "status": "ready"
+    },
+    {
+      "id": "mingw-w64-ucrt-x86_64-sdl3-ttf",
+      "name": "mingw-w64-ucrt-x86_64-sdl3-ttf",
+      "version": "3.2.2-3",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-sdl3-ttf-3.2.2-3-any.pkg.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-ucrt-x86_64-sdl3-ttf-3.2.2-3-any.pkg.tar.zst",
+      "size_bytes": 114353,
+      "sha256": "a1cab94de3659790ee2f6deee6bdfe9e407e380f5d3df32464b11ca0b5071d0e",
+      "sha256_source": {
+        "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
+        "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
+        "method": "official repository database %SHA256SUM%, read from the local pacman sync mirror (ucrt64.db) at the pinned version",
         "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
       },
       "license": "Zlib",

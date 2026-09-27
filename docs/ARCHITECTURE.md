@@ -98,11 +98,13 @@ entry set without silently selecting a winner. `canonical_cfg_json()` is stable 
 fixtures and build-cache comparisons. Neither report is an optimizing IR or a production
 HST switch.
 
-`assets/titles/synthetic.json` carries the source-owned `psp-core-v1` /
-`profile-zero-v1` contract and its acceptance scaffold. Its source program and
-build path point to `fixtures/pspdev_phase5`; the acceptance cases deliberately
-separate `SOURCE_SHAPE`, `PRODUCTION_DISPATCH`, and `PRODUCTION_HELPER` evidence.
-The scaffold is not a claim that the complete profile-zero route is runnable yet.
+`assets/titles/synthetic.json` and `synthetic-title2.json` carry the source-owned
+`psp-core-v1` / `profile-zero-v1` contract. Their shared PSPDEV fixture points to
+`fixtures/profile_zero`; each acceptance case names `profile-zero-e2e` as its
+proving gate and retains its declared evidence class. That gate drives both
+manifests through ProgramImage, analyzer/AOT package generation, and the headless
+production runtime. The fixtures cover the public source route only; broader
+title intake remains tracked in issue #309.
 Generated output from a source-owned profile may be public in principle, but retail
 or private-input-derived AOT remains local, ignored, and outside publication.
 

@@ -176,8 +176,8 @@ typedef enum {
 } IcGroup;
 
 /* Source-owned synthetic guest addresses. Chosen clear of the fixtures already in
- * this file (0x00200000 time-domain block) and of the scheduler's guest counters
- * (0x0031101c / 0x0031105c / 0x00331b80). Nothing here comes from the title. */
+ * this file (0x00200000 time-domain block) and other test-owned regions. Nothing
+ * here comes from a title profile. */
 enum {
     IC_SCRATCH  = 0x00240000u,  /* generic out-parameter word */
     IC_LWWORK   = 0x00240100u,  /* lightweight-mutex work area */

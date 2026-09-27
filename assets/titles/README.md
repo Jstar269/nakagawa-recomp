@@ -54,9 +54,11 @@ names the key to add.
 
 - `synthetic.json` is a source-owned public fixture for schema and tool testing.
   It also carries the Wave-1 `psp-core-v1` / `profile-zero-v1` contract,
-  source-program/build binding, and an acceptance scaffold. The scaffold marks
-  the full runtime route as planned rather than claiming a runnable end-to-end
-  product path.
+  and points its source/build binding at `fixtures/profile_zero`. All seven
+  acceptance cases are implemented with the proving gate named as
+  `profile-zero-e2e`; the manifest is runnable after the route passed for both
+  source-owned fixtures. Broader title intake remains tracked by
+  [#309](https://github.com/Jstar269/nakagawa-recomp/issues/309).
 - `pspdev-phase5.json` is a second wholly source-owned fixture whose sources live
   in `fixtures/pspdev_phase5` (a standard PSPDEV/PSPSDK `BUILD_PRX=1` module). It
   is deliberately configured *differently* from `synthetic.json` — the canonical
@@ -95,13 +97,12 @@ no build path can turn a required family into a header full of disabled macros.
 Titles that omit the key are unaffected.
 
 - `synthetic-title2.json` is a third source-owned fixture added for the
-  generic-title planning proof: it uses a deliberately distinct synthetic
-  address family (`0x0A4xxxxx`, never HST's `0x003xxxxx` or the other
-  synthetics' `0x088xxxxx`), a distinct module name (`synthetic2.prx` at
-  `0x0A800000`), and disjoint `dispatch_aliases`/`callback_terminators`.
-  It validates that the generic planner accepts a non-HST identity without
-  adding a title-specific conditional, inheriting HST constants, or reading
-  private inputs. Publication-safe and deterministic.
+  generic-title planning proof: it uses a distinct supported synthetic address
+  family (`0x090xxxxx`), a distinct module name (`synthetic2.prx` at
+  `0x09400000`), and disjoint `dispatch_aliases`/`callback_terminators`. It
+  builds the shared profile-zero source at this manifest's own address family.
+  `profile-zero-e2e` asserts the same seven-case route without generic-core
+  title branches.
 
 - `display-smoke.json` is a fourth source-owned fixture, and the only one whose
   runtime is *built* under the layout `src/core/nk_launch.c` resolves

@@ -1,10 +1,29 @@
 # Build and development setup
 
-The supported and tested core build is Windows 11 x64; the host-neutral object
-gate is a portability probe, not Linux support. For an ISO/player workflow, start with
+Windows 11 x64 remains the supported desktop baseline. Linux also has a bounded,
+headless showcase route for the runtime. For an ISO/player workflow, start with
 [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). For development, see
 [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) and
 [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The native player is the repository's only user interface.
+
+## Linux headless showcase
+
+Linux can build and run the two source-owned showcase packages through the runtime.
+The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.8,
+and PSPDEV v20260501 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
+3.4.8 release commit and verifies the PSPDEV archive against
+[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
+
+Run the showcase from the repository root:
+
+```bash
+make CC=gcc showcase-linux
+```
+
+The smoke selects SDL's dummy video and audio drivers and runs without a desktop or
+GPU. This confirms the Linux runtime builds and runs the showcase fixtures; general
+consumer ISO compatibility and interactive Linux presentation remain in the works
+([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)).
 
 ## Supported development baseline
 
@@ -45,7 +64,7 @@ Install [MSYS2](https://www.msys2.org/), open its **UCRT64** terminal, and run:
 
 ```bash
 pacman -Syu
-pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-vulkan-headers mingw-w64-ucrt-x86_64-vulkan-loader
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-sdl3-ttf mingw-w64-ucrt-x86_64-vulkan-headers mingw-w64-ucrt-x86_64-vulkan-loader
 ```
 
 Also install:
@@ -80,13 +99,17 @@ Any other absolute path must come from the repository root, an environment
 variable, or an explicit flag. `tools/test_workspace_paths.py` fails the tracked
 tree when a user-profile path or a workspace root appears in a first-party file.
 
-### Runtime DLLs (SDL3.dll & vulkan-1.dll)
+### Runtime DLLs (SDL3.dll, SDL3_ttf.dll & vulkan-1.dll)
 
-The native player (`nakagawa_player.exe`) requires `SDL3.dll` and the host Vulkan loader (`vulkan-1.dll`). In a release archive, the matching `SDL3.dll` is already beside `bin/nakagawa_player.exe`; leave both files in `bin/`. In a source checkout, `copy_build_assets.ps1` copies SDL3 and any imported MinGW runtime DLLs beside the built executable and generates their third-party notices.
+The native player (`nakagawa_player.exe`) requires `SDL3.dll` and the host Vulkan loader (`vulkan-1.dll`). It also loads `SDL3_ttf.dll` at run time for the readable UI font: `mingw32-make player` stages `SDL3_ttf.dll` and its full runtime dependency closure beside `build\nakagawa_player.exe` (`tools/stage_runtime_dlls.py`, with `SDL3_TTF_DLL` as the override in the same pattern as `SDL3_DLL`), so the same TTF font path is used whether the player is started from Explorer, a plain `cmd.exe` with no MSYS2 on `PATH`, a built title package, or the release layout. In a release archive, the matching `SDL3.dll`, `SDL3_ttf.dll` and its closure are already beside `bin/nakagawa_player.exe`; leave those files in `bin/`. In a source checkout, `copy_build_assets.ps1` copies SDL3 and any imported MinGW runtime DLLs beside the built game executable and generates their third-party notices; the player target stages its own typography runtime the same way. Without `SDL3_ttf.dll` the player still runs, but falls back to the 8x8 SDL bitmap font and logs the failing step once to stderr — the fallback is never silent — and the workspace doctor reports it as `RUNTIME_SDL3_TTF`.
 
 #### 1. SDL3.dll
 
 For a source build, install the MSYS2 UCRT64 SDL3 package described above. Do not copy the DLL into the repository root; the build asset script resolves the toolchain copy and stages it beside the player. For a release package, use the SDL3 DLL already present in `bin/`.
+
+#### 1a. SDL3_ttf.dll (UI typography)
+
+Install the MSYS2 UCRT64 `sdl3-ttf` package (with the `sdl3` package above). `mingw32-make player` then stages `SDL3_ttf.dll` and the mechanically resolved dependency closure (FreeType, HarfBuzz, Graphite2, libpng, zlib, bzip2, Brotli, GLib, libintl, libiconv, PCRE2 and the MinGW runtimes) beside `build\nakagawa_player.exe`, together with their licence texts in `THIRD_PARTY_NOTICES/`. Set `SDL3_TTF_DLL` to an explicit `SDL3_ttf.dll` file to override the toolchain copy, exactly like `SDL3_DLL`. `NK_UI_NO_TTF=1` still forces the bitmap fallback, for example on CI machines without the library.
 
 #### 2. vulkan-1.dll
 
@@ -188,7 +211,7 @@ independently of how many archives were found.
 [libxb](https://github.com/kiwi515/libxb) is not used by the build, runtime, or
 extractor. Its formerly audited `0.2.0` snapshot and the measured comparison boundary
 are retained as historical evidence in
-[`ISSUE196_DIRECT_XB.md`](ISSUE196_DIRECT_XB.md); no optional checkout is required.
+[`ISSUE196_DIRECT_XB.md`](archive/ISSUE196_DIRECT_XB.md); no optional checkout is required.
 
 `third_party/` and `place_game_here/` are local-only and ignored by Git. If you use `tools/validate_assets.py`, its optional `tools/reference_hashes.json` reference file is also local-only; it is not required by the normal build.
 
@@ -241,6 +264,7 @@ How the boundary behaves:
 - With a valid key file, `nk_cli inspect`, `build-package`, `bringup`, and the player's compatibility preflight decrypt the disc executable and the disc's encrypted PRX modules automatically and continue to the analyzer. The executable lands in `titles/<DISC_ID>/decrypted/EBOOT.elf`; every decrypted module lands in the same folder under its file name on the disc (for example `psmf.prx`), staged to a temporary name and renamed into place so an interrupted run never leaves a half-written module. Decrypted bytes are written only under the private per-user data directory (`titles/<DISC_ID>/decrypted/` and `cache/decrypted/`) — never next to the ISO, and never into this repository.
 - A valid user-supplied plain copy always wins: if `EBOOT.elf` or a module is already present in the per-title folder under its disc file name or manifest module name, the boundary never overwrites it and that module is skipped.
 - Without a key file, or when an entry is missing, the boundary fails closed and names the exact entry the container needs (for example `MISSING_KEY_ENTRY prx.tag.0x........` and "this executable needs key entry ..."). Each module fails closed on its own: the other modules still decrypt, and the compatibility preflight reports "Guest modules: N of M ready" with the missing entry. The existing guidance to supply decrypted modules at `<user data>/titles/<DISC_ID>/decrypted/` remains, so that route keeps working; a user-supplied `EBOOT.elf` takes precedence over automatic decryption.
+- A reported failure belongs to the container type whose shape matched, not to the last type tried: a modified or corrupt container reports `INTEGRITY_CHECK_FAILED` (or `CONTAINER_MALFORMED` for inconsistent fields), `MISSING_KEY_ENTRY` names only an entry the matched type truly needs, and a `~PSP` container whose header matches no supported type fails closed as `CONTAINER_MALFORMED` naming that instead of requesting key material.
 - The key file is never uploaded, never packaged, and never committed. The publication audit rejects key-file paths and KeyStore content outright, and neither the tests nor any release contain key material — the tests generate clearly fake per-run keys only.
 
 ### User title manifests (`<user data>/manifests`)
@@ -470,6 +494,36 @@ even while a frame is slow.
 
 The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
 
+### Public synthetic verification routes
+
+These routes verify the toolchain and the pipeline without any proprietary game
+input. Run them from a shell whose `PATH` includes the MSYS2 UCRT64 tools: a
+UCRT64 terminal, or PowerShell after `$env:Path = "C:\msys64\ucrt64\bin;$env:Path"`.
+
+```powershell
+.\nk_manager.ps1 -Action Test            # selftest gate (make selftest)
+mingw32-make player                      # build/nakagawa_player.exe, the native player
+mingw32-make production-smoke            # complete two-phase pipeline smoke test
+mingw32-make platform-ladder             # relocations, scheduler, scalar FPU, filesystem
+mingw32-make cosim-selftest              # differential AOT vs. interpreter cosimulation
+mingw32-make showcase showcase-smoke     # build the showcase demos, then run both headlessly
+```
+
+- The **differential cosimulation harness** verifies semantic parity between
+  AOT-generated code and the fail-closed interpreter floor.
+- The **platform ladder** exercises relocations, scheduler threading, scalar FPU,
+  and filesystem semantics across synthetic workloads.
+- The **production and display smoke fixtures** (`mingw32-make production-smoke`,
+  `mingw32-make display-smoke`) test the complete two-phase build pipeline and
+  display bring-up without proprietary inputs; `mingw32-make display-smoke-player`
+  also launches the fixture through the native player.
+- The **source-owned showcase demos** are project-authored PSP programs that
+  traverse the whole pipeline into validated packages the player discovers on
+  its own ([`SHOWCASE.md`](SHOWCASE.md)).
+
+What hosted CI runs, and what each check proves, is defined in [`CI.md`](CI.md);
+the pipeline itself is described in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 ### Player BUILD PACKAGE prerequisites
 
 **BUILD PACKAGE** in the native player re-runs this toolchain from inside the app, so
@@ -502,8 +556,10 @@ errors and offer a retry.
 
 The pinned candidate download set is recorded in
 [`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
-and 25 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3, Vulkan headers/loader,
-and their runtime dependencies), totaling 89,547,599 bytes. Package hashes and
+and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
+readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
+Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
+totaling 100,499,173 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
 python.org's release page. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
@@ -581,6 +637,7 @@ its redistributable host dependencies, and user-supplied game input.
 - **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest C:\path\to\manifest.json -GameName game` (or `python tools/nk_doctor.py --title-manifest C:\path\to\manifest.json --game-name game`) to validate the toolchain, build dependencies, and the selected title's local inputs. Without a title selection, Doctor uses the public synthetic manifest.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
+- **Retro 8x8 bitmap font in the player UI:** the readable-font path needs `SDL3_ttf.dll` and its dependency closure beside `nakagawa_player.exe` (or on `PATH`). Install the MSYS2 UCRT64 `sdl3-ttf` package and re-run `mingw32-make player`, which stages the whole closure and its licence notices; the workspace doctor reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`, and the player itself logs the failing step once to stderr when it falls back. `NK_UI_NO_TTF=1` forces the bitmap fallback on purpose.
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime still refuses encrypted `~PSP` executables because decryption happens earlier, in the player/CLI boundary that requires your own key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).

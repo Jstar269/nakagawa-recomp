@@ -76,6 +76,14 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+The Linux `native_tools` job also builds SDL3 from its pinned 3.4.8 release commit, installs
+Vulkan development headers, and downloads the PSPDEV archive identified by
+[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its SHA-256 before use. It
+then runs `make CC=gcc showcase-linux`, which builds and boots the two source-owned showcase
+packages with dummy SDL video and audio drivers. This is Linux runtime build-and-boot evidence
+for those fixtures; it does not establish general consumer-title compatibility or PSP hardware
+acceptance.
+
 ## Local readiness before opening a pull request
 
 Discover the available build and verification surfaces first:
@@ -347,7 +355,20 @@ developer runs locally, without private inputs:
 
 - `windows_runtime` links the native player (`mingw32-make player`), runs the
   complete platform ladder (`mingw32-make --no-print-directory platform-ladder`),
-  and runs the production smoke with its executable staged into a fresh
+  and runs `profile-zero-e2e` for the two profile-zero manifests. That gate
+  validates the guest ProgramImage, generates a public AOT package, launches it
+  through the headless production runtime, and checks all seven named
+  guest-service cases for each manifest. It runs in the existing 25-minute
+  `windows_runtime` job and took about 123 seconds locally for both package
+  builds and runtime launches. The guest bytes are the committed
+  `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
+  fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),
+  so hosted runners with no PSPDEV execute the whole route instead of
+  reporting a toolchain `SKIP`; where PSPDEV is installed, the gate rebuilds
+  the fixture first and fails if any byte differs from `SHA256SUMS`. Public
+  runtime link dependencies remain external; when they are unavailable, the
+  test reports an explicit `SKIP` with the printed missing-dependency reason.
+  The job also runs the production smoke with its executable staged into a fresh
   directory outside the build tree (`production-smoke-staged`).
 - `hygiene`'s "Exercise public-export generation and candidate audit" step runs
   on `security_publication` changes and every manual `workflow_dispatch`. One

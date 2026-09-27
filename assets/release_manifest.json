@@ -665,6 +665,40 @@
         "sha256": "bda0e223bc94c7bd44d2d799953dbde8120d2b16ce9f15d281842f6a6de4874b"
       },
       "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
+    },
+    {
+      "id": "fixture-profile-zero-eboot",
+      "name": "Profile-zero fixture: PSPDEV build of the project-authored guest (EBOOT.PBP)",
+      "source_path": "fixtures/profile_zero/prebuilt/EBOOT.PBP",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "1ebe269479f8cc226c20ccffb06e3c9326cc8296456b7187f97193860db1f500"
+      },
+      "comment": "Built with PSPDEV/PSPSDK from fixtures/profile_zero/{main.c,Makefile} (project-authored); links the permissively licensed PSPSDK/newlib startup (THIRD_PARTY_LICENSES/PSPSDK.txt). No retail bytes. Reproduce: fixtures/profile_zero/README.md (#557)."
+    },
+    {
+      "id": "fixture-profile-zero-prx",
+      "name": "Profile-zero fixture: PSPDEV build of the project-authored guest module (PRX)",
+      "source_path": "fixtures/profile_zero/prebuilt/profile_zero_guest.prx",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "aa6df0f9e6ac3356a44ba1d840e7289b67a1e9f798cec99b331452ef7773c863"
+      },
+      "comment": "Built with PSPDEV/PSPSDK from fixtures/profile_zero/{main.c,Makefile} (project-authored); links the permissively licensed PSPSDK/newlib startup (THIRD_PARTY_LICENSES/PSPSDK.txt). No retail bytes. Reproduce: fixtures/profile_zero/README.md (#557)."
     }
   ]
 }

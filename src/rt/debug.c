@@ -327,11 +327,6 @@ void sr_debug_init_watches(void) {
         }
     }
 
-    char *meta_watch = getenv("SR_METADATA_WATCH");
-    if (meta_watch && strcmp(meta_watch, "0") != 0) {
-        g_sr_metadata_watch = 1;
-        fprintf(stderr, "DEBUG: SR_METADATA_WATCH enabled. Monitoring 0x0030a040..0x0030a0bf\n");
-    }
 }
 
 /* ---- SR_NAN_TRAP reporter (see the SR_NAN_TRAP block in recomp.h) ----------

@@ -49,7 +49,8 @@ static void draw_rect_outline(SDL_Renderer *ren, float x, float y, float w, floa
  * SDL3_ttf shared library (if the user happens to have it) and open a
  * system UI font already licensed on the user's own machine. If the
  * library, every symbol, or every font file is missing, the classic
- * SDL_RenderDebugText path below draws everything, so the UI works with
+ * SDL_RenderDebugText path below draws everything and the failing step is
+ * logged once to stderr (the fallback is never silent), so the UI works with
  * whatever is thrown at it. Set NK_UI_NO_TTF=1 to force the fallback
  * (e.g. CI machines without the library). Nothing here is linked:
  * SDL_LoadObject/SDL_LoadFunction resolve everything at runtime, so the
@@ -83,6 +84,7 @@ typedef struct {
 typedef struct {
     bool attempted;
     bool ready;
+    const char *fallback_reason; /* stable token naming the failing step */
     SDL_SharedObject *lib;
     UiTtfInitFn f_init;
     UiTtfQuitFn f_quit;
@@ -200,6 +202,17 @@ static void *ui_font_sym(const char *name) {
     return (void *)SDL_LoadFunction(g_font.lib, name);
 }
 
+/* One stderr line naming the failing step, then the bitmap fallback. Called
+ * exactly once per process from ui_font_ensure (the load is attempted once),
+ * so the fallback can never be silent (#421). */
+static void ui_font_fall_back(const char *reason, const char *message) {
+    g_font.fallback_reason = reason;
+    fprintf(stderr,
+            "[nakagawa] ui font: readable TTF path unavailable: %s; "
+            "using the SDL_RenderDebugText bitmap fallback\n",
+            message);
+}
+
 /* All-or-nothing load: any missing piece disables the whole layer rather
  * than running a half-wired text stack. */
 static void ui_font_ensure(void) {
@@ -207,9 +220,13 @@ static void ui_font_ensure(void) {
     g_font.attempted = true;
     g_font.active_bucket = -1;
     g_font.density = 1.0f;
+    g_font.fallback_reason = "NONE";
 
     const char *force_off = getenv("NK_UI_NO_TTF");
-    if (force_off && *force_off) return;
+    if (force_off && *force_off) {
+        ui_font_fall_back("forced-off", "disabled by NK_UI_NO_TTF");
+        return;
+    }
 
     /* Beside the executable first (a user-placed SDL3_ttf.dll wins), then the
      * platform loader's default bare-name search (PATH on Windows). Built by
@@ -222,7 +239,12 @@ static void ui_font_ensure(void) {
         g_font.lib = SDL_LoadObject(ttf_candidates[i]);
         if (g_font.lib) break;
     }
-    if (!g_font.lib) return;
+    if (!g_font.lib) {
+        ui_font_fall_back("library-missing",
+                          "the SDL3_ttf library was not found beside the "
+                          "executable or on the loader path");
+        return;
+    }
 
     g_font.f_init = (UiTtfInitFn)ui_font_sym("TTF_Init");
     g_font.f_quit = (UiTtfQuitFn)ui_font_sym("TTF_Quit");
@@ -234,13 +256,26 @@ static void ui_font_ensure(void) {
     g_font.f_render = (UiTtfRenderTextFn)ui_font_sym("TTF_RenderText_Blended");
     if (!g_font.f_init || !g_font.f_quit || !g_font.f_open || !g_font.f_close ||
         !g_font.f_set_size || !g_font.f_measure || !g_font.f_measure_prefix || !g_font.f_render) {
+        const char *missing = !g_font.f_init ? "TTF_Init" :
+                              !g_font.f_quit ? "TTF_Quit" :
+                              !g_font.f_open ? "TTF_OpenFont" :
+                              !g_font.f_close ? "TTF_CloseFont" :
+                              !g_font.f_set_size ? "TTF_SetFontSize" :
+                              !g_font.f_measure ? "TTF_GetStringSize" :
+                              !g_font.f_measure_prefix ? "TTF_MeasureString" :
+                              "TTF_RenderText_Blended";
+        char message[160];
+        snprintf(message, sizeof(message),
+                 "the SDL3_ttf library is missing the %s symbol", missing);
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("symbol-missing", message);
         return;
     }
     if (!g_font.f_init()) {
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("init-failed", "TTF_Init failed");
         return;
     }
     char font_path[MAX_PATH_LEN];
@@ -248,13 +283,18 @@ static void ui_font_ensure(void) {
         g_font.f_quit();
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("no-system-font", "no system UI font was found");
         return;
     }
     g_font.font = g_font.f_open(font_path, ui_font_pt_for_scale(1.0f, 1.0f));
     if (!g_font.font) {
+        char message[MAX_PATH_LEN + 64];
+        snprintf(message, sizeof(message),
+                 "the system UI font could not be opened (%s)", font_path);
         g_font.f_quit();
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("open-failed", message);
         return;
     }
     g_font.ready = true;
@@ -346,6 +386,17 @@ void ui_font_set_density(float density) {
     if (density >= 1.0f && density <= 3.0f) {
         g_font.density = density;
     }
+}
+
+const char *ui_font_mode(void) {
+    ui_font_ensure();
+    return g_font.ready ? "ttf" : "bitmap";
+}
+
+const char *ui_font_fallback_reason(void) {
+    ui_font_ensure();
+    if (g_font.ready) return "NONE";
+    return g_font.fallback_reason ? g_font.fallback_reason : "unknown";
 }
 
 /* Select the raster size for a bucket; cached textures key the bucket, so
