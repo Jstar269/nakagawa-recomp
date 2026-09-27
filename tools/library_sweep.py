@@ -19,6 +19,10 @@ import subprocess
 import sys
 import time
 
+from nk_core import inspect_iso
+from nk_core.decrypt_boundary import key_file_path
+from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
+
 
 ROOT = Path(__file__).resolve().parents[1]
 NK_CLI = ROOT / "tools" / "nk_cli.py"
@@ -194,13 +198,14 @@ def _route_environment() -> dict[str, str]:
     environment["MAKEFLAGS"] = "-j4"
     if environment.get("NAKAGAWA_PSP_KEY_FILE"):
         return environment
-    base = environment.get("LOCALAPPDATA") or environment.get("APPDATA") or environment.get("USERPROFILE")
-    if base:
-        key_path = Path(base) / "Nakagawa" / "data" / "keys" / "psp-keyfile.json"
-        if key_path.is_file():
-            # The key is consumed in place by the existing private boundary;
-            # it is never read or copied by this tool.
-            environment["NAKAGAWA_PSP_KEY_FILE"] = str(key_path)
+    try:
+        key_path = key_file_path(default_data_root())
+    except PrerequisiteFetchError:
+        return environment
+    if key_path.is_file():
+        # The key is consumed in place by the existing private boundary;
+        # it is never read or copied by this tool.
+        environment["NAKAGAWA_PSP_KEY_FILE"] = str(key_path)
     return environment
 
 
@@ -566,8 +571,6 @@ def run_sweep(
         list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=0,
         resumed_this_invocation=previous_rows,
     )
-    from nk_core import inspect_iso
-
     for index, iso_path in enumerate(paths, start=1):
         key = _source_key(iso_path, iso_root)
         stat = iso_path.stat()
@@ -589,12 +592,15 @@ def run_sweep(
         )
         disc_id = None
         title_name = None
+        inspect_error = None
         try:
             metadata = inspect_iso(iso_path)
             disc_id = metadata.disc_id.upper()
             title_name = metadata.title
-        except Exception:
-            pass
+        except Exception as exc:  # the bring-up route still runs and names its own boundary
+            inspect_error = type(exc).__name__
+            print(f"[{index}/{len(paths)}] ISO inspection failed ({inspect_error}); "
+                  "running the route without decrypted-input staging", file=sys.stderr)
         safe_key = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
         work_dir = private_dir / "work" / safe_key
         report_path = work_dir / "bringup.json"
@@ -603,7 +609,7 @@ def run_sweep(
             staged_input_count, decrypted_input_status = _stage_decrypted_inputs(
                 decrypted_titles, disc_id, work_dir
             )
-        except OSError:
+        except (OSError, ValueError):
             staged_input_count = 0
             decrypted_input_status = "COPY_FAILED"
         started = time.perf_counter()
@@ -634,6 +640,7 @@ def run_sweep(
             "source_file": iso_path.name,
             "disc_id": disc_id,
             "title_name": title_name,
+            "inspect_error": inspect_error,
             "input_size_bytes": stat.st_size,
             "input_mtime_ns": stat.st_mtime_ns,
             "furthest_stage": _furthest_stage(report),
