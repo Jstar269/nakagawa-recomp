@@ -166,6 +166,27 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
 
+    def test_prohibited_extension_passes_only_as_a_pinned_approved_binary(self):
+        # #557: project-authored PSPDEV build output may carry a guest-executable
+        # suffix, but only as a reviewed release-manifest binary with matching bytes.
+        rel = "fixtures/profile_zero/prebuilt/profile_zero_guest.prx"
+        reason = publish_audit._forbidden_path(rel)
+        self.assertIsNotNone(reason)
+        pinned = "ab" * 32
+        comp = {"disposition": "approved_binary", "hashes": {"sha256": pinned}}
+        self.assertTrue(publish_audit._approved_binary_matches(
+            reason, "approved_binary", comp, pinned))
+        # A different file under the approved name is still a finding.
+        self.assertFalse(publish_audit._approved_binary_matches(
+            reason, "approved_binary", comp, "cd" * 32))
+        # No manifest approval, or no pinned hash, keeps the finding.
+        self.assertFalse(publish_audit._approved_binary_matches(reason, "included", comp, pinned))
+        self.assertFalse(publish_audit._approved_binary_matches(
+            reason, "approved_binary", {"disposition": "approved_binary"}, pinned))
+        # Only the extension rule can be approved; private-path rules never are.
+        self.assertFalse(publish_audit._approved_binary_matches(
+            "private/generated path", "approved_binary", comp, pinned))
+
     def test_local_only_keystore_path_class_fails_closed(self):
         # Issue #295: a key file can never be committed or packaged, under
         # any directory, whatever it is called.
