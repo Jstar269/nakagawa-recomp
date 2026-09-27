@@ -2987,7 +2987,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "90c56001610fc1e884bbe51bc4d0cb0258b6db32a3e1aa67aa3a004e2719653a"
+      "sha256": "3d1ea11cce2a070831e89b8f8551c7bfe489b074581ff50ccd2e73c2cb815e8b"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -8308,7 +8308,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29ee354958dbf7afb96e9bfd25c2a16b132af986712af911525750ee6b15272c"
+      "sha256": "f354ef88607427ae31f9ef482a4f565fc593f88bd49f5db81c14ebb6a200a0b8"
     },
     {
       "path": "tools/test_player_package_route.py",
