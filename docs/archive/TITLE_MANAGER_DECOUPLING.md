@@ -25,8 +25,8 @@ Nakagawa Recomp. The manager provides **generic recompiler infrastructure**:
 
 The old `hst_manager.ps1` name was a historical artifact from the single-title
 origin of the project. Data-driven title profiles
-([`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md)) and title-manifest
-runtime bindings ([`TITLE_CODEGEN_PLAN.md`](TITLE_CODEGEN_PLAN.md)) now own that
+([`TITLE_PROFILE_ARCHITECTURE.md`](../TITLE_PROFILE_ARCHITECTURE.md)) and title-manifest
+runtime bindings ([`TITLE_CODEGEN_PLAN.md`](../TITLE_CODEGEN_PLAN.md)) now own that
 variation, so the compatibility entry points are removed.
 
 ---

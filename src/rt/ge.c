@@ -130,6 +130,7 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
+static uint32_t s_ge_command[256];
 static int s_ge_inited = 0;
 static GeCpuProfileStats s_cpu_profile_stats;
 static int s_cpu_profile = -1;
@@ -335,6 +336,7 @@ static float decode_float24(uint32_t data) {
 }
 
 static void ge_state_init(void) {
+    memset(s_ge_command, 0, sizeof(s_ge_command));
     ge.scis_x2 = 479; ge.scis_y2 = 271;
     ge.maxz = 0xFFFF;
     ge.tex_scale_u = ge.tex_scale_v = 1.0f;
@@ -342,6 +344,12 @@ static void ge_state_init(void) {
     ge.amb_alpha = 0xFF;   /* lit alpha multiplies by this; 0 would blank lit geometry pre-init */
     ge.morph_weight[0] = 1.0f;
     s_ge_inited = 1;
+}
+
+uint32_t ge_get_cmd(uint32_t cmd) {
+    if (cmd > 0xffu) return 0u;
+    if (!s_ge_inited) ge_state_init();
+    return s_ge_command[cmd];
 }
 
 /* ---- Depth buffer ----
@@ -971,11 +979,12 @@ static int thru_ztest(void) {
 void ge_set_frame(uint32_t frame) {
     ge_capture_configure();
     ge_transition_trace_configure();
-    /* Arm the opt-in address-windowed instruction trace (SR_TRACE_PC) and mark every
-     * delivered vblank in it, so a windowed trace carries the frame each record belongs
-     * to. A cached env probe once per vblank; both calls are no-ops when it is unset. */
+    /* Arm the opt-in instruction trace and store watch, then carry the delivered vblank
+     * into both diagnostics. Their environment probes are cached and inert when unset. */
     sr_trace_window_configure();
     sr_trace_note_frame(frame);
+    sr_watch_configure();
+    sr_watch_note_vblank(frame);
     if (ge_capture_active() && frame != s_ge_frame) {
         int boundary_ok = !s_gpu || !s_gpu->capture_boundary || s_gpu->capture_boundary();
         if (!boundary_ok) {
@@ -3582,6 +3591,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         }
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
+        s_ge_command[cmd] = data;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
         switch (cmd) {

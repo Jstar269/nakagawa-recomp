@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ class PrerequisiteFetchError(RuntimeError):
 
 
 ProgressCallback = Callable[[str, int, int], None]
+CancelCheck = Callable[[], bool]
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CHUNK_SIZE = 64 * 1024
 
@@ -59,7 +61,7 @@ def _validated_item(item: dict, *, allow_http: bool) -> tuple[str, int, str, set
         hosts = {host.lower().rstrip(".") for host in item["allowed_hosts"]}
     except (KeyError, AttributeError, TypeError) as exc:
         raise PrerequisiteFetchError("MANIFEST_INVALID: prerequisite fields are missing.") from exc
-    if not isinstance(item_id, str) or not item_id or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789-._" for ch in item_id):
+    if not isinstance(item_id, str) or not item_id or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789-._+" for ch in item_id):
         raise PrerequisiteFetchError("MANIFEST_INVALID: prerequisite ID is unsafe.")
     if not isinstance(size, int) or size <= 0:
         raise PrerequisiteFetchError(f"MANIFEST_INVALID: {item_id} has no positive byte size.")
@@ -125,6 +127,8 @@ def download_verified_item(
 
     if destination.is_file():
         if destination.stat().st_size == expected_size and _sha256_file(destination) == expected_hash:
+            if progress:
+                progress(item["id"], expected_size, expected_size)
             return destination
         destination.unlink()
 
@@ -197,10 +201,20 @@ def _copy_notices(item_id: str, archive_member: str, source: Path, notices_root:
     return target.as_posix()
 
 
-def _extract_zip(item: dict, archive: Path, target: Path, notices_root: Path) -> list[str]:
+def _copy_checked(source, destination, cancelled: CancelCheck | None) -> None:
+    while block := source.read(CHUNK_SIZE):
+        if cancelled and cancelled():
+            raise PrerequisiteFetchError("INSTALL_CANCELLED: extraction cancelled by the user.")
+        destination.write(block)
+
+
+def _extract_zip(item: dict, archive: Path, target: Path, notices_root: Path,
+                 cancelled: CancelCheck | None = None) -> list[str]:
     notices: list[str] = []
     with zipfile.ZipFile(archive) as package:
         for info in package.infolist():
+            if cancelled and cancelled():
+                raise PrerequisiteFetchError("INSTALL_CANCELLED: extraction cancelled by the user.")
             if info.is_dir():
                 continue
             relative = _safe_relative_path(info.filename)
@@ -210,14 +224,15 @@ def _extract_zip(item: dict, archive: Path, target: Path, notices_root: Path) ->
             output = target.joinpath(*relative.parts)
             output.parent.mkdir(parents=True, exist_ok=True)
             with package.open(info) as source, output.open("wb") as destination:
-                shutil.copyfileobj(source, destination, CHUNK_SIZE)
+                _copy_checked(source, destination, cancelled)
             notice = _copy_notices(item["id"], info.filename, output, notices_root)
             if notice:
                 notices.append(notice)
     return notices
 
 
-def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path) -> list[str]:
+def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path,
+                 cancelled: CancelCheck | None = None) -> list[str]:
     notices: list[str] = []
     try:
         package = tarfile.open(archive, mode="r:*")
@@ -244,6 +259,8 @@ def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path) ->
 
         links: list[tuple[tarfile.TarInfo, PurePosixPath]] = []
         for member, relative in safe_members:
+            if cancelled and cancelled():
+                raise PrerequisiteFetchError("INSTALL_CANCELLED: extraction cancelled by the user.")
             destination = target.joinpath(*relative.parts)
             if member.isdir():
                 destination.mkdir(parents=True, exist_ok=True)
@@ -253,7 +270,7 @@ def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path) ->
                 if source is None:
                     raise PrerequisiteFetchError("ARCHIVE_INVALID: a regular file has no payload.")
                 with source, destination.open("wb") as output:
-                    shutil.copyfileobj(source, output, CHUNK_SIZE)
+                    _copy_checked(source, output, cancelled)
                 notice = _copy_notices(item["id"], member.name, destination, notices_root)
                 if notice:
                     notices.append(notice)
@@ -261,6 +278,8 @@ def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path) ->
                 links.append((member, relative))
 
         for member, relative in links:
+            if cancelled and cancelled():
+                raise PrerequisiteFetchError("INSTALL_CANCELLED: extraction cancelled by the user.")
             destination = target.joinpath(*relative.parts)
             link = PurePosixPath(member.linkname)
             source_path = target.joinpath(*(relative.parent.joinpath(link).parts if member.issym() else link.parts))
@@ -273,7 +292,8 @@ def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path) ->
                     os.link(source_path, destination)
             except (OSError, NotImplementedError):
                 if source_path.is_file():
-                    shutil.copyfile(source_path, destination)
+                    with source_path.open("rb") as source, destination.open("wb") as output:
+                        _copy_checked(source, output, cancelled)
                 elif source_path.is_dir():
                     shutil.copytree(source_path, destination, dirs_exist_ok=True)
                 else:
@@ -281,6 +301,34 @@ def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path) ->
                         "ARCHIVE_LINK_UNRESOLVED: package link target is missing."
                     ) from None
     return notices
+
+
+def _merge_staged_tree(source: Path, target: Path) -> None:
+    """Move one fully extracted artifact into its shared install prefix."""
+    for path in sorted(source.rglob("*"), key=lambda value: len(value.parts)):
+        relative = path.relative_to(source)
+        destination = target / relative
+        if path.is_dir() and not path.is_symlink():
+            if destination.exists() and not destination.is_dir():
+                raise PrerequisiteFetchError(
+                    "INSTALL_PATH_CONFLICT: an installed file conflicts with an artifact directory."
+                )
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and destination.is_dir() and not destination.is_symlink():
+            raise PrerequisiteFetchError(
+                "INSTALL_PATH_CONFLICT: an installed directory conflicts with an artifact file."
+            )
+        os.replace(path, destination)
+
+
+def _is_running_executable(path: Path) -> bool:
+    """Return whether this process is running from the supplied executable path."""
+    try:
+        return Path(sys.executable).resolve(strict=False) == path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
 
 
 def _write_install_record(path: Path, record: dict) -> None:
@@ -301,6 +349,7 @@ def install_items(
     progress: ProgressCallback | None = None,
     retries: int = 3,
     allow_http: bool = False,
+    cancelled: CancelCheck | None = None,
 ) -> dict:
     """Install all ready artifacts beneath app data and atomically record verified versions."""
     if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
@@ -313,30 +362,62 @@ def install_items(
     binary_root = install_root / "msys64"
     python_root = install_root / "python"
     notices_root = install_root / "notices"
+    staging_root = install_root / ".staging"
     records: dict[str, dict] = {}
+
+    def report_progress(item_id: str, received: int, expected: int) -> None:
+        if cancelled and cancelled():
+            raise PrerequisiteFetchError("INSTALL_CANCELLED: download cancelled by the user.")
+        if progress:
+            progress(item_id, received, expected)
 
     for item in manifest["artifacts"]:
         if item.get("status", "ready") != "ready":
             continue
+        if cancelled and cancelled():
+            raise PrerequisiteFetchError("INSTALL_CANCELLED: download cancelled by the user.")
         filename = item.get("filename")
         if not isinstance(filename, str) or Path(filename).name != filename or filename in {".", ".."}:
             raise PrerequisiteFetchError("MANIFEST_INVALID: artifact filename must be a simple file name.")
         archive = download_verified_item(
             item, downloads_root / item["id"] / filename,
-            progress=progress, retries=retries, allow_http=allow_http,
+            progress=report_progress if progress or cancelled else None,
+            retries=retries, allow_http=allow_http,
         )
         format_name = item.get("archive_format", "none")
         install_subdir = item.get("install_subdir", "msys64")
         target_root = python_root if install_subdir == "python" else binary_root
-        target_root.mkdir(parents=True, exist_ok=True)
-        if format_name == "zip":
-            notice_paths = _extract_zip(item, archive, target_root, notices_root)
-        elif format_name in {"tar.gz", "tar.zst"}:
-            notice_paths = _extract_tar(item, archive, target_root, notices_root)
-        elif format_name == "none":
-            notice_paths = []
-        else:
-            raise PrerequisiteFetchError(f"MANIFEST_INVALID: unsupported archive format {format_name!r}.")
+        running_bootstrap_python = (
+            item.get("id") == "cpython-embed-amd64"
+            and install_subdir == "python"
+            and _is_running_executable(python_root / "python.exe")
+        )
+        staging_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=f"{item['id']}-", dir=staging_root) as temporary:
+            item_stage = Path(temporary)
+            staged_payload = item_stage / "payload"
+            staged_notices = item_stage / "notices"
+            staged_payload.mkdir()
+            staged_notices.mkdir()
+            if format_name == "zip":
+                notice_paths = _extract_zip(item, archive, staged_payload,
+                                            staged_notices, cancelled)
+            elif format_name in {"tar.gz", "tar.zst"}:
+                notice_paths = _extract_tar(item, archive, staged_payload,
+                                            staged_notices, cancelled)
+            elif format_name == "none":
+                notice_paths = []
+            else:
+                raise PrerequisiteFetchError(f"MANIFEST_INVALID: unsupported archive format {format_name!r}.")
+            if cancelled and cancelled():
+                raise PrerequisiteFetchError("INSTALL_CANCELLED: extraction cancelled by the user.")
+            # The native player has already hash-verified and installed this archive
+            # before launching its embedded Python. Replacing that running executable
+            # or its loaded OpenSSL DLLs fails on Windows, so verify the cached archive
+            # and refresh notices without moving its payload over the live runtime.
+            if not running_bootstrap_python:
+                _merge_staged_tree(staged_payload, target_root)
+            _merge_staged_tree(staged_notices, notices_root)
         records[item["id"]] = {
             "version": item["version"],
             "size_bytes": item["size_bytes"],
@@ -350,6 +431,8 @@ def install_items(
             "schema_version": 1,
             "installed": records,
         })
+    if cancelled and cancelled():
+        raise PrerequisiteFetchError("INSTALL_CANCELLED: installation cancelled by the user.")
     return records
 
 
@@ -358,24 +441,58 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--progress-file", type=Path)
+    parser.add_argument("--cancel-file", type=Path)
+    parser.add_argument("--progress-base", type=int, default=0)
+    parser.add_argument("--total-bytes", type=int)
     args = parser.parse_args(argv)
     progress_stream = args.progress_file.open("a", encoding="utf-8") if args.progress_file else sys.stdout
+    received_by_item: dict[str, int] = {}
+    total_bytes = args.total_bytes
 
     def report(item_id: str, received: int, expected: int) -> None:
+        received_by_item[item_id] = received
+        received_total = args.progress_base + sum(received_by_item.values())
         progress_stream.write(json.dumps({
             "event": "download-progress", "item_id": item_id,
             "received_bytes": received, "expected_bytes": expected,
+            "total_received_bytes": received_total, "total_bytes": total_bytes,
         }) + "\n")
         progress_stream.flush()
 
+    def cancelled() -> bool:
+        return bool(args.cancel_file and args.cancel_file.exists())
+
     try:
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if total_bytes is None:
+            total_bytes = manifest.get("total_download_bytes")
         data_root = args.data_root or default_data_root()
-        records = install_items(manifest, data_root, progress=report)
-        progress_stream.write(json.dumps({"event": "install-complete", "installed": sorted(records)}) + "\n")
+        records = install_items(manifest, data_root, progress=report, cancelled=cancelled)
+        progress_stream.write(json.dumps({
+            "event": "install-complete", "installed": sorted(records),
+            "total_received_bytes": args.progress_base + sum(received_by_item.values()),
+            "total_bytes": total_bytes,
+        }) + "\n")
         progress_stream.flush()
         return 0
-    except (OSError, json.JSONDecodeError, PrerequisiteFetchError) as exc:
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            code = "DISK_FULL"
+            message = "DISK_FULL: App data ran out of space while installing verified build tools. Free disk space and retry."
+        else:
+            code = "INSTALL_WRITE_FAILED"
+            message = f"INSTALL_WRITE_FAILED: Could not write verified build tools in app data: {exc}"
+        progress_stream.write(json.dumps({"event": "install-failed", "code": code, "message": message}) + "\n")
+        progress_stream.flush()
+        return 2
+    except json.JSONDecodeError as exc:
+        progress_stream.write(json.dumps({
+            "event": "install-failed", "code": "MANIFEST_INVALID",
+            "message": f"MANIFEST_INVALID: Could not parse the pinned prerequisite manifest: {exc}",
+        }) + "\n")
+        progress_stream.flush()
+        return 2
+    except PrerequisiteFetchError as exc:
         code = str(exc).partition(":")[0]
         progress_stream.write(json.dumps({"event": "install-failed", "code": code, "message": str(exc)}) + "\n")
         progress_stream.flush()

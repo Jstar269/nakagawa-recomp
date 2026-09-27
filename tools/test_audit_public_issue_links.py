@@ -241,7 +241,7 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         # historical evidence; a 404 on the public tracker must be reported as
         # preserved historical evidence, not as a dead current reference.
         cases = (
-            "docs/ISSUE196_DIRECT_XB.md",
+            "docs/archive/ISSUE196_DIRECT_XB.md",
             "docs/provenance/MODIFIED_FILE_NOTICES.md",
         )
         for index, rel in enumerate(cases):

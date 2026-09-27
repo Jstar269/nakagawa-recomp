@@ -173,8 +173,12 @@ resolved from `C:/msys64/ucrt64/bin`), plus the SDL3_ttf dependency closure
 resolved by walking PE import tables recursively and stopping at Windows system
 DLLs. The step runs from the Makefile's `player` target (beside
 `build/nakagawa_player.exe`) and from `tools/nk_cli.py build-package` (into each
-built package), and it fails closed with the unresolved import named when the
-closure is incomplete. Licence texts for every staged DLL are copied beside them
+built package). It never stages a partial closure: when an import is
+unresolved, it names it. The player target then fails. A package build still
+succeeds with its required SDL3, libiconv and Vulkan runtimes, and prints the
+unresolved import as a warning, because the prerequisite installer (#296) does
+not provide SDL3_ttf yet; that player draws with the bitmap fallback and logs
+why. Licence texts for every staged DLL are copied beside them
 as `THIRD_PARTY_NOTICES/` by `tools/package_notices.py`, driven by
 `assets/third_party_components.json`. Because the closure sits beside the
 executable, launching from Explorer or a plain `cmd.exe` without MSYS2 on `PATH`
