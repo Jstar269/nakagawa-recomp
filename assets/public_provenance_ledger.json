@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1bb133f80bb549734e74b25a5cc2bec9d4f98e0a26a6d6df92aab5ec080be485"
+      "sha256": "e06ed6583b394aed126242cf68930fb1af4ed0197140e5d0e396a7ba4e4def5e"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1228,7 +1228,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7032952a1ebf2907fe726ca785b70b59b8e910aaf2fd5f9fd9d86a8b521e84d0"
+      "sha256": "ce15b358cacdfe74d7e18b3c2cf40db3676c7c7047d5adb7aa2f43ce3b440e84"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -1321,7 +1321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "910dc95b98cedae0d9de9699d221eb2ef9cf3352c281a9a061730d2f3d1081d2"
+      "sha256": "4d2519bc9dd9fabce136d85beb5f042560e86cf3bcaaee88bb3bc73938a5ad17"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -7022,7 +7022,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e66d214dc4052b3f68f15de2c70b430220bfa121a668539190691361491305ab"
+      "sha256": "9eb174e3eda9c98a3e66c04b0be0014cbbfcf4bbb241bf5500a1d58a7d10d7eb"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -8825,7 +8825,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d63d5740643d4638f332588f773522a91dcedff3d6708c1afeb00d925d0fd1f3"
+      "sha256": "3d59b8badb336003201c25cc90dcfe00d45ec7dd8abe9e76db47466644b6f3b3"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9486,7 +9486,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8df25476c4409cb7cdffcfdc0a92b98f71698926c9e4fbbf66eeecf7def212cf"
+      "sha256": "368db359546b637fc277410e601da0aabcd2d93c7ae6295bbbc6b97510eeb653"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
@@ -9597,5 +9597,18 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
+    "candidate_tree": "ff8f67a44c70448043c0847bd85718dcad20207a",
+    "refreshed_paths": [
+      "docs/COMPATIBILITY.md",
+      "docs/PREVIEW_RELEASE.md",
+      "docs/RELEASE_NOTES_v0.0.1.md",
+      "tools/record_toolchain.py",
+      "tools/test_sbom.py",
+      "tools/verify_sbom.py"
+    ]
+  }
 }
