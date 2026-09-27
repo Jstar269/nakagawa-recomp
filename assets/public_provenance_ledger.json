@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eacd33256e2063cab56bce29de3f9c42c0c29ad1610ede6a2c25eaf621ec303c"
+      "sha256": "ab32664df7f0ea9b1b6c97d2bd13aabfe7f8b06f9449c6189e86fca9ab4434f2"
     },
     {
       "path": "AGENTS.md",
@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3e196669f1d23b8d0bb41225d848cb02e3265904e84da39671ec7cb563cbb820"
+      "sha256": "46cf0d0ea678d6b463d6f5ab810cc6e165f61d0c0110b3435f4f523f256df284"
     },
     {
       "path": "NOTICE.md",
@@ -313,7 +313,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "52da67df6cfe3fe2200d0896ea01a772e58be229accc1b257210119f2ff9403f"
+      "sha256": "9ee24023f3ccc8aadf39c8dae6737c803278d9b6253fdf62419399bd272ddc58"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -362,6 +362,15 @@
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "7f8e4bf527a9c2f387485429f0bf1cf7982dfb70c7d3e87cc53086dd5ebf202c"
     },
     {
       "path": "THIRD_PARTY_LICENSES/FreeType-FTL.txt",
@@ -649,7 +658,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ed70fb3213a21a626f52c533be34809b42dd0d256efe5e2fdcca8d3aef46ff0a"
+      "sha256": "198d110cc612345222262f02a80b0320e20746aa0df746be8fb1b3e6e3b22009"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -682,7 +691,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e2be7894080faaa779c285596202af272b1fd286fead67b9de2861b8e8ed6768"
+      "sha256": "1911069683671922ca02e8f149253adae345627022852d12dfbdd13c73dc001d"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -1060,7 +1069,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e06ed6583b394aed126242cf68930fb1af4ed0197140e5d0e396a7ba4e4def5e"
+      "sha256": "1bb133f80bb549734e74b25a5cc2bec9d4f98e0a26a6d6df92aab5ec080be485"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1201,7 +1210,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d0d5f391dc09e9d010bcd0eeacae2faf94953c00e86a6d7f4b4d1bc445dc0d71"
+      "sha256": "2dc4df8310432b80856afd2a08dbd9b221afb66dc98bf331b1ac62a32a93ab44"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -1228,7 +1237,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ce15b358cacdfe74d7e18b3c2cf40db3676c7c7047d5adb7aa2f43ce3b440e84"
+      "sha256": "7032952a1ebf2907fe726ca785b70b59b8e910aaf2fd5f9fd9d86a8b521e84d0"
     },
     {
       "path": "docs/PREVIEW_RELEASE_NOTES.md",
@@ -1312,7 +1321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "edcb05c0254f8d47f8a63b546ed45a7c3915627b1e23b5eb7b53bcdf7eb8a703"
+      "sha256": "169761a40e0ae79f2ae6085f66ddc5407d97684cd37637ce7697c9f66429a7e9"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1321,7 +1330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4d2519bc9dd9fabce136d85beb5f042560e86cf3bcaaee88bb3bc73938a5ad17"
+      "sha256": "910dc95b98cedae0d9de9699d221eb2ef9cf3352c281a9a061730d2f3d1081d2"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -6503,7 +6512,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "125877fa9932c020ebaf3c2cac3c87c480aa5b71570e27c4fcb5c066b2ad82ae"
+      "sha256": "da95a4c57d5b72d3c7cac6e09bcb7a520e171fcfeebe3e10e5be97f4ca980fa1"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -7022,7 +7031,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9eb174e3eda9c98a3e66c04b0be0014cbbfcf4bbb241bf5500a1d58a7d10d7eb"
+      "sha256": "e66d214dc4052b3f68f15de2c70b430220bfa121a668539190691361491305ab"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -7202,7 +7211,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff646df09e857042951f43bbc7b622f6418e19015948f558f2de6836e764cadc"
+      "sha256": "31c667d6276a74dedd5d305e573df0f7869780d161db7100eaa71124bb54a2a5"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -7226,7 +7235,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2b2f4a45ec5d733539673622d4789537c9ac928227ae35035a6cc57abdc0449"
+      "sha256": "00d5746bec632e4382af4cc7c5d41f700332e7f6156cbe07c84ecbae9259bc85"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7659,7 +7668,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e7e6f7e1708046ab3a4867d00326e688d3bef03fd4c796805235c8e9f532fbb"
+      "sha256": "0a0b4ff898360b75ced24a0eecd056dff98e0fc234f8549e3447daa28b6f2c31"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -8272,7 +8281,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a155a0578e1017a0110425995c4b797bb1743f9531f8c9430561116e11541bdc"
+      "sha256": "41a1497f4664daa65c3ef17578209448a9c61c29c88c703c3d9dec5ea8ed8bf4"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -8296,7 +8305,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d59a1707056ecd36b3f8435b2e0fb62dd5b1bc57267153f876b2478272ce5f87"
+      "sha256": "e4d36426f3c3129edf217d654ea891233edbe9ed0f38566abe030eb78df46215"
     },
     {
       "path": "tools/test_perf_summary_diff.py",
@@ -8825,7 +8834,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3d59b8badb336003201c25cc90dcfe00d45ec7dd8abe9e76db47466644b6f3b3"
+      "sha256": "d63d5740643d4638f332588f773522a91dcedff3d6708c1afeb00d925d0fd1f3"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9486,7 +9495,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "368db359546b637fc277410e601da0aabcd2d93c7ae6295bbbc6b97510eeb653"
+      "sha256": "8df25476c4409cb7cdffcfdc0a92b98f71698926c9e4fbbf66eeecf7def212cf"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
@@ -9600,15 +9609,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
-    "candidate_tree": "ff8f67a44c70448043c0847bd85718dcad20207a",
+    "trusted_tree": "b4de6588475545ee5082c7f575c2b0d4c0f93e0f",
+    "candidate_tree": "37345bbb3a8df0cac3798a5ee1dc0f129b68ef01",
     "refreshed_paths": [
-      "docs/COMPATIBILITY.md",
-      "docs/PREVIEW_RELEASE.md",
-      "docs/RELEASE_NOTES_v0.0.1.md",
-      "tools/record_toolchain.py",
-      "tools/test_sbom.py",
-      "tools/verify_sbom.py"
+      "Makefile",
+      "tools/test_build_truth.py",
+      "tools/test_flight_build_identity.py"
     ]
   }
 }

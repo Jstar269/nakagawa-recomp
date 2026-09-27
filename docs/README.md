@@ -17,6 +17,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
 | Run the source-owned showcase demos right now | [`SHOWCASE.md`](SHOWCASE.md) |
 | Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
+| Audit user-supplied parser limits and hostile-input evidence | [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — per-boundary evidence for #319; an inventory is not issue completion |
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
@@ -41,6 +42,9 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 - [`SHOWCASE.md`](SHOWCASE.md) — the source-owned showcase demos: sources, packaging,
   player discovery, and their profile-zero acceptance status (#309).
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
+- [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
+  runtime and supported tooling parser boundaries, resource limits, deterministic
+  regression/mutation status, sanitizer availability, and unresolved gaps (#319).
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
@@ -159,6 +163,7 @@ Every substantial document carries one status.
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
 | `SHOWCASE.md` | CURRENT | Source-owned showcase demos: sources, packaging, player discovery and notices (#309) |
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
+| `PARSER_SAFETY_INVENTORY.json` | CURRENT | Per-boundary hostile-input/resource and campaign inventory (#319); does not establish issue completion |
 | `DEBUGGING.md` | CURRENT | Diagnostics and safe local troubleshooting |
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
