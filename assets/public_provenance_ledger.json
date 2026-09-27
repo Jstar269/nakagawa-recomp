@@ -7852,7 +7852,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "81984438dd985b5922f78e5cb9e95093f5d7d2cab88fac363241613ddd970dbd"
+      "sha256": "4f9f8440e740e65a3dd0993c3d87012a9628945df0e89a0ece1ecb1c35f0fc66"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -8272,7 +8272,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "95d7da7caadf241ebb648dda4d2905db432bd53919ae5774c3c72c799b1f5b38"
+      "sha256": "cbd81c8ab304eebd026ee328373cd2b77b94d3f0a409163f14bdd12fa1a3b5f8"
     },
     {
       "path": "tools/test_portability_inventory.py",
