@@ -336,8 +336,9 @@ RETIRED_DISPATCH_TARGETS = [
 ]
 
 # The old INIT_WALKER_GUARD was attached to these caller PCs, but its r16 restore
-# changed guest-visible state. Decision (a): remove the title-address guard and
-# preserve MIPS callee-saved registers at every returning AOT CALL boundary.
+# changed guest-visible state. Decision (b): remove the title-address guard from
+# generic dispatch; only the HST title configuration arms a restore of $s0-$s7/$fp
+# at a returning CALL, and every other title keeps its callee's register writes.
 RETIRED_INIT_WALKER_GUARD = dict(
     caller_pcs=[0x00000f98, 0x00000fdc],
     decision="b",
