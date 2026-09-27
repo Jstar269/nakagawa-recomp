@@ -148,7 +148,7 @@ REPO_COMMIT_URL_PAT = re.compile(
     r"github\.com/Jstar269/nakagawa-recomp/(?:tree|blob|commit)/([0-9a-f]{7,40})\b"
 )
 
-TOOLCHAIN_BASELINE_DOC = "docs/TOOLCHAIN_BASELINE_2026-08.md"
+TOOLCHAIN_BASELINE_DOC = "docs/archive/TOOLCHAIN_BASELINE_2026-08.md"
 TOOLCHAIN_BASELINE_STATUS_PAT = re.compile(
     r"^STATUS\s*=\s*(HISTORICAL|REFERENCE)\b", re.MULTILINE
 )
