@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -247,6 +248,88 @@ class RecorderBundleTests(unittest.TestCase):
             )
         self.assertEqual(bundle["build"]["build_id"], FAKE_COMMIT.lower())
         flight_diff.validate_bundle(bundle)
+
+
+class MakeIdentityResolutionTests(unittest.TestCase):
+    """How the Makefile resolves the commit that becomes ``build.build_id``.
+
+    The default used to be a bare ``$(shell git rev-parse HEAD)``. Make spawns a
+    missing program itself, so on a host without git on PATH -- the Windows
+    runtime compile gate runs in an MSYS2 shell that has none -- the build log
+    carried ``process_begin: CreateProcess(NULL, git rev-parse HEAD, ...) failed``
+    and every binary of that job recorded an empty identity. These tests pin the
+    replacement contract: a missing git yields an empty identity and NO error
+    text, an identity the caller supplies wins outright, and no default reaches
+    for git through make's own process spawn.
+    """
+
+    def _resolved(self, *overrides: str, env: dict[str, str] | None = None):
+        """Resolve SR_SOURCE_COMMIT the way the Makefile does, in a dry run.
+
+        ``clean-preview`` is a real target that skips every parse-time side
+        effect (profile stamps, build directories, toolchain discovery), so the
+        dump shows the resolved identity without the tree being touched. ``-p``
+        makes GNU Make print its variable database.
+        """
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        self.assertTrue(make, "GNU Make is required for the build-identity check")
+        environment = dict(os.environ)
+        environment.update(env or {})
+        result = subprocess.run(
+            [make, "--no-print-directory", "-p", "-n", "clean-preview",
+             f"BUILD_DIR={(ROOT / 'build' / 'identity-probe').as_posix()}", *overrides],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # GNU Make prints the variable database twice and marks a value with `:=`
+        # (file origin) or `=` (command line/environment origin); both spellings
+        # carry the resolved identity, and both must agree.
+        values: set[str] = set()
+        for line in result.stdout.splitlines():
+            match = re.match(r"^SR_SOURCE_COMMIT\s*(:?=)\s*(.*)$", line)
+            if match:
+                values.add(match.group(2).strip())
+        return values, result.stdout + result.stderr
+
+    def test_no_identity_default_spawns_git_through_make(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("GIT ?= git", makefile)
+        self.assertNotIn("$(shell git rev-parse HEAD)", makefile)
+        # Every commit-stamped default reads the one guarded resolution.
+        for name in ("SR_SOURCE_COMMIT", "PSP_ORACLE_SOURCE_COMMIT", "PSP_VFPU_ORACLE_COMMIT"):
+            with self.subTest(variable=name):
+                self.assertRegex(makefile, rf"(?m)^{name} \?= \$\(NK_GIT_REV_HEAD\)$")
+
+    def test_missing_git_yields_no_identity_and_no_error_text(self):
+        values, output = self._resolved("GIT=/nonexistent/nakagawa-no-such-git")
+        self.assertEqual(values, {""}, output)
+        for noise in ("process_begin", "CreateProcess", "No such file or directory"):
+            self.assertNotIn(noise, output)
+
+    def test_caller_supplied_identity_wins_over_git(self):
+        for overrides, env in (
+            ((f"SR_SOURCE_COMMIT={FAKE_COMMIT}",), None),
+            ((), {"SR_SOURCE_COMMIT": FAKE_COMMIT}),
+        ):
+            with self.subTest(env=bool(env)):
+                values, output = self._resolved(
+                    *overrides, env=env or {}
+                )
+                self.assertEqual(values, {FAKE_COMMIT}, output)
+
+    def test_caller_supplied_identity_wins_over_a_missing_git(self):
+        """The Windows job's environment: no git, identity forwarded by CI."""
+        values, output = self._resolved(
+            "GIT=/nonexistent/nakagawa-no-such-git",
+            env={"SR_SOURCE_COMMIT": FAKE_COMMIT},
+        )
+        self.assertEqual(values, {FAKE_COMMIT}, output)
+        self.assertNotIn("process_begin", output)
 
 
 if __name__ == "__main__":

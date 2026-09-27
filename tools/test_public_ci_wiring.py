@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -38,6 +39,40 @@ class PublicCiWiringTests(unittest.TestCase):
             self.assertTrue(require_synthetic_cases(header))
             header.write_bytes(b"different cases\n")
             self.assertFalse(require_synthetic_cases(header))
+
+    def test_windows_build_job_forwards_the_source_commit(self) -> None:
+        """Every Windows build job must state the revision its binaries record.
+
+        The Windows runtime compile gate runs its builds in an MSYS2 shell with
+        no git on PATH, so the Makefile cannot resolve a revision there. It used
+        to log `process_begin: CreateProcess(NULL, git rev-parse HEAD, ...) failed`
+        and build every binary of the job with an EMPTY identity
+        (flight recorder ``build.build_id``, issue #532). The job now forwards
+        the revision the checkout contains, which actions/checkout resolves to
+        ``github.sha``, so a Windows-built binary is identified without needing
+        git at all.
+        """
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        lines = ci.splitlines()
+        job_starts = [
+            index
+            for index, line in enumerate(lines)
+            if re.match(r"^ {2}[A-Za-z0-9_]+:\s*$", line)
+        ]
+        windows_jobs = []
+        for position, start in enumerate(job_starts):
+            end = job_starts[position + 1] if position + 1 < len(job_starts) else len(lines)
+            block = lines[start:end]
+            if any("runs-on: windows" in line for line in block):
+                windows_jobs.append((lines[start].strip(), block))
+        self.assertTrue(windows_jobs, "no Windows job found in ci.yml")
+        for name, block in windows_jobs:
+            with self.subTest(job=name):
+                self.assertTrue(
+                    any(line.strip() == "SR_SOURCE_COMMIT: ${{ github.sha }}" for line in block),
+                    f"{name} builds on a host with no git on PATH and must forward "
+                    "SR_SOURCE_COMMIT explicitly",
+                )
 
 
 if __name__ == "__main__":

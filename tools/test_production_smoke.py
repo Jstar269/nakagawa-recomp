@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from dataclasses import replace
 import hashlib
 import importlib.util
 import json
@@ -39,6 +40,7 @@ from test_iso_parity import (  # noqa: E402
     create_test_iso_with_executables,
 )
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
+from nk_core.types import TitleProfile  # noqa: E402
 
 
 SPEC = importlib.util.spec_from_file_location("production_smoke_generator", GENERATOR_PATH)
@@ -95,6 +97,33 @@ def build_synthetic_original_elf() -> bytes:
     executable[module_info + 4:module_info + 4 + len(module_name)] = module_name
     struct.pack_into("<I", executable, module_info + 32, 4)
     return bytes(executable)
+
+
+def build_synthetic_iso_elf() -> bytes:
+    """Build a linked ELF that the ISO preflight accepts as EBOOT.BIN."""
+    executable, _stub = build_synthetic_import_prx(b"sceSynthetic", 0x08804000)
+    executable = bytearray(executable)
+    struct.pack_into("<H", executable, 16, 2)
+    struct.pack_into("<I", executable, 24, 0x08804000)
+    phoff = struct.unpack_from("<I", executable, 28)[0]
+    struct.pack_into("<II", executable, phoff + 8, 0x08804000, 0x08804000)
+    struct.pack_into("<I", executable, phoff + 28, 0x100)
+    shoff = struct.unpack_from("<I", executable, 32)[0]
+    shentsize, shnum = struct.unpack_from("<HH", executable, 46)
+    for section_index in range(1, shnum - 1):
+        address_offset = shoff + section_index * shentsize + 12
+        section_address = struct.unpack_from("<I", executable, address_offset)[0]
+        struct.pack_into("<I", executable, address_offset, 0x08804000 + section_address)
+    return bytes(executable)
+
+
+def build_synthetic_decrypted_prx() -> bytes:
+    """Build a small source-owned ELF module for decrypted-PRX intake tests."""
+    module, _stub = build_synthetic_import_prx(b"sceSynthetic", 0)
+    module = bytearray(module)
+    phoff = struct.unpack_from("<I", module, 28)[0]
+    struct.pack_into("<I", module, phoff + 28, 0x100)
+    return bytes(module)
 
 
 class TestProductionSmoke(unittest.TestCase):
@@ -1062,15 +1091,17 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         globals_timeout = timeout
         launch_commands = []
+        launch_envs = []
 
         class FakeProcess:
-            def __init__(self):
+            def __init__(self, output):
                 self.returncode = launch_code
+                self.output = output
 
             def communicate(self, timeout=None):
                 if timeout is not None and globals_timeout:
                     raise subprocess.TimeoutExpired("synthetic-runtime", timeout)
-                return launch_output, None
+                return self.output, None
 
             def kill(self):
                 self.returncode = -9
@@ -1100,6 +1131,7 @@ class TestSanitizedBringup(unittest.TestCase):
 
         def fake_popen(command, **kwargs):
             launch_commands.append(list(command))
+            launch_envs.append(dict(kwargs.get("env", {})))
             flight_path = kwargs.get("env", {}).get("SR_FLIGHT_OUTPUT")
             if flight_path:
                 events = flight_events
@@ -1109,7 +1141,10 @@ class TestSanitizedBringup(unittest.TestCase):
                     "recorder": {"dropped": flight_dropped},
                     "events": events,
                 }), encoding="utf-8")
-            return FakeProcess()
+            output = launch_output
+            if not output and launch_code == 0:
+                output = "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+            return FakeProcess(output)
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
         with contextlib.ExitStack() as stack:
@@ -1136,6 +1171,7 @@ class TestSanitizedBringup(unittest.TestCase):
             with mock.patch("builtins.print"):
                 status = nk_cli.cmd_bringup(args)
         self.last_launch_command = launch_commands[-1] if launch_commands else None
+        self.last_launch_env = launch_envs[-1] if launch_envs else None
         return status, json.loads(report_path.read_text(encoding="utf-8"))
 
     def test_synthetic_consumer_stages_succeed_and_report_is_sanitized(self):
@@ -1152,8 +1188,31 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertTrue(command[2].endswith("runtime_image.bin"))
         self.assertRegex(command[3], r"^(?:0|0x[0-9a-f]{8})$")
         self.assertRegex(command[4], r"^0x[0-9a-f]{8}$")
-        self.assertEqual(command[5:], ["none", "none", "--sched"])
+        self.assertEqual(command[5:], ["none", "none", "--sched", "--gui"])
+        self.assertEqual(self.last_launch_env["SR_PRESENT_TRACE"], "1")
+        self.assertNotIn("SR_GEWATCH", self.last_launch_env)
+        self.assertEqual(report["presentation"], {
+            "status": "FRAME_SUBMITTED",
+            "frame_submissions": 1,
+        })
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("GUI presenter received 1 frame submission(s)", summary)
+        self.assertIn("Visual contents are not verified", summary)
         self.assertFalse(self.last_build_arguments.instruction_trace)
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_framebuffer_setup_but_no_gui_submission_is_not_success(self):
+        status, report = self._run_case(launch_output="synthetic runtime had no GUI submission\n")
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+        })
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertIn(308, report["issue_numbers"])
+        self.assertIn("no validated framebuffer was submitted",
+                      nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
 
     def test_instruction_trace_is_opt_in_and_stays_under_private_work_dir(self):
@@ -1168,7 +1227,7 @@ class TestSanitizedBringup(unittest.TestCase):
             trace_path,
             self.root / "success" / "work" / "instructions.trace",
         )
-        self.assertEqual(command[7:], ["--sched"])
+        self.assertEqual(command[7:], ["--sched", "--gui"])
         self.assertNotIn(str(trace_path), json.dumps(report))
 
     def test_instruction_trace_uses_make_trace_flag(self):
@@ -1257,10 +1316,19 @@ class TestSanitizedBringup(unittest.TestCase):
     def _run_module_fixture(
         self, iso_path: Path, work_root: Path, *,
         user_decrypted_eboot: bytes | None = None,
+        user_decrypted_modules: dict[str, bytes] | None = None,
+        catalog_manifest: dict | None = None,
         forbid_iso_executable: bool = False,
     ):
         work_dir = work_root / "work"
         report_path = work_root / "bringup.json"
+        if user_decrypted_modules:
+            decrypted_dir = (
+                work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
+            )
+            decrypted_dir.mkdir(parents=True, exist_ok=True)
+            for name, module_bytes in user_decrypted_modules.items():
+                (decrypted_dir / name).write_bytes(module_bytes)
         if user_decrypted_eboot is not None:
             decrypted_dir = (
                 work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
@@ -1278,7 +1346,7 @@ class TestSanitizedBringup(unittest.TestCase):
             returncode = 0
 
             def communicate(self, timeout=None):
-                return "", None
+                return "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n", None
 
         def fake_package_build(build_args, stage_observer=None):
             stage_observer("compile", "PASS", 1)
@@ -1306,6 +1374,26 @@ class TestSanitizedBringup(unittest.TestCase):
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 0, "", "")
         with contextlib.ExitStack() as stack:
+            if catalog_manifest is not None:
+                inspect_iso = nk_cli.inspect_iso
+
+                def inspect_catalog_iso(path):
+                    metadata = inspect_iso(path)
+                    profile = TitleProfile(
+                        id=catalog_manifest["id"],
+                        name=catalog_manifest.get("game_name", catalog_manifest["display_name"]),
+                        disc_ids=[metadata.disc_id],
+                        regions=[metadata.region],
+                    )
+                    return replace(metadata, matched_profile=profile)
+
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "inspect_iso", side_effect=inspect_catalog_iso
+                ))
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "_find_public_manifest",
+                    return_value=(self.root / "synthetic-manifest.json", catalog_manifest),
+                ))
             stack.enter_context(mock.patch.object(
                 nk_cli.subprocess, "run", return_value=completed
             ))
@@ -1328,23 +1416,8 @@ class TestSanitizedBringup(unittest.TestCase):
     def test_multi_module_iso_gets_provisional_non_overlapping_bindings(self):
         work_root = self.root / "multi-module-case"
         work_root.mkdir(parents=True)
-        module_bytes, _module_stub = build_synthetic_import_prx(b"sceSynthetic", 0)
-        module_bytes = bytearray(module_bytes)
-        module_phoff = struct.unpack_from("<I", module_bytes, 28)[0]
-        struct.pack_into("<I", module_bytes, module_phoff + 28, 0x100)
-        main_bytes, _main_stub = build_synthetic_import_prx(b"sceSynthetic", 0x08804000)
-        main_bytes = bytearray(main_bytes)
-        struct.pack_into("<H", main_bytes, 16, 2)
-        struct.pack_into("<I", main_bytes, 24, 0x08804000)
-        main_phoff = struct.unpack_from("<I", main_bytes, 28)[0]
-        struct.pack_into("<II", main_bytes, main_phoff + 8, 0x08804000, 0x08804000)
-        struct.pack_into("<I", main_bytes, main_phoff + 28, 0x100)
-        main_shoff = struct.unpack_from("<I", main_bytes, 32)[0]
-        main_shentsize, main_shnum = struct.unpack_from("<HH", main_bytes, 46)
-        for section_index in range(1, main_shnum - 1):
-            address_offset = main_shoff + section_index * main_shentsize + 12
-            section_address = struct.unpack_from("<I", main_bytes, address_offset)[0]
-            struct.pack_into("<I", main_bytes, address_offset, 0x08804000 + section_address)
+        module_bytes = build_synthetic_decrypted_prx()
+        main_bytes = build_synthetic_iso_elf()
         iso_path = work_root / "multi-module.iso"
         create_test_iso_with_modules(
             iso_path,
@@ -1487,6 +1560,11 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         self.assertIn("EBOOT.OLD is the game executable", cfw_check["message"])
         self.assertIn("decrypted EBOOT.elf", cfw_check["message"])
+        self.assertIn(
+            "Custom-firmware-patched dump: using the original executable",
+            cfw_check["message"],
+        )
+        self.assertIn("in the works (#308)", cfw_check["message"])
         selected_elf = work_root / "work" / "selected.elf"
         self.assertEqual(selected_elf.read_bytes(), decrypted_eboot)
         profile = json.loads(
@@ -1498,7 +1576,43 @@ class TestSanitizedBringup(unittest.TestCase):
             profile["input_identity"]["selected_executable"].rsplit("/", 1)[-1],
             "EBOOT.BIN",
         )
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn(
+            "Custom-firmware-patched dump: using the original executable",
+            summary,
+        )
+        self.assertIn("in the works (#308)", summary)
         nk_cli.validate_bringup_report(report)
+
+    def test_relocatable_main_entry_is_rebased_to_guest_address(self):
+        work_root = self.root / "relocatable-main-entry-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "relocatable-main-entry.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_synthetic_cfw_loader(),
+            sysdir_modules={},
+            usrdir_modules={},
+            old_eboot=build_psp_container(),
+            disc_id="ULUS99998",
+            title="Synthetic Relocatable Main Entry",
+        )
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_eboot=build_synthetic_decrypted_prx(),
+            forbid_iso_executable=True,
+        )
+
+        self.assertEqual(status, 0, report)
+        profile = json.loads(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998" / "profile.json")
+            .read_text(encoding="utf-8")
+        )
+        executable = profile["manifest"]["executable"]
+        self.assertEqual(executable["base"], 0x08804000)
+        self.assertEqual(executable["entry"], 0x08804000)
 
     def test_module_placement_without_safe_runtime_range_is_named(self):
         work_root = self.root / "no-module-range-case"
@@ -1543,6 +1657,118 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["issue_numbers"], [285, 295, 308])
         self.assertEqual(report["counts"]["modules"], 2)
         self.assertEqual(report["counts"]["encrypted_modules"], 1)
+        nk_cli.validate_bringup_report(report)
+
+    def test_user_decrypted_prx_replaces_encrypted_iso_module(self):
+        work_root = self.root / "decrypted-module-case"
+        work_root.mkdir(parents=True)
+        module_bytes = build_synthetic_decrypted_prx()
+        main_bytes = build_synthetic_iso_elf()
+        iso_path = work_root / "encrypted-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            bytes(main_bytes),
+            sysdir_modules={"encrypted.prx": build_psp_container()},
+            usrdir_modules={"plain.elf": bytes(module_bytes)},
+            disc_id="ULUS99998",
+            title="Synthetic Decrypted Module",
+        )
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_modules={"encrypted.prx": bytes(module_bytes)},
+        )
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(report["counts"]["modules"], 2)
+        self.assertEqual(report["counts"]["encrypted_modules"], 1)
+        module_stage = next(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998")
+            .glob("module-stage-*"),
+        )
+        self.assertEqual((module_stage / "encrypted.prx").read_bytes(), bytes(module_bytes))
+        profile = json.loads(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998" / "profile.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual([module["name"] for module in profile["manifest"]["modules"]],
+                         ["encrypted.prx", "plain.elf"])
+        nk_cli.validate_bringup_report(report)
+
+    def test_invalid_user_decrypted_prx_stays_at_crypto_boundary(self):
+        work_root = self.root / "invalid-decrypted-module-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "encrypted-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_plain_mips_elf(e_type=2),
+            sysdir_modules={"encrypted.prx": build_psp_container()},
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Invalid Decrypted Module",
+        )
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_modules={"encrypted.prx": build_psp_container()},
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "prepare_import")
+        # A still-encrypted "decrypted" copy is not a usable module: with no key
+        # file the module still needs the decryption boundary (#295).
+        self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
+        self.assertIn(295, report["issue_numbers"])
+        nk_cli.validate_bringup_report(report)
+
+    def test_catalog_bringup_stages_user_decrypted_prx(self):
+        work_root = self.root / "catalog-decrypted-module-case"
+        work_root.mkdir(parents=True)
+        module_bytes = build_synthetic_decrypted_prx()
+        main_bytes = build_synthetic_iso_elf()
+        iso_path = work_root / "catalog-encrypted-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            bytes(main_bytes),
+            sysdir_modules={"encrypted.prx": build_psp_container()},
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Catalog Decrypted Module",
+        )
+        catalog_manifest = nk_cli.title_manifest.load_manifest(
+            ROOT / "assets" / "titles" / "synthetic-title2.json"
+        )
+        catalog_manifest["executable"]["base"] = 0x08804000
+        catalog_manifest["executable"]["entry"] = 0x08804000
+        catalog_manifest["modules"] = [{
+            "name": "encrypted.prx",
+            "load_address": 0x08810000,
+            "required": True,
+            "role": "guest-prx",
+            "guest_path": "disc0:/PSP_GAME/SYSDIR/encrypted.prx",
+        }]
+        catalog_manifest = nk_cli.title_manifest.validate_manifest(catalog_manifest)
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_modules={"encrypted.prx": bytes(module_bytes)},
+            catalog_manifest=catalog_manifest,
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "codegen")
+        self.assertEqual(report["failure_class"], "CODEGEN_FAILED")
+        self.assertEqual(report["stages"]["prepare_import"]["status"], "PASS")
+        staged_module = (
+            work_root / "work" / "user-data" / "cache" / "bringup" /
+            "ULUS99998" / "modules" / "encrypted.prx"
+        )
+        self.assertEqual(staged_module.read_bytes(), bytes(module_bytes))
         nk_cli.validate_bringup_report(report)
 
     def test_each_stage_failure_is_named_in_the_report(self):
@@ -1713,8 +1939,8 @@ class TestProductStatusCopy(unittest.TestCase):
     clean-room public PGF reader landed in #474, closing #349, so wizard,
     checklist and completion-manifest text that still described those as
     missing was a false product claim. Boundaries that really are unavailable
-    stay named with their tracking issue: automatic executable decryption and
-    PGD-protected data (#295).
+    stay named with their tracking issue: PGD-protected data and no-keyfile
+    executable decryption (#295).
     """
 
     def _source(self, relative: str) -> str:
@@ -1722,7 +1948,7 @@ class TestProductStatusCopy(unittest.TestCase):
 
     def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
         ui = self._source("src/player/ui_renderer.c")
-        self.assertIn("does not decrypt encrypted executables (#295). It builds runtime ", ui)
+        self.assertIn("decrypts encrypted executables with a local key file (#295). It builds runtime ", ui)
         self.assertIn("packages from the library (#296/#297). Verify also lists font (#300)", ui)
         self.assertNotIn("or create runtime packages", ui)
         self.assertNotIn("Runtime package is missing (#296/#297)", ui)

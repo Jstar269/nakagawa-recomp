@@ -77,7 +77,53 @@ typedef struct {
     uint64_t terminal_sequence;
 } SrFlightSnapshot;
 
+/* ---- SR_TRACE_PC: an address window over the instruction trace ----
+ * The full trace is one line per guest instruction, which no run of any length
+ * can afford to write. SR_TRACE_PC=LO:HI keeps only the records whose guest pc
+ * is inside the window and adds the ABSOLUTE value of the registers SR_TRACE_V
+ * (VFPU) and SR_TRACE_F (FPU) name, because a window cannot reconstruct a value
+ * written before it. SR_TRACE_LIMIT stops the stream after that many records
+ * and disarms the gate, so the rest of the run executes uninstrumented. Every
+ * delivered vblank is marked, which places each record on the frame timeline.
+ *
+ * This is a diagnostic stream, not the byte-comparable oracle trace: a record is
+ * the canonical line the trace writer already rendered, followed by the absolute
+ * values. It is owned by the diagnostic recorder because every host of the
+ * runtime links that file -- the host probes the window before guest execution,
+ * and the GE's vblank tick marks the frame timeline. Nothing here
+ * is active unless SR_TRACE_PC names a window. The index list is one shared type
+ * in both branches below, so a host that does not link the recorder still
+ * compiles the trace writer against the same declaration. */
+#define SR_TRACE_WINDOW_MAX_INDEX 16u
+typedef struct {
+    unsigned vn, fn;                      /* how many absolute indices are named */
+    uint8_t v[SR_TRACE_WINDOW_MAX_INDEX]; /* VFPU indices, physical v[] order */
+    uint8_t f[SR_TRACE_WINDOW_MAX_INDEX]; /* FPU indices */
+} SrTraceWindowIndices;
+
 #if defined(SR_FLIGHT_RECORDER_LINKED) && !defined(SR_FLIGHT_RECORDER_STANDALONE)
+
+void sr_trace_window_configure(void);   /* lazy env probe; host start and vblank hooks */
+void sr_trace_note_frame(uint32_t frame);
+int  sr_trace_window_armed(void);
+int  sr_trace_window_begin_instruction(uint32_t pc);  /* 0 when outside the window */
+const SrTraceWindowIndices *sr_trace_window_indices(void);
+void sr_trace_window_record(uint32_t pc, const char *text);
+
+/* ---- SR_WATCH: guest stores intersecting one address range ----
+ * SR_WATCH=ADDR:LEN is probed once during runtime initialization. Store helpers
+ * check the exported flag before entering the recorder, so the disabled path
+ * adds only a predicted-false branch and no diagnostic call. */
+extern int g_sr_watch_enabled;
+#define SR_WATCH_ACTIVE() (g_sr_watch_enabled)
+void sr_watch_configure(void);
+void sr_watch_note_vblank(uint32_t vblank);
+void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, uint32_t width);
+uint64_t sr_watch_match_count(void);
+#define SR_WATCH_STORE_IF_ARMED(pc, addr, value, width) do { \
+    if (__builtin_expect(g_sr_watch_enabled, 0)) \
+        sr_watch_store((pc), (addr), (value), (width)); \
+} while (0)
 
 void sr_flight_init(void);
 int sr_flight_class_enabled(uint32_t event_class);
@@ -112,6 +158,25 @@ void sr_flight_test_disable(void);
     } while (0)
 
 #else
+
+/* Not linked: the window stays disarmed and inert, so a host without the
+ * recorder behaves exactly as it did before the probe existed. */
+static inline void sr_trace_window_configure(void) {}
+static inline void sr_trace_note_frame(uint32_t frame) { (void)frame; }
+static inline int sr_trace_window_armed(void) { return 0; }
+static inline int sr_trace_window_begin_instruction(uint32_t pc) { (void)pc; return 0; }
+static inline const SrTraceWindowIndices *sr_trace_window_indices(void) { return 0; }
+static inline void sr_trace_window_record(uint32_t pc, const char *text) {
+    (void)pc; (void)text;
+}
+#define SR_WATCH_STORE_IF_ARMED(pc, addr, value, width) ((void)0)
+#define SR_WATCH_ACTIVE() 0
+static inline void sr_watch_configure(void) {}
+static inline void sr_watch_note_vblank(uint32_t vblank) { (void)vblank; }
+static inline void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, uint32_t width) {
+    (void)pc; (void)addr; (void)value; (void)width;
+}
+static inline uint64_t sr_watch_match_count(void) { return 0u; }
 
 static inline void sr_flight_init(void) {}
 static inline int sr_flight_class_enabled(uint32_t event_class) {

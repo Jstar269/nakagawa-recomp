@@ -14,6 +14,7 @@
     "unsupported_imports",
     "runtime_imports",
     "runtime_output_kind",
+    "presentation",
     "process_exit_code",
     "counts",
     "exit_classification"
@@ -68,6 +69,7 @@
         "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP",
         "GUEST_ACTIVITY_UNVERIFIED",
         "DISPLAY_PROGRESS_UNVERIFIED",
+        "NO_FRAME_SUBMISSIONS",
         "ENTRY_NOT_COMPILED",
         "RUNTIME_INPUT_UNAVAILABLE",
         "RUNTIME_ELF_REJECTED",
@@ -94,6 +96,15 @@
     },
     "runtime_output_kind": {
       "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "VIDEO_UNAVAILABLE", "OTHER"]
+    },
+    "presentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "frame_submissions"],
+      "properties": {
+        "status": { "enum": ["NOT_RUN", "FRAME_SUBMITTED", "NO_FRAME_SUBMISSIONS"] },
+        "frame_submissions": { "type": "integer", "minimum": 0 }
+      }
     },
     "process_exit_code": { "type": ["integer", "null"] },
     "counts": {
@@ -131,7 +142,16 @@
       "additionalProperties": false,
       "required": ["code", "status", "issue_numbers"],
       "properties": {
-        "code": { "enum": ["DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "RUNTIME_PACKAGE", "SYSTEM_FONTS", "AUDIO_OUTPUT", "MODIFIED_DUMP_CFW_LOADER"] },
+        "code": {     "enum": [
+      "DISC_SFO",
+      "EXECUTABLE",
+      "EXPERIMENTAL",
+      "GUEST_MODULES",
+      "RUNTIME_PACKAGE",
+      "SYSTEM_FONTS",
+      "AUDIO_OUTPUT",
+      "MODIFIED_DUMP_CFW_LOADER"
+     ] },
         "status": { "enum": ["OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS"] },
         "issue_numbers": {
           "type": "array",

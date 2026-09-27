@@ -122,7 +122,7 @@ two additional record tables; revisions 0, 1, and 2 use the base header [C3],
 | Offset | Width | Header fact |
 | --- | --- | --- |
 | `0x0000` | 2 | Header offset; must be zero. |
-| `0x0002` | 2 | Header size; 392 for revisions 0–2, 412 for revision 3. |
+| `0x0002` | 2 | Header size; 392 for revisions 0–2 and 412 for revision 3 [C3]. |
 | `0x0004` | 4 | ASCII magic `PGF0`. |
 | `0x0008` | 4 | Signed revision; supported values are 0–3. |
 | `0x000C` | 4 | Signed version; must be nonnegative but does not select decoding. |
@@ -148,7 +148,7 @@ two additional record tables; revisions 0, 1, and 2 use the base header [C3],
 | `0x0102` | 1 each | Counts of dimension, X-adjustment, Y-adjustment, and advance metric records, in that order. |
 | `0x0106` | 102 | Reserved bytes. |
 | `0x016C` | 4 | Shadow character-map entry count. |
-| `0x0170` | 4 | Shadow character-map bits per entry; 16 for the supported 16-bit entries. |
+| `0x0170` | 4 | Shadow character-map bits per entry; 16 for the supported 16-bit entries, 0 or 16 for an empty map [C3]. |
 | `0x0174` | 4 | Unassigned fixed-point field; ignored by this reader. |
 | `0x0178` | 4 each | Two signed 26.6 fixed-point shadow-scale values, in order. |
 | `0x0180` | 8 | Reserved bytes, ending the 392-byte base header. |
@@ -160,12 +160,21 @@ as the source bits per pixel but is not used to choose a decoder (project
 decision with rationale: the bitmap stream is independently specified as
 4-bit samples; the field's exact historical meaning remains open question O-8).
 
-For revision 3, offsets `0x0188` and `0x0190` each contain a 32-bit
+For a 412-byte header, offsets `0x0188` and `0x0190` each contain a 32-bit
 bits-per-entry value; `0x018C` and `0x0194` each contain a 16-bit entry count;
 `0x018E`–`0x018F`, `0x0196`–`0x0197`, and `0x0198`–`0x019B` are reserved
-[C3]. Each declared revision-3 table entry occupies 4 bytes. The two tables
+[C3]. Each declared record entry occupies 4 bytes. The two tables
 are opaque to this reader: their contents are neither interpreted nor exposed.
-A nonzero count still consumes its complete section and is bounds-checked.
+A nonzero count still consumes its complete section and is bounds-checked. The
+public description attaches this extension to revision 3 and gives 392 or 412 as
+the header length [C3]; the extension is therefore identified by the *declared
+header size*, not by the revision value. A revision-3 font whose header is 392
+bytes has no extension, so its section directory is exactly the revision-0–2
+directory and it is decoded on the same direct-map path (project decision with
+rationale: the extension exists only to describe extra sections, so a file that
+does not contain it must not be rejected for its revision value; a 412-byte
+header still requires revision 3, because only that revision has a documented
+extension). Revisions above 3 remain a named unsupported boundary.
 
 After the applicable header, sections occur in this exact order [C3]:
 
@@ -194,8 +203,8 @@ Validation at this stage is fail-closed. The 16 MiB image ceiling and
 1,048,576 count ceilings are project decisions: they bound untrusted work while
 covering the documented format ranges, and open question O-1 retains real-font
 coverage evidence. Total image size is from 392 through 16 MiB inclusive; both
-base packed widths are 1–32; the shadow width is 0 when
-its count is zero and must be 16 when its count is nonzero; the first glyph is
+base packed widths are 1–32; the shadow width is 0 or 16 when its count is zero
+and must be 16 when its count is nonzero; the first glyph is
 no greater than the last; and both character-map and glyph counts are at most
 1,048,576 [C2]–[C5]. The character map count is the number of character-map
 entries, not a glyph count (project decision: PSP SDK documents that meaning
@@ -203,10 +212,11 @@ entries, not a glyph count (project decision: PSP SDK documents that meaning
 confirm it). The character-pointer count must equal the inclusive glyph count
 `last − first + 1` (project decision: otherwise two header facts disagree about
 the table cardinality). Negative revision or version, a nonzero header offset,
-the wrong header size, bad magic, an unsupported revision above 3, any invalid
-width/count, or any section that does not fit causes open failure without
-publishing partial state [C2]–[C5]. Other shadow widths and unproven revision-3 table
-meanings remain named unsupported boundaries O-2 and O-5.
+a header size that is neither 392 nor 412, a 412-byte header outside revision
+3, bad magic, an unsupported revision above 3, any invalid width/count, or any
+section that does not fit causes open failure without publishing partial state
+[C2]–[C5]. Other shadow widths and unproven revision-3 table meanings remain
+named unsupported boundaries O-2 and O-5.
 
 ### 3.2 Packed character map
 
@@ -238,11 +248,17 @@ subtraction rule above; no host signed-overflow operation is permitted.
 The shadow character map is a packed array of unsigned 16-bit character codes,
 not another glyph-id table [C3]. Its supported width is therefore 16 bits per
 entry; its data occupies two bytes per code and the section is rounded to a
-whole 32-bit word, leaving two padding bytes after an odd count. Zero entries
-consume no bytes; a nonzero count with any other width is a named unsupported
-format and causes open failure under §3.7 (open question O-5 asks whether a
-non-16 historical
-encoding exists). The array is neither required to be sorted nor NUL
+whole 32-bit word, leaving two padding bytes after an odd count. A zero count
+consumes no bytes and accepts either declared width, 0 or the documented 16
+(project decision: the public description gives 16 as the entry width of this
+map and no other width is documented, so an empty map has no entry whose width
+could contradict the field, and refusing a font that declares the documented
+width for an empty map would reject a valid converter output for no semantic
+reason). A nonzero count with any other width is a named unsupported
+format and causes open failure under §3.7 (open question O-5 records that the
+documented width is written with a question mark and that no font may be read
+to establish a historical alternative). The array is neither required to be
+sorted nor NUL
 terminated. Bounds are the only validation at this stage; duplicate codes are
 preserved in file order.
 
@@ -262,16 +278,21 @@ resulting shadow's row-order bits and the one-based raw identifier populate the
 shadow fields in §3.9; this public seam does not expose a separate shadow-draw
 operation.
 
-Revision-3 header counts describe two consecutive arrays of 4-byte records,
-each record containing two little-endian 16-bit values [C3]. This reader skips
-both arrays after checking their byte sizes; it does not use their start/length
-pairs to reinterpret the ordinary character map. Their declared bits-per-entry
+A 412-byte header's counts describe two consecutive arrays of 4-byte records,
+each record containing two little-endian 16-bit values; the public description
+calls the first array's pairs subcharmap start and length and marks the second
+array's meaning unknown [C3]. This reader skips both arrays after checking their
+byte sizes; it does not use their start/length pairs to reinterpret the
+ordinary character map. Their declared bits-per-entry
 values are retained as header facts but have no decoding effect. This keeps an
 otherwise structurally valid revision-3 font on the same direct-map path while
 making the uncompressed-map limitation explicit: a revision-3 font whose
 ordinary map is absent or incomplete reports unavailable characters rather than
 pretending the opaque tables were understood (project decision; open questions
-O-1 and O-2 keep real-font revision and alternate-map coverage visible).
+O-1 and O-2 keep real-font revision and alternate-map coverage visible). Because
+the public description states what each record *contains* but never how the
+ordinary character map refers to those records, interpreting them is refused by
+name rather than guessed; O-2 and O-20 track that evidence.
 
 ### 3.4 Character pointer table
 
@@ -349,14 +370,16 @@ The three index flags and fixed advance index follow the public format
 description's bit-44/45–47 reading [C3]. Treating bit 44 as non-layout-bearing
 and bits 45–47 as those three flags is a project decision where it diverges
 from the excluded implementation; synthetic tests in §8 pin this reading and
-a source-owned PSP probe remains open under O-4. Regardless of bit 44, a
+a source-owned PSP probe remains open under O-4. The public description gives
+bit 44 the role bit meaning “0: shadow, 1: character” [C3], which is consistent
+with this reader's reachability rule: a
 record reached through the main pointer table is primary and a record reached
 through a nonzero primary shadow offset is shadow. A shadow offset that is
 zero, points before the end of the primary record, wraps, or leaves fewer than
 six bytes for its prefix causes open failure when a nonzero shadow identifier
 names it. Character information remains available for mapped records with row
-order 0 or 3, but the current draw seam cannot rasterize either and does not
-silently change them to rows 1 or 2 (§3.11).
+order 0 or 3, but the current draw seam cannot rasterize row order 0 and does
+not silently change it to rows 1 or 2 (§3.6, §3.11).
 
 ### 3.6 Glyph bitmap stream
 
@@ -391,15 +414,45 @@ exceed 16,129 samples; §3.11 retains a 65,536-sample draw ceiling as a
 defensive bound.
 
 Row order 3 begins with three little-endian 16-bit character codes rather than
-an RLE bitmap, representing a composite glyph [C3]. The current public draw
-seam has no overlay operation, so `pgf_draw_glyph` and
-`pgf_draw_glyph_by_id` reject row order 3 with return 0 and write nothing
-(project decision; open question O-11 keeps composite rendering in the works
-under #349). Character queries still return the record's dimensions and
-metrics; primary row order remains internal because the ABI has no field for
-it. Row order 0 is handled the same way for drawing. A shadow record's bitmap
+an RLE bitmap, representing a composite glyph: the public description states
+that such a record's glyph data is a list of three UCS2 values and that drawing
+it means looking those three values up in the character map to identify the
+corresponding glyph identifiers and overlaying them [C3]. The composite's own
+metric record is decoded exactly like any other record, so its dimensions,
+adjustments, and advances remain queryable through §3.9. `pgf_draw_glyph` and
+`pgf_draw_glyph_by_id` render the composite's three components through the
+public seam; §3.10 fixes the component placement, the combination rule, and
+§3.11 keeps the per-component destination rules. Row order 0 is still refused
+for drawing with return 0 and no write (project decision: the description gives
+no meaning for it [C3]). A shadow record's bitmap
 uses the same RLE and row rules at its byte-aligned location, although the
 current seam exposes only its row-order bits and identifier.
+
+**Composite payload validation.** A row-order-3 record is validated at open, not
+at draw, and these checks are normative:
+
+1. Six bytes must remain in the image at the record's bitmap offset, because the
+   payload is a fixed six bytes. Fewer cause open failure.
+2. Each of the three codes is resolved through the ordinary character map of
+   §3.2, with no alternate code and no revision-3 table. A code below the first
+   glyph, at or above the character-map count, carrying the absence sentinel, or
+   mapping to a glyph identifier at or above the inclusive glyph count causes
+   open failure.
+3. Each resolved component must be a *raster* component: row order 1 or 2 with
+   nonzero width and height. A component that is itself row order 0 or 3, or a
+   composite component, causes open failure. This rule also makes the reference
+   graph acyclic by construction: a component is always a leaf raster record, so
+   a self-reference, a mutual reference, or any longer cycle is refused instead
+   of followed. The reader therefore performs no unbounded recursion.
+4. Because the checks run for every glyph at open, a composite that names an
+   unavailable or non-raster component prevents open, exactly as an invalid
+   shadow reference does (§3.7). It is not deferred to a draw that might never
+   happen.
+
+The resolved component identifiers are part of the validated handle, so a later
+draw performs no further character-map lookup and cannot observe a different
+resolution. The composite's own row order is not exposed because the ABI has no
+field for it.
 
 ### 3.7 Open and validation
 
@@ -428,15 +481,17 @@ Validation proceeds in this order:
 5. For every glyph identifier, decode its pointer and the complete primary
    record according to §§3.4–3.5. Every indexed metric must exist. Resolve and
    validate every nonzero shadow identifier and its shadow-record prefix
-   according to §3.3.
+   according to §3.3. For every row-order-3 record, validate the six-byte
+   composite payload and resolve its three raster components according to §3.6.
 6. Publish the handle only after all preceding checks pass.
 
 A bitmap tail may be incomplete because the primary record itself is complete;
-it follows the deterministic zero-tail rule in §3.6 when drawn. Row order 0 or
-3 and a zero width or height do not by themselves prevent open: they produce
+it follows the deterministic zero-tail rule in §3.6 when drawn. Row order 0 and
+a zero width or height do not by themselves prevent open: they produce
 the query and draw results in §§3.9 and 3.11. Conversely, a bad pointer, a
-record that crosses glyph-data end, a missing metric-table index, or an invalid
-shadow reference prevents open even if no currently mapped character would
+record that crosses glyph-data end, a missing metric-table index, an invalid
+shadow reference, or an invalid composite payload or component prevents open
+even if no currently mapped character would
 have used that glyph (project decision: eager validation keeps a valid-looking
 lookup from becoming a later memory fault).
 
@@ -454,10 +509,11 @@ returns null from the corresponding open operation. Query and draw failures
 return 0 as specified later. The present API has no reason-string accessor, so
 the owning product boundary must name the failed semantic class rather than
 report a generic crash: header, section bounds, packed width, revision,
-allocation, glyph-record metric, shadow reference, guest-record, glyph
-resolution, row order/composite, pixel format, and destination geometry are the
+allocation, glyph-record metric, shadow reference, composite payload,
+composite component, guest-record, glyph
+resolution, row order, pixel format, and destination geometry are the
 required classes; §7 tracks the missing per-open diagnostic accessor under
-issue #349.
+issue #349 and the composite classes under #521.
 
 ### 3.8 Font information
 
@@ -612,20 +668,52 @@ The footprint can reach 128 by 128, still below §3.11's 65,536-sample ceiling.
 The advance values do not scale, round, or otherwise alter this bitmap
 placement; their fixed-point representation is queried independently.
 
+**Composite assembly.** A row-order-3 record is placed by the rule above applied
+three times, once per component, and combined per addressable sample:
+
+| Step | Behaviour |
+| --- | --- |
+| 1 | Components are drawn in file order, the first code first. |
+| 2 | Every component uses the *same* requested 26.6 position, floor fraction, bilinear rule, and clipping as the composite record would have used. The composite record's own width and height take no part in placement; each component uses its own. |
+| 3 | The first component writes its interpolated sample, exactly as an ordinary row-order-1 or row-order-2 glyph overwrites the destination. |
+| 4 | The second and third components write the larger of their interpolated sample and the destination sample already present at that addressable sample. For packed formats 0 and 1 the comparison is on the 4-bit nibble; for formats 2–4 it is on the sample byte, repeated into every component byte of the pixel. |
+
+Steps 3 and 4 are a project decision, and the public description does not state
+them: it says only that the three components are “overlaid” [C3]. Overwrite in
+file order was rejected because a later component's transparent box would erase
+the earlier component's coverage, which cannot compose a base glyph with the
+marks laid over it, and because a rule that depends on component order would let
+two fonts' identical records render differently. A per-sample maximum is
+order-independent, never erases an existing sample, and gives the same result for
+a component drawn twice. The split between an overwriting first component and
+maximising later ones keeps a composite from inheriting the destination's prior
+contents through its first component. Physical-PSP evidence for the real
+placement, clipping, and combination of components remains required and is named
+as open question O-19 under #521; until it exists this rule is project
+behaviour, not hardware truth, and the source-owned vectors in §8 pin it.
+
+Because the three components share one requested position, a composite's
+combined footprint is the union of the components' footprints, and each
+component keeps its own vertical clipping against `bufHeight`.
+
 ### 3.11 Pixel output and dirty notification
 
 A draw is all-or-nothing with respect to validation. Before the first pixel or
 dirty-region side effect, the reader verifies the handle and glyph resolution,
 the complete guest image record, a nonzero guest buffer address, nonzero width,
 height, and row byte count, a known pixel format, positive source dimensions,
-a source area no greater than 65,536 samples, row order 1 or 2, all checked
+a source area no greater than 65,536 samples, row order 1 or 2 for the glyph or
+for every component of a composite, all checked
 address arithmetic, every distinct writable destination byte, and a nonempty
 intersection of the source footprint with the horizontally addressable buffer
 range. Any failure returns 0, leaves the image record and buffer unchanged,
 and sends no dirty notification [C1], [C2], [C8]. A valid request whose
 vertical interval lies wholly outside the buffer returns 1 with no pixel and
 no dirty-row effect; the asymmetric horizontal check is a project decision
-that prevents an empty range from being treated as a successful raster. Except
+that prevents an empty range from being treated as a successful raster. For a
+composite, the preflight is repeated for all three components before the first
+pixel of the first component is written, so a component that cannot be placed
+leaves the whole draw untouched. Except
 for ABI field meanings, this section's preflight, raw-sample write, and dirty
 rules are project decisions: they make hostile geometry fail before guest
 memory changes and keep all platform implementations on one PSP-visible rule
@@ -666,14 +754,18 @@ the source footprint with `[0, bufHeight)`. Let its integer destination base
 be *bx*, and let *aw* be the addressable width derived from *bpl*. Within each
 intersecting row, the dirty interval has exclusive endpoints
 `max(0,bx)` and `min(aw,bx+ow)`; the early check guarantees it is nonempty.
-This clips only to *aw*, not to `bufWidth`, intentionally permitting
+This clips only to *aw*, not to *bufWidth*, intentionally permitting
 notification of row padding that received no pixel. Let the addressable-unit
 size in bytes be 1 for formats 0 and 1, and respectively 1, 3, and 4 for
 formats 2–4. The reported row span starts at
 `bufferPtr + y × bpl + floor(start ÷ unit)` and has
 `(ceil(end ÷ unit) − floor(start ÷ unit)) × unit` bytes. A valid request with
 no intersecting vertical rows sends no notification. No notification is sent
-for a failed request.
+for a failed request. A composite reports each component's spans in component
+order, so one composite can produce up to three sets of row spans; a component
+with no intersecting row contributes none. The spans are computed and
+bounds-checked during the preflight, before any pixel is written, so a span
+that cannot be validated fails the whole draw.
 
 Guest addresses throughout this section use 64-bit intermediate arithmetic and
 must lie wholly in writable guest memory after 32-bit wrap is ruled out. The
@@ -689,13 +781,16 @@ system. The product must use the following named boundaries verbatim enough to
 make “in the works” and its tracker visible; none may be hidden behind a
 generic font error or an apparently successful blank render.
 
-Status note: the table below is the specification session’s frozen record of the
-boundaries required at spec time, and it is not current product copy. The public
+Status note: the table below began as the specification session’s frozen record
+of the boundaries required at spec time, and it is not current product copy. The
+public
 runtime reader has since shipped in `src/rt/pgf_public.c` (PR
 [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474), closing
 [#349](https://github.com/Jstar269/nakagawa-recomp/issues/349)) and is available
-for supported inputs; the remaining rows are still open boundaries whose only
-tracker is that now-closed issue. See
+for supported inputs. Composite row-order-3 rendering and the supported
+revision/shadow-width variants were added under
+[#521](https://github.com/Jstar269/nakagawa-recomp/issues/521), which now tracks
+the rows whose evidence is still missing. See
 [`../YOUR_OWN_GAMES.md`](../YOUR_OWN_GAMES.md) for the current product statement.
 
 | Named boundary | Required product meaning | Tracking |
@@ -705,8 +800,8 @@ tracker is that now-closed issue. See
 | Generated PGF fixtures | “Synthetic and generated-font coverage is in the works.” A generated fixture is evidence, not an authenticity claim. | #313 |
 | Guest font integration | “Guest `libfont.prx` font loading and text layout are in the works.” | #299 |
 | Pairwise kerning | The seam exposes per-glyph advances only; “pairwise kerning is in the works with guest text layout.” | #299 |
-| Composite row-order-3 glyphs | “Composite PGF glyph rendering is in the works”; character metrics may be available while draw fails closed. | #349 |
-| Revision and shadow-width extensions | “Additional PGF revision/map variants are in the works”; unsupported variants are rejected by name. | #349 |
+| Composite row-order-3 glyphs | Rendered through the public draw seam from the record's own three-code payload (§§3.6, 3.10), with the overlay rule a named project decision. “Physical-PSP composite placement and combination confirmation is in the works”; a composite whose payload, components, or reference graph is invalid is rejected at open by name. | #521 |
+| Revision and shadow-width extensions | An empty shadow map that declares the documented 16-bit width, and a revision-3 font with no 412-byte extension, are now decoded. The remaining variants stay refused by name: “additional PGF revision/map variants are in the works”, covering the revision-3 subcharmap reference semantics and any non-16 shadow-map width. | [#521](https://github.com/Jstar269/nakagawa-recomp/issues/521) |
 | Shadow drawing | This seam reports shadow identity/row state but exposes no shadow-image draw call; “shadow-image drawing is in the works with guest font integration.” | #299 |
 | Per-open reason reporting | The current open API returns only null; “named PGF rejection diagnostics are in the works.” §3.7 fixes the semantic classes meanwhile. | #349 |
 | Metric hardware confirmation | Source-owned tests establish this contract; “physical-PSP PGF metric confirmation is in the works.” | #349 |
@@ -808,23 +903,48 @@ path. The future implementation-bearing reader path still requires the normal
 path-specific classifier/provenance process before merge; this specification
 does not pre-empt that human decision.
 
-Open questions are not permission to guess during implementation:
+Open questions are not permission to guess during implementation. A question may
+also be *answered from the public format description*, which closes its
+format-facts half without claiming hardware evidence; each answer below names the
+evidence and what remains open:
 
 1. **O-1 — observed revisions and header sizes.** Which revisions and exact
    header sizes occur in user-owned firmware fonts (#300) and generated
-   fixtures (#313)? Revisions above 3 remain named unsupported meanwhile.
+   fixtures (#313)? **Partly answered (#521):** the public description documents
+   392 and 412 as the header lengths, attaches the 20-byte extension to revision
+   3, and gives 2 or 3 as the observed revision values [C3]; §3.1 therefore
+   accepts revisions 0–3, treats the extension as a property of the declared
+   header size, and keeps a 412-byte header exclusive to revision 3. Which
+   revisions real firmware and converter output actually carry, and anything
+   above 3, remain open and refused by name.
 2. **O-2 — revision-3 alternate maps.** Do real revision-3 fonts require the
    two opaque tables to interpret their direct character map, and what are
-   their bits-per-entry values? The direct-map-only limit remains visible.
+   their bits-per-entry values? **Partly answered (#521):** each record is four
+   bytes holding two little-endian 16-bit values, the first array's pairs are a
+   subcharmap start and length, and the header carries a bits-per-entry field for
+   each array [C3]. How the ordinary character map refers to those records is
+   stated nowhere in that description, so the direct-map-only limit remains
+   visible and the subcharmap path is refused by name; see O-20.
 3. **O-3 — character-map count.** Does `charMapLength` always mean the direct
    map's entry count as PSP SDK states, or can it equal glyph cardinality in a
    firmware variant? A source-owned PSP probe should compare both counts.
 4. **O-4 — metric flag positions.** Are bits 44–47 always role/three group
    flags, and is the advance index always 8 bits? A black-box/hardware probe
    must distinguish this reading from the excluded backend's shifted reading.
+   **Format facts answered (#521):** the public description gives bit 44 a
+   one-bit role meaning (“0: shadow, 1: character”), bits 45–47 the three
+   group-storage flags this reader uses, and the advance group a fixed 8-bit
+   index [C3]. Reachability already supplies the role of bit 44, so §3.5 keeps
+   it non-layout-bearing; the hardware probe stays open.
 5. **O-5 — shadow-map width/padding.** Is 16 bits per shadow-map entry with
    exactly two bytes per entry universal, or do odd counts/non-16 widths use a
-   different packed boundary? Unsupported values are rejected meanwhile.
+   different packed boundary? **Partly answered (#521):** the description states
+   two bytes per entry and a 16-bit entry width for this map [C3], so §3.3
+   accepts 16 bits for a nonempty map and, for an empty map, either 0 or that
+   documented 16; every other width is still refused by name. The section's
+   whole-32-bit-word rounding after an odd count remains an unproven project
+   decision, because the description gives that map a plain two-bytes-per-entry
+   size with no padding rule and no font may be read to settle it.
 6. **O-6 — invalid metric indices.** Must a missing table entry reject open,
    or may firmware render a zero/default metric? This spec requires open
    failure; §8 pins the decision until hardware evidence supersedes it.
@@ -835,15 +955,26 @@ Open questions are not permission to guess during implementation:
    fields, and is byte `0x22` truly the source BPP? The reader exposes it
    without using it to decode.
 9. **O-9 — first/last/map relationship.** Must
-   `firstGlyph + charMapLength − 1 = lastGlyph`? This reader does not assume
-   it and uses the map count as the direct lookup bound.
+   `firstGlyph + charMapLength − 1 = lastGlyph`? The public description calls
+   `0x0010` the number of elements in the character map, which counts
+   char-glyphs, and `0x00B6`/`0x00B8` the first and last element in that same
+   map [C3]; that is the relationship this reader's composite components rely
+   on when they resolve a code through §3.2. This reader still does not require
+   the equality and keeps the map count as the direct lookup bound (project
+   decision, §3.2); a firmware variant that breaks it stays open.
 10. **O-10 — draw rejection surface.** Should null buffer, unknown format,
     zero dimensions/row width, and nonpositive glyph area all return failure
     before writes, and should the three byte-per-pixel formats repeat the raw
     4-bit value in every byte? Hardware/probe agreement is still required.
 11. **O-11 — composite glyphs.** What is the exact overlay, positioning, and
-    clipping order for a revision-3 row-order-3 record? Metrics remain queryable;
-    draw stays closed under #349.
+    clipping order for a row-order-3 record? **Answered as project behaviour
+    (#521):** the public description states that a row-order-3 record's glyph
+    data is a list of three UCS2 values to look up in the character map and
+    overlay [C3], which is the payload, resolution, and per-component placement
+    §§3.6 and 3.10 implement. It states nothing about the combination of the
+    three components' samples, so §3.10 fixes that rule as a named project
+    decision and the hardware question moves to O-19; metrics remain queryable
+    and an invalid composite is refused at open.
 12. **O-12 — shadow selection.** Confirm the one-based shadow identifier,
     glyph-local shadow-record offset, and shadow row-order reporting against a
     source-owned PSP probe.
@@ -869,6 +1000,19 @@ Open questions are not permission to guess during implementation:
     decode under §3.6 to `1,1,2,2,3,0,0,0,15,15,15,5`; the earlier expected
     sequence did not match its control/sample nibbles. The vector now follows
     §3.6. Confirm this correction during spec review.
+19. **O-19 — composite hardware confirmation.** A source-owned PSP probe must
+    establish the real placement, clipping order, and sample-combination rule for
+    a row-order-3 record, including whether components share the composite's
+    requested position and how a component's transparent area treats an earlier
+    component's coverage. Until then §3.10's table is project behaviour pinned by
+    synthetic vectors, tracked with #521.
+20. **O-20 — revision-3 subcharmap reference semantics.** A source-owned PSP
+    probe must establish how the ordinary character map refers to the two
+    revision-3 tables, what the second table's pairs mean, and what its
+    bits-per-entry fields select. Until then a revision-3 font is decoded from
+    its ordinary map only, and a character that only the subcharmaps describe
+    reports as unavailable rather than guessing an identifier; tracked with
+    #521.
 
 Required future hardware evidence is homebrew-only under campaign §8: a
 resident-runner probe may open user-supplied fonts and record ABI records,
@@ -940,7 +1084,8 @@ and no shadow; mutations then vary one fact at a time.
    and 63 and compare the exact signed results. Sweep width and height through
    0, 1, 126, and 127.
 4. Build row orders 0, 1, 2, and 3. Character information succeeds for all
-   mapped records, while drawing succeeds only for 1 and 2.
+   mapped records, while drawing succeeds for 1, 2, and 3; only row order 0
+   fails closed for drawing.
 5. Toggle bit 44 while keeping bits 45–47 and payload groups fixed. Under this
    specification the decoded primary layout and query result are identical,
    pinning O-4's project decision.
@@ -981,9 +1126,55 @@ and no shadow; mutations then vary one fact at a time.
    assert it is truncated to the footprint without consuming another run.
 5. Encode zero-area, 1-by-1, 127-by-1, 1-by-127, and 127-by-127 records. The
    last has 16,129 samples and remains below the defensive 65,536 ceiling.
-6. A row-order-3 record starts with three known 16-bit character codes.
-   Character query returns 1; both draw APIs return 0 and leave the buffer
-   unchanged.
+6. A row-order-3 record starts with three known 16-bit character codes. The
+   payload is at the record's bitmap offset, so the code bytes must be checked
+   as such: a record whose next six bytes are a valid RLE run for its own
+   dimensions is still a composite.
+
+**Header and variant vectors.**
+
+1. A shadow count of zero opens with the declared shadow width 0 and with the
+   documented 16. A nonzero count opens only with 16; widths 8 and 15 are
+   refused for both a zero and a nonzero count.
+2. A revision-3 font with a 392-byte header opens on the ordinary
+   direct-map path and its character queries match an otherwise identical
+   revision-2 fixture. A 412-byte header with revision 0, 2, or a negative
+   value is refused, as is revision 4 with either header size.
+3. A 412-byte header whose two extension tables carry nonzero counts still
+   skips exactly `count × 4` bytes each, so a fixture whose revision value is
+   3 and whose header is 392 must place its character map immediately after the
+   base header. Both spellings of the same font are compared byte-for-byte
+   through their guest records.
+
+**Composite-glyph vectors.**
+
+1. Build one composite record naming three raster components with distinct
+   2-by-2 bitmaps, one in row order 1, one in row order 2, and one with a
+   larger area, and render in 8-bit format at `fx = fy = 0`. Assert the exact
+   destination bytes: the first component's samples, the second and third
+   components' samples where they exceed what is already there, and the retained
+   earlier samples everywhere else. Assert the exact per-component dirty spans
+   in component order.
+2. Render the same composite at `fx = 32`, at `fy = 32`, at both fractions, and
+   at a negative position, and assert the destination samples and the widened
+   footprint column and row.
+3. Assert the composite's own `SceFontCharInfo` fields: its dimensions,
+   adjustments, and advances, not its components'; and that
+   `pgf_has_char` and `pgf_get_char_info` return 1 for it.
+4. Assert that a destination prefilled with a distinguishable value keeps that
+   value wherever no component writes: the first component overwrites its whole
+   footprint, including its transparent samples.
+5. Hostile composites, each refused at open with no handle: a payload with
+   fewer than six bytes left in the image; a code below the first glyph; a code
+   at or above the map count; a code carrying the absence sentinel; a code whose
+   map value is at or above the inclusive glyph count; a component that is
+   itself a composite; a component that names the composite itself; a component
+   that names another composite which names it back; and a component with zero
+   width or height.
+6. A composite whose second component cannot be placed — for example a
+   destination whose buffer geometry fails that component's preflight while the
+   first component's succeeds — returns 0 and leaves the whole buffer
+   unchanged, proving the per-component preflight precedes the first pixel.
 
 **Font-information vectors.**
 
@@ -1040,7 +1231,7 @@ and no shadow; mutations then vary one fact at a time.
    a valid footprint wholly above/below the buffer. The latter returns 1 with
    no write or dirty call. An empty horizontal intersection returns 0.
 6. Null font/buffer, zero width/height/row bytes, unmapped glyph, row order
-   0/3, and zero-area source all return 0 with the destination and its guard
+   0, and zero-area source all return 0 with the destination and its guard
    pages unchanged. Include destination spans that cross a guest allocation
    boundary to prove preflight write atomicity.
 
@@ -1083,7 +1274,12 @@ missing-reader reason. After implementation, the same unmodified vectors must
 pass. The documentation change's independent failing-before check is the
 `tools.test_lint_docs` index-completeness test: adding the new spec without
 its `docs/README.md` index/status entries fails, and adding those entries makes
-it pass.
+it pass. The composite and variant vectors have the same requirement: against
+the reader that refuses row order 3, a zero-count shadow map that declares 16
+bits, and a revision-3 font with a 392-byte header, every new vector in the
+**Composite-glyph vectors** and **Header and variant vectors** groups fails —
+composite draws return 0, and the two variant fonts return null — and each
+vector passes once §§3.1, 3.3, 3.6, 3.10, and 3.11 are implemented.
 
 ## 9. Citation catalog
 
@@ -1093,9 +1289,12 @@ it pass.
   boundary, correctness evidence, and documentation gate routing.
 - [C3] BenHur, *PGF Binary Format*, archived 24 November 2007 —
   <http://web.archive.org/web/20071124080708/http://www.psp-programming.com/benhur/pgf_binary_format_doc_0.9934.htm>
-  (header offsets and widths, section order and sizes, packed character and
-  pointer tables, shadow map, revision-3 tables, glyph metric fields and
-  optional groups, pointer-to-byte rule, 4-bit RLE, and composite marker).
+  (header offsets and widths, 392/412 header lengths and the revision-3
+  extension, section order and sizes, packed character and
+  pointer tables, two-byte 16-bit shadow map, revision-3 tables, glyph metric
+  fields and
+  optional groups, bit-44 role bit, pointer-to-byte rule, 4-bit RLE, and the
+  row-order-3 three-code composite payload with its overlay rule).
 - [C4] yetiPSP, *Chapter 26: Font System*, §26.9 —
   <https://hitmen.c02.at/files/yapspd/psp_doc/chap26.html> (low-nibble-first
   bit/nibble order, 4-bit RLE controls, and horizontal/vertical row order).
@@ -1148,6 +1347,11 @@ excluded files.
   behaviour references and are neither cited nor implementation inputs.
 - The archived BenHur format document, yetiPSP chapter 26, XentaxWiki PGF
   page, and PSP2SDK PGF header/reference pages listed in §9.
+- The archived BenHur format document [C3] was re-read for the composite and
+  variant revision to settle the row-order-3 payload and overlay rule, the
+  shadow map's entry width, the 392/412 header lengths, and the bit-44 role
+  bit. It is the only format source consulted for those rules, and no firmware
+  font, converter, or emulator font implementation was read for them.
 - An archived PSP Developer Wiki PGF overview and the PSP Developer Notes font
   page were consulted only as terminology/layout cross-checks; no fact unique
   to either page is normative here.

@@ -48,6 +48,159 @@ typedef struct {
     const char *name;
 } SrFlightClassName;
 
+/* ---- SR_TRACE_PC: the address window over the instruction trace ----
+ * The contract is documented in flight_recorder.h. The stream is opened here so
+ * this diagnostic does not depend on the trace writer being linked, which every
+ * host of the runtime links instead. */
+static FILE *s_tw_fp;
+static int s_tw_configured;
+static int s_tw_armed;
+static int s_tw_skip;
+static uint32_t s_tw_lo, s_tw_hi;
+static SrTraceWindowIndices s_tw_indices;
+static unsigned long s_tw_limit, s_tw_count;
+
+static int s_watch_configured;
+static uint64_t s_watch_start;
+static uint64_t s_watch_end;
+static uint32_t s_watch_vblank;
+static uint64_t s_watch_matches;
+int g_sr_watch_enabled;
+
+void sr_watch_configure(void) {
+    if (s_watch_configured) return;
+    s_watch_configured = 1;
+    const char *spec = getenv("SR_WATCH");
+    if (!spec || !spec[0]) return;
+
+    const char *separator = strchr(spec, ':');
+    if (!separator || separator == spec || separator[1] == '\0' || spec[0] == '-') {
+        fprintf(stderr, "SR_WATCH: expected ADDR:LEN (a non-negative address and a nonzero length)\n");
+        return;
+    }
+    errno = 0;
+    char *addr_end = NULL;
+    unsigned long long start = strtoull(spec, &addr_end, 0);
+    if (errno != 0 || addr_end != separator || start > UINT32_MAX) {
+        fprintf(stderr, "SR_WATCH: invalid address in ADDR:LEN\n");
+        return;
+    }
+    errno = 0;
+    char *len_end = NULL;
+    unsigned long long length = strtoull(separator + 1, &len_end, 0);
+    if (errno != 0 || len_end == separator + 1 || *len_end != '\0' || length == 0u ||
+        length > (UINT32_MAX + 1ULL) - start) {
+        fprintf(stderr, "SR_WATCH: invalid length in ADDR:LEN\n");
+        return;
+    }
+
+    s_watch_start = (uint64_t)start;
+    s_watch_end = s_watch_start + (uint64_t)length;
+    g_sr_watch_enabled = 1;
+    fprintf(stderr, "SR_WATCH: armed addr=0x%08x len=0x%llx\n",
+            (uint32_t)s_watch_start, length);
+}
+
+/* The vblank note and the match counter are plain diagnostics shared between the GE
+ * thread and the storing thread without synchronization: a report may carry the
+ * previous vblank, and the counter is exact only single-threaded (the selftest). */
+void sr_watch_note_vblank(uint32_t vblank) {
+    s_watch_vblank = vblank;
+}
+
+void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, uint32_t width) {
+    if (!g_sr_watch_enabled || width == 0u) return;
+    const uint64_t store_start = (uint64_t)addr;
+    const uint64_t store_end = store_start + (uint64_t)width;
+    if (store_start >= s_watch_end || store_end <= s_watch_start) return;
+    s_watch_matches++;
+    fprintf(stderr,
+            "SR_WATCH: pc=0x%08x addr=0x%08x val=0x%08x width=%u vblank=%u\n",
+            pc, addr, value, width, s_watch_vblank);
+}
+
+uint64_t sr_watch_match_count(void) { return s_watch_matches; }
+
+static void sr_trace_window_list(const char *text, uint8_t *out, unsigned *count) {
+    *count = 0;
+    if (!text || !text[0]) return;
+    while (*text && *count < SR_TRACE_WINDOW_MAX_INDEX) {
+        char *end = NULL;
+        const unsigned long value = strtoul(text, &end, 0);
+        if (end == text) return;
+        if (value < 128u) out[(*count)++] = (uint8_t)value;
+        text = end;
+        while (*text == ',' || *text == ' ') text++;
+    }
+}
+
+void sr_trace_window_configure(void) {
+    if (s_tw_configured) return;
+    s_tw_configured = 1;
+    const char *window = getenv("SR_TRACE_PC");
+    if (!window || !window[0]) return;
+    const char *path = getenv("SR_TRACE");
+    if (!path || !path[0]) path = "logs/trace_window.txt";
+    const char *sep = strchr(window, ':');
+    if (!sep) sep = strchr(window, '-');
+    if (!sep) {
+        fprintf(stderr, "TRACE_WINDOW: SR_TRACE_PC needs LO:HI, got '%s'\n", window);
+        return;
+    }
+    const uint32_t lo = (uint32_t)strtoul(window, NULL, 0);
+    const uint32_t hi = (uint32_t)strtoul(sep + 1, NULL, 0);
+    if (hi < lo) {
+        fprintf(stderr, "TRACE_WINDOW: empty window %s\n", window);
+        return;
+    }
+    sr_trace_window_list(getenv("SR_TRACE_V"), s_tw_indices.v, &s_tw_indices.vn);
+    sr_trace_window_list(getenv("SR_TRACE_F"), s_tw_indices.f, &s_tw_indices.fn);
+    const char *limit = getenv("SR_TRACE_LIMIT");
+    s_tw_limit = limit && limit[0] ? strtoul(limit, NULL, 0) : 0ul;
+    s_tw_fp = fopen(path, "wb");
+    if (!s_tw_fp) {
+        fprintf(stderr, "TRACE_WINDOW: cannot open '%s'\n", path);
+        return;
+    }
+    fprintf(s_tw_fp, "# trace-window v1 lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u\n",
+            lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn);
+    s_tw_lo = lo;
+    s_tw_hi = hi;
+    s_tw_armed = 1;
+    fprintf(stderr, "TRACE_WINDOW: armed lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u path=%s\n",
+            lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn, path);
+}
+
+void sr_trace_note_frame(uint32_t frame) {
+    if (!s_tw_armed || !s_tw_fp) return;
+    fprintf(s_tw_fp, "frame %u\n", frame);
+}
+
+int sr_trace_window_armed(void) { return s_tw_armed; }
+
+int sr_trace_window_begin_instruction(uint32_t pc) {
+    s_tw_skip = pc < s_tw_lo || pc > s_tw_hi;
+    return !s_tw_skip;
+}
+
+const SrTraceWindowIndices *sr_trace_window_indices(void) {
+    return s_tw_armed ? &s_tw_indices : 0;
+}
+
+void sr_trace_window_record(uint32_t pc, const char *text) {
+    (void)pc;
+    if (!s_tw_armed || s_tw_skip || !s_tw_fp) return;
+    fprintf(s_tw_fp, "%s\n", text);
+    if (s_tw_limit && ++s_tw_count >= s_tw_limit) {
+        fprintf(s_tw_fp, "# window complete records=%lu\n", s_tw_count);
+        fflush(s_tw_fp);
+        /* Disarm rather than close: the trace writer's own stream is untouched,
+         * and the gate stops admitting in-window instructions, so the rest of
+         * the run executes uninstrumented. */
+        s_tw_armed = 0;
+    }
+}
+
 static SrFlightEvent s_flight_events[SR_FLIGHT_MAX_EVENTS];
 static uint32_t s_flight_classes;
 static uint32_t s_flight_limit = 256u;
@@ -137,6 +290,7 @@ static void register_exit(void) {
 }
 
 void sr_flight_init(void) {
+    sr_watch_configure();
     if (s_flight_init_state == 2) return;
     if (s_flight_init_state == 1) return;
     s_flight_init_state = 1;
