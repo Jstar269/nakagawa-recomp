@@ -667,7 +667,7 @@ class TestRuntimeDllStaging(unittest.TestCase):
                 staged_names,
                 {"sdl3.dll", "sdl3_ttf.dll", "libfreetype-6.dll", "libpng16-16.dll", "zlib1.dll"},
             )
-            for name in staged_names:
+            for name in staged:
                 self.assertTrue((package_dir / name).is_file(), name)
             self.assertFalse((package_dir / "KERNEL32.dll").exists())
 
