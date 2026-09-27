@@ -87,12 +87,12 @@ with explicit target and unbuilt boundaries.
   productization target and the routes evaluated for it. All four are CURRENT
   maintained records; each marks unbuilt behavior inline, so CURRENT does not mean
   the target pipeline exists.
-- [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md),
-  [`PREVIEW_RELEASE_NOTES.md`](PREVIEW_RELEASE_NOTES.md) — proposed scope and
-  copy for an early preview. Both are proposals: creating a tag or release is a
+- [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md) — proposed scope and packaging
+  specification for an early preview. It is a proposal: creating a tag or release is a
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
 - [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — draft release notes
-  for the v0.0.1 public build. Status: DRAFT; releases are maintainer-published.
+  for the v0.0.1 public build, including the proposed preview copy it superseded.
+  Status: DRAFT; releases are maintainer-published.
 
 ## Archive
 
@@ -157,7 +157,7 @@ Every substantial document carries one status.
 | --- | --- | --- |
 | `ARCHITECTURE.md` | CURRENT | Implementation behavior (source/tests remain authoritative) |
 | `ARCHIVE_VFS.md` | CURRENT | Read-only archive-backed VFS: XB mounts, member lookup and loose-content routes (#298) |
-| `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims |
+| `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims, including the optional local symbol reference (`FindSymbol`) |
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
 | `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
@@ -179,7 +179,6 @@ Every substantial document carries one status.
 | `PROJECT_MODEL.md` | CURRENT | Repository and project model |
 | `WORKSPACE_DOCTOR.md` | CURRENT | Doctor checks and host contract |
 | `DCO_POLICY.md` | CURRENT | Sign-off governance |
-| `SYMBOL_REFERENCE.md` | CURRENT | Symbol reference scope |
 | `DECOMPME_INTEGRATION.md` | CURRENT | Forward-looking integration plan (not built work) |
 | `AI_USAGE.md` | CURRENT | AI-assistance and review boundaries |
 | `PSPDEV_LOCAL_VERIFICATION.md` | CURRENT | PSPDEV local-verification boundary |
@@ -189,8 +188,7 @@ Every substantial document carries one status.
 | `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Native slice functional checklist |
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation per capability; PARTIAL rows name what is absent |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
-| `PREVIEW_RELEASE_NOTES.md` | CURRENT | Proposed preview copy, same proposal-only scope |
-| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build |
+| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build; carries the proposed preview copy |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202) and the library's build-package → validate → launch route exists (PR #487), while module decryption, retail-disc hash validation, and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; the zero-toolchain recommended routes remain unimplemented |
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and one-click end-user preparation remain unbuilt |
