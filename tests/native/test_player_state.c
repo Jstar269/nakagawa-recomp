@@ -2363,8 +2363,8 @@ int main(int argc, char **argv) {
         assert(player_app_start_package_build(capp, 0));
         assert(capp->active_view == VIEW_PREREQ_CONSENT);
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
-        assert(capp->prerequisites.item_count == 26);
-        assert(capp->prerequisites.total_bytes == UINT64_C(89547599));
+        assert(capp->prerequisites.item_count == 35);
+        assert(capp->prerequisites.total_bytes == UINT64_C(100499173));
         assert(capp->build_session.is_building == false);
         /* Consent cancellation has no side effects. */
         player_app_prereq_cancel(capp);
@@ -2386,7 +2386,7 @@ int main(int argc, char **argv) {
         assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
         assert(capp->active_view == VIEW_PREREQ_PROGRESS);
         player_app_prereq_update_progress(capp, "cpython-embed-amd64", 64, 128,
-                                          64, UINT64_C(89547599));
+                                          64, UINT64_C(100499173));
         assert(strcmp(capp->prerequisites.current_item, "cpython-embed-amd64") == 0);
         assert(capp->prerequisites.item_received_bytes == 64);
         assert(capp->prerequisites.total_received_bytes == 64);
