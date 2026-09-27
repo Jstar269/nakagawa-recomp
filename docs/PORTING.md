@@ -223,8 +223,10 @@ Nakagawa is a generic PSP static recompiler whose first mature profile happens t
 *Hot Shots Tennis: Get a Grip* (HST). This section records where that distinction does
 not currently hold: where generic core (runtime/tooling) carries knowledge that is true
 only of one title. It is the second-title readiness record; the machine-enforced
-inventory lives in `tools/compat_overrides.py` (`HLE_GUEST_ADDRESS_GROUPS`) and is
-inventoried as static source-shape (tier 4) and gated by `tools/test_compat_manifest.py`.
+inventory lives in `tools/compat_overrides.py` (`RETIRED_HLE_DIAGNOSTIC_GROUPS`,
+`RETIRED_DIAGNOSTIC_GROUPS`, and the title-configured compatibility lists). The
+source guard in `tools/test_compat_manifest.py` rejects their HST addresses in generic
+runtime and dispatch source.
 The inventory is *not* an executable proof of unsupported-interpreter fail-closed; that
 property is proven by the production interpreter floor (`src/rt/guest_interp.c`) through
 `fixtures/cosim/cosim_selftest.c` (fail-closed negative corpus, control sweep, jalr link
@@ -238,7 +240,7 @@ able to receive a profile, run analysis, produce its target/import/capability ce
 attempt compilation, and expose its first unsupported semantic boundary **without
 title-specific edits to generic core**.
 
-### C-1 — Title guest addresses in `src/rt/hle.c`
+### C-1 — Title guest addresses in generic runtime — RETIRED
 
 Before 2026-08-20 the semantic-debt inventory's checked sources were `tools/codegen.py`
 and `src/rt/recomp.c`, with manual groups covering `src/rt/sched.c`. `src/rt/hle.c` was
@@ -256,15 +258,19 @@ direct-literal regex matched none of them. The gate now also recognizes those in
 shapes (`bound_local`, `cpu_state_register`); its grammar and its explicit limits are
 documented in `tools/test_compat_manifest.py` (static inventory — see executable
 fail-closed coverage in `fixtures/cosim/` and `src/rt/dispatch_isolation_selftest.c`).
-Classification summary (census buckets, per group):
+Historical diagnostic census (now retired):
 
 | Group | Bucket | Addresses | Sites |
 | --- | --- | --- | --- |
-| `guest_bss_snapshots` | DIAGNOSTIC_ONLY | 27 | 30 |
-| `exit_path_context` | DIAGNOSTIC_ONLY | 2 | 3 |
-| `umd_ufl_head_dump` | DIAGNOSTIC_ONLY | 1 | 3 |
+| `guest_bss_snapshots` | deleted; use SR_TRACE_PC / SR_WATCH | 27 | 30 |
+| `exit_path_context` | deleted; use SR_TRACE_PC / SR_WATCH | 2 | 3 |
+| `umd_ufl_head_dump` | deleted; use SR_TRACE_PC / SR_WATCH | 1 | 3 |
 
-`TOTAL_COUPLINGS` in `src/rt/hle.c`: 30 distinct addresses / 36 sites (DIAGNOSTIC_ONLY).
+The HST-specific reads, snapshots, UMD dump, scheduler boot/spin/audio probes, and
+recompiler address probes have been removed from generic `hle.c`, `sched.c`, and
+`recomp.c`. The historical inventory remains under `RETIRED_*` names as a guard;
+the live HST diagnostic count in those files is zero. Generic runtime diagnostics
+use `SR_TRACE_PC` and `SR_WATCH`.
 The four former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups below (16 addresses / 23 sites)
 were migrated on 2026-08-27 to typed title configuration via `runtime_bindings`
 (`display_bringup`, `runtime_sync`, `libfont_ready_flag_addr`,
@@ -273,14 +279,11 @@ appear in the `hle.c` census. Retired inventory lives in
 `tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
 `tools/test_hle_title_isolation.py`.
 
-As of 2026-09-14, the retained diagnostic reads are inert unless the generated,
-validated title configuration declares `codegen_profile: "hst"` and the operator
-sets `SR_HLE_DIAGNOSTICS`. `sr_title_config_diagnostics_enabled()` is the only
-runtime gate for these groups; `nk_manager.ps1` clears the flag for every profile
-and sets it only for `Diagnostics`. Generic and public fixture profiles therefore
-remain inert even when a diagnostics environment leaks into their process. C-1 is
-retired as a wrong-title execution blocker; the 30-address/36-site inventory stays
-in place for auditability and future source-shape drift detection.
+The separate Newlib master/table addresses remain only in the typed
+`SrTitleReentBindings` returned by `sr_title_config_reent_bindings()`. That accessor
+requires the validated `hst` codegen profile and exact HST source id; generic and
+fixture profiles receive no values. This preserves the flagship's configured reent
+compatibility while keeping guest addresses out of generic scheduler code.
 
 By bucket (live `hle.c` only):
 
@@ -295,7 +298,7 @@ By bucket (live `hle.c` only):
   addresses are outside it, in `HLE_TITLE_CONFIGURED_COMPAT`); two documented
   build/profile couplings below (C-2, C-3) are retired.
 - `EXPLICIT_COMPATIBILITY_OVERRIDE`: 0 in live `hle.c` (migrated).
-- `DIAGNOSTIC_ONLY`: 30 addresses / 36 sites (read-only, env-gated).
+- `DIAGNOSTIC_ONLY`: 0 live; 30 addresses / 36 historical sites retired.
 - `PRIVATE_ACCEPTANCE_ONLY`: 0.
 - `FALSE_POSITIVE`: 0 (a deliberately injected generic constant never flags; the
   explicit generic-site rules are regression-tested).
@@ -321,10 +324,12 @@ disabled-profile fail-closed.
 
 ### Top remaining title-#2 blockers
 
-1. Diagnostic-only groups in `src/rt/hle.c` (C-1) — **RETIRED** as a wrong-title
-   execution blocker on 2026-09-14; the reads remain inventoried and require the
-   validated HST profile plus `SR_HLE_DIAGNOSTICS`. (The VBLANK interrupt stack
-   boundary C-6 is retired).
+1. HST dispatch hooks and diagnostic probes (C-1, #361, #362) — **RETIRED**:
+   exact trace hooks, target-pattern swallowing, and HST-address diagnostics were
+   removed. A synthetic resource-shaped call now fails at the named
+   `not-executable` boundary; title-configured HST Newlib bindings remain available
+   to the flagship. The broader second-title boundary remains in the works under
+   [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.

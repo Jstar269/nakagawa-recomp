@@ -97,6 +97,11 @@ def _diagnostic_hook_violations(code: str) -> list[str]:
     return violations
 
 
+def _has_generic_dispatch_hook_table(code: str) -> bool:
+    code = _strip_comments(code)
+    return bool(re.search(r"\b(?:DispatchHook|g_exact_hooks|g_range_hooks)\b", code))
+
+
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestDispatchSelftestC(unittest.TestCase):
     @classmethod
@@ -155,25 +160,34 @@ class TestDispatchWiring(unittest.TestCase):
         recomp_code = _strip_comments(RECOMP_C)
         exact = re.search(r"static const DispatchHook g_exact_hooks\[\] = \{(.*?)\n\};", recomp_code, re.S)
         ranges = re.search(r"static const DispatchHook g_range_hooks\[\] = \{(.*?)\n\};", recomp_code, re.S)
-        self.assertIsNotNone(exact)
-        self.assertIsNotNone(ranges)
-        hook_tables = (exact.group(1) if exact else "") + (ranges.group(1) if ranges else "")
+        self.assertIsNone(exact)
+        self.assertIsNone(ranges)
         retired_names = ("NULL_CALL_A", "NULL_CALL_B", "RESOURCE_HANDLE", "SCEDMAC",
                          "MODTABLE_WALK", "_REENT_DATA", "MOD_STUB", "PLT_TRAMP",
                          "INIT_LANG", "HINSERT", "hook_null_call", "hook_resource_handle",
                          "hook_sceDmac_string", "hook_modtable_walk", "hook_mod_stub",
                          "hook_plt_unimpl", "hook_init_lang", "hook_hash_insert_guard")
         for name in retired_names:
-            self.assertNotIn(name, hook_tables)
             self.assertNotIn(name, recomp_code)
         self.assertNotIn("sr_dtab_resolve_computed", DISPATCH_H)
         self.assertNotIn("sr_dtab_resolve_computed", RECOMP_C)
         self.assertIn("RecompFn fn = sr_lookup(target);", RECOMP_C)
 
+    def test_generic_dispatch_has_no_title_hook_tables_or_traversals(self):
+        self.assertFalse(_has_generic_dispatch_hook_table(RECOMP_C),
+                         "generic dispatch must not traverse a title hook table")
+        mutant = RECOMP_C + "\nstatic const DispatchHook g_range_hooks[] = { { 0, 0, 0, 0 } };\n"
+        self.assertTrue(_has_generic_dispatch_hook_table(mutant),
+                        "hook-table regression guard did not detect its mutation")
+
     def test_hostile_target_matrix_is_source_owned(self):
         isolation = (ROOT / "src" / "rt" / "dispatch_isolation_selftest.c").read_text(encoding="utf-8")
         self.assertIn("0x33000010u", isolation)
         self.assertIn("test_historical_target_shapes_fail_closed", isolation)
+
+    def test_rejections_name_the_semantic_boundary_and_tracker(self):
+        self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #285", RECOMP_C)
+        self.assertIn('return "target-not-executable";', RECOMP_C)
 
     def test_broad_swallow_mutation_is_detected(self):
         # Mutation proof: inserting one representative old-style range predicate into
@@ -186,48 +200,23 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertTrue(_has_retired_target_swallow(mutated))
         self.assertFalse(_has_retired_target_swallow(RECOMP_C))
 
-    def test_exact_hook_helpers_are_diagnostic_fallthrough_only(self):
-        # Every surviving g_exact_hooks[] helper must be diagnostic/read-only:
-        # no internal sr_lookup self-delegation and no consume (return 0), so an
-        # unregistered exact key always continues through normal dispatch and a
-        # registered one executes exactly once at the authoritative lookup.
+    def test_exact_hook_helpers_are_removed(self):
         code = _strip_comments(RECOMP_C)
         helpers = set(_exact_hook_helpers(code))
-        self.assertEqual(
-            helpers,
-            {
-                "hook_log_alloc_req",
-                "hook_log_free_req",
-                "hook_hash_fill_trace",
-                "hook_fmt_trace",
-                "hook_thunk_call_trace",
-                "hook_plt_walk",
-            },
-        )
+        self.assertEqual(helpers, set())
+        self.assertFalse(_has_generic_dispatch_hook_table(code))
         self.assertEqual(_diagnostic_hook_violations(code), [])
 
     def test_self_delegating_consuming_helper_is_detected(self):
-        # Tripwire sensitivity: a reintroduced helper that looks the target up
-        # itself and consumes the dispatch -- the pre-revision HFILL/FMT shape,
-        # under any name -- must be flagged as both a live table entry and a
-        # violating helper body, while the real tree stays clean.
+        # Tripwire sensitivity: a reintroduced exact hook table must be detected,
+        # regardless of the table entry name or whether its handler looks harmless.
         code = _strip_comments(RECOMP_C)
-        table_open = "static const DispatchHook g_exact_hooks[] = {\n"
-        self.assertIn(table_open, code)
-        mutant = code.replace(
-            table_open,
-            table_open + '    { 0x0000deadu, 0xFFFFFFFFu, "MUTANT", hook_mutant },\n',
-            1,
+        mutant = code + (
+            "\nstatic const DispatchHook g_exact_hooks[] = {\n"
+            '    { 0x0000deadu, 0xFFFFFFFFu, "MUTANT", hook_mutant },\n};\n'
         )
-        mutant += (
-            "\nstatic int hook_mutant(CpuState *s, uint32_t target) {\n"
-            "    RecompFn f = sr_lookup(target);\n"
-            "    if (f) f(s);\n"
-            "    return 0;\n"
-            "}\n"
-        )
-        violations = _diagnostic_hook_violations(mutant)
-        self.assertTrue(any(v.startswith("hook_mutant:") for v in violations), violations)
+        self.assertTrue(_has_generic_dispatch_hook_table(mutant))
+        self.assertFalse(_has_generic_dispatch_hook_table(code))
         self.assertEqual(_diagnostic_hook_violations(code), [])
 
 

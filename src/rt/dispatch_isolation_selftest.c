@@ -163,6 +163,16 @@ static int g_failures = 0;
 static int g_body_hits = 0;
 static void synthetic_body(CpuState *s) { (void)s; g_body_hits++; }
 
+#define ABI_CALL_TARGET 0x00670000u
+#define ABI_CALL_SITE   0x00670004u
+#define ABI_CALL_RESUME 0x00670008u
+
+static void synthetic_callee_clobbers_saved_gprs(CpuState *s) {
+    for (unsigned reg = 16u; reg <= 23u; reg++)
+        s->r[reg] = 0xcccc0000u + reg;
+    s->r[30] = 0xcccc0030u;
+}
+
 static void own_synthetic_aot_word(uint32_t address) {
     MEM_W32(address, 0u);
     CHECK(sr_exec_span_register(address, address + 4u),
@@ -220,6 +230,60 @@ static int generic_outcome(Probe p, uint32_t target) {
     (void)target;
     if (p.body_ran) return 0;
     return p.dispatch_result < 0 && p.v0 == 0xdeadbeefu && p.pc == p.pc_before;
+}
+
+static void test_historical_call_target_fails_at_named_boundary(void) {
+    CpuState s;
+    CpuState before;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[29] = 0x00400000u;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    before = s;
+
+    int result = dispatch_call_try(&s, 0x33000010u, PROBE_RA);
+    CHECK(result == SR_GUEST_INTERP_NOT_EXECUTABLE,
+          "historical resource-shaped CALL target must fail at the named "
+          "not-executable boundary (got %s)",
+          sr_guest_interp_result_name((SrGuestInterpResult)result));
+    CHECK(strcmp(dispatch_semantic_boundary_name((SrGuestInterpResult)result),
+                 "target-not-executable") == 0,
+          "rejected CALL target did not map to the product boundary name");
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "rejected historical CALL target changed guest state");
+}
+
+/* Real hardware does not restore $s0-$s7/$fp for a callee: honoring the ABI is the
+ * callee's own job. A generic or fixture title therefore sees every register write
+ * its callee makes; only a title configuration declaring the #363 debt restores them
+ * (sr_title_config_preserve_callee_saved_at_calls). None of this matrix does. */
+static void test_call_boundary_keeps_callee_register_writes(void) {
+    sr_mem_init();
+    sr_exec_span_reset();
+    own_synthetic_aot_word(ABI_CALL_TARGET);
+    sr_register(ABI_CALL_TARGET, synthetic_callee_clobbers_saved_gprs);
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = ABI_CALL_SITE;
+    for (unsigned reg = 16u; reg <= 23u; reg++)
+        s.r[reg] = 0x11110000u + reg;
+    s.r[30] = 0x11110030u;
+
+    int result = dispatch_call_try(&s, ABI_CALL_TARGET, ABI_CALL_RESUME);
+    CHECK(result == SR_GUEST_INTERP_AOT_HANDOFF,
+          "registered synthetic CALL did not complete through AOT (result=%d)", result);
+    CHECK(sr_title_config_preserve_callee_saved_at_calls() == 0,
+          "configuration \"%s\" unexpectedly restores callee-saved registers",
+          sr_title_config()->source_id);
+    for (unsigned reg = 16u; reg <= 23u; reg++)
+        CHECK(s.r[reg] == 0xcccc0000u + reg,
+              "CALL boundary hid the callee's write to r[%u] (got 0x%08x)",
+              reg, s.r[reg]);
+    CHECK(s.r[30] == 0xcccc0030u,
+          "CALL boundary hid the callee's write to fp/s8 (got 0x%08x)", s.r[30]);
+    sr_exec_span_reset();
 }
 
 /* ---- valid executable AOT miss: production interpreter floor ---------------------- */
@@ -1244,6 +1308,8 @@ int main(int argc, char **argv) {
     test_high_virtual_module_authority_is_fail_closed();
     test_public_dispatch_wrapper_terminates_rejection(argv[0]);
     test_retired_bindings_are_inert();
+    test_call_boundary_keeps_callee_register_writes();
+    test_historical_call_target_fails_at_named_boundary();
     test_historical_target_shapes_fail_closed();
     test_diagnostic_exact_hooks_never_consume();
     test_configured_aliases_redirect();
