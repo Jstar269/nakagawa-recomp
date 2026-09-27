@@ -66,6 +66,11 @@ class TitleManifestTests(unittest.TestCase):
             schema["$defs"]["profileZero"]["properties"]["source_program"]["properties"]["entry_symbol"]["pattern"],
             "^[A-Za-z_][A-Za-z0-9_]*$",
         )
+        profile_zero_case = (
+            schema["$defs"]["profileZero"]["properties"]["acceptance"]
+            ["properties"]["cases"]["items"]
+        )
+        self.assertIn("gate", profile_zero_case["properties"])
         required_bindings = schema["properties"]["required_runtime_bindings"]
         self.assertEqual(required_bindings["maxItems"], len(title_manifest.DECLARABLE_BINDING_FAMILIES))
         self.assertTrue(required_bindings["uniqueItems"])
@@ -377,7 +382,11 @@ class TitleManifestTests(unittest.TestCase):
         self.assertEqual(contract["unknown_capability_policy"], "fail-closed")
         self.assertEqual(contract["profile_id"], "profile-zero-v1")
         self.assertFalse(normalized["profile_zero"]["acceptance"]["private_inputs_allowed"])
-        self.assertEqual(normalized["profile_zero"]["build"]["makefile"], "fixtures/pspdev_phase5/Makefile")
+        self.assertEqual(normalized["profile_zero"]["build"]["makefile"], "fixtures/profile_zero/Makefile")
+        self.assertEqual(
+            normalized["profile_zero"]["acceptance"]["cases"][0]["gate"],
+            "profile-zero-e2e",
+        )
 
         value = copy.deepcopy(self.fixture)
         value["runtime_contract"]["capability_requirements"].append("unknown-host-fastmem")
@@ -433,15 +442,42 @@ class TitleManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "private-title evidence"):
             title_manifest.validate_manifest(value)
 
+    def test_profile_zero_implemented_case_requires_a_named_gate(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        implemented = next(
+            case for case in value["profile_zero"]["acceptance"]["cases"]
+            if case["status"] == "implemented"
+        )
+        implemented.pop("gate")
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "must name their proving gate"):
+            title_manifest.validate_manifest(value)
+
+        implemented["gate"] = "profile-zero-e2e"
+        normalized = title_manifest.validate_manifest(value)
+        self.assertEqual(
+            next(case for case in normalized["profile_zero"]["acceptance"]["cases"]
+                 if case["status"] == "implemented")["gate"],
+            "profile-zero-e2e",
+        )
+
+        implemented["gate"] = "../unsafe"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "must match"):
+            title_manifest.validate_manifest(value)
+
     def test_profile_zero_runnable_claim_matches_acceptance_state(self) -> None:
         value = copy.deepcopy(self.fixture)
-        value["profile_zero"]["runnable"] = True
+        value["profile_zero"]["runnable"] = False
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "exactly when"):
             title_manifest.validate_manifest(value)
 
         value = copy.deepcopy(self.fixture)
-        value["profile_zero"]["acceptance"]["status"] = "ready"
+        value["profile_zero"]["acceptance"]["status"] = "scaffold"
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "exactly when"):
+            title_manifest.validate_manifest(value)
+
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["acceptance"]["cases"][0]["status"] = "planned"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "every case to be implemented"):
             title_manifest.validate_manifest(value)
 
 

@@ -15,6 +15,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | --- | --- |
 | Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) |
 | Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
+| Run the source-owned showcase demos right now | [`SHOWCASE.md`](SHOWCASE.md) |
 | Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
@@ -37,6 +38,8 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
   states, semantic boundaries, and tracking issues.
 - [`SMOKE_TEST.md`](SMOKE_TEST.md) — numbered pass/fail release smoke test for the
   native player.
+- [`SHOWCASE.md`](SHOWCASE.md) — the source-owned showcase demos: sources, packaging,
+  player discovery, and their profile-zero acceptance status (#309).
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
@@ -69,8 +72,6 @@ with explicit target and unbuilt boundaries.
 - [`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md) — why no
   title id, address, or disc id may be hardcoded into generic code. The rule is
   machine-enforced by `tools/test_generic_title_planning_proof.py`.
-- [`TITLE_MANAGER_DECOUPLING.md`](TITLE_MANAGER_DECOUPLING.md) — roadmap for
-  decoupling the primary build orchestrator from legacy title defaults.
 - [`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md) — the
   functional checklist a native player slice is measured against.
 - [`NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md`](NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md)
@@ -89,6 +90,28 @@ with explicit target and unbuilt boundaries.
 - [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — draft release notes
   for the v0.0.1 public build. Status: DRAFT; releases are maintainer-published.
 
+## Archive
+
+Superseded, retired and dated records live in [`archive/`](archive/). They are
+kept for provenance, are not maintained, and are never current guidance:
+history lives in git, so nothing is deleted.
+
+- [`archive/IMPORT_AUDIT.md`](archive/IMPORT_AUDIT.md) — pre-republication
+  import-coverage/fake-success audit (tracker item #71); the method is current,
+  the snapshot example is superseded.
+- [`archive/ISSUE196_DIRECT_XB.md`](archive/ISSUE196_DIRECT_XB.md) — superseded
+  direct-XB hypothesis with a scope banner; the measured comparison boundary is
+  retained as historical evidence.
+- [`archive/TITLE_MANAGER_DECOUPLING.md`](archive/TITLE_MANAGER_DECOUPLING.md) —
+  the completed decoupling of `nk_manager` from legacy HST entry points
+  (issues #196/#338, both closed).
+- [`archive/TOOLCHAIN_BASELINE_2026-08.md`](archive/TOOLCHAIN_BASELINE_2026-08.md) —
+  dated August 2026 toolchain capture; live manifests, `SETUP.md` and the
+  environment doctor are authoritative for current versions.
+- [`archive/ui-baseline/README.md`](archive/ui-baseline/README.md) — the retired
+  web dashboard's visual/functional inventory and migration proposals, kept as
+  historical evidence; the native player is the only UI (#522).
+
 ## Provenance and publication
 
 - [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) defines the exact-tree,
@@ -105,9 +128,11 @@ with explicit target and unbuilt boundaries.
   runtime PSP module (PRX) loader for clean-room rewrite unit G3.
 - [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
   PGF reader for clean-room rewrite unit G4. The public reader built from it
-  landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs;
-  the remaining composite-glyph and spec-variant boundaries are named in that
-  specification's §4.
+  landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs,
+  including composite row-order-3 glyphs and the supported revision and
+  shadow-map variants ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521));
+  the remaining composite, revision, and hardware-confirmation boundaries are
+  named in that specification's §4.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
@@ -122,8 +147,7 @@ counsel/incident work product. Unknown paths fail closed in the machine policy.
 
 ## Document status taxonomy
 
-Every substantial document carries one status. No physical moves are proposed
-in this slice; classification comes first, directory moves separately.
+Every substantial document carries one status.
 
 | Path | Status | Authority / scope |
 | --- | --- | --- |
@@ -157,7 +181,6 @@ in this slice; classification comes first, directory moves separately.
 | `LLE_FIDELITY_ARCHITECTURE.md` | CURRENT | Fidelity doctrine; ranks correctness above convenience |
 | `HLE_AND_WORKAROUND_INVENTORY.md` | CURRENT | The tier doctrine and HLE budget. The per-item inventory inside it is capture-time; live counts come from `tools/test_compat_manifest.py` |
 | `TITLE_PROFILE_ARCHITECTURE.md` | CURRENT | No-hardcoded-title rule, enforced by `tools/test_generic_title_planning_proof.py` |
-| `TITLE_MANAGER_DECOUPLING.md` | CURRENT | Orchestrator decoupling and nk_manager transition plan |
 | `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Native slice functional checklist |
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation per capability; PARTIAL rows name what is absent |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
@@ -175,15 +198,19 @@ in this slice; classification comes first, directory moves separately.
 | `cleanroom/PGF_SPEC.md` | DRAFT | Runtime PGF reader clean-room behaviour spec (G4); read for intent, never cite as shipped behaviour |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
 | `provenance/FONT_ORIGINS.md` | CURRENT | PGF replacement-font origin evidence and route decision |
-| `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
+| `archive/IMPORT_AUDIT.md` | ARCHIVED | Pre-republication import-coverage audit; method current, snapshot superseded |
+| `archive/ISSUE196_DIRECT_XB.md` | ARCHIVED | Superseded hypothesis preserved with scope banner |
+| `archive/TITLE_MANAGER_DECOUPLING.md` | ARCHIVED | Completed orchestrator decoupling campaign (issues #196/#338) |
+| `archive/TOOLCHAIN_BASELINE_2026-08.md` | ARCHIVED | Dated capture; live manifests/SETUP authoritative |
+| `archive/ui-baseline/README.md` | ARCHIVED | Retired web-dashboard inventory; historical, not current capabilities |
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `PSP_INTR_WAITS_CENSUS.md` | CURRENT | Generated registration census for the waits matrix; regenerate with `tools/waits_census.py` |
-| `IMPORT_AUDIT.md` | HISTORICAL | Method current, snapshot example superseded |
-| `ISSUE196_DIRECT_XB.md` | HISTORICAL | Superseded hypothesis preserved with scope banner |
 | `provenance/MODIFIED_FILE_NOTICES.md` | HISTORICAL | Retained notice contract, capture-time scope |
 
 Meanings: CURRENT is maintained contract — update it with the change.
+ARCHIVED is superseded, retired or dated material moved to `archive/` — preserve
+it, never cite it as status or current guidance.
 REFERENCE is dated evidence — read it, do not restate it as current.
 HISTORICAL is pre-republication evidence — preserve, do not cite as status.
 SUPERSEDED applies to rows/sections inside a file (marked inline with a

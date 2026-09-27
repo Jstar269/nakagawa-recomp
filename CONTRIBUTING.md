@@ -27,6 +27,9 @@ mismatch, a maintainer refreshes those files on your branch. If you add a new fi
 request where it came from: written by you, or derived from which project, at which revision, and
 under which license. A maintainer then admits the path.
 
+**Expect Trusted provenance attestation to go red on a pull request that adds a file.** That is
+normal, not something you broke: it stays red until a maintainer admits the new path.
+
 **What a provenance failure means for you.** When the only findings are
 `TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED`, or a new path the publication scope has not
 admitted yet, the job summary now says so in one line: *a maintainer will admit these N new files;

@@ -746,6 +746,7 @@ PUBLIC_TARGETS := \
 	platform-ladder-title2 \
 	platform-ladder-title2-negative \
 	platform-ladder-clean \
+	profile-zero-e2e \
 	cosim-selftest \
 	cosim-selftest-run \
 	cosim-selftest-clean \
@@ -851,6 +852,7 @@ HELP_DESCRIPTION_platform-ladder-fs-negative := run the negative filesystem fixt
 HELP_DESCRIPTION_platform-ladder-title2 := run the second-title platform fixture
 HELP_DESCRIPTION_platform-ladder-title2-negative := run the negative second-title fixture
 HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
+HELP_DESCRIPTION_profile-zero-e2e := run the manifest-driven profile-zero production route
 HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
 HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
 HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
@@ -1284,7 +1286,7 @@ platform-ladder-fs:
 
 # Negative control: same executable and guest, but the payload file is absent.
 # sceIoOpen must fail visibly and the guest must store the failure sentinel.
-platform-ladder-fs-negative:
+platform-ladder-fs-negative: platform-ladder-fs
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs --negative
 
 platform-ladder-title2:
@@ -1320,6 +1322,9 @@ platform-ladder-title2-negative:
 
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
+
+profile-zero-e2e:
+	$(PYTHON) -m unittest tools.test_profile_zero_e2e -v
 
 # The generator the codegen rule runs. Overridable so the cosim mutation
 # campaign can mutate the GENERATOR as well as the interpreter -- a
@@ -1493,7 +1498,12 @@ $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_setting
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
+# Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
+# the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
+# PATH) use the readable TTF font instead of the bitmap fallback.
+.PHONY: player
 player: $(PLAYER_EXE)
+	$(PYTHON) tools/stage_runtime_dlls.py --target $(patsubst %/,%,$(dir $(PLAYER_EXE)))
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 

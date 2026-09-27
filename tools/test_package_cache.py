@@ -227,6 +227,79 @@ class PackageCacheTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("unreadable", reason)
 
+    def test_completion_manifest_accepts_gcc_runtime_dll_artifact_names(self) -> None:
+        # Host runtime closure DLLs ship inside packages and GCC/MSYS2 library
+        # names contain '+' (libstdc++-6.dll). The artifact rule must mirror
+        # is_valid_artifact_path() in src/core/nk_title_manifest.c so the
+        # completion manifest never records what the native validator rejects.
+        package_dir = self.root / "package"
+        package_dir.mkdir()
+        executable = package_dir / "synthetic.exe"
+        image = package_dir / "synthetic_image.bin"
+        generated = package_dir / "synthetic_recomp.o"
+        runtime_dll = package_dir / "libstdc++-6.dll"
+        notices = package_dir / "THIRD_PARTY_LICENSES"
+        notices.mkdir()
+        notice = notices / "Sdl3_ttf-zlib.txt"
+        executable.write_bytes(b"native")
+        image.write_bytes(b"image")
+        generated.write_bytes(b"object")
+        runtime_dll.write_bytes(b"dll")
+        notice.write_text("licence text\n", encoding="utf-8")
+        key = self.key()
+        cache = package_cache.cache_metadata(
+            key, {"profile": "none", "funcs_per_chunk": 2000}
+        )
+        package = {
+            "cache": cache,
+            "inputs": self.inputs,
+            "executable": {
+                "path": executable.name,
+                "sha256": package_cache.sha256_file(executable),
+            },
+            "generated_objects": [{
+                "path": generated.name,
+                "sha256": package_cache.sha256_file(generated),
+            }],
+        }
+        (package_dir / "package.json").write_text(
+            package_cache.canonical_json(package), encoding="utf-8"
+        )
+        (package_dir / "build-report.json").write_text(
+            package_cache.canonical_json({"cache": cache}), encoding="utf-8"
+        )
+        package_cache.write_completion_manifest(package_dir, key)
+        valid, reason, _ = package_cache.validate_completion_manifest(
+            package_dir, expected_key=key
+        )
+        self.assertTrue(valid, reason)
+        manifest = json.loads(
+            (package_dir / package_cache.COMPLETION_MANIFEST).read_text(
+                encoding="utf-8"
+            )
+        )
+        recorded = {record["path"] for record in manifest["artifacts"]}
+        self.assertIn("libstdc++-6.dll", recorded)
+        self.assertIn("THIRD_PARTY_LICENSES/Sdl3_ttf-zlib.txt", recorded)
+
+        for good in ("libstdc++-6.dll", "libSDL3_ttf.so.0", "dir/libc++.so"):
+            self.assertEqual(package_cache._safe_relative(good), good)
+        for bad in (
+            "..",
+            "dir/../escape.dll",
+            "back\\slash.dll",
+            "C:/abs.dll",
+            "/abs.dll",
+            "CON.dll",
+            "dir//empty.dll",
+            "trailing.",
+            "spa ce.dll",
+            "semi;colon.dll",
+        ):
+            with self.subTest(path=bad):
+                with self.assertRaises(package_cache.PackageCacheError):
+                    package_cache._safe_relative(bad)
+
     def test_cli_and_planner_compute_the_same_key(self) -> None:
         manifest = json.loads(
             (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")

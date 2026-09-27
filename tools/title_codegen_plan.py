@@ -863,6 +863,13 @@ def _required_local_assets(
             },
             {
                 "kind": "host-runtime-library",
+                "name": "SDL3_ttf.dll",
+                "required": False,
+                "bundled": (output_dir / "SDL3_ttf.dll").is_file(),
+                "resolution": "package directory or host PATH",
+            },
+            {
+                "kind": "host-runtime-library",
                 "name": "vulkan-1.dll",
                 "required": True,
                 "bundled": (output_dir / "vulkan-1.dll").is_file(),
