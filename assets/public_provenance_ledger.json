@@ -1339,7 +1339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9dacb88dfb428586241613eb6531979788e1cc3611ac97c85237a214323137fb"
+      "sha256": "6c94143701f159265def7b1e27312152b40075b3eb43ef1ee0ba23c50d557fa4"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2684,7 +2684,7 @@
         "license": "GPL-3.0-only",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "cbbccde6fc31628abc04a2953f189cd3242b7066d40492a69b8fb72537b3ab24"
+      "sha256": "cfc038df44ea3a882d02dad394ab6aa68640df56760229a09cb9a3fdf871c5ab"
     },
     {
       "path": "src/core/nk_psp_prx.h",
@@ -6239,7 +6239,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7bb424bdc41fb848a8d9f0928b789b0f38ae30420383a78430b46803b5dd6927"
+      "sha256": "4968b4bc95a41fd6490f22636ab1a8d6f904edf52249435b85ead28dd38f72b0"
     },
     {
       "path": "tools/nk_core/decrypt_tool.py",
@@ -8488,7 +8488,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5c6015bffa627978c1c132ad90592eb090da29b02b8c065ec04d10a3f0ed853a"
+      "sha256": "7094d28b0a104f384b929352c875563c9cf7f5b6110869d5db5c0386dff349cc"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",
