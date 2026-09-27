@@ -904,7 +904,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "db60b89bd6faf0a4161e07181372fda56348a7ab4e7185cf9bb6f3f9eac7adad"
+      "sha256": "82d3cdf2634eb6a5567063749a035acfc3b04abd2cfa49a5837e1687c839cbaa"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1174,7 +1174,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9622b4eaade06573b765295c7d1e71ee987395cd18bc2c344060c6bc131a8cdb"
+      "sha256": "70d8c1716f82f1cdf21d5b4544707a2648ae28b46468ed3f4cfb5eb1e51ad2df"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1291,7 +1291,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4660cf9fc0eb36d9c439e4c95ea975aafafe2beab44057085558e58419d8d60d"
+      "sha256": "2bfdf82772c21b935bdd0016328159ee0f5ace4860ea60f12f23e52b4eb7e978"
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
@@ -1300,7 +1300,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6fc4d16ac15e20de271542afb0d42f59fbcc7ec77e132ca89ac97e5f0ca1678e"
+      "sha256": "3445282e4539be043b46b273caec34228cdec48657fc69946a5841ece8f1c4e4"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -4575,7 +4575,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50b111c35ed99ef2fb7c4b1d13d3cbffc9b6073ffe6e7542e7b519edde00df6c"
+      "sha256": "fb911f094727a37516d7a1c257333ad0df1ad7016a8581dad6a63e99f3dfbb51"
     },
     {
       "path": "src/rt/profiler_selftest.c",
@@ -5181,7 +5181,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55fdb979182158ceb04f9b5aa56300fee2b6eb43b4d274bc00023ab6f3dd9f8e"
+      "sha256": "105d7c24481c8d8ec6d871ba0720b4cf47c5eb5df6cc0c4cfffa803f2a51862f"
     },
     {
       "path": "tests/native/test_player_state.c",
