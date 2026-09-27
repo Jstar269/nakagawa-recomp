@@ -103,26 +103,30 @@ typedef struct {
 
 /* ---------------------------------------------------------------- ABI cursor */
 
+/* Variadic words start in register `first_reg` ($6 for sprintf, whose $4/$5 hold the
+ * buffer and format; $5 for printf) and continue through $11, then on the stack at
+ * the caller's $sp. */
 static uint32_t guest_printf_next_word(CpuState *s, uint32_t entry_sp,
-                                       uint32_t *argi) {
+                                       uint32_t first_reg, uint32_t *argi) {
     uint32_t index = (*argi)++;
-    return index < 6u ? s->r[6u + index]
-                      : MEM_R32(entry_sp + 4u * (index - 6u));
+    uint32_t in_regs = 12u - first_reg;
+    return index < in_regs ? s->r[first_reg + index]
+                           : MEM_R32(entry_sp + 4u * (index - in_regs));
 }
 
-/* A 64-bit argument starts at an even argument-word slot.  Word 0 is $6, itself
- * even, and the stack continuation preserves the same parity. */
+/* A 64-bit argument starts at an even register (an even-odd pair); the stack
+ * continuation after $11 preserves the same parity. */
 static uint64_t guest_printf_next_dword(CpuState *s, uint32_t entry_sp,
-                                        uint32_t *argi) {
-    if ((*argi & 1u) != 0u) (*argi)++;
-    uint64_t bits = guest_printf_next_word(s, entry_sp, argi);
-    bits |= (uint64_t)guest_printf_next_word(s, entry_sp, argi) << 32;
+                                        uint32_t first_reg, uint32_t *argi) {
+    if (((first_reg + *argi) & 1u) != 0u) (*argi)++;
+    uint64_t bits = guest_printf_next_word(s, entry_sp, first_reg, argi);
+    bits |= (uint64_t)guest_printf_next_word(s, entry_sp, first_reg, argi) << 32;
     return bits;
 }
 
 static double guest_printf_next_double(CpuState *s, uint32_t entry_sp,
-                                       uint32_t *argi) {
-    uint64_t bits = guest_printf_next_dword(s, entry_sp, argi);
+                                       uint32_t first_reg, uint32_t *argi) {
+    uint64_t bits = guest_printf_next_dword(s, entry_sp, first_reg, argi);
     double value;
     memcpy(&value, &bits, sizeof value);
     return value;
@@ -130,16 +134,25 @@ static double guest_printf_next_double(CpuState *s, uint32_t entry_sp,
 
 /* ---------------------------------------------------------------- output sink */
 
+/* Output goes to guest memory at `dst` (sprintf), or, when `host` is set, into a
+ * bounded host buffer that is never guest-visible (printf's log line). */
 typedef struct {
     uint32_t dst;
     int total;
+    char *host;
+    int host_cap;
+    int host_len;
 } gp_out;
 
 /* The PSP return value is an int.  Saturate rather than overflow it; signed
  * overflow would be host UB and the guest cannot represent more anyway. */
 static void gp_put(gp_out *o, char c) {
-    MEM_W8(o->dst, (uint8_t)c);
-    o->dst++;
+    if (o->host) {
+        if (o->host_len < o->host_cap - 1) o->host[o->host_len++] = c;
+    } else {
+        MEM_W8(o->dst, (uint8_t)c);
+        o->dst++;
+    }
     if (o->total < INT_MAX) o->total++;
 }
 
@@ -512,15 +525,16 @@ static int gp_is_known_conv(char c) {
 
 /* ---------------------------------------------------------------- entry point */
 
-void sr_guest_sprintf(CpuState *s) {
-    uint32_t fmt = s->r[5], argi = 0;
+/* The formatter shared by sprintf and printf: `fmt` is the guest format string and
+ * the variadic words start in register `first_reg`. */
+static void gp_format(CpuState *s, uint32_t fmt, uint32_t first_reg, gp_out *out) {
+    uint32_t argi = 0;
     uint32_t entry_sp = s->r[29];
-    gp_out out = { s->r[4], 0 };
 
     while (MEM_R8(fmt) != 0u) {
         uint8_t ch = MEM_R8(fmt++);
-        if (ch != '%') { gp_put(&out, (char)ch); continue; }
-        if (MEM_R8(fmt) == '%') { fmt++; gp_put(&out, '%'); continue; }
+        if (ch != '%') { gp_put(out, (char)ch); continue; }
+        if (MEM_R8(fmt) == '%') { fmt++; gp_put(out, '%'); continue; }
 
         gp_spec sp;
         memset(&sp, 0, sizeof sp);
@@ -540,7 +554,7 @@ void sr_guest_sprintf(CpuState *s) {
 
         if (MEM_R8(fmt) == '*') {
             fmt++;
-            int32_t w = (int32_t)guest_printf_next_word(s, entry_sp, &argi);
+            int32_t w = (int32_t)guest_printf_next_word(s, entry_sp, first_reg, &argi);
             /* A negative `*` width means the '-' flag with |width|. */
             if (w < 0) {
                 sp.left = 1;
@@ -558,7 +572,7 @@ void sr_guest_sprintf(CpuState *s) {
             fmt++;
             if (MEM_R8(fmt) == '*') {
                 fmt++;
-                int32_t p = (int32_t)guest_printf_next_word(s, entry_sp, &argi);
+                int32_t p = (int32_t)guest_printf_next_word(s, entry_sp, first_reg, &argi);
                 /* A negative `*` precision is as if precision were omitted. */
                 if (p < 0)                 sp.precision = -1;
                 else if (p > GP_MAX_PREC)  in_bounds = 0;
@@ -580,7 +594,7 @@ void sr_guest_sprintf(CpuState *s) {
         /* An unknown conversion emits its character and consumes nothing, so
          * every following conversion still receives its own argument. */
         if (!gp_is_known_conv(sp.conv)) {
-            gp_put(&out, sp.conv);
+            gp_put(out, sp.conv);
             continue;
         }
 
@@ -594,19 +608,19 @@ void sr_guest_sprintf(CpuState *s) {
         double dval = 0.0;
         uint64_t uval = 0;
         if (wants_double) {
-            dval = guest_printf_next_double(s, entry_sp, &argi);
+            dval = guest_printf_next_double(s, entry_sp, first_reg, &argi);
         } else if (wants_quad) {
-            uval = guest_printf_next_dword(s, entry_sp, &argi);
+            uval = guest_printf_next_dword(s, entry_sp, first_reg, &argi);
         } else {
-            uval = guest_printf_next_word(s, entry_sp, &argi);
+            uval = guest_printf_next_word(s, entry_sp, first_reg, &argi);
         }
 
         /* A recognized conversion whose width/precision exceeds this project's
          * safety bound still consumed its argument above, so the cursor stays
          * correct; only the field is replaced by a visible marker. */
         if (!in_bounds) {
-            gp_put(&out, '%');
-            gp_put(&out, sp.conv);
+            gp_put(out, '%');
+            gp_put(out, sp.conv);
             continue;
         }
 
@@ -618,7 +632,7 @@ void sr_guest_sprintf(CpuState *s) {
             else if (sp.m_char)  v = (int8_t)(uval & 0xffu);
             else                 v = (int32_t)(uint32_t)uval;
             uint64_t mag = (v < 0) ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
-            gp_emit_int(&out, &sp, mag, 1, v < 0, 10u, 0, 0);
+            gp_emit_int(out, &sp, mag, 1, v < 0, 10u, 0, 0);
             break;
         }
         case 'u': case 'o': case 'x': case 'X': {
@@ -631,20 +645,20 @@ void sr_guest_sprintf(CpuState *s) {
                           : (sp.conv == 'u') ? 10u : 16u;
             int upper = (sp.conv == 'X');
             int hex_prefix = (sp.alt && base == 16u && v != 0u);
-            gp_emit_int(&out, &sp, v, 0, 0, base, upper, hex_prefix);
+            gp_emit_int(out, &sp, v, 0, 0, base, upper, hex_prefix);
             break;
         }
         case 'f': case 'F': case 'e': case 'E':
         case 'g': case 'G': case 'a': case 'A':
-            gp_emit_float(&out, &sp, dval);
+            gp_emit_float(out, &sp, dval);
             break;
         case 'c': {
             /* The '0' flag zero-pads %c unless the field is left-justified. */
             char c = (char)(uval & 0xffu);
             char fill = (sp.zero && !sp.left) ? '0' : ' ';
             int pad = (sp.width > 1) ? sp.width - 1 : 0;
-            if (sp.left) { gp_put(&out, c); gp_pad(&out, ' ', pad); }
-            else         { gp_pad(&out, fill, pad); gp_put(&out, c); }
+            if (sp.left) { gp_put(out, c); gp_pad(out, ' ', pad); }
+            else         { gp_pad(out, fill, pad); gp_put(out, c); }
             break;
         }
         case 's': {
@@ -667,19 +681,19 @@ void sr_guest_sprintf(CpuState *s) {
             }
             char fill = (sp.zero && !sp.left) ? '0' : ' ';
             int pad = (sp.width > len) ? sp.width - len : 0;
-            if (!sp.left) gp_pad(&out, fill, pad);
+            if (!sp.left) gp_pad(out, fill, pad);
             for (int i = 0; i < len; i++) {
-                gp_put(&out, valid ? (char)MEM_R8(p + (uint32_t)i)
+                gp_put(out, valid ? (char)MEM_R8(p + (uint32_t)i)
                                    : null_text[i]);
             }
-            if (sp.left) gp_pad(&out, ' ', pad);
+            if (sp.left) gp_pad(out, ' ', pad);
             break;
         }
         case 'p': {
             /* "0x" is unconditional, including for a zero value; the digits
              * follow %x rules for precision, width, zero-fill and left-fill.
              * Sign flags do not apply. */
-            gp_emit_int(&out, &sp, uval & 0xffffffffu, 0, 0, 16u, 0, 1);
+            gp_emit_int(out, &sp, uval & 0xffffffffu, 0, 0, 16u, 0, 1);
             break;
         }
         case 'n': {
@@ -687,7 +701,7 @@ void sr_guest_sprintf(CpuState *s) {
              * the write.  The destination span is preflighted so a partial
              * store cannot happen at the end of the arena. */
             uint32_t p = (uint32_t)uval;
-            uint32_t count = (uint32_t)out.total;
+            uint32_t count = (uint32_t)out->total;
             uint32_t width = sp.m_quad ? 8u
                            : sp.m_short ? 2u
                            : sp.m_char ? 1u : 4u;
@@ -710,6 +724,20 @@ void sr_guest_sprintf(CpuState *s) {
         }
     }
 
+}
+
+int sr_guest_format_host(CpuState *s, uint32_t fmt, uint32_t first_reg,
+                         char *buf, int cap) {
+    gp_out out = { 0u, 0, buf, cap, 0 };
+    if (!buf || cap <= 0) return 0;
+    gp_format(s, fmt, first_reg, &out);
+    buf[out.host_len] = '\0';
+    return out.total;
+}
+
+void sr_guest_sprintf(CpuState *s) {
+    gp_out out = { s->r[4], 0, NULL, 0, 0 };
+    gp_format(s, s->r[5], 6u, &out);
     MEM_W8(out.dst, 0u);
     s->r[2] = (uint32_t)out.total;
     s->pc = s->r[31];

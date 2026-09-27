@@ -566,6 +566,53 @@ int main(void) {
     /* ---- output length ------------------------------------------------------ */
     EXPECT("return counts padding", "%20d", "                  42", 42u);
 
+    /* ---- printf mode: variadic words start in $5, output to a host buffer -- */
+    {
+        char line[64];
+        put_string(FMT, "a=%d s=%s");
+        memset(cpu.r, 0, sizeof cpu.r);
+        cpu.r[4] = FMT;
+        cpu.r[5] = (uint32_t)-7;
+        cpu.r[6] = TEXT;
+        cpu.r[29] = STACK;
+        memset(SR_HOST(DST), 0x5a, 16u);
+        int n = sr_guest_format_host(&cpu, FMT, 5u, line, (int)sizeof line);
+        checks++;
+        if (strcmp(line, "a=-7 s=host0") != 0 || n != 12) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s got=\"%s\" n=%d\n", "printf mode from $5", line, n);
+        }
+        check_u32("printf mode leaves guest memory", MEM_R32(DST), 0x5a5a5a5au);
+
+        /* A 64-bit argument after one word starts at the next even register ($6). */
+        put_string(FMT, "%d %lld");
+        memset(cpu.r, 0, sizeof cpu.r);
+        cpu.r[4] = FMT;
+        cpu.r[5] = 1u;
+        cpu.r[6] = 0x00000002u;
+        cpu.r[7] = 0x00000001u;
+        cpu.r[29] = STACK;
+        n = sr_guest_format_host(&cpu, FMT, 5u, line, (int)sizeof line);
+        checks++;
+        if (strcmp(line, "1 4294967298") != 0) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s got=\"%s\"\n", "printf mode 64-bit pair", line);
+        }
+
+        /* A short host buffer truncates the text but returns the full length. */
+        char tiny[4];
+        put_string(FMT, "%s");
+        memset(cpu.r, 0, sizeof cpu.r);
+        cpu.r[5] = TEXT;
+        cpu.r[29] = STACK;
+        n = sr_guest_format_host(&cpu, FMT, 5u, tiny, (int)sizeof tiny);
+        checks++;
+        if (strcmp(tiny, "hos") != 0 || n != 5) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s got=\"%s\" n=%d\n", "printf mode truncation", tiny, n);
+        }
+    }
+
     if (failures != 0) {
         fprintf(stderr, "guest printf selftest: %d failure(s)\n", failures);
         free(arena);

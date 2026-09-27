@@ -111,7 +111,6 @@ int     sched_current_priority(void) { return 32; }
 int     sched_is_dormant(uint32_t uid) { (void)uid; return 1; }
 void    sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) { (void)entry; (void)arglen; (void)argp; }
 CpuState *sr_cpu_for_callbacks(void) { return NULL; }
-void    sr_boot_probe(CpuState *s, uint32_t guest_pc) { (void)s; (void)guest_pc; }
 int     sr_vblank_quantum_due(void) { return 0; }
 void    sr_hle_advance_time(uint32_t us) { (void)us; }
 
