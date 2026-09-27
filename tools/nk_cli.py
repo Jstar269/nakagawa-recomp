@@ -741,6 +741,7 @@ def _current_package_cache_key(
     executable_sha256: str,
     module_dir: Path | None,
     psp_header: Path | None,
+    title_input_identity: dict,
     *,
     public_safe: bool | None = None,
     instruction_trace: bool = False,
@@ -776,6 +777,7 @@ def _current_package_cache_key(
     options = _package_codegen_options(manifest, environment)
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
+        title_input_identity=title_input_identity,
         codegen_options=options,
         analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
         codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
@@ -915,6 +917,9 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
 def _build_package(args: argparse.Namespace, stage_observer,
                    reporter: _BuildProgressReporter) -> int:
     disc_id = args.disc_id.upper()
+    register_local_identity = bool(
+        getattr(args, "register_local_compatibility_record", False)
+    )
     if not re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id):
         msg = "Build refused: disc ID must be a nine-character PSP ID."
         reporter.report("preflight", "FAIL", msg)
@@ -928,7 +933,12 @@ def _build_package(args: argparse.Namespace, stage_observer,
         iso_path = Path(entry["iso_path"]).expanduser()
         if not iso_path.is_file():
             raise PackageBuildError(f"The library source ISO is unavailable at {iso_path}.")
-        metadata = inspect_iso(iso_path)
+        metadata = inspect_iso(iso_path, user_data_root=user_root)
+        if metadata.qualification_error and not register_local_identity:
+            raise PackageBuildError(
+                metadata.qualification_error +
+                " Rebuild with --register-local-compatibility-record only after reviewing this exact local input."
+            )
         if metadata.disc_id != disc_id:
             raise PackageBuildError(f"ISO identity {metadata.disc_id} no longer matches library entry {disc_id}.")
         preflight = inspect_compatibility_preflight(iso_path, metadata=metadata,
@@ -976,6 +986,25 @@ def _build_package(args: argparse.Namespace, stage_observer,
         manifest_source, manifest, expected_hash = _load_entry_manifest(
             user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
         )
+        requires_local_identity = bool(
+            manifest.get("disc", {}).get("require_local_compatibility_record", False)
+        )
+        recorded_identity = package_cache.read_local_title_input_identity(user_root, disc_id)
+        if requires_local_identity and recorded_identity is None and not register_local_identity:
+            raise PackageBuildError(
+                f"Unqualified revision (SFO DISC_VERSION {metadata.version}): this manifest requires "
+                "an explicit local compatibility record. Rebuild with "
+                "--register-local-compatibility-record after reviewing the selected local inputs; "
+                "revision qualification is in the works (#315)."
+            )
+        if (requires_local_identity and recorded_identity is not None and
+            recorded_identity["disc"]["disc_version"] != metadata.version and
+            not register_local_identity):
+            raise PackageBuildError(
+                f"Unqualified revision (SFO DISC_VERSION {metadata.version}): the local compatibility "
+                "record names a different SFO revision. Review and register this revision explicitly "
+                "with --register-local-compatibility-record; revision qualification is in the works (#315)."
+            )
         reporter.report("preflight", "PASS", "Library entry and manifest validated")
         reporter.report("extract", "START", "Extracting executable and guest modules...")
         cache_dir = _require_child(user_root, user_root / "cache" / "packages" / disc_id,
@@ -1033,6 +1062,56 @@ def _build_package(args: argparse.Namespace, stage_observer,
         )
         reporter.report("extract", "PASS", "Executable and modules prepared")
 
+        identity_modules = []
+        for module in sorted(
+            (item for item in manifest.get("modules", [])
+             if item.get("role") == "guest-prx" and item.get("required", False)),
+            key=lambda item: item["name"],
+        ):
+            if module_dir is None or not (module_dir / module["name"]).is_file():
+                raise PackageBuildError(
+                    f"Required guest PRX {module['name']} is unavailable for title identity (#315)."
+                )
+            identity_modules.append({
+                "name": module["name"],
+                "sha256": package_cache.sha256_file(module_dir / module["name"]),
+            })
+        header_magic = None
+        if cached_header is not None:
+            with cached_header.open("rb") as header_file:
+                header_magic = header_file.read(4).decode("ascii", errors="replace")
+        title_input_identity = package_cache.build_title_input_identity(
+            manifest=manifest,
+            executable_name=manifest_selected,
+            executable_sha256=actual_hash,
+            modules=identity_modules,
+            psp_header_sha256=(
+                package_cache.sha256_file(cached_header) if cached_header is not None else None
+            ),
+            psp_header_magic=header_magic,
+            disc_id=metadata.disc_id,
+            region=(metadata.region if metadata.region in {"JP", "NA", "EU", "KR", "ASIA", "OTHER"}
+                    else "OTHER"),
+            disc_version=metadata.version,
+            param_sfo=dict(metadata.param_sfo_facts),
+            container=dict(metadata.container_metadata),
+        )
+        if requires_local_identity and recorded_identity is not None and not register_local_identity:
+            identity_changes = package_cache.title_input_identity_changes(
+                recorded_identity, title_input_identity
+            )
+            if identity_changes:
+                raise PackageBuildError(
+                    "Local compatibility record mismatch: " + ", ".join(identity_changes) +
+                    ". Review and register the changed inputs with "
+                    "--register-local-compatibility-record; revision qualification is in the works (#315)."
+                )
+        identity_path = cache_dir / "title-input-identity.json"
+        _write_private_file(
+            identity_path,
+            package_cache.canonical_json(title_input_identity).encode("utf-8"),
+        )
+
         target_dir = user_root / "packages" / disc_id
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
@@ -1044,6 +1123,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             actual_hash,
             module_dir,
             cached_header,
+            title_input_identity,
             public_safe=public_safe,
             instruction_trace=bool(getattr(args, "instruction_trace", False)),
         )
@@ -1065,6 +1145,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             reporter.log("CACHE: unchanged key; AOT and native objects reused")
             reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
             reporter.report("package", "PASS", f"Package reused: {target_dir}")
+            package_cache.write_local_title_input_identity(user_root, title_input_identity)
             _report_reused_package_stages(stage_observer)
             reporter.close()
             return 0
@@ -1094,6 +1175,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 reporter.log("CACHE: content-addressed entry reused")
                 reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
                 reporter.report("package", "PASS", f"Package promoted: {target_dir}")
+                package_cache.write_local_title_input_identity(user_root, title_input_identity)
                 _report_reused_package_stages(stage_observer)
                 reporter.close()
                 return 0
@@ -1124,6 +1206,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             str(elf_path),
             "--output-dir",
             str(build_dir),
+            "--title-input-identity-file",
+            str(identity_path),
         ]
         if public_safe:
             command.append("--public-safe")
@@ -1226,6 +1310,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         package_cache.write_completion_manifest(
             build_dir,
             cache_key,
+            title_input_identity=title_input_identity,
             backends=backends_mode,
             limits=backend_limits,
         )
@@ -1267,6 +1352,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             if backup is not None and not target_dir.exists():
                 os.replace(backup, target_dir)
             raise
+        package_cache.write_local_title_input_identity(user_root, title_input_identity)
         if backup is not None:
             shutil.rmtree(backup, ignore_errors=True)
         _prune_package_cache(cache_dir, entry_root)
@@ -2435,6 +2521,10 @@ def main() -> int:
                          help="Optional directory containing required guest PRXs")
     p_build.add_argument("--psp-header", type=Path,
                          help="PSP header required by some title manifests")
+    p_build.add_argument(
+        "--register-local-compatibility-record", action="store_true",
+        help="explicitly record this exact local input identity for a manifest that requires it",
+    )
     p_build.add_argument("--progress-json", nargs="?", const="-", default=None,
                          help="Emit machine-readable progress JSON objects (one per line)")
     p_build.add_argument("--log-file", type=Path, default=None,

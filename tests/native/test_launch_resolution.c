@@ -111,6 +111,7 @@ static int write_launch_environment_probe(void) {
     const char *scale = getenv("SR_RESOLUTION_SCALE");
     const char *fullscreen = getenv("SR_FULLSCREEN");
     const char *volume = getenv("SR_MASTER_VOLUME");
+    const char *input_profile = getenv("NK_INPUT_PROFILE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -118,14 +119,16 @@ static int write_launch_environment_probe(void) {
                      "SR_VSYNC=%s\n"
                      "SR_RESOLUTION_SCALE=%s\n"
                      "SR_FULLSCREEN=%s\n"
-                     "SR_MASTER_VOLUME=%s\n",
+                     "SR_MASTER_VOLUME=%s\n"
+                     "NK_INPUT_PROFILE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
                      vsync ? vsync : "<unset>",
                      scale ? scale : "<unset>",
                      fullscreen ? fullscreen : "<unset>",
-                     volume ? volume : "<unset>") >= 0;
+                     volume ? volume : "<unset>",
+                     input_profile ? input_profile : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     return ok ? 0 : 4;
 }
@@ -212,6 +215,35 @@ static void test_no_iso_child_environment(const char *test_executable,
     session.config.vsync = false;
     session.config.fullscreen = true;
     session.config.master_volume = 55;
+    /* The host input profile the player resolved for the disc being launched
+       (#520). A disc with its own mapping gets its own profile file; this is
+       what the child runtime loads instead of the global one. */
+    char title_profile[1000];
+    snprintf(title_profile, sizeof(title_profile), "%s%cdisc_profile.json",
+             root, sep);
+    write_file(title_profile, "synthetic per-title input profile");
+    session.config.input_profile_path[0] = '\0';
+    {
+        char entry[1200];
+        assert(nk_launch_format_input_profile_env(&session, entry, sizeof(entry)) == false);
+        assert(entry[0] == '\0');
+    }
+    /* The launcher's own resolved path is what a session carries, so a path
+     * this long cannot be a real one; copying it must be refused, not truncated. */
+    assert(strlen(title_profile) < sizeof(session.config.input_profile_path));
+    memcpy(session.config.input_profile_path, title_profile, strlen(title_profile) + 1);
+    {
+        char entry[1200];
+        assert(nk_launch_format_input_profile_env(&session, entry, sizeof(entry)) == true);
+        char expected[1200];
+        snprintf(expected, sizeof(expected), "NK_INPUT_PROFILE=%s", title_profile);
+        assert(strcmp(entry, expected) == 0);
+        /* An entry that cannot fit is dropped rather than truncated. */
+        char tiny[8];
+        assert(nk_launch_format_input_profile_env(&session, tiny, sizeof(tiny)) == false);
+        assert(tiny[0] == '\0');
+        assert(nk_launch_format_input_profile_env(NULL, entry, sizeof(entry)) == false);
+    }
     assert(nk_launch_start(&session) == NK_OK);
 
     int child_exit = nk_launch_wait(&session, -1);
@@ -239,6 +271,13 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_RESOLUTION_SCALE=2\n") != NULL);
     assert(strstr(observed, "SR_FULLSCREEN=1\n") != NULL);
     assert(strstr(observed, "SR_MASTER_VOLUME=55\n") != NULL);
+    /* The per-title mapping the player resolved reaches the child as
+       NK_INPUT_PROFILE, so the launched title uses its own mapping (#520). */
+    {
+        char expected[1200];
+        snprintf(expected, sizeof(expected), "NK_INPUT_PROFILE=%s\n", title_profile);
+        assert(strstr(observed, expected) != NULL);
+    }
 
     restore_environment_value("PSP_ISO", old_iso, had_iso);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
@@ -250,6 +289,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     free(old_unrelated);
 
     remove(report_path);
+    remove(title_profile);
     remove(runtime_path);
     remove(image_path);
     remove(staged_eboot);

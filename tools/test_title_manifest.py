@@ -42,6 +42,10 @@ class TitleManifestTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"], 1)
         self.assertEqual(schema["properties"]["codegen_profile"]["enum"], ["none", "hst"])
         self.assertEqual(
+            schema["$defs"]["disc"]["properties"]["require_local_compatibility_record"]["type"],
+            "boolean",
+        )
+        self.assertEqual(
             set(schema["required"]),
             {
                 "schema_version", "id", "display_name", "kind", "executable",
@@ -148,6 +152,14 @@ class TitleManifestTests(unittest.TestCase):
         }
         normalized = title_manifest.validate_manifest(retail)
         self.assertEqual(normalized["disc"]["id"], "TEST00001")
+
+        retail["disc"]["require_local_compatibility_record"] = True
+        normalized = title_manifest.validate_manifest(retail)
+        self.assertTrue(normalized["disc"]["require_local_compatibility_record"])
+        retail["disc"]["require_local_compatibility_record"] = "yes"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "boolean"):
+            title_manifest.validate_manifest(retail)
+        retail["disc"].pop("require_local_compatibility_record")
 
         retail["disc"]["compatible_revisions"] = ["TEST00002"]
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "forbidden"):

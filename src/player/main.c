@@ -602,6 +602,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
+           "input_scope=%s input_titles=%d input_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
            "selected_runtime=%d selected_package_status=%d games=%d "
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
@@ -629,7 +630,12 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_CIRCLE].primary.index,
            app->input_settings.has_save_diagnostic ? 1 : 0,
+           input_settings_is_title_scope(&app->input_settings)
+               ? input_settings_scope_label(&app->input_settings) : "global",
+           app->input_settings.file.title_count,
+           app->input_profile_notice[0] ? 1 : 0,
            selected && selected->is_experimental ? 1 : 0,
+
            selected && selected->is_prepared ? 1 : 0,
            selected && selected->assets_staged ? 1 : 0,
            selected && player_app_game_has_runtime(app, selected) ? 1 : 0,
