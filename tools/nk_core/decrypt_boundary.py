@@ -67,11 +67,19 @@ def _run_boundary(key_path: Path, source: Path, destination: Path) -> BoundaryOu
     if proc.returncode != 0 or not out_tmp.is_file():
         out_tmp.unlink(missing_ok=True)
         combined = (proc.stdout or "") + (proc.stderr or "")
-        detail = next(
-            (line.strip() for line in combined.splitlines()
-             if line.strip() and not line.startswith("note:")),
-            f"boundary exited with status {proc.returncode}",
-        )
+        lines = [
+            line.strip() for line in combined.splitlines()
+            if line.strip() and not line.startswith("note:")
+        ]
+        # The first line is the failure token; the last line is the
+        # boundary's own message, so the rendered text names the same
+        # diagnosis the player card shows (issue #559).
+        if len(lines) > 1:
+            detail = f"{lines[0]}; {lines[-1]}"
+        elif lines:
+            detail = lines[0]
+        else:
+            detail = f"boundary exited with status {proc.returncode}"
         return BoundaryOutcome("failed", detail, str(key_path))
     if os.name != "nt":
         out_tmp.chmod(0o600)

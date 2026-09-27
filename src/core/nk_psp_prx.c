@@ -21,6 +21,8 @@
  *     (code/key/key144/seed/xor) -- see nk_psp_keystore.h;
  *   - all KIRK operations thread an NkPspCtx so a missing key entry fails
  *     closed with its exact name;
+ *   - the multi-type aggregation reports the failure of the type whose
+ *     container shape matched, not the last type tried (issue #559);
  *   - the caller-visible contract returns the decrypted payload length and
  *     fails closed with NK_PSP_ERR_* codes.
  *
@@ -317,7 +319,8 @@ static int finish_cmd1(NkPspCtx *ctx, u8 *outbuf, u8 *header, u32 size,
 }
 
 static int psp_decrypt_type0(NkPspCtx *ctx, const TagRecipe *r,
-                             const u8 *inbuf, u8 *outbuf, u32 size)
+                             const u8 *inbuf, u8 *outbuf, u32 size,
+                             int *matched)
 {
     PRXType0 t;
     u8 digest[0x14];
@@ -340,6 +343,7 @@ static int psp_decrypt_type0(NkPspCtx *ctx, const TagRecipe *r,
         sha1_parts(parts, 4, digest);
     }
     if (memcmp(digest, t.sha1, 0x14) != 0) return NK_PSP_ERR_INTEGRITY;
+    *matched = 1;
     if (decrypt_size <= 0 || (u32)decrypt_size > size) return NK_PSP_ERR_FORMAT;
 
     if (outbuf != inbuf) memcpy(outbuf, inbuf, size);
@@ -353,7 +357,8 @@ static int psp_decrypt_type0(NkPspCtx *ctx, const TagRecipe *r,
 }
 
 static int psp_decrypt_type1(NkPspCtx *ctx, const TagRecipe *r,
-                             const u8 *inbuf, u8 *outbuf, u32 size)
+                             const u8 *inbuf, u8 *outbuf, u32 size,
+                             int *matched)
 {
     PRXType1 t;
     u8 digest[0x14];
@@ -381,6 +386,7 @@ static int psp_decrypt_type1(NkPspCtx *ctx, const TagRecipe *r,
         sha1_parts(parts, 4, digest);
     }
     if (memcmp(digest, t.sha1, 0x14) != 0) return NK_PSP_ERR_INTEGRITY;
+    *matched = 1;
     if (decrypt_size <= 0 || (u32)decrypt_size > size) return NK_PSP_ERR_FORMAT;
 
     if (outbuf != inbuf) memcpy(outbuf, inbuf, size);
@@ -394,7 +400,8 @@ static int psp_decrypt_type1(NkPspCtx *ctx, const TagRecipe *r,
 }
 
 static int psp_decrypt_type2(NkPspCtx *ctx, const TagRecipe *r,
-                             const u8 *inbuf, u8 *outbuf, u32 size)
+                             const u8 *inbuf, u8 *outbuf, u32 size,
+                             int *matched)
 {
     PRXType2 t;
     u8 xorbuf[0x90];
@@ -432,6 +439,7 @@ static int psp_decrypt_type2(NkPspCtx *ctx, const TagRecipe *r,
         sha1_parts(parts, 7, digest);
     }
     if (memcmp(digest, t.sha1, 0x14) != 0) return NK_PSP_ERR_INTEGRITY;
+    *matched = 1;
     if (decrypt_size <= 0 || (u32)decrypt_size > size) return NK_PSP_ERR_FORMAT;
 
     if (outbuf != inbuf) memcpy(outbuf, inbuf, size);
@@ -448,7 +456,7 @@ static int psp_decrypt_type2(NkPspCtx *ctx, const TagRecipe *r,
 
 static int psp_decrypt_type5(NkPspCtx *ctx, const TagRecipe *r,
                              const u8 *inbuf, u8 *outbuf, u32 size,
-                             const u8 *caller_seed)
+                             const u8 *caller_seed, int *matched)
 {
     PRXType5 t;
     u8 xorbuf[0x90];
@@ -508,6 +516,7 @@ static int psp_decrypt_type5(NkPspCtx *ctx, const TagRecipe *r,
         sha1_parts(parts, 7, digest);
     }
     if (memcmp(digest, t.sha1, 0x14) != 0) return NK_PSP_ERR_INTEGRITY;
+    *matched = 1;
     if (decrypt_size <= 0 || (u32)decrypt_size > size) return NK_PSP_ERR_FORMAT;
 
     if (outbuf != inbuf) memcpy(outbuf, inbuf, size);
@@ -523,7 +532,8 @@ static int psp_decrypt_type5(NkPspCtx *ctx, const TagRecipe *r,
 }
 
 static int psp_decrypt_type6(NkPspCtx *ctx, const TagRecipe *r,
-                             const u8 *inbuf, u8 *outbuf, u32 size)
+                             const u8 *inbuf, u8 *outbuf, u32 size,
+                             int *matched)
 {
     PRXType6 t;
     u8 xorbuf[0x90];
@@ -560,6 +570,7 @@ static int psp_decrypt_type6(NkPspCtx *ctx, const TagRecipe *r,
         sha1_parts(parts, 8, digest);
     }
     if (memcmp(digest, t.sha1, 0x14) != 0) return NK_PSP_ERR_INTEGRITY;
+    *matched = 1;
     if (decrypt_size <= 0 || (u32)decrypt_size > size) return NK_PSP_ERR_FORMAT;
 
     if (outbuf != inbuf) memcpy(outbuf, inbuf, size);
@@ -576,18 +587,83 @@ static int psp_decrypt_type6(NkPspCtx *ctx, const TagRecipe *r,
     return finish_cmd1(ctx, outbuf, header, size, decrypt_size);
 }
 
+/* --------------------------- aggregation ------------------------------ */
+
+/*
+ * Combined diagnosis (issue #559): the type whose SHA-1 selector verified
+ * the container ("matched") owns the reported failure, so a corrupt
+ * container reports that type's integrity or format failure instead of
+ * the last type tried asking for key material it does not need.  A
+ * MISSING_KEY raised before any selector matched is a shared
+ * prerequisite every eligible type needs and stays reportable; when no
+ * type matches, the container itself is reported malformed.
+ */
+typedef struct {
+    int owner_have;
+    int owner_code;
+    char owner_entry[80];
+    char owner_message[256];
+    int missing_have;
+    char missing_entry[80];
+    char missing_message[256];
+    int prereq_have;
+    int prereq_code;
+    char prereq_entry[80];
+    char prereq_message[256];
+    int attempts;
+} PrxDiagnosis;
+
+static void prx_diagnose(PrxDiagnosis *d, const NkPspCtx *ctx, int rc,
+                         int matched)
+{
+    if (rc >= 0 || rc == TYPE_SKIP) return;
+    d->attempts++;
+    if (matched) {
+        if (!d->owner_have) {
+            d->owner_have = 1;
+            d->owner_code = rc;
+            snprintf(d->owner_entry, sizeof(d->owner_entry), "%s",
+                     ctx->missing_entry);
+            snprintf(d->owner_message, sizeof(d->owner_message), "%s",
+                     ctx->message);
+        }
+        return;
+    }
+    if (rc == NK_PSP_ERR_MISSING_KEY) {
+        if (!d->missing_have) {
+            d->missing_have = 1;
+            snprintf(d->missing_entry, sizeof(d->missing_entry), "%s",
+                     ctx->missing_entry);
+            snprintf(d->missing_message, sizeof(d->missing_message), "%s",
+                     ctx->message);
+        }
+        return;
+    }
+    if (rc != NK_PSP_ERR_INTEGRITY && rc != NK_PSP_ERR_FORMAT &&
+        !d->prereq_have) {
+        d->prereq_have = 1;
+        d->prereq_code = rc;
+        snprintf(d->prereq_entry, sizeof(d->prereq_entry), "%s",
+                 ctx->missing_entry);
+        snprintf(d->prereq_message, sizeof(d->prereq_message), "%s",
+                 ctx->message);
+    }
+}
+
 /* --------------------------- entry point ------------------------------ */
 
 int pspDecryptPRX(NkPspCtx *ctx, const u8 *inbuf, u8 *outbuf,
                   u32 size, const u8 *seed)
 {
     TagRecipe recipe;
-    int have_missing = 0, have_integrity = 0, have_format = 0;
+    PrxDiagnosis diag;
     int krc, rc;
+    int matched;
 
     if (ctx == NULL || inbuf == NULL || outbuf == NULL) {
         return NK_PSP_ERR_INTERNAL;
     }
+    memset(&diag, 0, sizeof(diag));
     ctx->missing_entry[0] = '\0';
     ctx->message[0] = '\0';
     if (size < PSP_HEADER_SIZE) {
@@ -609,59 +685,88 @@ int pspDecryptPRX(NkPspCtx *ctx, const u8 *inbuf, u8 *outbuf,
 
     /* The decoder does not know the container's tag/type mapping, so it
      * tries every type the recipe carries material for (upstream order:
-     * 0, 1, 2, 5, 6); the per-type SHA-1 check selects the right one. */
+     * 0, 1, 2, 5, 6); the per-type SHA-1 check selects the right one, and
+     * the first type it selects owns the combined diagnosis (issue #559).
+     * Diagnostics are cleared before each attempt so every recorded
+     * snapshot is that attempt's own. */
     if (recipe.key144 != NULL) {
-        rc = psp_decrypt_type0(ctx, &recipe, inbuf, outbuf, size);
+        ctx->missing_entry[0] = '\0';
+        ctx->message[0] = '\0';
+        matched = 0;
+        rc = psp_decrypt_type0(ctx, &recipe, inbuf, outbuf, size, &matched);
         if (rc >= 0) return rc;
-        if (rc == NK_PSP_ERR_MISSING_KEY) have_missing = 1;
-        else if (rc == NK_PSP_ERR_INTEGRITY) have_integrity = 1;
-        else if (rc == NK_PSP_ERR_FORMAT) have_format = 1;
+        prx_diagnose(&diag, ctx, rc, matched);
 
-        rc = psp_decrypt_type1(ctx, &recipe, inbuf, outbuf, size);
+        ctx->missing_entry[0] = '\0';
+        ctx->message[0] = '\0';
+        matched = 0;
+        rc = psp_decrypt_type1(ctx, &recipe, inbuf, outbuf, size, &matched);
         if (rc >= 0) return rc;
-        if (rc == NK_PSP_ERR_MISSING_KEY) have_missing = 1;
-        else if (rc == NK_PSP_ERR_INTEGRITY) have_integrity = 1;
-        else if (rc == NK_PSP_ERR_FORMAT) have_format = 1;
+        prx_diagnose(&diag, ctx, rc, matched);
     }
     if (recipe.key != NULL) {
-        rc = psp_decrypt_type2(ctx, &recipe, inbuf, outbuf, size);
+        ctx->missing_entry[0] = '\0';
+        ctx->message[0] = '\0';
+        matched = 0;
+        rc = psp_decrypt_type2(ctx, &recipe, inbuf, outbuf, size, &matched);
         if (rc >= 0) return rc;
-        if (rc == NK_PSP_ERR_MISSING_KEY) have_missing = 1;
-        else if (rc == NK_PSP_ERR_INTEGRITY) have_integrity = 1;
-        else if (rc == NK_PSP_ERR_FORMAT) have_format = 1;
+        prx_diagnose(&diag, ctx, rc, matched);
 
-        rc = psp_decrypt_type5(ctx, &recipe, inbuf, outbuf, size, seed);
+        ctx->missing_entry[0] = '\0';
+        ctx->message[0] = '\0';
+        matched = 0;
+        rc = psp_decrypt_type5(ctx, &recipe, inbuf, outbuf, size, seed,
+                               &matched);
         if (rc >= 0) return rc;
-        if (rc == NK_PSP_ERR_MISSING_KEY) have_missing = 1;
-        else if (rc == NK_PSP_ERR_INTEGRITY) have_integrity = 1;
-        else if (rc == NK_PSP_ERR_FORMAT) have_format = 1;
+        prx_diagnose(&diag, ctx, rc, matched);
 
-        rc = psp_decrypt_type6(ctx, &recipe, inbuf, outbuf, size);
+        ctx->missing_entry[0] = '\0';
+        ctx->message[0] = '\0';
+        matched = 0;
+        rc = psp_decrypt_type6(ctx, &recipe, inbuf, outbuf, size, &matched);
         if (rc >= 0) return rc;
-        if (rc == NK_PSP_ERR_MISSING_KEY) have_missing = 1;
-        else if (rc == NK_PSP_ERR_INTEGRITY) have_integrity = 1;
-        else if (rc == NK_PSP_ERR_FORMAT) have_format = 1;
+        prx_diagnose(&diag, ctx, rc, matched);
     }
 
-    /* Fail-closed aggregation, most specific diagnosis first.  ctx already
-     * carries the exact missing entry / the first recorded message. */
-    if (have_missing) return NK_PSP_ERR_MISSING_KEY;
-    if (have_integrity) {
-        if (ctx->message[0] == '\0') {
+    /* Fail-closed aggregation (issue #559), most specific diagnosis first. */
+    if (diag.owner_have) {
+        snprintf(ctx->missing_entry, sizeof(ctx->missing_entry), "%s",
+                 diag.owner_entry);
+        snprintf(ctx->message, sizeof(ctx->message), "%s",
+                 diag.owner_message);
+        if (ctx->message[0] == '\0' &&
+            diag.owner_code == NK_PSP_ERR_INTEGRITY) {
             snprintf(ctx->message, sizeof(ctx->message),
                      "integrity checks failed for key entry %s "
                      "(wrong key entry values, or a modified container)",
                      recipe.name);
         }
-        return NK_PSP_ERR_INTEGRITY;
-    }
-    if (have_format) {
-        if (ctx->message[0] == '\0') {
+        if (ctx->message[0] == '\0' && diag.owner_code == NK_PSP_ERR_FORMAT) {
             snprintf(ctx->message, sizeof(ctx->message),
                      "container fields are inconsistent with key entry %s",
                      recipe.name);
         }
-        return NK_PSP_ERR_FORMAT;
+        return diag.owner_code;
+    }
+    if (diag.missing_have) {
+        snprintf(ctx->missing_entry, sizeof(ctx->missing_entry), "%s",
+                 diag.missing_entry);
+        snprintf(ctx->message, sizeof(ctx->message), "%s",
+                 diag.missing_message);
+        return NK_PSP_ERR_MISSING_KEY;
+    }
+    if (diag.prereq_have) {
+        snprintf(ctx->missing_entry, sizeof(ctx->missing_entry), "%s",
+                 diag.prereq_entry);
+        snprintf(ctx->message, sizeof(ctx->message), "%s",
+                 diag.prereq_message);
+        return diag.prereq_code;
+    }
+    if (diag.attempts > 0) {
+        return nk_psp_fail(ctx, NK_PSP_ERR_FORMAT, NULL,
+                           "container matches no supported PRX container "
+                           "type (0, 1, 2, 5 or 6); its header is corrupt, "
+                           "was modified, or is not a supported module");
     }
     return nk_psp_fail(ctx, NK_PSP_ERR_UNSUPPORTED, recipe.name,
                        "no enabled decryption path matched key entry %s",
