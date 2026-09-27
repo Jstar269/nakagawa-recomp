@@ -271,16 +271,20 @@ class MutationTests(unittest.TestCase):
         mutated = HLE_C.read_text(encoding="utf-8") + "\n    MEM_W32(0x002d132cu, 1u);\n"
         found = extract_hle_guest_addresses(mutated)
         self.assertIn(0x002d132c, found)
-        missing = set(found) - {a for group in compat_overrides.HLE_GUEST_ADDRESS_GROUPS for a in group["addresses"]}
-        # The newly added address is not in the live inventory, so it must be missing
+        retired = {a for group in compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS
+                   for a in group["addresses"]}
+        configured = {a for group in compat_overrides.HLE_TITLE_CONFIGURED_COMPAT
+                      for a in group["addresses"]}
+        missing = set(found) & (retired | configured)
         self.assertIn(0x002d132c, missing)
 
     def test_removing_inventory_entry_fails(self):
-        live = {a for group in compat_overrides.HLE_GUEST_ADDRESS_GROUPS for a in group["addresses"]}
-        # Drop one diagnostic address from the live inventory; hle.c still has it
-        thinned = live - {0x0030a000}
+        retired = {a for group in compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS
+                   for a in group["addresses"]}
+        thinned = retired - {0x0030a000}
         found = set(extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8")))
-        self.assertEqual(found - thinned, {0x0030a000})
+        self.assertEqual(found & thinned, set())
+        self.assertNotIn(0x0030a000, found)
 
     def test_title_configured_inventory_is_not_live(self):
         live = {a for group in compat_overrides.HLE_GUEST_ADDRESS_GROUPS for a in group["addresses"]}
@@ -288,6 +292,18 @@ class MutationTests(unittest.TestCase):
         self.assertEqual(live & configured, set(),
                          "live and title-configured inventories must be disjoint")
         self.assertEqual(configured, HST_MIGRATED)
+
+    def test_hst_reent_addresses_live_only_in_title_configuration(self):
+        addresses = {int(item["address"]) for item in
+                     compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT}
+        self.assertEqual(addresses, {0x002cf338, 0x0030aa88})
+        title_config = (ROOT / "src" / "rt" / "title_config.c").read_text(encoding="utf-8")
+        self.assertTrue(all(f"0x{address:08x}u" in title_config for address in addresses))
+        for relative in ("src/rt/hle.c", "src/rt/sched.c", "src/rt/recomp.c"):
+            source = (ROOT / relative).read_text(encoding="utf-8").lower()
+            for address in addresses:
+                self.assertNotIn(f"0x{address:08x}", source,
+                                 f"{relative} contains HST-only reent address {address:#x}")
 
 
 if __name__ == "__main__":

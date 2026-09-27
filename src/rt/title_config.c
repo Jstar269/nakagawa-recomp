@@ -5,13 +5,14 @@
  *
  * It binds the build-local artifact emitted by tools/title_runtime_config.py to the
  * generic SrTitleRuntimeConfig interface. Every other runtime source consumes the
- * accessors in title_config.h and never sees a title address, a macro name, or a
- * conditional compilation branch.
+ * accessors in title_config.h and never sees a title address literal, a generated
+ * macro name, or a conditional compilation branch.
  */
 
 #include "title_config.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* Build-local generated artifact (build/<game>/sr_title_config.h). The build always
  * generates it: with no title configuration it defines the generic all-disabled
@@ -242,6 +243,38 @@ int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
         return 1;
     }
     return 0;
+}
+
+int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
+#if SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE
+    /* The validated manifest selects the flagship profile and its exact source id.
+     * Keep this legacy guest-layout knowledge inside the title-config boundary. */
+    if (s_config.valid != 0u && strcmp(s_config.source_id, "hst-ucus98701") == 0) {
+        if (out) {
+            out->master_reent_addr = 0x002cf338u;
+            out->guest_thread_table_addr = 0x0030aa88u;
+        }
+        return 1;
+    }
+#else
+    (void)out;
+#endif
+    return 0;
+}
+
+int sr_title_config_preserve_callee_saved_at_calls(void) {
+#if SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE
+    /* #363 compatibility debt, HST only: a returning dispatch CALL restores the
+     * callee-saved $s0-$s7/$fp. Real hardware does not; a generic title sees every
+     * register write its callee makes. Retire this once the flagship's clobber is
+     * root-caused. */
+    static int enabled = -1;
+    if (enabled < 0)
+        enabled = s_config.valid != 0u && strcmp(s_config.source_id, "hst-ucus98701") == 0;
+    return enabled;
+#else
+    return 0;
+#endif
 }
 
 int sr_title_config_libfont_ready_flag_addr(uint32_t *out) {

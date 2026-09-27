@@ -43,6 +43,23 @@ The current schema also permits an optional, typed `runtime_bindings` block for 
 
 The target remains a generic core that does not require title-specific patches. The current contract records the temporary bindings honestly rather than describing the target state as already achieved. Public schema fields do not authorize private paths, retail bytes, captures, or derived evidence.
 
+The generic dispatcher has no exact or range title-hook table. Historical resource-shaped
+targets now reach ordinary lookup and fail at a named interpreter boundary; the runtime
+reports the boundary as in the works under [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285).
+Unsupported interpreter forms remain fail-closed. HST-specific diagnostic probes in the
+HLE, scheduler, and recompiler were removed; use generic SR_TRACE_PC or SR_WATCH
+instrumentation when those observations are needed. The init-walker r16 save/restore
+no longer names caller addresses in generic dispatch. Real hardware does not restore
+$s0-$s7 or $fp/$s8 for a callee, so a generic title keeps every register write its
+callee makes. Only the HST title configuration arms a restore of those registers at a
+returning CALL (`sr_title_config_preserve_callee_saved_at_calls`), recorded as #363 debt
+until the flagship's clobber is root-caused.
+
+The HST Newlib master and guest thread-table addresses are isolated behind the typed
+SrTitleReentBindings accessor in src/rt/title_config.c. It returns values only for the
+validated hst codegen profile with the matching HST source id. Other profiles receive no
+addresses and perform no guest-table seeding.
+
 ## 3. Catalog identity and generic launch resolution
 
 The registry maps validated manifest identity to title metadata. Preparation
@@ -79,5 +96,7 @@ For the native player’s current implementation boundary and process lifecycle,
 - Python/native identity and path resolution have source-owned parity and fail-closed regression coverage under #366.
 - A real second-title bring-up remains pending under #285.
 - Temporary profile-owned compatibility bindings remain visible debt under #363.
+- HST reent-table configuration remains title-gated compatibility debt under #363; generic
+  dispatch rejection and diagnostic cleanup do not establish full second-title support.
 - Release and preparation version authority remains unresolved under #333.
 - Private title inputs and private acceptance remain separate from public schema and synthetic-fixture results.

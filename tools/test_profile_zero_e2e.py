@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,13 @@ CASE_EVIDENCE = {
 }
 SAVE_BYTES = b"PROFILE_ZERO_SAVE_V1\n"
 VBLANK_SCRIPT = "12 4000 4\n240 0008 4\n"
+# Committed PSPDEV build output of fixtures/profile_zero/{main.c,Makefile}.
+# The route consumes these bytes on hosts without PSPDEV/PSPSDK (hosted CI);
+# where the toolchain exists, the same build is reproduced and compared.
+PREBUILT_DIR = ROOT / "fixtures" / "profile_zero" / "prebuilt"
+PREBUILT_SUMS = PREBUILT_DIR / "SHA256SUMS"
+PREBUILT_EBOOT = PREBUILT_DIR / "EBOOT.PBP"
+PREBUILT_GUEST = PREBUILT_DIR / "profile_zero_guest.prx"
 
 
 def _manifest(path: Path) -> dict:
@@ -173,6 +181,85 @@ def _build_guest(manifest: dict, output_dir: Path, backend: tuple[str, str | Non
             f"for {manifest['id']}"
         )
     return guest
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _verify_committed_fixture() -> dict[str, str]:
+    """Fail closed unless the committed fixture matches its own digest list."""
+    if not PREBUILT_SUMS.is_file():
+        raise AssertionError(
+            f"committed profile-zero fixture digest list is missing: {PREBUILT_SUMS} "
+            "(rebuild it with PSPDEV; see fixtures/profile_zero/README.md)"
+        )
+    digests: dict[str, str] = {}
+    for line in PREBUILT_SUMS.read_text(encoding="ascii").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{64}", parts[0]) or parts[1] in digests:
+            raise AssertionError(f"malformed line in {PREBUILT_SUMS}: {line!r}")
+        digests[parts[1]] = parts[0]
+    for required in (PREBUILT_EBOOT.name, PREBUILT_GUEST.name):
+        if required not in digests:
+            raise AssertionError(f"{PREBUILT_SUMS} does not cover {required}")
+    present = {
+        path.name
+        for path in PREBUILT_DIR.iterdir()
+        if path.is_file() and path.name != PREBUILT_SUMS.name
+    }
+    if present != set(digests):
+        raise AssertionError(
+            f"committed profile-zero fixture files {sorted(present)} do not match "
+            f"the digest list {sorted(digests)}"
+        )
+    for name, expected in sorted(digests.items()):
+        actual = _sha256(PREBUILT_DIR / name)
+        if actual != expected:
+            raise AssertionError(
+                f"committed profile-zero fixture {name} does not match SHA256SUMS: "
+                f"expected {expected}, got {actual}"
+            )
+    return digests
+
+
+def _materialize_committed_fixture(manifest: dict, output_dir: Path) -> Path:
+    """Stage the committed PSPDEV build output where the route expects it."""
+    digests = _verify_committed_fixture()
+    build = manifest["profile_zero"]["build"]
+    game_name = manifest.get("game_name") or manifest["id"].replace("-", "_")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    eboot = output_dir / str(build["target"])
+    guest = output_dir / f"{game_name}.prx"
+    shutil.copyfile(PREBUILT_EBOOT, eboot)
+    shutil.copyfile(PREBUILT_GUEST, guest)
+    if _sha256(eboot) != digests[PREBUILT_EBOOT.name] or _sha256(guest) != digests[PREBUILT_GUEST.name]:
+        raise AssertionError(f"staged profile-zero fixture drifted for {manifest['id']}")
+    return guest
+
+
+def _verify_rebuild_matches_committed(manifest: dict, output_dir: Path, guest: Path) -> None:
+    """Fail closed when a PSPDEV rebuild differs from the committed fixture."""
+    digests = _verify_committed_fixture()
+    build = manifest["profile_zero"]["build"]
+    for path, expected in (
+        (output_dir / str(build["target"]), digests[PREBUILT_EBOOT.name]),
+        (guest, digests[PREBUILT_GUEST.name]),
+    ):
+        if not path.is_file():
+            raise AssertionError(
+                f"PSPDEV rebuild for {manifest['id']} produced no {path.name}"
+            )
+        actual = _sha256(path)
+        if actual != expected:
+            raise AssertionError(
+                f"PSPDEV rebuild for {manifest['id']} does not reproduce the committed "
+                f"fixture {path.name}: expected sha256 {expected}, got {actual}. "
+                "Regenerate and explain fixtures/profile_zero/prebuilt (see "
+                "fixtures/profile_zero/README.md); drift must never be tolerated silently."
+            )
 
 
 def _runtime_build_environment() -> tuple[dict[str, str], str]:
@@ -472,12 +559,44 @@ class ProfileZeroManifestTests(unittest.TestCase):
         self.assertIn("profile-zero-e2e:", makefile)
         self.assertIn("profile-zero-e2e", workflow)
 
+    def test_committed_fixture_matches_its_digests_and_manifest_entries(self) -> None:
+        digests = _verify_committed_fixture()
+        self.assertIn(PREBUILT_EBOOT.name, digests)
+        self.assertIn(PREBUILT_GUEST.name, digests)
+        for path in MANIFEST_PATHS:
+            with self.subTest(manifest=path.name):
+                manifest = _manifest(path)
+                game_name = manifest.get("game_name") or manifest["id"].replace("-", "_")
+                with tempfile.TemporaryDirectory(prefix="nk-profile-zero-prebuilt-") as temporary:
+                    guest = _materialize_committed_fixture(manifest, Path(temporary))
+                    self.assertEqual(guest.name, f"{game_name}.prx")
+                    image = prxload.load_program_image(
+                        guest,
+                        base=int(manifest["executable"]["base"]),
+                    )
+                    self.assertIsInstance(image, prxload.ProgramImage)
+                    self.assertGreater(len(image.executable_intervals), 0)
+                    self.assertEqual(
+                        image.entry_point,
+                        int(manifest["executable"]["entry"]),
+                        "manifest entry must match the committed PSPDEV guest module",
+                    )
+
     def test_package_and_runtime_route_assert_all_profile_zero_cases(self) -> None:
         backend = _pspdev_backend()
         if backend is None:
-            self.skipTest(
-                "SKIP: PSPDEV/PSPSDK is absent from PATH and WSL Ubuntu "
-                "(/usr/local/pspdev); the manifest-driven route requires its declared guest toolchain"
+            print(
+                "profile-zero-e2e: PSPDEV/PSPSDK is absent; the route runs on the "
+                "committed fixture in fixtures/profile_zero/prebuilt (no toolchain SKIP)",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                "profile-zero-e2e: PSPDEV/PSPSDK is present; rebuilding the fixture "
+                "and checking it byte-for-byte against the committed fixture",
+                file=sys.stderr,
+                flush=True,
             )
         build_environment, make = _runtime_build_environment()
         with tempfile.TemporaryDirectory(prefix="nk-profile-zero-e2e-") as temporary:
@@ -485,10 +604,13 @@ class ProfileZeroManifestTests(unittest.TestCase):
             for manifest_path in MANIFEST_PATHS:
                 with self.subTest(manifest=manifest_path.name):
                     manifest = _manifest(manifest_path)
-                    guest = _build_guest(
+                    if backend is not None:
+                        rebuild_dir = root / manifest["id"] / "psp-rebuild"
+                        rebuilt_guest = _build_guest(manifest, rebuild_dir, backend)
+                        _verify_rebuild_matches_committed(manifest, rebuild_dir, rebuilt_guest)
+                    guest = _materialize_committed_fixture(
                         manifest,
                         root / manifest["id"] / "psp-build",
-                        backend,
                     )
                     image = prxload.load_program_image(
                         guest,
