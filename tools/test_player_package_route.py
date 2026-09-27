@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +49,7 @@ TOOLS = ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+import nk_cli  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_psp_container,
     create_test_iso_with_executables,
@@ -101,6 +103,151 @@ def synthetic_manifest() -> dict:
         "feature_requirements": ["allegrex-core", "psp-hle"],
         "verification_profile": "synthetic-public",
     }
+
+
+class TestPackageRuntimeDependencies(unittest.TestCase):
+    def test_embeddable_cli_restores_tools_directory_to_import_path(self):
+        tools_directory = str(Path(nk_cli.__file__).resolve().parent)
+        with patch.object(nk_cli.sys, "path", []):
+            nk_cli._ensure_cli_module_path()
+            self.assertEqual(nk_cli.sys.path, [tools_directory])
+
+    def test_codegen_plan_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "title_codegen_plan.py"
+        code = (
+            "import runpy, sys\n"
+            f"script = {str(script)!r}\n"
+            "sys.argv = [script, '--help']\n"
+            "runpy.run_path(script, run_name='__main__')\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("usage:", completed.stdout.lower())
+
+    def test_title_runtime_config_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "title_runtime_config.py"
+        code = (
+            "import runpy, sys\n"
+            f"script = {str(script)!r}\n"
+            "sys.argv = [script, '--help']\n"
+            "runpy.run_path(script, run_name='__main__')\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+        self.assertIn("usage:", completed.stdout.lower())
+
+    def test_codegen_restores_tools_directory_for_embedded_python(self):
+        script = TOOLS / "codegen.py"
+        code = (
+            "import importlib.util, sys\n"
+            f"script = {str(script)!r}\n"
+            "spec = importlib.util.spec_from_file_location('embedded_codegen', script)\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "sys.modules[spec.name] = module\n"
+            "spec.loader.exec_module(module)\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code], cwd=ROOT,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         completed.stdout + completed.stderr)
+
+    def test_prxload_and_imports_restore_tools_directory_for_embedded_python(self):
+        for name in ("prxload.py", "imports.py"):
+            with self.subTest(script=name):
+                script = TOOLS / name
+                code = (
+                    "import importlib.util, sys\n"
+                    f"script = {str(script)!r}\n"
+                    "spec = importlib.util.spec_from_file_location('embedded_tool', script)\n"
+                    "module = importlib.util.module_from_spec(spec)\n"
+                    "sys.modules[spec.name] = module\n"
+                    "spec.loader.exec_module(module)\n"
+                )
+                completed = subprocess.run(
+                    [sys.executable, "-I", "-c", code], cwd=ROOT,
+                    capture_output=True, text=True, timeout=20,
+                )
+                self.assertEqual(completed.returncode, 0,
+                                 completed.stdout + completed.stderr)
+
+    def test_runtime_package_uses_the_configured_sdl3_provider(self):
+        with tempfile.TemporaryDirectory(prefix="nk-sdl3-package-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            runtime = provider / "bin" / "SDL3.dll"
+            iconv = provider / "bin" / "libiconv-2.dll"
+            vulkan = provider / "bin" / "vulkan-1.dll"
+            runtime.parent.mkdir(parents=True)
+            runtime.write_bytes(b"source-owned synthetic SDL3 test payload")
+            iconv.write_bytes(b"source-owned synthetic iconv test payload")
+            vulkan.write_bytes(b"source-owned synthetic Vulkan test payload")
+            package = root / "package"
+            package.mkdir()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "",
+                "VULKAN_SDK": str(provider),
+            }):
+                with patch("nk_cli._windows_host", return_value=True):
+                    nk_cli._stage_runtime_assets(package)
+            self.assertEqual((package / "SDL3.dll").read_bytes(), runtime.read_bytes())
+            self.assertEqual((package / "libiconv-2.dll").read_bytes(), iconv.read_bytes())
+            self.assertEqual((package / "vulkan-1.dll").read_bytes(), vulkan.read_bytes())
+
+    def test_runtime_package_fails_closed_without_vulkan_loader(self):
+        with tempfile.TemporaryDirectory(prefix="nk-vulkan-package-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            sdl = provider / "bin" / "SDL3.dll"
+            sdl.parent.mkdir(parents=True)
+            sdl.write_bytes(b"source-owned synthetic SDL3 test payload")
+            (provider / "bin" / "libiconv-2.dll").write_bytes(
+                b"source-owned synthetic iconv test payload"
+            )
+            package = root / "package"
+            package.mkdir()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "",
+                "VULKAN_SDK": str(root / "missing-sdk"),
+            }):
+                with patch("nk_cli._windows_host", return_value=True), patch("nk_cli.shutil.which", return_value=None):
+                    with self.assertRaisesRegex(nk_cli.PackageBuildError, "vulkan-1.dll"):
+                        nk_cli._stage_runtime_assets(package)
+
+    @unittest.skipUnless(os.name == "nt", "Windows UCRT path precedence")
+    def test_runtime_build_keeps_an_available_downloaded_toolchain_first(self):
+        with tempfile.TemporaryDirectory(prefix="nk-ucrt-path-") as temporary:
+            toolchain_bin = Path(temporary) / "ucrt64" / "bin"
+            toolchain_bin.mkdir(parents=True)
+            (toolchain_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            with patch.dict(os.environ, {"PATH": str(toolchain_bin)}):
+                env = nk_cli._runtime_build_environment()
+            self.assertEqual(env["PATH"].split(os.pathsep, 1)[0], str(toolchain_bin))
+
+    @unittest.skipUnless(os.name == "nt", "Windows embedded Python path")
+    def test_runtime_build_exposes_its_interpreter_after_the_downloaded_toolchain(self):
+        with tempfile.TemporaryDirectory(prefix="nk-package-python-path-") as temporary:
+            root = Path(temporary)
+            toolchain_bin = root / "ucrt64" / "bin"
+            python_bin = root / "python"
+            toolchain_bin.mkdir(parents=True)
+            python_bin.mkdir()
+            (toolchain_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            interpreter = python_bin / "python.exe"
+            interpreter.write_bytes(b"synthetic executable path marker")
+            with patch.dict(os.environ, {"PATH": str(toolchain_bin) + os.pathsep + r"C:\Windows"}):
+                with patch("nk_cli.sys.executable", str(interpreter)):
+                    path = nk_cli._runtime_build_environment()["PATH"].split(os.pathsep)
+            self.assertEqual(path[:2], [str(toolchain_bin), str(python_bin)])
 
 
 def tracked_status() -> str:
@@ -462,6 +609,176 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertFalse((header_root / "packages" / DISC_ID).exists())
 
         self.assertEqual(tracked_status(), before)
+
+
+class TestRuntimeDllStaging(unittest.TestCase):
+    """Runtime staging ships SDL3_ttf, its resolved closure, and licences (#421).
+
+    Synthetic DLL files plus a fake import resolver are enough: the contract under
+    test is the mechanical closure walk, the copy, and the licence staging, not
+    the toolchain's PE bytes.
+    """
+
+    GRAPH = {
+        "sdl3.dll": ["KERNEL32.dll"],
+        "sdl3_ttf.dll": ["SDL3.dll", "libfreetype-6.dll", "KERNEL32.dll"],
+        "libfreetype-6.dll": ["libpng16-16.dll", "zlib1.dll"],
+        "libpng16-16.dll": ["zlib1.dll"],
+        "zlib1.dll": ["KERNEL32.dll"],
+    }
+
+    def fake_resolver(self):
+        def imports_of(path: Path) -> list[str]:
+            return list(self.GRAPH.get(path.name.lower(), []))
+
+        def is_system(name: str) -> bool:
+            return name.lower() == "kernel32.dll"
+
+        return imports_of, is_system
+
+    def write_fake_dlls(self, bin_dir: Path) -> None:
+        bin_dir.mkdir(parents=True)
+        # Real file names: roots are looked up by their canonical case, and a
+        # case-sensitive host (the Linux CI runner) must find them too.
+        for name in ("SDL3.dll", "SDL3_ttf.dll", "libfreetype-6.dll", "libpng16-16.dll", "zlib1.dll"):
+            (bin_dir / name).write_bytes(b"MZ\0\0synthetic-" + name.encode())
+
+    def test_staging_copies_ttf_closure_and_licence_files(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            staged = stage_runtime_dlls.stage_runtime_dlls(
+                package_dir,
+                roots=["SDL3.dll", "SDL3_ttf.dll"],
+                search_dirs=[bin_dir],
+                env={},
+                imports_of=imports_of,
+                is_system=is_system,
+            )
+
+            staged_names = {name.lower() for name in staged}
+            self.assertEqual(
+                staged_names,
+                {"sdl3.dll", "sdl3_ttf.dll", "libfreetype-6.dll", "libpng16-16.dll", "zlib1.dll"},
+            )
+            for name in staged:
+                self.assertTrue((package_dir / name).is_file(), name)
+            self.assertFalse((package_dir / "KERNEL32.dll").exists())
+
+            notices = package_dir / "THIRD_PARTY_NOTICES"
+            self.assertTrue(notices.is_dir())
+            notice_text = "\n".join(
+                p.name for p in notices.iterdir() if p.is_file()
+            )
+            for licence in ("SDL3_ttf", "FreeType", "libpng", "zlib"):
+                self.assertIn(licence, notice_text)
+
+    def test_missing_sdl3_ttf_fails_the_stage_closed(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            empty_bin = Path(tmp) / "toolchain-bin"
+            empty_bin.mkdir()
+            imports_of, is_system = self.fake_resolver()
+            with self.assertRaises(stage_runtime_dlls.StageError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3_ttf.dll"],
+                    search_dirs=[empty_bin],
+                    env={},
+                    imports_of=imports_of,
+                    is_system=is_system,
+                )
+            self.assertIn("SDL3_ttf.dll", str(ctx.exception))
+            self.assertEqual(list(package_dir.iterdir()), [])
+
+    def test_unresolved_closure_member_fails_closed(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+            broken = dict(self.GRAPH)
+            broken["libfreetype-6.dll"] = ["libghost.dll"]
+
+            def broken_imports(path: Path) -> list[str]:
+                return list(broken.get(path.name.lower(), []))
+
+            with self.assertRaises(stage_runtime_dlls.StageError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3_ttf.dll"],
+                    search_dirs=[bin_dir],
+                    env={},
+                    imports_of=broken_imports,
+                    is_system=is_system,
+                )
+            self.assertIn("libghost.dll", str(ctx.exception))
+
+    @unittest.skipUnless(os.name == "nt", "the Windows staging route copies DLLs")
+    def test_package_route_staging_step_covers_sdl3_ttf(self) -> None:
+        """The build-package route delegates its DLL staging to the shared step."""
+        from unittest import mock
+
+        import nk_cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = Path(tmp) / "ucrt64"
+            (provider / "bin").mkdir(parents=True)
+            for name in ("SDL3.dll", "libiconv-2.dll", "vulkan-1.dll"):
+                (provider / "bin" / name).write_bytes(b"source-owned synthetic test payload")
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "", "VULKAN_SDK": str(provider),
+            }), mock.patch.object(
+                nk_cli._runtime_dlls, "stage_runtime_dlls"
+            ) as stage:
+                nk_cli._stage_runtime_assets(package_dir)
+            stage.assert_called_once()
+            self.assertEqual(stage.call_args.args[0], package_dir)
+            self.assertEqual(stage.call_args.kwargs["roots"], ("SDL3_ttf.dll",))
+
+    def test_package_without_the_font_closure_builds_and_names_the_fallback(self) -> None:
+        """The prerequisite installer (#296) has no SDL3_ttf yet: the package still
+        builds with its required runtimes, and the missing font closure is reported."""
+        import contextlib
+        import io
+        from unittest import mock
+
+        import nk_cli
+
+        with tempfile.TemporaryDirectory(prefix="nk-ttf-package-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            (provider / "bin").mkdir(parents=True)
+            for name in ("SDL3.dll", "libiconv-2.dll", "vulkan-1.dll"):
+                (provider / "bin" / name).write_bytes(b"source-owned synthetic test payload")
+            package = root / "package"
+            package.mkdir()
+            stderr = io.StringIO()
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "", "VULKAN_SDK": str(provider),
+            }), patch("nk_cli._windows_host", return_value=True), mock.patch.object(
+                nk_cli._runtime_dlls, "stage_runtime_dlls",
+                side_effect=nk_cli._runtime_dlls.StageError("SDL3_ttf.dll could not be resolved"),
+            ), contextlib.redirect_stderr(stderr):
+                nk_cli._stage_runtime_assets(package)
+            self.assertTrue((package / "SDL3.dll").is_file())
+            self.assertTrue((package / "vulkan-1.dll").is_file())
+            self.assertIn("SDL3_ttf.dll could not be resolved", stderr.getvalue())
+            self.assertIn("bitmap fallback", stderr.getvalue())
 
 
 if __name__ == "__main__":

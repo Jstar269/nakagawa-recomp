@@ -6,13 +6,33 @@ in the works.
 
 ## What you need
 
-- **A disc image of a game you own.** Use an ISO made from your own UMD, or your
-  own PlayStation Store purchase. Nakagawa Recomp never downloads games and
-  contains no game data. Don't use copies you don't own.
+- **Windows 11 x64** with a Vulkan-capable graphics card and current GPU
+  drivers. Windows is the only supported player platform today; other platforms
+  are in the works ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329), [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)).
+- **A disc image of a game you own, in uncompressed standard `.iso` format.**
+  Use an ISO made from your own UMD, or your own PlayStation Store purchase.
+  Nakagawa Recomp never downloads games and contains no game data. Don't use
+  copies you don't own.
 - **The game's executable in unencrypted form, for most commercial games.**
   Nakagawa recompiles the game's own program code into a native program on your
   computer, so it has to be able to read that code. Most retail PSP executables
-  (`EBOOT.BIN` and some `.prx` modules) are encrypted.
+  (`EBOOT.BIN` and some `.prx` modules) are encrypted. You can either supply
+  your own local key file to the built-in decryption boundary (see below) or
+  put your own unencrypted files in the per-title folder.
+- **PSP system fonts (optional but recommended for text).** Authentic in-game
+  typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped
+  from a real PSP console. They cannot legally be bundled and must be
+  user-provided ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300));
+  a clean-room open-font converter is in the works
+  ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
+
+Expectation: adding an ISO identifies the disc and shows a compatibility
+checklist of what will and will not work. **BUILD PACKAGE** recompiles the
+title in front of you, and **Play** starts it once the package validates; for
+most retail discs you also supply an unencrypted executable. Both steps
+compile C on your machine, so they need the MSYS2 UCRT64 developer toolchain
+([`SETUP.md`](SETUP.md)); one-click play straight from an ISO without it is in
+the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
 ## What the player does automatically
 
@@ -97,12 +117,57 @@ even for copies you own. Check the rules where you live.
 - Issues, pull requests and project discussions must never contain game files,
   keys, or links to downloads or decryption tools.
 
+## When something is not supported yet
+
+The software follows a **fail-closed** policy: when something is unsupported,
+missing, or unimplemented, it halts cleanly at a named semantic boundary and
+tells you why. It never fakes success, simulates a phantom state, or silently
+crashes.
+
+- **Game not in the built-in list:** a valid PSP disc that has no profile yet is
+  imported as **Experimental**. The card notes that compatibility is unknown,
+  checklist items indicate what is missing, and Play stays unavailable until a
+  matching runtime package exists. Second-title verification is in the works
+  ([#285](https://github.com/Jstar269/nakagawa-recomp/issues/285)) and generic
+  title intake is in the works
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that
+  are not PSP game discs are refused.
+- **Encrypted executable:** the checklist reports that the executable is
+  encrypted and names the per-title folder above
+  ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)), noting that
+  automatic decryption with your own key file is in the works
+  ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). If an
+  unencrypted `BOOT.BIN` is present on disc or a valid user-supplied `EBOOT.elf`
+  is found in that folder, it is selected automatically.
+- **Missing compiled runtime:** if a game has been identified and staged but no
+  matching valid package exists in `<user data>/packages/<DISC_ID>/`, the
+  preflight checklist reports `RUNTIME_PACKAGE` as missing and the card offers
+  **BUILD PACKAGE**; Play stays disabled until a valid package is built
+  ([#465](https://github.com/Jstar269/nakagawa-recomp/pull/465)). The one
+  exception is a non-experimental catalog title whose developer runtime the
+  launcher resolves, which is playable without a package
+  ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)); a stale
+  package shows **REBUILD PACKAGE** and an incompatible one shows
+  `PACKAGE INCOMPATIBLE`.
+- **Missing firmware fonts:** if in-game fonts cannot be found, the player notes
+  that the PSP font `jpn0.pgf` is missing and directs you to run
+  `python tools/nk_cli.py fonts import <folder>`
+  ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)), rather than
+  substituting mismatched system fonts that cause text clipping. Guest
+  `libfont` startup without a ready-flag bypass is in the works
+  ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)), as is the
+  clean-room open-font converter
+  ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
+
+[`COMPATIBILITY.md`](COMPATIBILITY.md) carries the full per-title and
+subsystem breakdown with tracking issues.
+
 ## What is still in the works
 
 | Area | Today | Tracking |
 | --- | --- | --- |
 | Encrypted executables | You supply unencrypted files as described above. The project is reviewing lawful ways to make this automatic. | [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295) |
-| Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the remaining reader variants are still in the works. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
+| Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
 | In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`. | [#300](https://github.com/Jstar269/nakagawa-recomp/issues/300) |
 | Games beyond the verified title | Other games import as Experimental; bring-up of further titles is ongoing. | [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 

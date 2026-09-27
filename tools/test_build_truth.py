@@ -1482,6 +1482,15 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         for target in ("clean", "clean-fixtures", "tidy", "distclean", "clean-all"):
             self.assertIn(target, public_targets, f"Target {target} missing from PUBLIC_TARGETS")
 
+    def test_platform_ladder_fs_negative_waits_for_positive_image(self) -> None:
+        match = re.search(
+            r"^platform-ladder-fs-negative:\s*(?P<prerequisites>.*)$",
+            self.makefile_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(match, "Filesystem negative ladder target is missing")
+        self.assertIn("platform-ladder-fs", match.group("prerequisites").split())
+
     def test_clean_removes_specified_build_dir(self) -> None:
         """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""
         if not self.make:

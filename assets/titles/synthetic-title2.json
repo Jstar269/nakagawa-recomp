@@ -3,22 +3,23 @@
   "id": "synthetic-title2-v1",
   "display_name": "Nakagawa Synthetic Title 2 Fixture",
   "kind": "synthetic",
+  "game_name": "synthetic_title2",
   "executable": {
-    "base": 171966464,
-    "entry": 171966464,
+    "base": 150994944,
+    "entry": 150995180,
     "bss_metadata_source": "elf",
     "extra_executable_spans": []
   },
   "modules": [
     {
       "name": "synthetic2.prx",
-      "load_address": 176160768,
+      "load_address": 155189248,
       "required": false,
       "role": "optional-guest-prx"
     }
   ],
   "filesystem": {
-    "data_root": "fixtures/synthetic_title2/data",
+    "data_root": "fixtures/profile_zero",
     "memory_stick_root": "build/synthetic_title2/memstick",
     "device_prefixes": [
       "host0:",
@@ -34,30 +35,30 @@
   "verification_profile": "synthetic-public",
   "runtime_bindings": {
     "schema_version": 1,
-    "fallback_entry": 171970560,
-    "worker_thread_entry": 171974656,
-    "launcher_thread_entry": 171978752,
-    "vblank_frame_counter_addr": 172032000,
-    "vblank_vsync_counter_addr": 172048384,
+    "fallback_entry": 150995180,
+    "worker_thread_entry": 151003136,
+    "launcher_thread_entry": 151007232,
+    "vblank_frame_counter_addr": 151060480,
+    "vblank_vsync_counter_addr": 151076864,
     "dispatch_aliases": [
       {
-        "from": 172097536,
-        "to": 172105728
+        "from": 151126016,
+        "to": 151134208
       },
       {
-        "from": 172101632,
-        "to": 172109824
+        "from": 151130112,
+        "to": 151138304
       }
     ],
     "callback_terminators": [
       {
         "sentinel": 0,
-        "ra": 172163072
+        "ra": 151191552
       },
       {
         "sentinel": 4294967295,
-        "pc": 172167168,
-        "ra": 172171264
+        "pc": 151195648,
+        "ra": 151199744
       }
     ]
   },
@@ -86,7 +87,7 @@
     "resources": {
       "mode": "manifest-filesystem",
       "locators": [
-        "fixtures/synthetic_title2"
+        "fixtures/profile_zero"
       ]
     },
     "hle_overrides": [],
@@ -107,69 +108,76 @@
   },
   "profile_zero": {
     "schema_version": 1,
-    "runnable": false,
+    "runnable": true,
     "source_program": {
-      "source_files": [
-        "fixtures/synthetic_title2/main.c"
-      ],
+        "source_files": [
+          "fixtures/profile_zero/main.c"
+        ],
       "entry_symbol": "main",
       "ownership": "project-authored-public"
     },
     "build": {
-      "makefile": "fixtures/synthetic_title2/Makefile",
-      "working_directory": "fixtures/synthetic_title2",
+      "makefile": "fixtures/profile_zero/Makefile",
+      "working_directory": "fixtures/profile_zero",
       "target": "EBOOT.PBP",
       "toolchain": "PSPDEV/PSPSDK (locally installed)"
     },
     "acceptance": {
       "schema_version": 1,
-      "status": "scaffold",
+      "status": "ready",
       "private_inputs_allowed": false,
       "cases": [
         {
           "id": "program-image",
           "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "SOURCE_SHAPE",
-          "assertion": "Synthetic Title 2 source-owned ELF fixture produces a validated immutable ProgramImage with stable source identity and checked spans."
+          "assertion": "The PSPDEV-built source fixture loads as a ProgramImage whose entry matches the manifest and lies in a checked executable span."
         },
         {
           "id": "aot-generation",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "SOURCE_SHAPE",
           "assertion": "The public source program is accepted by the existing analyzer and AOT generator without selecting an HST profile."
         },
         {
           "id": "runtime-dispatch",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "The profile-zero entry executes through the production runtime and exits with an asserted return state."
         },
         {
           "id": "scheduler-vblank-input",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "A public route asserts one thread, deterministic VBLANK progression, and a controller sample without private title state."
         },
         {
           "id": "ge-presentation",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "A source-owned clear and primitive reach the backend and presentation seam with a truthful public capture result."
         },
         {
           "id": "audio-helper",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_HELPER",
           "assertion": "A source-owned audio sample reaches the selected public audio capability or fails closed as unavailable."
         },
         {
           "id": "savedata-roundtrip",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "A source-owned save operation is confined to the declared writable root and its bytes round-trip deterministically."
         }
       ]
     }
   },
-  "notes": "Synthetic Title 2: second source-owned fixture for generic-title planning proof. Obviously synthetic addresses in the 0x0A4xxxx range (never HST 0x000xxxx or 0x003xxxx), no retail bytes, no private inputs, deterministic."
+  "notes": "Synthetic Title 2 uses the source-owned profile-zero PSPDEV fixture at a distinct 0x090xxxxx address family. profile-zero-e2e validates its production route without private inputs; no retail bytes or private inputs."
 }

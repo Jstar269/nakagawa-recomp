@@ -47,6 +47,13 @@ import tempfile
 import time
 from typing import Any
 
+# The Windows embeddable Python runtime uses a fixed ``._pth`` search path and
+# may omit the directory containing this script. Keep sibling tool imports
+# available when the package builder launches this script from that runtime.
+_TOOLS_DIRECTORY = str(Path(__file__).resolve().parent)
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
+
 import title_manifest
 
 GAME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -852,6 +859,13 @@ def _required_local_assets(
                 "name": "SDL3.dll",
                 "required": True,
                 "bundled": (output_dir / "SDL3.dll").is_file(),
+                "resolution": "package directory or host PATH",
+            },
+            {
+                "kind": "host-runtime-library",
+                "name": "SDL3_ttf.dll",
+                "required": False,
+                "bundled": (output_dir / "SDL3_ttf.dll").is_file(),
                 "resolution": "package directory or host PATH",
             },
             {

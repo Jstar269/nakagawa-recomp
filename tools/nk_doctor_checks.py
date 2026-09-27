@@ -1565,6 +1565,126 @@ def check_runtime_dependencies(report: Report, msys_path: Path, game_name: str =
             report.fail("RUNTIME_VULKAN", "Resolved Vulkan loader is not a valid x86-64 DLL", path=vulkan, detail=detail)
 
 
+def check_typography_runtime(
+    report: Report,
+    msys_path: Path,
+    game_name: str = "nakagawa_player",
+    *,
+    imports_of: object = None,
+    is_system: object = None,
+) -> None:
+    """Report whether SDL3_ttf and its resolved closure sit beside the player (#421).
+
+    The launcher resolves SDL3_ttf at run time and falls back to the SDL bitmap
+    font only as a logged last resort, so an unstaged typography runtime is
+    always a named finding, never a silent pass. The closure is the mechanical
+    PE import walk from tools/stage_runtime_dlls.py, stopping at Windows system
+    DLLs.
+    """
+    import stage_runtime_dlls as staging
+
+    root = report.root
+    exe = None
+    for candidate in (root / "build" / f"{game_name}.exe", root / "build" / game_name):
+        if candidate.is_file():
+            exe = candidate
+            break
+    if exe is None:
+        report.info(
+            "RUNTIME_SDL3_TTF",
+            "Player executable not built; the SDL3_ttf staging check does not apply yet",
+            remediation="Run 'mingw32-make player'; it stages the typography runtime beside the executable.",
+        )
+        return
+
+    ttf_name = "SDL3_ttf.dll"
+    beside = exe.parent / ttf_name
+    override = os.environ.get("SDL3_TTF_DLL", "")
+    candidates = [beside]
+    if override:
+        candidates.append(Path(override))
+    candidates.append(msys_path / ttf_name)
+    resolved = next((path for path in candidates if path.is_file()), None)
+    if resolved is None:
+        searched = ", ".join(str(path) for path in candidates)
+        report.fail(
+            "RUNTIME_SDL3_TTF",
+            "SDL3_ttf was not found beside the player or in the configured UCRT64 bin directory",
+            path=beside,
+            detail=f"searched {searched}",
+            remediation=(
+                "Install mingw-w64-ucrt-x86_64-sdl3_ttf (or set SDL3_TTF_DLL) and run "
+                "'mingw32-make player'; without it the player falls back to the SDL "
+                "bitmap font and logs the fallback at startup."
+            ),
+        )
+        report.fail(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure cannot be resolved without SDL3_ttf",
+            remediation="Stage the typography runtime beside the player first.",
+        )
+        return
+
+    if resolved != beside:
+        report.warn(
+            "RUNTIME_SDL3_TTF",
+            "SDL3_ttf resolves only outside the player directory",
+            path=resolved,
+            detail=f"not staged beside the player at {beside}",
+            remediation=(
+                "Run 'mingw32-make player' (or tools/stage_runtime_dlls.py --target build) "
+                "so launches without the toolchain on PATH keep the readable TTF font."
+            ),
+        )
+    else:
+        report.pass_(
+            "RUNTIME_SDL3_TTF",
+            "SDL3_ttf is staged beside the player",
+            path=beside,
+        )
+
+    walk = {}
+    if imports_of is not None:
+        walk["imports_of"] = imports_of
+    if is_system is not None:
+        walk["is_system"] = is_system
+    search_dirs = [exe.parent, msys_path]
+    try:
+        closure = staging.resolve_dll_closure(resolved, search_dirs=search_dirs, **walk)
+    except staging.StageError as exc:
+        report.fail(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure is incomplete",
+            path=exe.parent,
+            detail=str(exc),
+            remediation="Run 'mingw32-make player'; it stages the whole resolved closure beside the executable.",
+        )
+        return
+    dependencies = closure[1:]
+    missing_beside = [dep.name for dep in dependencies if not (exe.parent / dep.name).is_file()]
+    if not dependencies:
+        report.pass_(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "SDL3_ttf has no non-system dependencies to stage",
+            path=exe.parent,
+        )
+    elif missing_beside:
+        report.warn(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure is not fully staged beside the player",
+            path=exe.parent,
+            detail=f"missing beside the player: {', '.join(sorted(missing_beside))}",
+            remediation="Run 'mingw32-make player'; it stages the whole resolved closure beside the executable.",
+        )
+    else:
+        report.pass_(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure is staged beside the player",
+            path=exe.parent,
+            detail=", ".join(sorted(dep.name for dep in dependencies)),
+        )
+
+
 def check_build_products(report: Report, game_name: str = "recomp") -> None:
     build = report.root / "build" / game_name
     exe = build / f"{game_name}.exe"

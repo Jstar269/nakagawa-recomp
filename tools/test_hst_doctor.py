@@ -901,5 +901,103 @@ class LongPathDiagnosticTests(unittest.TestCase):
             )
 
 
+class TypographyRuntimeCheckTests(unittest.TestCase):
+    """The player's SDL3_ttf runtime is a reported workspace fact, never silent (#421)."""
+
+    def player_root(self, tmp: str) -> Path:
+        root = Path(tmp)
+        (root / "build").mkdir()
+        # Synthetic executables: the check never executes them, it only stages
+        # expectations around their directory.
+        (root / "build" / "nakagawa_player.exe").write_bytes(b"MZ\0\0synthetic player")
+        return root
+
+    @staticmethod
+    def fake_resolver(graph: dict[str, list[str]]):
+        def imports_of(path: Path) -> list[str]:
+            return list(graph.get(path.name.lower(), []))
+
+        def is_system(name: str) -> bool:
+            return name.lower() in {"kernel32.dll", "user32.dll"}
+
+        return imports_of, is_system
+
+    def test_missing_sdl3_ttf_is_a_clear_finding_not_a_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.player_root(tmp)
+            empty_msys = root / "msys-bin"
+            empty_msys.mkdir()
+            imports_of, is_system = self.fake_resolver({})
+            report = nk_doctor.Report(root, "workspace")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SDL3_TTF_DLL", None)
+                nk_doctor_checks.check_typography_runtime(
+                    report, empty_msys, imports_of=imports_of, is_system=is_system,
+                )
+            ttf = [r for r in report.results if r.code == "RUNTIME_SDL3_TTF"]
+            self.assertEqual(len(ttf), 1)
+            self.assertEqual(ttf[0].status, "FAIL")
+            self.assertIn("SDL3_ttf", ttf[0].summary)
+            self.assertTrue(ttf[0].remediation)
+
+    def test_staged_ttf_with_resolved_closure_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.player_root(tmp)
+            empty_msys = root / "msys-bin"
+            empty_msys.mkdir()
+            player_dir = root / "build"
+            graph = {
+                "sdl3_ttf.dll": ["SDL3.dll", "libfreetype-6.dll", "KERNEL32.dll"],
+                "sdl3.dll": ["KERNEL32.dll"],
+                "libfreetype-6.dll": ["zlib1.dll"],
+                "zlib1.dll": [],
+            }
+            # Real file names, so a case-sensitive host (the Linux CI runner) finds them.
+            canonical = {"sdl3_ttf.dll": "SDL3_ttf.dll", "sdl3.dll": "SDL3.dll"}
+            for name in graph:
+                (player_dir / canonical.get(name, name)).write_bytes(b"MZ\0\0" + name.encode())
+            imports_of, is_system = self.fake_resolver(graph)
+            report = nk_doctor.Report(root, "workspace")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SDL3_TTF_DLL", None)
+                nk_doctor_checks.check_typography_runtime(
+                    report, empty_msys, imports_of=imports_of, is_system=is_system,
+                )
+            statuses = {r.code: r.status for r in report.results}
+            self.assertEqual(statuses.get("RUNTIME_SDL3_TTF"), "PASS")
+            self.assertEqual(statuses.get("RUNTIME_SDL3_TTF_CLOSURE"), "PASS")
+
+    def test_ttf_resolved_only_outside_the_player_dir_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.player_root(tmp)
+            msys = root / "msys-bin"
+            msys.mkdir()
+            (msys / "SDL3_ttf.dll").write_bytes(b"MZ\0\0synthetic ttf")
+            imports_of, is_system = self.fake_resolver({"sdl3_ttf.dll": ["KERNEL32.dll"]})
+            report = nk_doctor.Report(root, "workspace")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SDL3_TTF_DLL", None)
+                nk_doctor_checks.check_typography_runtime(
+                    report, msys, imports_of=imports_of, is_system=is_system,
+                )
+            ttf = [r for r in report.results if r.code == "RUNTIME_SDL3_TTF"]
+            self.assertEqual(len(ttf), 1)
+            self.assertEqual(ttf[0].status, "WARN")
+            self.assertIn("beside", (ttf[0].summary or "") + (ttf[0].detail or ""))
+
+    def test_no_player_executable_is_an_explicit_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "build").mkdir()
+            empty_msys = root / "msys-bin"
+            empty_msys.mkdir()
+            imports_of, is_system = self.fake_resolver({})
+            report = nk_doctor.Report(root, "workspace")
+            nk_doctor_checks.check_typography_runtime(
+                report, empty_msys, imports_of=imports_of, is_system=is_system,
+            )
+            self.assertEqual([r.status for r in report.results], ["INFO"])
+
+
 if __name__ == "__main__":
     unittest.main()

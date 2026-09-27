@@ -22,6 +22,7 @@
 #define PGF_MAX_COUNT 1048576u
 #define PGF_MAX_SAMPLES 65536u
 #define PGF_MAX_GLYPH_EDGE 127u
+#define PGF_COMPOSITE_PARTS 3u
 #define PGF_FONT_INFO_SIZE 0x108u
 #define PGF_CHAR_INFO_SIZE 0x3cu
 #define PGF_GLYPH_IMAGE_SIZE 0x18u
@@ -65,6 +66,8 @@ typedef struct PgfGlyph {
     uint32_t shadow_offset;
     uint32_t shadow_id;
     uint32_t shadow_row_order;
+    uint32_t composite;
+    uint32_t component[PGF_COMPOSITE_PARTS];
     int32_t dimension_width;
     int32_t dimension_height;
     int32_t x_left;
@@ -286,31 +289,71 @@ static int pgf_primary_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph) {
     return 1;
 }
 
-static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph) {
+static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph,
+                             int allow_composite);
+
+/* Row order 3 carries three little-endian 16-bit character codes at the record's
+   bitmap offset instead of a bitmap. Each code resolves through the ordinary
+   character map to a leaf raster component; see PGF_SPEC.md 3.6. */
+static int pgf_resolve_composite(const PGF *p, PgfGlyph *glyph) {
+    unsigned part;
+
+    if (glyph->bitmap_offset > p->size ||
+        p->size - glyph->bitmap_offset < PGF_COMPOSITE_PARTS * 2u) {
+        return 0;
+    }
+    for (part = 0; part < PGF_COMPOSITE_PARTS; ++part) {
+        PgfGlyph component;
+        uint32_t component_id;
+        uint32_t code = pgf_u16(p->image + glyph->bitmap_offset +
+                                (size_t)part * 2u);
+
+        if (!pgf_map_entry(p, code, &component_id) ||
+            !pgf_checked_glyph(p, component_id, &component, 0)) {
+            return 0;
+        }
+        if ((component.row_order != 1u && component.row_order != 2u) ||
+            component.width == 0u || component.height == 0u) {
+            return 0;
+        }
+        glyph->component[part] = component_id;
+    }
+    glyph->composite = 1u;
+    return 1;
+}
+
+static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph,
+                             int allow_composite) {
     uint32_t shadow_code;
     uint32_t mapped_glyph;
     uint64_t target;
     int valid;
 
     if (!pgf_primary_glyph(p, glyph_id, glyph)) return 0;
-    if (glyph->shadow_id == 0u) return 1;
-    if (glyph->shadow_id > p->shadow_count) return 0;
+    if (glyph->shadow_id != 0u) {
+        if (glyph->shadow_id > p->shadow_count) return 0;
 
-    shadow_code = pgf_u16(p->image + p->shadow_map_offset +
-                          ((size_t)glyph->shadow_id - 1u) * 2u);
-    if (!pgf_map_entry(p, shadow_code, &mapped_glyph)) return 0;
-    (void)mapped_glyph;
+        shadow_code = pgf_u16(p->image + p->shadow_map_offset +
+                              ((size_t)glyph->shadow_id - 1u) * 2u);
+        if (!pgf_map_entry(p, shadow_code, &mapped_glyph)) return 0;
 
-    if (glyph->shadow_offset < glyph->record_size) return 0;
-    target = (uint64_t)glyph->record_offset + glyph->shadow_offset;
-    if (target < glyph->record_offset || target > p->size ||
-        p->size - (size_t)target < 6u) {
-        return 0;
+        if (glyph->shadow_offset < glyph->record_size) return 0;
+        target = (uint64_t)glyph->record_offset + glyph->shadow_offset;
+        if (target < glyph->record_offset || target > p->size ||
+            p->size - (size_t)target < 6u) {
+            return 0;
+        }
+        glyph->shadow_row_order = pgf_get_bits(p->image + (size_t)target,
+                                                p->size - (size_t)target,
+                                                42, 2, &valid);
+        if (!valid) return 0;
     }
-    glyph->shadow_row_order = pgf_get_bits(p->image + (size_t)target,
-                                            p->size - (size_t)target,
-                                            42, 2, &valid);
-    return valid;
+    if (glyph->row_order != 3u) return 1;
+    /* A composite component is always a leaf raster record, so a self-reference,
+     * a mutual reference, or any longer cycle is refused here instead of
+     * followed, and this reader never recurses without bound. */
+    if (!allow_composite) return 0;
+    return pgf_resolve_composite(p, glyph);
 }
 
 static int pgf_parse_directory(PGF *p) {
@@ -341,7 +384,11 @@ static int pgf_parse_directory(PGF *p) {
     revision = pgf_i32(h + 8u);
     version = pgf_i32(h + 12u);
     if (revision < 0 || revision > 3 || version < 0) return 0;
-    if (header_size != (revision == 3 ? PGF_REV3_HEADER_SIZE : PGF_BASE_HEADER_SIZE) ||
+    /* The revision-3 extension is identified by the declared header size, not by
+       the revision value, so a revision-3 file with no extension decodes on the
+       ordinary path while a 412-byte header still requires revision 3. */
+    if ((header_size != PGF_BASE_HEADER_SIZE && header_size != PGF_REV3_HEADER_SIZE) ||
+        (header_size == PGF_REV3_HEADER_SIZE && revision != 3) ||
         p->size < header_size) {
         return 0;
     }
@@ -363,7 +410,8 @@ static int pgf_parse_directory(PGF *p) {
     }
     glyph_count = last - first + 1u;
     if (glyph_count > PGF_MAX_COUNT || pointer_count != glyph_count ||
-        (shadow_count == 0u ? shadow_bits != 0u : shadow_bits != 16u)) {
+        (shadow_count == 0u ? (shadow_bits != 0u && shadow_bits != 16u)
+                            : shadow_bits != 16u)) {
         return 0;
     }
     p->first_glyph = first;
@@ -373,7 +421,7 @@ static int pgf_parse_directory(PGF *p) {
     p->shadow_count = shadow_count;
     for (i = 0; i < PGF_TABLE_COUNT; ++i) p->metric_counts[i] = h[0x102u + i];
 
-    if (revision == 3) {
+    if (header_size == PGF_REV3_HEADER_SIZE) {
         rev3_count_a = pgf_u16(h + 0x18cu);
         rev3_count_b = pgf_u16(h + 0x194u);
     }
@@ -390,7 +438,7 @@ static int pgf_parse_directory(PGF *p) {
         !pgf_add_section(&cursor, length, p->size, &p->shadow_map_offset)) {
         return 0;
     }
-    if (revision == 3) {
+    if (header_size == PGF_REV3_HEADER_SIZE) {
         if (!pgf_add_section(&cursor, (uint64_t)rev3_count_a * 4u,
                              p->size, &table_offset) ||
             !pgf_add_section(&cursor, (uint64_t)rev3_count_b * 4u,
@@ -434,7 +482,7 @@ static PGF *pgf_open_owned(uint8_t *image, size_t size, const uint8_t *name,
     if (!pgf_parse_directory(p)) goto fail;
     for (i = 0; i < p->glyph_count; ++i) {
         PgfGlyph glyph;
-        if (!pgf_checked_glyph(p, i, &glyph)) goto fail;
+        if (!pgf_checked_glyph(p, i, &glyph, 1)) goto fail;
     }
     return p;
 
@@ -625,13 +673,13 @@ static int pgf_lookup(const PGF *p, int char_code, int alt_char_code,
     uint32_t glyph_id;
     if (p && char_code >= 0 &&
         pgf_map_entry(p, (uint32_t)char_code, &glyph_id) &&
-        pgf_checked_glyph(p, glyph_id, glyph)) {
+        pgf_checked_glyph(p, glyph_id, glyph, 1)) {
         return 1;
     }
     if (allow_alternate && p && char_code >= (int)p->first_glyph &&
         alt_char_code >= 0 &&
         pgf_map_entry(p, (uint32_t)alt_char_code, &glyph_id) &&
-        pgf_checked_glyph(p, glyph_id, glyph)) {
+        pgf_checked_glyph(p, glyph_id, glyph, 1)) {
         return 1;
     }
     return 0;
@@ -758,7 +806,7 @@ int pgf_get_char_info(const PGF *p, int char_code, int alt_char_code,
 
 static int pgf_get_glyph_by_id(const PGF *p, int glyph_id, PgfGlyph *glyph) {
     if (!p || glyph_id < 0 || (uint32_t)glyph_id >= p->glyph_count) return 0;
-    return pgf_checked_glyph(p, (uint32_t)glyph_id, glyph);
+    return pgf_checked_glyph(p, (uint32_t)glyph_id, glyph, 1);
 }
 
 static int pgf_floor_64(int32_t value, int64_t *integer, uint32_t *fraction) {
@@ -864,178 +912,229 @@ static int pgf_guest_row_span(uint32_t base, uint64_t row_offset,
 }
 
 static void pgf_store_pixel(uint32_t address, uint32_t x, uint32_t format,
-                            uint8_t sample) {
+                            uint8_t sample, int combine) {
     uint8_t *destination = SR_HOST(address);
     uint8_t old;
     if (format == 0u || format == 1u) {
         uint8_t shift = (uint8_t)(((x & 1u) ^ (format == 1u ? 1u : 0u)) * 4u);
         uint8_t mask = (uint8_t)(0x0fu << shift);
         old = *destination;
+        if (combine && (uint8_t)((old >> shift) & 0x0fu) > (uint8_t)(sample & 0x0fu)) {
+            sample = (uint8_t)((old >> shift) & 0x0fu);
+        }
         *destination = (uint8_t)((old & (uint8_t)~mask) |
                                  ((uint8_t)(sample & 0x0fu) << shift));
     } else if (format == 2u) {
+        old = *destination;
+        if (combine && old > sample) sample = old;
         *destination = sample;
-    } else if (format == 3u) {
-        destination[0] = sample;
-        destination[1] = sample;
-        destination[2] = sample;
     } else {
+        old = destination[0];
+        if (combine && old > sample) sample = old;
         destination[0] = sample;
         destination[1] = sample;
         destination[2] = sample;
-        destination[3] = sample;
+        if (format == 4u) destination[3] = sample;
     }
 }
 
-static int pgf_draw(const PGF *p, const PgfGlyph *glyph, uint32_t guest_image) {
-    uint8_t image[PGF_GLYPH_IMAGE_SIZE];
-    uint8_t samples[PGF_MAX_GLYPH_EDGE * PGF_MAX_GLYPH_EDGE];
+/* Everything one destination needs, derived once from the guest image record. */
+typedef struct PgfTarget {
     uint32_t format;
-    int32_t x_position;
-    int32_t y_position;
+    int64_t base_x;
+    int64_t base_y;
+    uint32_t fraction_x;
+    uint32_t fraction_y;
     uint32_t buffer_width;
     uint32_t buffer_height;
     uint32_t bytes_per_line;
     uint32_t buffer_address;
     uint64_t addressable_width;
-    uint64_t writable_width;
     uint64_t unit_bytes;
+} PgfTarget;
+
+/* The clipped, fully validated placement of one glyph or composite component. */
+typedef struct PgfPlan {
+    uint32_t first_x;
+    uint32_t last_x;
+    uint32_t first_row;
+    uint32_t row_count;
+    uint32_t dirty_count;
+    PgfDirtySpan dirty[PGF_MAX_GLYPH_EDGE + 1u];
+} PgfPlan;
+
+static int pgf_read_target(uint32_t guest_image, PgfTarget *target) {
+    uint8_t image[PGF_GLYPH_IMAGE_SIZE];
+    uint16_t buffer_width;
+    uint16_t buffer_height;
+    uint16_t bytes_per_line;
+
+    if (!pgf_guest_read(guest_image, image, sizeof(image))) return 0;
+    target->format = pgf_u32(image);
+    target->base_x = 0;
+    target->base_y = 0;
+    target->fraction_x = 0;
+    target->fraction_y = 0;
+    (void)pgf_floor_64(pgf_i32(image + 4u), &target->base_x, &target->fraction_x);
+    (void)pgf_floor_64(pgf_i32(image + 8u), &target->base_y, &target->fraction_y);
+    buffer_width = pgf_u16(image + 0x0cu);
+    buffer_height = pgf_u16(image + 0x0eu);
+    bytes_per_line = pgf_u16(image + 0x10u);
+    target->buffer_width = buffer_width;
+    target->buffer_height = buffer_height;
+    target->bytes_per_line = bytes_per_line;
+    target->buffer_address = pgf_u32(image + 0x14u);
+    if (target->format > 4u || target->buffer_address == 0u ||
+        buffer_width == 0u || buffer_height == 0u || bytes_per_line == 0u) {
+        return 0;
+    }
+    if (target->format <= 1u) {
+        target->addressable_width = (uint64_t)bytes_per_line * 2u;
+        target->unit_bytes = 1u;
+    } else if (target->format == 2u) {
+        target->addressable_width = bytes_per_line;
+        target->unit_bytes = 1u;
+    } else if (target->format == 3u) {
+        target->addressable_width = bytes_per_line / 3u;
+        target->unit_bytes = 3u;
+    } else {
+        target->addressable_width = bytes_per_line / 4u;
+        target->unit_bytes = 4u;
+    }
+    return target->addressable_width != 0u;
+}
+
+/* Preflight one component: validate every byte it may touch, and record the
+   clipped pixel interval and the dirty spans, before any pixel is written. */
+static int pgf_plan_component(const PgfTarget *target, const PgfGlyph *glyph,
+                              PgfPlan *plan) {
+    uint64_t writable_width;
     uint64_t footprint_width;
     uint64_t footprint_height;
     uint64_t actual_x0;
     uint64_t actual_x1;
     uint64_t dirty_x0;
     uint64_t dirty_x1;
-    int64_t base_x;
-    int64_t base_y;
-    uint32_t fraction_x;
-    uint32_t fraction_y;
     int64_t pixel_x1;
-    int64_t pixel_y1;
-    uint32_t row;
-    uint32_t dirty_count = 0;
-    PgfDirtySpan dirty[PGF_MAX_GLYPH_EDGE + 1u];
+    int64_t first_y;
+    int64_t last_y;
+    int64_t y;
 
-    if (!p || !glyph || glyph->width == 0u || glyph->height == 0u ||
+    if (glyph->width == 0u || glyph->height == 0u ||
         glyph->width > PGF_MAX_GLYPH_EDGE || glyph->height > PGF_MAX_GLYPH_EDGE ||
         (uint64_t)glyph->width * glyph->height > PGF_MAX_SAMPLES ||
-        (glyph->row_order != 1u && glyph->row_order != 2u) ||
-        !pgf_guest_read(guest_image, image, sizeof(image))) {
+        (glyph->row_order != 1u && glyph->row_order != 2u)) {
         return 0;
     }
-    format = pgf_u32(image);
-    x_position = pgf_i32(image + 4u);
-    y_position = pgf_i32(image + 8u);
-    buffer_width = pgf_u16(image + 0x0cu);
-    buffer_height = pgf_u16(image + 0x0eu);
-    bytes_per_line = pgf_u16(image + 0x10u);
-    buffer_address = pgf_u32(image + 0x14u);
-    if (format > 4u || buffer_address == 0u || buffer_width == 0u ||
-        buffer_height == 0u || bytes_per_line == 0u) {
-        return 0;
-    }
-    if (format <= 1u) {
-        addressable_width = (uint64_t)bytes_per_line * 2u;
-        unit_bytes = 1u;
-    } else if (format == 2u) {
-        addressable_width = bytes_per_line;
-        unit_bytes = 1u;
-    } else if (format == 3u) {
-        addressable_width = bytes_per_line / 3u;
-        unit_bytes = 3u;
-    } else {
-        addressable_width = bytes_per_line / 4u;
-        unit_bytes = 4u;
-    }
-    if (addressable_width == 0u) return 0;
-    writable_width = buffer_width < addressable_width ? buffer_width : addressable_width;
-    pgf_floor_64(x_position, &base_x, &fraction_x);
-    pgf_floor_64(y_position, &base_y, &fraction_y);
-    footprint_width = glyph->width + (fraction_x != 0u ? 1u : 0u);
-    footprint_height = glyph->height + (fraction_y != 0u ? 1u : 0u);
-    pixel_x1 = base_x + (int64_t)footprint_width;
-    pixel_y1 = base_y + (int64_t)footprint_height;
-    actual_x0 = base_x < 0 ? 0u : (uint64_t)base_x;
+    writable_width = target->buffer_width < target->addressable_width ?
+                     target->buffer_width : target->addressable_width;
+    footprint_width = glyph->width + (target->fraction_x != 0u ? 1u : 0u);
+    footprint_height = glyph->height + (target->fraction_y != 0u ? 1u : 0u);
+    actual_x0 = target->base_x < 0 ? 0u : (uint64_t)target->base_x;
+    pixel_x1 = target->base_x + (int64_t)footprint_width;
     actual_x1 = pixel_x1 < 0 ? 0u : (uint64_t)pixel_x1;
     if (actual_x1 > writable_width) actual_x1 = writable_width;
     if (actual_x0 >= actual_x1) return 0;
 
-    pgf_decode_bitmap(p, glyph, samples);
-    if (base_y < 0) {
-        uint64_t skip = (uint64_t)(-base_y);
-        row = skip >= footprint_height ? (uint32_t)footprint_height : (uint32_t)skip;
-    } else {
-        row = 0u;
-    }
-    while (row < footprint_height) {
-        int64_t y = base_y + (int64_t)row;
-        uint64_t row_offset;
-        uint64_t byte_start;
-        uint64_t byte_end;
+    first_y = target->base_y < 0 ? 0 : target->base_y;
+    last_y = target->base_y + (int64_t)footprint_height;
+    if (last_y > (int64_t)target->buffer_height) last_y = target->buffer_height;
+    plan->first_x = (uint32_t)actual_x0;
+    plan->last_x = (uint32_t)actual_x1;
+    plan->first_row = (uint32_t)(first_y - target->base_y);
+    plan->row_count = last_y > first_y ? (uint32_t)(last_y - first_y) : 0u;
+    plan->dirty_count = 0u;
+
+    for (y = first_y; y < last_y; ++y) {
+        uint64_t row_offset = (uint64_t)y * target->bytes_per_line;
+        uint64_t byte_start = target->format <= 1u ?
+                              actual_x0 / 2u : actual_x0 * target->unit_bytes;
+        uint64_t byte_end = target->format <= 1u ?
+                            (actual_x1 + 1u) / 2u : actual_x1 * target->unit_bytes;
         uint32_t ignored_address;
-        if (y >= (int64_t)buffer_height) break;
-        if (y >= 0) {
-            if ((uint64_t)y > UINT64_MAX / bytes_per_line) return 0;
-            row_offset = (uint64_t)y * bytes_per_line;
-            if (format <= 1u) {
-                byte_start = actual_x0 / 2u;
-                byte_end = (actual_x1 + 1u) / 2u;
-            } else {
-                byte_start = actual_x0 * unit_bytes;
-                byte_end = actual_x1 * unit_bytes;
-            }
-            if (byte_end <= byte_start ||
-                !pgf_guest_row_span(buffer_address, row_offset, byte_start,
-                                    byte_end - byte_start, &ignored_address)) {
-                return 0;
-            }
+        if (byte_end <= byte_start ||
+            !pgf_guest_row_span(target->buffer_address, row_offset, byte_start,
+                                byte_end - byte_start, &ignored_address)) {
+            return 0;
         }
-        ++row;
     }
 
-    dirty_x0 = base_x < 0 ? 0u : (uint64_t)base_x;
+    dirty_x0 = target->base_x < 0 ? 0u : (uint64_t)target->base_x;
     dirty_x1 = pixel_x1 < 0 ? 0u : (uint64_t)pixel_x1;
-    if (dirty_x1 > addressable_width) dirty_x1 = addressable_width;
+    if (dirty_x1 > target->addressable_width) dirty_x1 = target->addressable_width;
     if (dirty_x0 < dirty_x1) {
-        int64_t y0 = base_y < 0 ? 0 : base_y;
-        int64_t y1 = pixel_y1 > (int64_t)buffer_height ?
-                     (int64_t)buffer_height : pixel_y1;
-        for (; y0 < y1; ++y0) {
-            uint64_t row_offset = (uint64_t)y0 * bytes_per_line;
-            uint64_t first_unit = dirty_x0 / (format <= 1u ? 2u : 1u);
-            uint64_t last_unit = (dirty_x1 + (format <= 1u ? 1u : 0u)) /
-                                 (format <= 1u ? 2u : 1u);
-            uint64_t byte_start = first_unit * unit_bytes;
-            uint64_t byte_count = (last_unit - first_unit) * unit_bytes;
+        for (y = first_y; y < last_y && plan->dirty_count < PGF_MAX_GLYPH_EDGE + 1u; ++y) {
+            uint64_t row_offset = (uint64_t)y * target->bytes_per_line;
+            uint64_t first_unit = dirty_x0 / (target->format <= 1u ? 2u : 1u);
+            uint64_t last_unit = (dirty_x1 + (target->format <= 1u ? 1u : 0u)) /
+                                 (target->format <= 1u ? 2u : 1u);
+            uint64_t byte_start = first_unit * target->unit_bytes;
+            uint64_t byte_count = (last_unit - first_unit) * target->unit_bytes;
             uint32_t address;
             if (byte_count == 0u || byte_count > UINT32_MAX ||
-                !pgf_guest_row_span(buffer_address, row_offset, byte_start,
+                !pgf_guest_row_span(target->buffer_address, row_offset, byte_start,
                                     byte_count, &address)) {
                 return 0;
             }
-            dirty[dirty_count].address = address;
-            dirty[dirty_count].size = (uint32_t)byte_count;
-            ++dirty_count;
+            plan->dirty[plan->dirty_count].address = address;
+            plan->dirty[plan->dirty_count].size = (uint32_t)byte_count;
+            ++plan->dirty_count;
         }
     }
+    return 1;
+}
 
-    for (row = 0; row < footprint_height; ++row) {
-        int64_t y = base_y + (int64_t)row;
+/* Write one planned component's pixels, then report its dirty spans. */
+static void pgf_blit_component(const PGF *p, const PgfTarget *target,
+                               const PgfGlyph *glyph, const PgfPlan *plan,
+                               int combine) {
+    uint8_t samples[PGF_MAX_GLYPH_EDGE * PGF_MAX_GLYPH_EDGE];
+    uint32_t row;
+
+    pgf_decode_bitmap(p, glyph, samples);
+    for (row = 0; row < plan->row_count; ++row) {
+        int64_t y = target->base_y + (int64_t)(plan->first_row + row);
         uint32_t x;
-        if (y < 0 || y >= (int64_t)buffer_height) continue;
-        for (x = (uint32_t)actual_x0; (uint64_t)x < actual_x1; ++x) {
-            uint32_t ox = (uint32_t)((int64_t)x - base_x);
+        for (x = plan->first_x; x < plan->last_x; ++x) {
+            uint32_t ox = (uint32_t)((int64_t)x - target->base_x);
             uint8_t sample = pgf_interpolated_sample(glyph, samples,
-                                                     fraction_x, fraction_y,
-                                                     ox, row);
-            uint64_t byte_offset = format <= 1u ? x / 2u : (uint64_t)x * unit_bytes;
-            uint64_t address64 = (uint64_t)buffer_address +
-                                 (uint64_t)y * bytes_per_line + byte_offset;
-            pgf_store_pixel((uint32_t)address64, x, format, sample);
+                                                     target->fraction_x,
+                                                     target->fraction_y,
+                                                     ox, plan->first_row + row);
+            uint64_t byte_offset = target->format <= 1u ?
+                                   x / 2u : (uint64_t)x * target->unit_bytes;
+            uint64_t address64 = (uint64_t)target->buffer_address +
+                                 (uint64_t)y * target->bytes_per_line + byte_offset;
+            pgf_store_pixel((uint32_t)address64, x, target->format, sample, combine);
         }
     }
-    for (row = 0; row < dirty_count; ++row) {
-        sr_gpu_vram_dirty(dirty[row].address, dirty[row].size);
+    for (row = 0; row < plan->dirty_count; ++row) {
+        sr_gpu_vram_dirty(plan->dirty[row].address, plan->dirty[row].size);
+    }
+}
+
+static int pgf_draw(const PGF *p, const PgfGlyph *glyph, uint32_t guest_image) {
+    PgfTarget target;
+    PgfPlan plans[PGF_COMPOSITE_PARTS];
+    PgfGlyph parts[PGF_COMPOSITE_PARTS];
+    unsigned part;
+
+    if (!p || !glyph || !pgf_read_target(guest_image, &target)) return 0;
+    if (!glyph->composite) {
+        if (!pgf_plan_component(&target, glyph, &plans[0])) return 0;
+        pgf_blit_component(p, &target, glyph, &plans[0], 0);
+        return 1;
+    }
+    /* Every component is preflighted before the first pixel is written, so a
+       component that cannot be placed leaves the whole draw untouched. */
+    for (part = 0; part < PGF_COMPOSITE_PARTS; ++part) {
+        if (!pgf_checked_glyph(p, glyph->component[part], &parts[part], 0) ||
+            !pgf_plan_component(&target, &parts[part], &plans[part])) {
+            return 0;
+        }
+    }
+    for (part = 0; part < PGF_COMPOSITE_PARTS; ++part) {
+        pgf_blit_component(p, &target, &parts[part], &plans[part], part != 0u);
     }
     return 1;
 }

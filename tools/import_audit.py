@@ -4,7 +4,7 @@
 
 """Classify a PSP ELF's imports against the HLE registration manifest.
 
-Reads a developer-supplied ELF (never committed; see docs/IMPORT_AUDIT.md),
+Reads a developer-supplied ELF (never committed; see docs/archive/IMPORT_AUDIT.md),
 parses its import table defensively, and classifies every (library, NID)
 import as one of:
 

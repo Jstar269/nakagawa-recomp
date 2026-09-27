@@ -1170,7 +1170,18 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 13); /* 8x preset not offered */
+        assert(player_app_focus_count(stops) == 15); /* 8x preset not offered */
+        stops->active_view = VIEW_PREREQ_CONSENT;
+        assert(player_app_focus_count(stops) == 2);
+        stops->active_view = VIEW_PREREQ_PROGRESS;
+        assert(player_app_focus_count(stops) == 1);
+        stops->active_view = VIEW_PREREQ_ABOUT;
+        stops->prerequisites.item_count = 0;
+        assert(player_app_focus_count(stops) == 1);
+        stops->prerequisites.item_count = 1;
+        assert(player_app_focus_count(stops) == 2);
+        stops->active_view = VIEW_CONFIRM_REMOVE_TOOLS;
+        assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
         assert(player_app_focus_count(stops) == 22);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
@@ -2333,9 +2344,8 @@ int main(int argc, char **argv) {
         assert(strstr(capp->last_error.message, "source checkout") != NULL);
         assert(strstr(capp->last_error.message, "nk_cli.py") != NULL);
 
-        /* 21c: back in the checkout, an empty PATH trips the toolchain gate
-           before any child process is spawned. PYTHON is pinned to a file that
-           exists so the interpreter leg is never the reported failure. */
+        /* 21c: back in the checkout, an empty PATH requests consent before
+           any prerequisite download or child process starts. */
         assert(nk_ps_chdir(saved_cwd) == 0);
         snprintf(capp->install_root, sizeof(capp->install_root), "%s", saved_cwd);
         char prior_path[32768];
@@ -2349,12 +2359,95 @@ int main(int argc, char **argv) {
 #endif
         nk_ps_set_env("PATH", "");
 
-        assert(!player_app_start_package_build(capp, 0));
-        assert(strcmp(capp->last_error.error_code, "BUILD_TOOLCHAIN_MISSING") == 0);
-        assert(strstr(capp->last_error.message, "gcc") != NULL);
-        assert(strstr(capp->last_error.message, "BUILD_TOOLCHAIN_MISSING") != NULL);
-        assert(strstr(capp->last_error.message, "in the works (#324)") != NULL);
+#if defined(_WIN32) || defined(_WIN64)
+        assert(player_app_start_package_build(capp, 0));
+        assert(capp->active_view == VIEW_PREREQ_CONSENT);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
+        assert(capp->prerequisites.item_count == 26);
+        assert(capp->prerequisites.total_bytes == UINT64_C(89547599));
         assert(capp->build_session.is_building == false);
+        /* Consent cancellation has no side effects. */
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+#else
+        /* Automatic installation is Windows x64 only for now: other hosts are
+           refused with the tracking issue, and nothing is downloaded. */
+        assert(!player_app_start_package_build(capp, 0));
+        assert(strstr(capp->last_error.message, "#306") != NULL);
+        assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
+#endif
+        assert(capp->build_session.is_building == false);
+
+        /* The next attempt records consent for this build only and reaches
+           the progress card. */
+        assert(player_app_prereq_begin(capp, 0, true, true));
+        player_app_prereq_accept(capp, true);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_update_progress(capp, "cpython-embed-amd64", 64, 128,
+                                          64, UINT64_C(89547599));
+        assert(strcmp(capp->prerequisites.current_item, "cpython-embed-amd64") == 0);
+        assert(capp->prerequisites.item_received_bytes == 64);
+        assert(capp->prerequisites.total_received_bytes == 64);
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.cancel_requested);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_finish_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+
+        assert(player_app_prereq_begin(capp, 0, false, true));
+        player_app_prereq_accept(capp, false);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.cancel_requested);
+        player_app_prereq_finish_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+
+        assert(player_app_prereq_begin(capp, 0, true, true));
+        player_app_prereq_accept(capp, true);
+        player_app_prereq_fail(capp, "PYTHON_ARCHIVE_EXTRACT_FAILED",
+                               "The verified runtime could not be extracted.");
+        assert(capp->active_view == VIEW_ERROR);
+        assert(strcmp(capp->last_error.error_code, "PYTHON_ARCHIVE_EXTRACT_FAILED") == 0);
+        player_app_prereq_retry(capp);
+        assert(capp->active_view == VIEW_PREREQ_CONSENT);
+        assert(capp->prerequisites.bootstrap_python);
+        player_app_prereq_accept(capp, true);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
+        player_app_prereq_cancel(capp);
+        player_app_prereq_finish_cancel(capp);
+
+        assert(player_app_prereq_begin(capp, 0, false, true));
+        player_app_prereq_accept(capp, false);
+        {
+            static const char *const errors[] = {
+                "OFFLINE_OR_NETWORK_ERROR", "HASH_MISMATCH", "SIZE_MISMATCH",
+                "REDIRECT_REJECTED", "TRUNCATED_BODY", "DISK_FULL",
+                "DESTINATION_WRITE_FAILED", "MANIFEST_INVALID"
+            };
+            for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+                player_app_prereq_fail(capp, errors[i], "Check the connection or free disk space, then retry.");
+                assert(capp->active_view == VIEW_ERROR);
+                assert(capp->prerequisites.phase == PLAYER_PREREQ_FAILED);
+                assert(strcmp(capp->last_error.error_code, errors[i]) == 0);
+                assert(strcmp(capp->last_error.recovery_action_label, "Retry Download") == 0);
+                assert(capp->last_error.return_view == VIEW_PREREQ_CONSENT);
+                player_app_prereq_retry(capp);
+                assert(capp->active_view == VIEW_PREREQ_CONSENT);
+                assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
+                player_app_prereq_accept(capp, false);
+                assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+            }
+        }
+        player_app_prereq_complete(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_INSTALLED);
+        assert(capp->prerequisites.resume_build_pending);
+        assert(player_app_prereq_take_resume(capp));
+        assert(!player_app_prereq_take_resume(capp));
 
         /* Restore the process environment before any later probe. */
         if (prior_path[0]) nk_ps_set_env("PATH", prior_path);

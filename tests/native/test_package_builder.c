@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
@@ -389,7 +390,7 @@ static void test_toolchain_preflight(void) {
                                              tool, sizeof(tool), msg, sizeof(msg)));
     assert(strcmp(tool, "gcc") == 0);
     assert(strstr(msg, "BUILD_TOOLCHAIN_MISSING") != NULL);
-    assert(strstr(msg, "in the works (#324)") != NULL);
+    assert(strstr(msg, "pinned prerequisite consent card") != NULL);
     assert(strstr(msg, "gcc") != NULL);
     assert(strstr(msg, "PATH") != NULL);
 
@@ -413,6 +414,157 @@ static void test_toolchain_preflight(void) {
     assert(!package_builder_find_tool("nk_no_such_tool_zz9", found, sizeof(found)));
 }
 
+static void test_pinned_prerequisite_manifest(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 8: pinned prerequisite manifest metadata\n");
+    char cli_path[NK_MAX_PATH];
+    char error[256];
+    PackagePrerequisiteList list;
+    assert(package_builder_find_cli(NULL, cli_path, sizeof(cli_path)));
+    assert(package_builder_load_prerequisites(cli_path, &list, error, sizeof(error)));
+    assert(list.count == 26);
+    assert(list.total_bytes == UINT64_C(89547599));
+    assert(strcmp(list.items[0].id, "cpython-embed-amd64") == 0);
+    assert(strcmp(list.items[0].host, "www.python.org") == 0);
+    assert(strcmp(list.items[0].version, "3.14.7") == 0);
+    assert(strcmp(list.items[0].license, "PSF-2.0") == 0);
+    assert(strcmp(list.items[0].sha256,
+                  "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15") == 0);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+typedef struct {
+    const unsigned char *body;
+    size_t body_size;
+    size_t delivered_size;
+    size_t offset;
+    const char *final_url;
+    uint64_t content_length;
+    int close_count;
+} FakeDownload;
+
+static bool fake_download_open(void *context, const char *url,
+                               const char *allowed_hosts,
+                               PackageHttpResponse *response) {
+    FakeDownload *fake = (FakeDownload *)context;
+    (void)url;
+    (void)allowed_hosts;
+    response->final_url = fake->final_url;
+    response->has_content_length = true;
+    response->content_length = fake->content_length;
+    response->context = fake;
+    response->read = NULL;
+    response->close = NULL;
+    return true;
+}
+
+static bool fake_download_read(void *context, unsigned char *buffer,
+                               size_t capacity, size_t *bytes_read) {
+    FakeDownload *fake = (FakeDownload *)context;
+    size_t remaining = fake->delivered_size - fake->offset;
+    size_t count = remaining < capacity ? remaining : capacity;
+    if (count) memcpy(buffer, fake->body + fake->offset, count);
+    fake->offset += count;
+    *bytes_read = count;
+    return true;
+}
+
+static void fake_download_close(void *context) {
+    FakeDownload *fake = (FakeDownload *)context;
+    fake->close_count++;
+}
+
+static bool fake_download_transport(void *context, const char *url,
+                                    const char *allowed_hosts,
+                                    PackageHttpResponse *response) {
+    bool ok = fake_download_open(context, url, allowed_hosts, response);
+    response->read = fake_download_read;
+    response->close = fake_download_close;
+    return ok;
+}
+
+static void assert_download_failure(PackagePrerequisite *item,
+                                   FakeDownload *fake, const char *destination,
+                                   const char *expected_code) {
+    char code[64];
+    char message[256];
+    fake->offset = 0;
+    fake->close_count = 0;
+    assert(!package_builder_download_verified(item, destination,
+            fake_download_transport, fake, NULL, NULL,
+            code, sizeof(code), message, sizeof(message)));
+    assert(strcmp(code, expected_code) == 0);
+    assert(message[0] != '\0');
+    assert(fake->close_count == 1);
+    assert(!nk_platform_file_exists(destination));
+    char partial[NK_MAX_PATH];
+    snprintf(partial, sizeof(partial), "%s.part", destination);
+    assert(!nk_platform_file_exists(partial));
+}
+
+static void test_native_download_verification(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 9: native download verification failures\n");
+    static const unsigned char body[] = "hello";
+    char root[NK_MAX_PATH];
+    char dir[NK_MAX_PATH];
+    char dest[NK_MAX_PATH];
+    assert(nk_platform_get_path(NK_PATH_CACHE, root, sizeof(root)));
+    int n = snprintf(dir, sizeof(dir), "%s%cnative-bootstrap-%lu", root,
+                     nk_platform_path_separator(), (unsigned long)time(NULL));
+    assert(n > 0 && (size_t)n < sizeof(dir));
+    assert(nk_platform_mkdir_p(dir));
+    n = snprintf(dest, sizeof(dest), "%s%cverified.zip", dir,
+                 nk_platform_path_separator());
+    assert(n > 0 && (size_t)n < sizeof(dest));
+
+    PackagePrerequisite item;
+    memset(&item, 0, sizeof(item));
+    snprintf(item.id, sizeof(item.id), "synthetic-test");
+    snprintf(item.name, sizeof(item.name), "Synthetic test payload");
+    snprintf(item.url, sizeof(item.url), "https://www.python.org/test.zip");
+    snprintf(item.host, sizeof(item.host), "www.python.org");
+    snprintf(item.allowed_hosts, sizeof(item.allowed_hosts), "www.python.org");
+    snprintf(item.sha256, sizeof(item.sha256),
+             "%064d", 0);
+    item.size_bytes = sizeof(body) - 1;
+
+    FakeDownload fake = {
+        body, sizeof(body) - 1, sizeof(body) - 1, 0,
+        "https://www.python.org/test.zip", sizeof(body) - 1, 0
+    };
+    assert_download_failure(&item, &fake, dest, "HASH_MISMATCH");
+
+    snprintf(item.sha256, sizeof(item.sha256),
+             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    item.size_bytes++;
+    assert_download_failure(&item, &fake, dest, "SIZE_MISMATCH");
+    item.size_bytes--;
+
+    fake.final_url = "https://foreign.example/test.zip";
+    assert_download_failure(&item, &fake, dest, "REDIRECT_REJECTED");
+    fake.final_url = "https://www.python.org/test.zip";
+
+    fake.delivered_size = 3;
+    assert_download_failure(&item, &fake, dest, "TRUNCATED_BODY");
+    fake.delivered_size = sizeof(body) - 1;
+
+    char code[64];
+    char message[256];
+    fake.offset = 0;
+    fake.close_count = 0;
+    assert(package_builder_download_verified(&item, dest, fake_download_transport,
+            &fake, NULL, NULL, code, sizeof(code), message, sizeof(message)));
+    assert(fake.close_count == 1);
+    FILE *saved = fopen(dest, "rb");
+    assert(saved);
+    unsigned char actual[sizeof(body)] = { 0 };
+    assert(fread(actual, 1, sizeof(body) - 1, saved) == sizeof(body) - 1);
+    fclose(saved);
+    assert(memcmp(actual, body, sizeof(body) - 1) == 0);
+    remove(dest);
+    assert(_rmdir(dir) == 0);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     if (argc == 3 && strcmp(argv[1], "--find-cli") == 0) {
         char cli_path[NK_MAX_PATH];
@@ -433,6 +585,12 @@ int main(int argc, char *argv[]) {
     test_session_cancellation();
     test_cli_search_order_and_guidance();
     test_toolchain_preflight();
+    test_pinned_prerequisite_manifest();
+#if defined(_WIN32) || defined(_WIN64)
+    test_native_download_verification();
+#else
+    puts("[PACKAGE_BUILDER_TEST] SKIP native WinHTTP/SHA-256 transport tests (non-Windows host)");
+#endif
 
     printf("ALL PACKAGE BUILDER TESTS PASSED\n");
     return 0;

@@ -54,6 +54,23 @@ def _seam_backend(macro):
     return text[idx:end]
 
 
+_POSIX_FILE_IO_EXTENSIONS = ("sr_cd_mkdir_leaf", "sr_cd_rename_file", "sr_cd_delete_file")
+
+
+def _c_function(code, name):
+    """Return one `static inline` function definition, signature to closing brace."""
+    start = re.search(r"static inline [^;{]*\b" + re.escape(name) + r"\(", code).start()
+    return code[start:code.index("\n}\n", start) + 2]
+
+
+def _posix_without_extensions():
+    """The POSIX backend minus the guest file-I/O extensions: the savedata seam."""
+    posix = _seam_backend("SR_CD_BACKEND_POSIX_AT")
+    for name in _POSIX_FILE_IO_EXTENSIONS:
+        posix = posix.replace(_c_function(posix, name), "")
+    return posix
+
+
 def _seam_generic():
     """The host-neutral half: everything above the first backend banner."""
     text = SEAM_H.read_text(encoding="utf-8")
@@ -723,8 +740,13 @@ class TestPortableContainedDeleteArchitecture(unittest.TestCase):
 
         (Textual position proves nothing here -- the handler is defined above
         its callers. What is asserted is that the probe lives in the handler and
-        that every use of the handler directly follows a refused unlinkat.)"""
-        posix = _seam_backend("SR_CD_BACKEND_POSIX_AT")
+        that every use of the handler directly follows a refused unlinkat.)
+
+        The guest file-I/O extensions (sceIoMkdir/Rename/Remove) are excluded
+        here and pinned separately below: they refuse a planted symlink BY
+        POLICY, which needs a no-follow probe, but never rely on it for
+        containment."""
+        posix = _posix_without_extensions()
         self.assertEqual(posix.count("fstatat("), 1,
                          "exactly one fstatat may exist, and only for diagnosis")
         self.assertEqual(posix.count("S_ISDIR"), 1,
@@ -751,6 +773,28 @@ class TestPortableContainedDeleteArchitecture(unittest.TestCase):
             self.assertIsNotNone(
                 re.search(r"unlinkat\([^;]*\)\s*(!=|==)\s*0", window),
                 "the diagnosis must run only on the failure branch of the deletion")
+
+    def test_posix_file_io_extensions_probe_only_descriptor_relative_no_follow(self):
+        """sceIoMkdir/Rename/Remove may classify a leaf, but only through the
+        walked parent descriptor and never through a link. A leaf swapped after
+        the probe still resolves inside that same parent, so the probe decides
+        policy (refuse links, directories, specials), never containment."""
+        posix = _seam_backend("SR_CD_BACKEND_POSIX_AT")
+        for name in _POSIX_FILE_IO_EXTENSIONS:
+            body = _strip_c_comments(_c_function(posix, name))
+            self.assertIn("sr_cd__at_walk(root->fd", body,
+                          f"{name} must reach its parent through the root descriptor")
+            probes = re.findall(r"fstatat\(([^;]*)\)", body)
+            for args in probes:
+                self.assertIn("AT_SYMLINK_NOFOLLOW", args,
+                              f"{name} may only probe without following links")
+                self.assertRegex(args.split(",")[0].strip(), r"^\w+_fd$",
+                                 f"{name} may only probe relative to a walked descriptor")
+            _assert_absent(self, ("unlink", "rename", "mkdir", "stat", "lstat", "remove"),
+                           body, name)
+        remove = _strip_c_comments(_c_function(posix, "sr_cd_delete_file"))
+        self.assertLess(remove.index("S_ISLNK"), remove.index("unlinkat("),
+                        "sceIoRemove refuses a planted link before it deletes anything")
 
     def test_seam_has_no_unsafe_fallback_for_an_unsupported_host(self):
         header = SEAM_H.read_text(encoding="utf-8")

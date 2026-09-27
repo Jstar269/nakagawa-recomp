@@ -34,6 +34,7 @@ from nk_doctor_checks import (
     check_repository_contract,
     check_runtime_dependencies,
     check_runtime_package_cache,
+    check_typography_runtime,
     check_save_root,
     check_toolchain,
     check_vfpu_assets,
@@ -231,6 +232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.scope in {"run", "all"}:
         check_vfpu_assets(report)
         check_runtime_dependencies(report, args.msys_path, title_context.game_name)
+        check_typography_runtime(report, args.msys_path)
     if args.disc_id:
         if args.user_data_root is None:
             report.fail(
