@@ -129,11 +129,25 @@ void input_settings_format_binding(const InputSettingsState *state, int control_
 void input_settings_init(InputSettingsState *state) {
     if (!state) return;
     memset(state, 0, sizeof(*state));
-    nk_input_profile_init_default(&state->profile);
+    nk_input_profile_file_init_default(&state->file);
+    state->profile = state->file.global;
+    state->profile_path[0] = '\0';
     nk_input_profile_resolve_path(state->profile_path, sizeof(state->profile_path));
     state->capture_control = -1;
     state->capture_timeout_ms = INPUT_SETTINGS_CAPTURE_TIMEOUT_MS;
     input_settings_refresh_conflicts(state);
+}
+
+/* Copy the mapping being edited back into the document slot it belongs to, so a
+ * save writes the user's edits to the right mapping and leaves the others be. */
+static void store_current_scope(InputSettingsState *state) {
+    if (!state) return;
+    if (!state->editing_disc_id[0]) {
+        state->file.global = state->profile;
+        return;
+    }
+    nk_input_profile_file_set_title(&state->file, state->editing_disc_id,
+                                    &state->profile, NULL, 0);
 }
 
 void input_settings_reset_to_defaults(InputSettingsState *state) {
@@ -144,7 +158,137 @@ void input_settings_reset_to_defaults(InputSettingsState *state) {
     state->capture_elapsed_ms = 0;
     state->save_diagnostic[0] = '\0';
     state->has_save_diagnostic = false;
+    store_current_scope(state);
     input_settings_refresh_conflicts(state);
+}
+
+bool input_settings_is_title_scope(const InputSettingsState *state) {
+    return state && state->editing_disc_id[0] != '\0';
+}
+
+bool input_settings_has_title_mapping(const InputSettingsState *state, const char *disc_id) {
+    if (!state || !disc_id || !disc_id[0]) return false;
+    return nk_input_profile_file_find_title(&state->file, disc_id) >= 0;
+}
+
+const char *input_settings_scope_label(const InputSettingsState *state) {
+    if (!state) return "Global mapping";
+    if (!state->editing_disc_id[0]) return "Global mapping";
+    return state->editing_disc_id;
+}
+
+const NkInputProfile *input_settings_resolve_for_disc(
+    const InputSettingsState *state,
+    const char *disc_id,
+    char *diag_buf,
+    size_t diag_buf_sz
+) {
+    if (!state) {
+        if (diag_buf && diag_buf_sz > 0) diag_buf[0] = '\0';
+        return NULL;
+    }
+    return nk_input_profile_file_resolve(&state->file, disc_id, diag_buf, diag_buf_sz);
+}
+
+bool input_settings_set_scope(InputSettingsState *state, const char *disc_id) {
+    if (!state) return false;
+    /* Edits made in the scope being left are kept, so switching back and forth
+     * between the global mapping and a disc's own mapping never loses work. */
+    store_current_scope(state);
+    if (!disc_id || !disc_id[0]) {
+        state->profile = state->file.global;
+        state->editing_disc_id[0] = '\0';
+        input_settings_cancel_capture(state);
+        input_settings_cancel_calibration(state);
+        input_settings_refresh_conflicts(state);
+        return true;
+    }
+
+    if (!nk_input_profile_disc_id_safe(disc_id)) return false;
+
+    /* A disc that has no entry yet starts from a copy of the global mapping, so
+     * the first edit in a per-title scope changes only what the user changed. */
+    if (nk_input_profile_file_find_title(&state->file, disc_id) < 0) {
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+        if (nk_input_profile_file_set_title(&state->file, disc_id, &state->file.global,
+                                            diag, sizeof(diag)) != NK_OK) {
+            return false;
+        }
+    }
+    int idx = nk_input_profile_file_find_title(&state->file, disc_id);
+    if (idx < 0) return false;
+    state->profile = state->file.title[idx];
+    snprintf(state->editing_disc_id, sizeof(state->editing_disc_id), "%s", disc_id);
+    input_settings_cancel_capture(state);
+    input_settings_cancel_calibration(state);
+    input_settings_refresh_conflicts(state);
+    return true;
+}
+
+bool input_settings_toggle_scope(InputSettingsState *state, const char *disc_id) {
+    if (!state) return false;
+    if (input_settings_is_title_scope(state)) {
+        /* Choosing the global mapping for this disc drops its own entry, so the
+         * next launch really does run the global profile instead of a custom
+         * mapping the user just said they no longer want. */
+        char leaving[NK_MAX_DISC_ID_LEN];
+        snprintf(leaving, sizeof(leaving), "%s", state->editing_disc_id);
+        if (!input_settings_set_scope(state, NULL)) return false;
+        return nk_input_profile_file_remove_title(&state->file, leaving);
+    }
+    return input_settings_set_scope(state, disc_id);
+}
+
+NkResult input_settings_write_disc_profile(
+    const InputSettingsState *state,
+    const char *disc_id,
+    char *out_path,
+    size_t out_path_sz,
+    char *diag_buf,
+    size_t diag_buf_sz
+) {
+    if (diag_buf && diag_buf_sz > 0) diag_buf[0] = '\0';
+    if (out_path && out_path_sz > 0) out_path[0] = '\0';
+    if (!state || !out_path || out_path_sz == 0) return NK_ERROR_GENERIC;
+    if (!nk_input_profile_disc_id_safe(disc_id)) {
+        snprintf(diag_buf, diag_buf_sz,
+                 "disc ID '%s' cannot name a per-title profile file",
+                 disc_id ? disc_id : "");
+        return NK_ERROR_GENERIC;
+    }
+
+    const NkInputProfile *effective =
+        nk_input_profile_file_resolve(&state->file, disc_id, diag_buf, diag_buf_sz);
+    if (!effective) {
+        snprintf(diag_buf, diag_buf_sz, "no input profile document is loaded");
+        return NK_ERROR_GENERIC;
+    }
+
+    char config_dir[1024] = {0};
+    if (!nk_platform_get_path(NK_PATH_CONFIG, config_dir, sizeof(config_dir))) {
+        snprintf(diag_buf, diag_buf_sz, "per-user config directory is unavailable");
+        return NK_ERROR_IO;
+    }
+    char sep = nk_platform_path_separator();
+    char dir[sizeof(config_dir) + 32];
+    int written = snprintf(dir, sizeof(dir), "%s%c%s", config_dir, sep, "input_profiles");
+    if (written <= 0 || (size_t)written >= sizeof(dir)) {
+        snprintf(diag_buf, diag_buf_sz, "per-title profile path is too long");
+        return NK_ERROR_IO;
+    }
+    if (!nk_platform_dir_exists(dir) && !nk_platform_mkdir_p(dir)) {
+        snprintf(diag_buf, diag_buf_sz, "could not create '%s'", dir);
+        return NK_ERROR_IO;
+    }
+
+    written = snprintf(out_path, out_path_sz, "%s%c%s.json", dir, sep, disc_id);
+    if (written <= 0 || (size_t)written >= out_path_sz) {
+        out_path[0] = '\0';
+        snprintf(diag_buf, diag_buf_sz, "per-title profile path is too long");
+        return NK_ERROR_IO;
+    }
+
+    return nk_input_profile_save(effective, out_path, diag_buf, diag_buf_sz);
 }
 
 static bool sources_equal(const NkBindingSource *a, const NkBindingSource *b) {
@@ -252,13 +396,20 @@ NkResult input_settings_load(InputSettingsState *state, const char *custom_path)
     }
 
     state->loaded_from_file = true;
-    NkResult res = nk_input_profile_load(&state->profile, load_path, state->load_diagnostic, sizeof(state->load_diagnostic));
+    NkResult res = nk_input_profile_file_load(&state->file, load_path,
+                                              state->load_diagnostic,
+                                              sizeof(state->load_diagnostic));
     if (res != NK_OK) {
-        nk_input_profile_init_default(&state->profile);
+        nk_input_profile_file_init_default(&state->file);
         state->has_load_diagnostic = true;
     } else {
         state->has_load_diagnostic = false;
     }
+    /* A load returns editing to the global mapping: the document it just read
+     * is the authority for what exists, and the per-title scopes are reachable
+     * again through input_settings_set_scope. */
+    state->editing_disc_id[0] = '\0';
+    state->profile = state->file.global;
     input_settings_refresh_conflicts(state);
     return res;
 }
@@ -280,7 +431,11 @@ NkResult input_settings_save(InputSettingsState *state, const char *custom_path)
     state->save_diagnostic[0] = '\0';
     state->has_save_diagnostic = false;
 
-    NkResult res = nk_input_profile_save(&state->profile, save_path, state->save_diagnostic, sizeof(state->save_diagnostic));
+    /* The whole document is written, so entries for other discs are preserved. */
+    store_current_scope(state);
+    NkResult res = nk_input_profile_file_save(&state->file, save_path,
+                                              state->save_diagnostic,
+                                              sizeof(state->save_diagnostic));
     if (res != NK_OK) {
         state->has_save_diagnostic = true;
     }
