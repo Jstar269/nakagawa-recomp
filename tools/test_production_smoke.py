@@ -1091,15 +1091,17 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         globals_timeout = timeout
         launch_commands = []
+        launch_envs = []
 
         class FakeProcess:
-            def __init__(self):
+            def __init__(self, output):
                 self.returncode = launch_code
+                self.output = output
 
             def communicate(self, timeout=None):
                 if timeout is not None and globals_timeout:
                     raise subprocess.TimeoutExpired("synthetic-runtime", timeout)
-                return launch_output, None
+                return self.output, None
 
             def kill(self):
                 self.returncode = -9
@@ -1129,6 +1131,7 @@ class TestSanitizedBringup(unittest.TestCase):
 
         def fake_popen(command, **kwargs):
             launch_commands.append(list(command))
+            launch_envs.append(dict(kwargs.get("env", {})))
             flight_path = kwargs.get("env", {}).get("SR_FLIGHT_OUTPUT")
             if flight_path:
                 events = flight_events
@@ -1138,7 +1141,10 @@ class TestSanitizedBringup(unittest.TestCase):
                     "recorder": {"dropped": flight_dropped},
                     "events": events,
                 }), encoding="utf-8")
-            return FakeProcess()
+            output = launch_output
+            if not output and launch_code == 0:
+                output = "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+            return FakeProcess(output)
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
         with contextlib.ExitStack() as stack:
@@ -1165,6 +1171,7 @@ class TestSanitizedBringup(unittest.TestCase):
             with mock.patch("builtins.print"):
                 status = nk_cli.cmd_bringup(args)
         self.last_launch_command = launch_commands[-1] if launch_commands else None
+        self.last_launch_env = launch_envs[-1] if launch_envs else None
         return status, json.loads(report_path.read_text(encoding="utf-8"))
 
     def test_synthetic_consumer_stages_succeed_and_report_is_sanitized(self):
@@ -1181,8 +1188,31 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertTrue(command[2].endswith("runtime_image.bin"))
         self.assertRegex(command[3], r"^(?:0|0x[0-9a-f]{8})$")
         self.assertRegex(command[4], r"^0x[0-9a-f]{8}$")
-        self.assertEqual(command[5:], ["none", "none", "--sched"])
+        self.assertEqual(command[5:], ["none", "none", "--sched", "--gui"])
+        self.assertEqual(self.last_launch_env["SR_PRESENT_TRACE"], "1")
+        self.assertNotIn("SR_GEWATCH", self.last_launch_env)
+        self.assertEqual(report["presentation"], {
+            "status": "FRAME_SUBMITTED",
+            "frame_submissions": 1,
+        })
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("GUI presenter received 1 frame submission(s)", summary)
+        self.assertIn("Visual contents are not verified", summary)
         self.assertFalse(self.last_build_arguments.instruction_trace)
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_framebuffer_setup_but_no_gui_submission_is_not_success(self):
+        status, report = self._run_case(launch_output="synthetic runtime had no GUI submission\n")
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+        })
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertIn(308, report["issue_numbers"])
+        self.assertIn("no validated framebuffer was submitted",
+                      nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
 
     def test_instruction_trace_is_opt_in_and_stays_under_private_work_dir(self):
@@ -1197,7 +1227,7 @@ class TestSanitizedBringup(unittest.TestCase):
             trace_path,
             self.root / "success" / "work" / "instructions.trace",
         )
-        self.assertEqual(command[7:], ["--sched"])
+        self.assertEqual(command[7:], ["--sched", "--gui"])
         self.assertNotIn(str(trace_path), json.dumps(report))
 
     def test_instruction_trace_uses_make_trace_flag(self):
@@ -1316,7 +1346,7 @@ class TestSanitizedBringup(unittest.TestCase):
             returncode = 0
 
             def communicate(self, timeout=None):
-                return "", None
+                return "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n", None
 
         def fake_package_build(build_args, stage_observer=None):
             stage_observer("compile", "PASS", 1)
@@ -1553,6 +1583,36 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         self.assertIn("in the works (#308)", summary)
         nk_cli.validate_bringup_report(report)
+
+    def test_relocatable_main_entry_is_rebased_to_guest_address(self):
+        work_root = self.root / "relocatable-main-entry-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "relocatable-main-entry.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_synthetic_cfw_loader(),
+            sysdir_modules={},
+            usrdir_modules={},
+            old_eboot=build_psp_container(),
+            disc_id="ULUS99998",
+            title="Synthetic Relocatable Main Entry",
+        )
+
+        status, report = self._run_module_fixture(
+            iso_path,
+            work_root,
+            user_decrypted_eboot=build_synthetic_decrypted_prx(),
+            forbid_iso_executable=True,
+        )
+
+        self.assertEqual(status, 0, report)
+        profile = json.loads(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998" / "profile.json")
+            .read_text(encoding="utf-8")
+        )
+        executable = profile["manifest"]["executable"]
+        self.assertEqual(executable["base"], 0x08804000)
+        self.assertEqual(executable["entry"], 0x08804000)
 
     def test_module_placement_without_safe_runtime_range_is_named(self):
         work_root = self.root / "no-module-range-case"

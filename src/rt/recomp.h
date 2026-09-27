@@ -670,6 +670,7 @@ uint32_t sr_alloc_uid(void);
 uint32_t ge_run_list(uint32_t addr, int resume);
 extern uint32_t g_ge_stall_addr;
 uint32_t ge_framebuffer(void);
+uint32_t ge_get_cmd(uint32_t cmd);
 
 /* Interactive window front-end (src/rt/gui.c, Win32). gui_init opens the window; gui_present is
  * called from sceDisplaySetFrameBuf to show a frame, pump messages, and sample the keyboard;
