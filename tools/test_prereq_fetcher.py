@@ -8,6 +8,7 @@ import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+import os
 from pathlib import Path
 import socket
 import sys
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from nk_core.prereq_fetcher import (
     PrerequisiteFetchError,
+    default_data_root,
     download_verified_item,
     install_items,
 )
@@ -235,6 +237,116 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         item["url"] = f"http://127.0.0.1:{unused_port}/payload"
         with self.assertRaisesRegex(PrerequisiteFetchError, "OFFLINE_OR_NETWORK_ERROR"):
             download_verified_item(item, self.root / "payload.zip", retries=2, allow_http=True)
+
+    def test_font_closure_packages_are_pinned_in_the_manifest(self) -> None:
+        """The readable-font DLL closure must ship on the prerequisite route (#421).
+
+        The 17-DLL closure of SDL3.dll/SDL3_ttf.dll maps (mechanically, via
+        pacman -Qo) to twelve MSYS2 UCRT64 packages; the nine that the manifest
+        did not yet pin must be pinned like every other artifact: official
+        repository database %SHA256SUM%, exact size, HTTPS host allow-list.
+        """
+        manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        artifacts = {item["id"]: item for item in manifest["artifacts"]}
+        expected = {
+            "mingw-w64-ucrt-x86_64-brotli",
+            "mingw-w64-ucrt-x86_64-bzip2",
+            "mingw-w64-ucrt-x86_64-freetype",
+            "mingw-w64-ucrt-x86_64-glib2",
+            "mingw-w64-ucrt-x86_64-graphite2",
+            "mingw-w64-ucrt-x86_64-harfbuzz",
+            "mingw-w64-ucrt-x86_64-libpng",
+            "mingw-w64-ucrt-x86_64-pcre2",
+            "mingw-w64-ucrt-x86_64-sdl3-ttf",
+        }
+        self.assertTrue(
+            expected <= set(artifacts),
+            f"missing pinned font-closure packages: {sorted(expected - set(artifacts))}",
+        )
+        for package in sorted(expected):
+            with self.subTest(package=package):
+                item = artifacts[package]
+                self.assertEqual(item["allowed_hosts"], ["repo.msys2.org"])
+                self.assertTrue(item["url"].startswith("https://repo.msys2.org/mingw/ucrt64/"))
+                self.assertEqual(item["filename"], f"{package}-{item['version']}-any.pkg.tar.zst")
+                self.assertTrue(item["url"].endswith(item["filename"]))
+                digest = item["sha256"]
+                self.assertEqual(len(digest), 64)
+                self.assertTrue(all(ch in "0123456789abcdef" for ch in digest))
+                self.assertIsInstance(item["size_bytes"], int)
+                self.assertGreater(item["size_bytes"], 0)
+                self.assertEqual(item["archive_format"], "tar.zst")
+                self.assertEqual(item["install_subdir"], "msys64")
+                self.assertEqual(item["status"], "ready")
+                self.assertTrue(item["license"])
+                self.assertTrue(item["license_metadata"])
+                source = item["sha256_source"]
+                self.assertEqual(source["url"],
+                                 "https://repo.msys2.org/mingw/ucrt64/ucrt64.db")
+                self.assertEqual(source["signature_url"],
+                                 "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig")
+                self.assertIn("%SHA256SUM%", source["method"])
+        declared_total = manifest["total_download_bytes"]
+        self.assertEqual(
+            declared_total,
+            sum(item["size_bytes"] for item in manifest["artifacts"]),
+            "total_download_bytes must match the pinned artifact sizes",
+        )
+
+    def test_synthetic_installed_toolchain_resolves_the_font_closure(self) -> None:
+        """The installer's extracted layout must resolve the closure (#421).
+
+        The pinned prerequisites extract to
+        <data>/prerequisites/msys64/ucrt64 with bin/ and share/licenses/;
+        stage_runtime_dlls must find the DLL closure there without any MSYS2 on
+        PATH. Fake DLLs and a fake import resolver keep this offline.
+        """
+        import package_notices
+        import stage_runtime_dlls
+
+        with patch.dict(os.environ, {
+            "LOCALAPPDATA": str(self.root),
+            "XDG_DATA_HOME": str(self.root),
+        }):
+            data_root = default_data_root()
+        toolchain_root = data_root / "prerequisites" / "msys64" / "ucrt64"
+        bin_dir = toolchain_root / "bin"
+        (toolchain_root / "share" / "licenses" / "mingw-w64-ucrt-x86_64-sdl3-ttf").mkdir(parents=True)
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "gcc.exe").write_bytes(b"source-owned synthetic test payload\n")
+        closure = [
+            "SDL3.dll", "SDL3_ttf.dll", "libbrotlicommon.dll", "libbrotlidec.dll",
+            "libbz2-1.dll", "libfreetype-6.dll", "libgcc_s_seh-1.dll",
+            "libglib-2.0-0.dll", "libgraphite2.dll", "libharfbuzz-0.dll",
+            "libiconv-2.dll", "libintl-8.dll", "libpcre2-8-0.dll",
+            "libpng16-16.dll", "libstdc++-6.dll", "libwinpthread-1.dll", "zlib1.dll",
+        ]
+        for name in closure:
+            (bin_dir / name).write_bytes(b"source-owned synthetic test payload\n")
+
+        def fake_imports(path: Path) -> list[str]:
+            if path.name == "SDL3_ttf.dll":
+                return [name for name in closure if name != "SDL3_ttf.dll"]
+            return []
+
+        with patch.dict(os.environ, {
+            "LOCALAPPDATA": str(self.root),
+            "XDG_DATA_HOME": str(self.root),
+            "MINGW_PREFIX": "",
+        }), patch.object(package_notices.shutil, "which", return_value=None):
+            resolved_root = package_notices.resolve_toolchain_root()
+            self.assertEqual(resolved_root, toolchain_root.resolve())
+            search_dirs = stage_runtime_dlls.default_search_dirs()
+            self.assertIn(bin_dir.resolve(), [d.resolve() for d in search_dirs])
+            root_dll = stage_runtime_dlls.resolve_root_dll("SDL3_ttf.dll", "", search_dirs)
+            resolved = stage_runtime_dlls.resolve_dll_closure(
+                root_dll, search_dirs=search_dirs, imports_of=fake_imports
+            )
+        self.assertEqual(
+            {path.name.lower() for path in resolved},
+            {name.lower() for name in closure},
+        )
 
     def test_sony_font_hook_is_fail_closed_and_never_downloaded_by_tests(self) -> None:
         manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"

@@ -111,6 +111,50 @@ The diff tool compares transition PCs by `(pc, reason)`, preserves `null` as not
 ranks non-zero subsystem costs without summing overlapping intervals. A private HST profile may
 add a real-workload route, but it is supplemental and must not replace the public matrix.
 
+## VBLANK delivery ledger (is the guest told about too many vblanks?)
+
+A game runs fast if the runtime hands the guest more VBLANK episodes than the
+60000/1001 Hz display source produced, so the pacing question is answered over the
+WHOLE run, from the two artifacts a `Benchmark` run already writes:
+
+```powershell
+python tools/vblank_ledger.py --perf logs/perf.csv --stderr logs/stderr_run.log
+```
+
+```text
+VBLANK_CHECK: presenting PASS presenting_s=3454 wall_s=3457.723 source_periods=207256.1 delivered=207248
+VBLANK_CHECK: rate PASS ratio=0.99992 band=[0.99500,1.00500] excess_episodes=-16 ... per_second_delivered={59: 617, 60: 2209, 61: 623}
+VBLANK_CHECK: identity PASS owed=205096 coalesced=7 delivered=205102 dropped=0 in_flight=1 residual=1 late_owed=84207 late_delivered=84206
+VBLANK_CHECK: masked PASS coalesced=7 masked_periods=11 credit=-4 in_flight=1
+VBLANK_AUDIT: verdict=PASS checks=4 failures=0
+```
+
+- `rate` divides delivered episodes by the source periods that elapsed
+  (`presenting wall seconds` x 60000/1001) and fails in BOTH directions, naming the
+  excess or deficit in episodes and in Hz. A ratio below 1 with `dropped=0` is
+  latency, not loss: `identity`'s `in_flight` residual is what the source still owes.
+- `identity` is the runtime's own ledger (`PERF_ATTRIB vblank_owed`):
+  `owed + coalesced == delivered + dropped + in_flight`. A mismatch is a bookkeeping
+  bug and is reported as one, not absorbed into a rate.
+- `masked` compares the episodes credited to masked windows
+  (`coalesced`) with the periods that actually elapsed with interrupts clear
+  (`PERF_ATTRIB vblank_late ... masked_periods=`). A credit beyond the in-flight
+  residual is a masked window counted twice; the hardware probe measured `+1` for a
+  window however many periods it covered (`docs/ARCHITECTURE.md`).
+- A missing ledger is `SKIP` with its reason, and a run where nothing could be
+  judged is `NOT_RUN` with a non-zero exit: an absent artifact is not a pass.
+
+Do not read the run's rate from the per-second `vblank_hz` column. A second holds 59,
+60 or 61 episodes, so its ratio is quantised -- 60 episodes in a 1.0005 s interval
+reads 59.94 Hz while 61 in the same interval reads 60.94 Hz. Averaging those ratios
+over a run, or selecting the best-looking seconds, reports a rate the run never
+delivered: one 60-minute idle soak measured `delivered/wall = 0.99996` (207248
+episodes over 3457.7 s, `dropped=0`, `in_flight=1`) while the best 30 of its seconds
+averaged 61.43 Hz. The 61-episode seconds are real and expected: the runtime
+delivers a preserved backlog as a burst when a service point finally arrives, which
+`per_second_delivered=` prints so a catch-up is visible as a count rather than as a
+faster game.
+
 ## Debug Categories (SR_DEBUG bitmask)
 
 The `SR_DEBUG` environment variable accepts a hex bitmask to enable multiple categories at once:

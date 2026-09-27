@@ -1941,8 +1941,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         labels = set(labels) | set(dup_slot_skips.values())
     out = []
     out.append(f"void {entry_symbol(start, resume_owners)}(CpuState *s) {{")
-    if hst_profile and start in {0x0003D828, 0x0003DFD0, 0x000705B0, 0x001026B8, 0x001039D8}:
-        out.append(f"    sr_boot_probe(s, 0x{start:08x}u);")
     out.append(f"    SR_YIELD(s, 0x{start:08x}u);")   # preemption point (no-op unless scheduler active)
     # Callable entries own an o32 frame contract. Resume entries begin with an
     # already-live owner frame, so the guest instructions alone own SP changes.
@@ -2024,16 +2022,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # loop genuinely spins again, the watchdog thread-dump PC identifies it uniquely
         # (0x00100e98 vs 0x0001038c) — root-cause that spin; do not re-cap (see
         # docs/audit/F3_LOOPCAPS.md and docs/DESIGN_FONT_HLE.md F3 re-scope).
-        # The strtol parser can expose an unterminated asset token only after thousands
-        # of characters. Keep this read-only probe compiled in; sr_boot_probe is a
-        # production no-op unless SR_BOOT_DIAG is explicitly enabled.
-        if hst_profile and addr == 0x000160e8:
-            out.append("    sr_boot_probe(s, 0x000160e8u);")
-        # Job-queue drain instrumentation. The boot watchdog often interrupts
-        # inside the queue's sync callbacks, obscuring the outer queue state.
-        # This read-only probe records count/index progress at the actual loop.
-        if hst_profile and addr == 0x000705e4:
-            out.append("    sr_boot_probe(s, 0x000705e4u);")
         # TOKENSCAN_DIAG: instrumentation ONLY (not a fix) for the post-1.6 blocker. The
         # worker's PC sampler pins on f_001041f4's character-scan loop (top at L_0010433c):
         # it dispatches f_0006517c (a vtable "get char / element" call) once per iteration

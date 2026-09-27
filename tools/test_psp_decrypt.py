@@ -1014,5 +1014,89 @@ class TestDiscModuleBoundary(unittest.TestCase):
             self.assertEqual(result["status"], "failed", result)
 
 
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestMatchedTypeDiagnosis(unittest.TestCase):
+    """Issue #559: the reported failure belongs to the container type whose
+    shape matched, never to a later type's unmet key entry."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_diag_"))
+        cls.exe = build_tool()
+        cls.elf = tiny_elf()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _sealed(self) -> tuple[bytes, dict]:
+        entries, _ = synthetic_entries()
+        tag_entry = entries[f"prx.tag.0x{SYNTH_TAG:08X}"]
+        container = seal_type2_psp(
+            self.elf, SYNTH_TAG, bytes.fromhex(tag_entry["key"]),
+            bytes.fromhex(entries["kirk.cmd1.key"]),
+            bytes.fromhex(entries[f"kirk.keyvault.{SYNTH_CODE}"]),
+            compressed=False, elf_size=len(self.elf),
+        )
+        return container, entries
+
+    def _decrypt(self, name: str, container: bytes, entries: dict):
+        src = self.tmp / f"{name}.BIN"
+        src.write_bytes(bytes(container))
+        keyfile = self.tmp / f"{name}.json"
+        write_keyfile(keyfile, entries)
+        dst = self.tmp / f"{name}.out"
+        out = subprocess.run(
+            [str(self.exe), "decrypt", "--key-file", str(keyfile),
+             "--in", str(src), "--out", str(dst)],
+            capture_output=True, text=True,
+        )
+        combined = out.stdout + out.stderr
+        return out, dst, combined
+
+    def test_corrupt_type2_container_reports_integrity_not_type6_key(self):
+        """The type-6 path shares the type-2 SHA-1 input when the ECDSA
+        signature tail is zero, so a corrupt type-2 container used to
+        surface the type-6 ECDSA key request instead of its own failure."""
+        container, entries = self._sealed()
+        tampered = bytearray(container)
+        tampered[0x150] ^= 0xFF  # payload bytes: the type-2 selector still matches
+        out, dst, combined = self._decrypt("diag_corrupt", tampered, entries)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertFalse(dst.exists())
+        self.assertNotIn("MISSING_KEY_ENTRY", combined)
+        self.assertNotIn("kirk.ecdsa", combined)
+        self.assertIn("INTEGRITY_CHECK_FAILED", combined)
+
+    def test_valid_container_missing_keyvault_entry_names_exactly_it(self):
+        """A well-formed container whose key entry is absent still names
+        exactly that entry, not any other type's material."""
+        container, entries = self._sealed()
+        entries.pop(f"kirk.keyvault.{SYNTH_CODE}")
+        out, dst, combined = self._decrypt("diag_missing", container, entries)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertFalse(dst.exists())
+        self.assertIn("MISSING_KEY_ENTRY", combined)
+        first = combined.split("MISSING_KEY_ENTRY", 1)[1].splitlines()[0].strip()
+        self.assertTrue(
+            first.startswith(f"kirk.keyvault.{SYNTH_CODE}"),
+            f"expected the keyvault entry first, got: {first!r}",
+        )
+        self.assertNotIn("kirk.ecdsa", combined)
+
+    def test_container_matching_no_type_reports_format_failure(self):
+        """A ~PSP container whose header no type's selector matches is a
+        format failure that says so, not a key request."""
+        container, entries = self._sealed()
+        corrupted = bytearray(container)
+        corrupted[0x140] ^= 0xFF  # id region: hashed by every eligible type
+        out, dst, combined = self._decrypt("diag_nomatch", corrupted, entries)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertFalse(dst.exists())
+        self.assertNotIn("MISSING_KEY_ENTRY", combined)
+        self.assertIn("CONTAINER_MALFORMED", combined)
+        self.assertIn("matches no supported PRX container type", combined)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,10 +1,29 @@
 # Build and development setup
 
-The supported and tested core build is Windows 11 x64; the host-neutral object
-gate is a portability probe, not Linux support. For an ISO/player workflow, start with
+Windows 11 x64 remains the supported desktop baseline. Linux also has a bounded,
+headless showcase route for the runtime. For an ISO/player workflow, start with
 [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). For development, see
 [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) and
 [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The native player is the repository's only user interface.
+
+## Linux headless showcase
+
+Linux can build and run the two source-owned showcase packages through the runtime.
+The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.8,
+and PSPDEV v20260501 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
+3.4.8 release commit and verifies the PSPDEV archive against
+[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
+
+Run the showcase from the repository root:
+
+```bash
+make CC=gcc showcase-linux
+```
+
+The smoke selects SDL's dummy video and audio drivers and runs without a desktop or
+GPU. This confirms the Linux runtime builds and runs the showcase fixtures; general
+consumer ISO compatibility and interactive Linux presentation remain in the works
+([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)).
 
 ## Supported development baseline
 
@@ -245,6 +264,7 @@ How the boundary behaves:
 - With a valid key file, `nk_cli inspect`, `build-package`, `bringup`, and the player's compatibility preflight decrypt the disc executable and the disc's encrypted PRX modules automatically and continue to the analyzer. The executable lands in `titles/<DISC_ID>/decrypted/EBOOT.elf`; every decrypted module lands in the same folder under its file name on the disc (for example `psmf.prx`), staged to a temporary name and renamed into place so an interrupted run never leaves a half-written module. Decrypted bytes are written only under the private per-user data directory (`titles/<DISC_ID>/decrypted/` and `cache/decrypted/`) — never next to the ISO, and never into this repository.
 - A valid user-supplied plain copy always wins: if `EBOOT.elf` or a module is already present in the per-title folder under its disc file name or manifest module name, the boundary never overwrites it and that module is skipped.
 - Without a key file, or when an entry is missing, the boundary fails closed and names the exact entry the container needs (for example `MISSING_KEY_ENTRY prx.tag.0x........` and "this executable needs key entry ..."). Each module fails closed on its own: the other modules still decrypt, and the compatibility preflight reports "Guest modules: N of M ready" with the missing entry. The existing guidance to supply decrypted modules at `<user data>/titles/<DISC_ID>/decrypted/` remains, so that route keeps working; a user-supplied `EBOOT.elf` takes precedence over automatic decryption.
+- A reported failure belongs to the container type whose shape matched, not to the last type tried: a modified or corrupt container reports `INTEGRITY_CHECK_FAILED` (or `CONTAINER_MALFORMED` for inconsistent fields), `MISSING_KEY_ENTRY` names only an entry the matched type truly needs, and a `~PSP` container whose header matches no supported type fails closed as `CONTAINER_MALFORMED` naming that instead of requesting key material.
 - The key file is never uploaded, never packaged, and never committed. The publication audit rejects key-file paths and KeyStore content outright, and neither the tests nor any release contain key material — the tests generate clearly fake per-run keys only.
 
 ### User title manifests (`<user data>/manifests`)
@@ -536,8 +556,10 @@ errors and offer a retry.
 
 The pinned candidate download set is recorded in
 [`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
-and 25 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3, Vulkan headers/loader,
-and their runtime dependencies), totaling 89,547,599 bytes. Package hashes and
+and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
+readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
+Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
+totaling 100,499,173 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
 python.org's release page. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
