@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eacd33256e2063cab56bce29de3f9c42c0c29ad1610ede6a2c25eaf621ec303c"
+      "sha256": "ab32664df7f0ea9b1b6c97d2bd13aabfe7f8b06f9449c6189e86fca9ab4434f2"
     },
     {
       "path": "AGENTS.md",
@@ -7235,7 +7235,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2b2f4a45ec5d733539673622d4789537c9ac928227ae35035a6cc57abdc0449"
+      "sha256": "00d5746bec632e4382af4cc7c5d41f700332e7f6156cbe07c84ecbae9259bc85"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -9606,5 +9606,14 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "55dd491170f3e48922883c066823d33346700e08",
+    "candidate_tree": "d209c13abe5ea1ef2fe04b3badc48ff30fcf1845",
+    "refreshed_paths": [
+      ".pre-commit-config.yaml",
+      "tools/test_ci_paths.py"
+    ]
+  }
 }
