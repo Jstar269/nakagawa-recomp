@@ -21,7 +21,7 @@ linked live issue, and read counts from the generator cited beside each area.
 - Unified PSP clocks, waits, and interrupt delivery remain source-owned
   runtime work.
 - Direct XB archive/VFS tooling is documented in
-  [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md); title inputs
+  [`docs/archive/ISSUE196_DIRECT_XB.md`](docs/archive/ISSUE196_DIRECT_XB.md); title inputs
   remain local-only.
 - The versioned title-manifest/toolkit boundary is described in
   [`assets/titles/README.md`](assets/titles/README.md); only generic and

@@ -62,14 +62,14 @@ HISTORICAL_EVIDENCE_DOCS = {
     "docs/STATUS_HISTORY.md",
     "docs/ROADMAP.md",
     "docs/HARDWARE_ORACLE.md",
-    "docs/IMPORT_AUDIT.md",
+    "docs/archive/IMPORT_AUDIT.md",
     "docs/NEXT_SESSION.md",
     "docs/PHASE5_HARDWARE_EVIDENCE.md",
     "docs/PSP_INTR_WAITS_MATRIX.md",
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
     "docs/COVERAGE_LEDGER.md",
-    "docs/TOOLCHAIN_BASELINE_2026-08.md",
-    "docs/ISSUE196_DIRECT_XB.md",
+    "docs/archive/TOOLCHAIN_BASELINE_2026-08.md",
+    "docs/archive/ISSUE196_DIRECT_XB.md",
     "docs/provenance/MODIFIED_FILE_NOTICES.md",
 }
 

@@ -68,6 +68,19 @@ Candidates for Product 3 include:
 - PSPDEV/PSPSDK declaration synchronization;
 - optional PSPLINK or hardware-oracle collection tools that never become runtime requirements.
 
+## Direction
+
+Nakagawa Recomp's long-term goal is to evolve into a definitive, multi-title PSP recompilation and preservation platform built from original code wherever possible.
+
+While initial development began by adapting upstream open-source toolkits, the architectural direction systematically replaces convenience shortcuts and high-level approximations with maximal sensible low-level emulation (LLE), precise hardware-measured semantics, and original implementations. Core initiatives include:
+
+- Driving title-specific HLE overrides toward zero in generic runtime code
+- Prioritizing guest execution fidelity over host reimplementations
+- Expanding data-driven multi-title manifest planning
+- Delivering and hardening the standalone native player interface
+
+See [`LLE_FIDELITY_ARCHITECTURE.md`](LLE_FIDELITY_ARCHITECTURE.md) for the fidelity doctrine and [`HLE_AND_WORKAROUND_INVENTORY.md`](HLE_AND_WORKAROUND_INVENTORY.md) for the HLE budget that drives title-specific overrides to zero.
+
 ## Dependency direction
 
 The desired direction is:
