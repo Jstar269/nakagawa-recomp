@@ -1498,7 +1498,12 @@ $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_setting
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
+# Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
+# the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
+# PATH) use the readable TTF font instead of the bitmap fallback.
+.PHONY: player
 player: $(PLAYER_EXE)
+	$(PYTHON) tools/stage_runtime_dlls.py --target $(patsubst %/,%,$(dir $(PLAYER_EXE)))
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 

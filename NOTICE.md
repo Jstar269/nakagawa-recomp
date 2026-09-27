@@ -50,8 +50,8 @@ of truth, `assets/third_party_components.json` (schema:
 `assets/third_party_components.schema.json`), records every component that can
 enter a release artifact: its SPDX identifier, its disposition, the packaging
 route that copies it, and the license texts copied verbatim into
-`third_party/licenses/`. The native package, the SBOM, and the release gate all
-read that one file.
+`third_party/licenses/` and `THIRD_PARTY_LICENSES/`. The native package, the
+SBOM, and the release gate all read that one file.
 
 - The native package route (`tools/package_notices.py`, invoked by the package
   build and by `copy_build_assets.ps1`) emits `THIRD_PARTY_NOTICES.txt`,
@@ -63,6 +63,47 @@ read that one file.
 - `tools/test_third_party_notices.py` is the gate: it fails when a DLL a
   packaging route can copy, or any component in the source of truth, lacks a
   license record or a license text.
+
+## Staged host runtime libraries (#421)
+
+The Windows player and every built package stage `SDL3.dll`, `SDL3_ttf.dll`,
+and the mechanically resolved SDL3_ttf dependency closure beside the
+executable (`tools/stage_runtime_dlls.py`, PE import-table walk stopping at
+Windows system DLLs). No font file is bundled: the UI opens a system UI font
+already present on the user's machine. Every staged DLL ships its upstream
+license text, copied verbatim from the MSYS2 UCRT64 toolchain packages
+(`ucrt64/share/licenses/`, read-only) and recorded with its SHA-256 in
+`assets/third_party_components.json`:
+
+| DLL | License | License text |
+| --- | --- | --- |
+| `SDL3.dll` | Zlib | `third_party/licenses/sdl3/LICENSE.txt` |
+| `SDL3_ttf.dll` | Zlib | `THIRD_PARTY_LICENSES/SDL3_ttf.txt` |
+| `libfreetype-6.dll` | FTL | `THIRD_PARTY_LICENSES/FreeType-FTL.txt` |
+| `libharfbuzz-0.dll` | MIT | `THIRD_PARTY_LICENSES/HarfBuzz.txt` |
+| `libgraphite2.dll` | MIT (chosen) | `THIRD_PARTY_LICENSES/Graphite2.txt` |
+| `libpng16-16.dll` | libpng-2.0 | `THIRD_PARTY_LICENSES/libpng.txt` |
+| `zlib1.dll` | Zlib | `THIRD_PARTY_LICENSES/zlib.txt` |
+| `libbz2-1.dll` | bzip2-1.0.6 | `THIRD_PARTY_LICENSES/bzip2.txt` |
+| `libbrotlidec.dll`, `libbrotlicommon.dll` | MIT | `THIRD_PARTY_LICENSES/Brotli.txt` |
+| `libglib-2.0-0.dll` | LGPL-2.1-or-later | `THIRD_PARTY_LICENSES/GLib.txt` |
+| `libintl-8.dll` | LGPL-2.1-or-later | `THIRD_PARTY_LICENSES/libintl.txt` |
+| `libiconv-2.dll` | LGPL-2.1-or-later | `THIRD_PARTY_LICENSES/libiconv.txt` |
+| `libpcre2-8-0.dll` | BSD-3-Clause WITH PCRE2-exception | `THIRD_PARTY_LICENSES/PCRE2.txt` |
+| `libgcc_s_seh-1.dll`, `libstdc++-6.dll` | GPL-3.0-or-later WITH GCC-exception-3.1 | `third_party/licenses/gcc-libs/COPYING3.txt`, `third_party/licenses/gcc-libs/COPYING.RUNTIME.txt` |
+| `libwinpthread-1.dll` | MIT AND BSD-3-Clause | `third_party/licenses/winpthreads/COPYING.txt` |
+
+License choices and combination notes:
+
+- **FreeType** is dual-licensed FTL or GPL-2.0-or-later; this distribution uses
+  the **FTL** option, which the FSF lists as GPL-compatible.
+- **Graphite2** is granted under four licenses (LGPL-2.1+, MPL-2.0, GPL-2.0+,
+  or MIT) by its upstream `LICENSE`; this distribution uses the **MIT** option.
+- **GLib, libintl and libiconv** are LGPL-2.1-or-later and are dynamically
+  linked as separate replaceable DLLs. LGPL-2.1 section 3 permits use under
+  GPL-3 terms, so they combine with this GPL-3 distribution.
+- The **MinGW runtime** licenses (`gcc-libs`, `winpthreads`) were already
+  covered by the existing records; no new text was needed for them.
 
 The FFmpeg ATRAC3+ subset (LGPL-2.1-or-later) is statically linked. The whole
 program is distributed under the GNU GPL version 3 (the project's own files are
