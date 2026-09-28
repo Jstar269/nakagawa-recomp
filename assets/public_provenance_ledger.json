@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4497dac00f2864bfc2cb58c3ae9961dec7f8b2de8404698ca34a790e1e705dd"
+      "sha256": "f6e166593d539c6986605bcfdf0959ff94b5659deaee26df689f0ff39d220603"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8275,7 +8275,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c53e4bc31a39ee62ff2a19f9e2311b6419bf104d7d8a5cb4af708a0a1e4b187b"
+      "sha256": "e425455b9a75e93062774a0a62425d699cfd9c3bd2bbd81134b5b3c85c4482d3"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
@@ -9468,5 +9468,14 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "b290fb911e3a63d588e683193f4adb17a6b5cf01",
+    "candidate_tree": "8be502c47387cd37d6a952c4ddf6ccf008bac3f1",
+    "refreshed_paths": [
+      "tools/nk_cli.py",
+      "tools/test_production_smoke.py"
+    ]
+  }
 }
