@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -649,6 +650,64 @@ class LibrarySweepTests(unittest.TestCase):
 
         self.assertEqual(private_path.read_bytes(), private_before)
         self.assertEqual(self.public_output.read_bytes(), b"PUBLIC_CHECKPOINT")
+
+    def test_malformed_retained_source_keys_refuse_before_outputs_advance(self) -> None:
+        iso = _write_iso(self.iso_dir, "retained.iso", "UCUS99997", "Retained Key Sentinel")
+        iso_root = self.iso_dir.resolve()
+        stat = iso.stat()
+        valid = _sweep_row("launch")
+        valid.update({
+            "source_key": library_sweep._source_key(iso_root / iso.name, iso_root),
+            "source_file": iso.name,
+            "disc_id": "UCUS99997",
+            "input_size_bytes": stat.st_size,
+            "input_mtime_ns": stat.st_mtime_ns,
+        })
+        missing_source_key = dict(valid)
+        del missing_source_key["source_key"]
+        malformed_rows = (
+            ("non-object", ["not a row"], "JSON object"),
+            ("missing source_key", [missing_source_key], "source_key"),
+            ("non-string source_key", [{**valid, "source_key": 97}], "source_key"),
+            ("empty source_key", [{**valid, "source_key": ""}], "source_key"),
+            ("duplicate source_key", [valid, {**valid, "furthest_stage": "analyze"}],
+             "source_key"),
+        )
+        self.private_dir.mkdir(parents=True, exist_ok=True)
+        private_path = self.private_dir / "library-sweep.json"
+        self.public_output.parent.mkdir(parents=True, exist_ok=True)
+
+        for label, rows, error in malformed_rows:
+            with self.subTest(label=label):
+                private_path.write_text(json.dumps({
+                    "schema_version": 1,
+                    "source_commit": library_sweep._source_commit(),
+                    "source_fingerprint": library_sweep._source_fingerprint(),
+                    "time_budget_seconds": 120,
+                    "rows": rows,
+                }), encoding="utf-8")
+                private_before = private_path.read_bytes()
+                self.public_output.write_bytes(b"PUBLIC_CHECKPOINT")
+                stderr = io.StringIO()
+
+                with mock.patch.object(
+                    library_sweep,
+                    "_run_bringup",
+                    return_value=library_sweep.RouteOutcome(_bringup_report()),
+                ) as run_bringup, mock.patch("sys.stderr", stderr):
+                    result = library_sweep.main([
+                        str(self.iso_dir),
+                        "--private-dir",
+                        str(self.private_dir),
+                        "--public-output",
+                        str(self.public_output),
+                    ])
+
+                self.assertEqual(result, 2)
+                self.assertIn(error, stderr.getvalue())
+                run_bringup.assert_not_called()
+                self.assertEqual(private_path.read_bytes(), private_before)
+                self.assertEqual(self.public_output.read_bytes(), b"PUBLIC_CHECKPOINT")
 
     def test_private_nid_sidecar_is_contained_and_whitelisted(self) -> None:
         work_dir = self.private_dir / "bringup"

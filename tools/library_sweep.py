@@ -248,12 +248,15 @@ def _read_existing_rows(
     rows = payload.get("rows")
     if not isinstance(rows, list):
         raise ValueError("existing private sweep report has no row array")
+    _validate_sweep_rows(rows)
     retained: dict[str, dict] = {}
+    existing_keys: set[str] = set()
     for row in rows:
-        if not isinstance(row, dict):
-            continue
-        key = row.get("source_key")
-        if isinstance(key, str) and key in source_keys:
+        key = row["source_key"]
+        if key in existing_keys:
+            raise ValueError("existing private sweep report has duplicate source_key rows")
+        existing_keys.add(key)
+        if key in source_keys:
             retained[key] = row
     return retained
 
@@ -832,8 +835,12 @@ def _validate_sweep_rows(rows: object) -> None:
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"sweep row {index} must be a JSON object")
-        if "source_key" in row and not isinstance(row["source_key"], str):
+        if "source_key" not in row:
+            raise ValueError(f"sweep row {index} is missing field source_key")
+        if not isinstance(row["source_key"], str):
             raise ValueError(f"sweep row {index} field source_key must be a string")
+        if not row["source_key"]:
+            raise ValueError(f"sweep row {index} field source_key must be non-empty")
         if "furthest_stage" in row and not isinstance(row["furthest_stage"], str):
             raise ValueError(f"sweep row {index} field furthest_stage must be a string")
         stage = row.get("furthest_stage", "identify")
