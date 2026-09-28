@@ -1195,6 +1195,13 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertRegex(command[4], r"^0x[0-9a-f]{8}$")
         self.assertEqual(command[5:], ["none", "none", "--sched", "--gui"])
         self.assertEqual(self.last_launch_env["SR_PRESENT_TRACE"], "1")
+        for selector in (
+            "SDL_VIDEO_DRIVER",
+            "SDL_VIDEODRIVER",
+            "SDL_AUDIO_DRIVER",
+            "SDL_AUDIODRIVER",
+        ):
+            self.assertEqual(self.last_launch_env[selector], "dummy")
         self.assertNotIn("SR_GEWATCH", self.last_launch_env)
         self.assertEqual(report["presentation"], {
             "status": "FRAME_SUBMITTED",
@@ -1205,6 +1212,21 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn("Visual contents are not verified", summary)
         self.assertFalse(self.last_build_arguments.instruction_trace)
         nk_cli.validate_bringup_report(report)
+
+    def test_headless_bringup_overrides_inherited_sdl3_selectors(self):
+        inherited = {
+            "SDL_VIDEO_DRIVER": "windows",
+            "SDL_VIDEODRIVER": "windows",
+            "SDL_AUDIO_DRIVER": "wasapi",
+            "SDL_AUDIODRIVER": "wasapi",
+        }
+        with mock.patch.dict(os.environ, inherited):
+            status, report = self._run_case()
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["failure_class"], "NONE")
+        for selector in inherited:
+            self.assertEqual(self.last_launch_env[selector], "dummy")
 
     def test_zero_exit_with_framebuffer_setup_but_no_gui_submission_is_not_success(self):
         status, report = self._run_case(launch_output="synthetic runtime had no GUI submission\n")
