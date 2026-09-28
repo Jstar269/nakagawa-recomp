@@ -9471,8 +9471,8 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "574dfabc1722843f9c410d0ef760839914c8196f",
-    "candidate_tree": "79c7a77b3ba02ebe883e9d388368cd28d75c6c2e",
+    "trusted_tree": "b290fb911e3a63d588e683193f4adb17a6b5cf01",
+    "candidate_tree": "7c0ce89d54f83f4abc75010de72c62340f80e0a4",
     "refreshed_paths": [
       "tools/generate_sbom.py",
       "tools/test_sbom.py",
