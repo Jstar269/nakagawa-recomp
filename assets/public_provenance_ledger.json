@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a5e117ff8aadfc652178e88cab5302a1cff1bc3f9242df4f4dd32aef51adfd96"
+      "sha256": "69c6ce53a113a1982ae592e74c06316e8f68bb8ae9c1aa9df9b071c565a01b84"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4563,7 +4563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9a3100584a3efeb67424f9dfd22b9d7a81a066a043900e10acf5710d290be66"
+      "sha256": "289048453b048e11aca6d556317e68aaa81d258874a07bf3ef47f957fafc980b"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9468,5 +9468,14 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "b290fb911e3a63d588e683193f4adb17a6b5cf01",
+    "candidate_tree": "0cfb1be6f7cad5e0b384bf8195f35cbb127b05b9",
+    "refreshed_paths": [
+      "src/rt/hle.c",
+      "src/rt/hle_thread_selftest.c"
+    ]
+  }
 }
