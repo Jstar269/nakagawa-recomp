@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "46cf0d0ea678d6b463d6f5ab810cc6e165f61d0c0110b3435f4f523f256df284"
+      "sha256": "9f8ae4dba12c5a101f3323a715964676459d6b47aafc1712f80ee82e67212413"
     },
     {
       "path": "NOTICE.md",
@@ -593,7 +593,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c11973cd95bb94414ac2615b710a222e36426fb4e7540eebe3c2a9897ea47ccd"
+      "sha256": "0716570dbc884ff0acce41dfbce616990b1026b8c1bcba1a3fae7c6d9409bf83"
     },
     {
       "path": "assets/history_audit_reviewed.json",
@@ -4125,7 +4125,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5108315bcafb4e01502d2e8938ec0e0d65838decfec8471cc1b67e31256c986a"
+      "sha256": "2a5a87f2080469a35c3ba17ba5b9be9955286e8a549b9f63e63038566c59c4af"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -4137,7 +4137,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5c4606b36b70c0a8efdf81681b9473ccf309f99bd47c0ad3320892615b7c9c2a"
+      "sha256": "cc1d3e827bc08ac6e7770f75edbdc3d83957acc2d26101e79c3e764e9d1ef51b"
     },
     {
       "path": "src/rt/fp_convert.h",
@@ -4794,7 +4794,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1b15b1962b4902596e932f4a3742df4dd3b97265c7350a6c92338f0571692618"
+      "sha256": "87b43da5c44db97ed936d83af06b82b5a687e65d936e0567b6e6b43e5afde53f"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -5781,7 +5781,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6fec13f6bcfe39eccd6de1858b077b479c40c19085b30c556c497d119c2b0ca4"
+      "sha256": "62745cf053637ba2813e698ddb5708975549211d061dcd3b529a4bfcd8b066a8"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7530,7 +7530,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0a0b4ff898360b75ced24a0eecd056dff98e0fc234f8549e3447daa28b6f2c31"
+      "sha256": "25efed3f775484e1fc8d08b09bf1dd2e767029dc282eeced0fb6933b645bbb42"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -7542,7 +7542,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df4064a92876eab9d847132679518b854c6be2f8a428a21b9c0e21b062dd8924"
+      "sha256": "e70417c00842f350ff05fe4f5972e85220d8d36b9c77e92d2d88bbc5a321a7cb"
     },
     {
       "path": "tools/test_font_provisioning.py",
@@ -9471,12 +9471,17 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "788f1e13aa2b41bb5865226da8fb0b581c47f3e2",
-    "candidate_tree": "172357a2a713ca6a1f8455cf8405c7595ea56966",
+    "trusted_tree": "fda9d2ca6ea5e7bff32c4b218a540418a2c07447",
+    "candidate_tree": "7e8e7bb8a5ec5695fac51821e86db640762aeb77",
     "refreshed_paths": [
-      "tools/generate_sbom.py",
-      "tools/test_sbom.py",
-      "tools/verify_sbom.py"
+      "Makefile",
+      "assets/flight_recorder_schema.json",
+      "src/rt/flight_recorder.c",
+      "src/rt/flight_recorder.h",
+      "src/rt/psmf_media_selftest.c",
+      "tools/flight_diff.py",
+      "tools/test_flight_build_identity.py",
+      "tools/test_flight_diff.py"
     ]
   }
 }
