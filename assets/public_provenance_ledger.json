@@ -9471,8 +9471,8 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "574dfabc1722843f9c410d0ef760839914c8196f",
-    "candidate_tree": "b65c137d7a2e117747c1a51cedcd88b6ade35939",
+    "trusted_tree": "b290fb911e3a63d588e683193f4adb17a6b5cf01",
+    "candidate_tree": "0cfb1be6f7cad5e0b384bf8195f35cbb127b05b9",
     "refreshed_paths": [
       "src/rt/hle.c",
       "src/rt/hle_thread_selftest.c"
