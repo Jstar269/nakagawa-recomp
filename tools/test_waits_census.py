@@ -34,6 +34,10 @@ class ExtractApisTests(unittest.TestCase):
         self.assertNotIn("sceIoWaitAsync", apis)
         self.assertNotIn("sceKernelWaitSema", apis)
 
+    def test_family_shorthand_glob_ignored(self) -> None:
+        text = "the `sceDisplayWaitVblank*` CB/Multi variants."
+        self.assertEqual(waits_census.extract_apis(text), [])
+
     def test_underscore_and_digit_names(self) -> None:
         text = "use `__sceSasSetADSR` and `sceKernelWaitEventFlagCB`."
         self.assertEqual(
@@ -49,6 +53,38 @@ class DispositionTests(unittest.TestCase):
         for api in ("sceKernelCreateMbx", "sceKernelDelayThread"):
             self.assertEqual(by_api[api]["disposition"], "missing")
             self.assertEqual(by_api[api]["owner"], "#339")
+
+    def test_base_name_stays_missing_when_only_the_cb_variant_is_registered(self) -> None:
+        """A base/`CB` pair is two real exports; a prefix is not a family.
+
+        `sceKernelDelaySysClockThread` is a strict prefix of
+        `sceKernelDelaySysClockThreadCB`, yet both are exact exports. Once the
+        CB form is registered the base form must still read as a legitimate
+        `missing` row under #339, not as prose shorthand for the other.
+        """
+        matrix = (
+            "Exact names: `sceKernelDelaySysClockThread` and "
+            "`sceKernelDelaySysClockThreadCB`."
+        )
+        manifest = {
+            "registrations": [
+                {
+                    "nid": "0x00000010",
+                    "name": "sceKernelDelaySysClockThreadCB",
+                    "handler": "h_DelaySysClockThread",
+                    "classification": "dedicated",
+                    "status": "unreviewed",
+                }
+            ]
+        }
+        census = waits_census.build_census(matrix, manifest=manifest)
+        by_api = {r["api"]: r for r in census["rows"]}
+        base = by_api["sceKernelDelaySysClockThread"]
+        self.assertEqual(base["disposition"], "missing")
+        self.assertEqual(base["owner"], "#339")
+        self.assertEqual(
+            by_api["sceKernelDelaySysClockThreadCB"]["disposition"], "implemented"
+        )
 
     def test_fake_success_maps_to_registered_and_281(self) -> None:
         manifest = {
@@ -170,6 +206,31 @@ class LiveManifestTests(unittest.TestCase):
             "sceKernelReferMbxStatus",
         ):
             self.assertIn(api, names, f"{api} must be registered in hle.c")
+
+    def test_display_family_prose_is_not_a_census_name(self) -> None:
+        """The matrix's `sceDisplay` prose named a family, not an export.
+
+        Spelled as a bare exact backtick token it joined the census as a
+        `missing` row that no NID can ever satisfy, inflating the #339 count.
+        The prose now spells the family as the glob `sceDisplayWaitVblank*`,
+        which `extract_apis` ignores, so the bare family token must not
+        reappear while each concrete VBLANK variant keeps its own row.
+        """
+        rows = {r["api"]: r for r in self.census["rows"]}
+        self.assertNotIn(
+            "sceDisplay",
+            rows,
+            "bare family shorthand must not join the exact census",
+        )
+        for api in (
+            "sceDisplayWaitVblank",
+            "sceDisplayWaitVblankCB",
+            "sceDisplayWaitVblankStart",
+            "sceDisplayWaitVblankStartCB",
+            "sceDisplayWaitVblankStartMulti",
+            "sceDisplayWaitVblankStartMultiCB",
+        ):
+            self.assertIn(api, rows, f"{api} must remain its own census row")
 
     def test_every_row_has_an_allowed_disposition(self) -> None:
         for r in self.census["rows"]:

@@ -181,6 +181,8 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
 #define NID_SCE_KERNEL_EXIT_DELETE_THREAD_ORACLE 0x809ce29bu
 #define NID_SCE_KERNEL_GET_THREAD_ID 0x293b45b8u
+#define NID_SCE_KERNEL_VOLATILE_MEM_LOCK 0x3e0271d3u
+#define NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK 0xa14f40b2u
 #define NID_SCE_KERNEL_CREATE_MSG_PIPE 0x7c0dc2a0u
 #define NID_SCE_KERNEL_DELETE_MSG_PIPE 0xf0b7da1cu
 #define NID_SCE_KERNEL_TRY_SEND_MSG_PIPE 0x884c9f90u
@@ -1910,6 +1912,84 @@ static void test_controlled_unsupported_registration(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x4b85c861u) == 0u,
            "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
+}
+
+/* Enter the production Lock/TryLock NID mappings with an output span that crosses
+ * the guest arena boundary. The regression protects the valid output from a partial
+ * write and preserves the existing no-op behavior for NULL output pointers. */
+static void test_volatile_mem_output_preflight(void) {
+    const uint32_t paddr_out = 0x08a10000u;
+    const uint32_t size_out = 0x08a10004u;
+    const uint32_t sentinel = 0xa5c35a3cu;
+    CpuState cpu;
+    sr_hle_init();
+
+    MEM_W32(paddr_out, sentinel);
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = 0x0bfffffeu; /* starts inside the arena; the 4-byte span crosses its end */
+    uint32_t ret = sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_LOCK);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "volatile-memory Lock returns illegal-address when its size output is outside guest memory");
+    expect(MEM_R32(paddr_out) == sentinel,
+           "volatile-memory Lock validates both output spans before writing either one");
+    expect(MEM_R32(size_out) == sentinel,
+           "volatile-memory Lock leaves its valid size output unchanged on refusal");
+
+    MEM_W32(paddr_out, sentinel);
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0x0bfffffeu;
+    cpu.r[6] = size_out;
+    ret = sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "volatile-memory TryLock returns illegal-address when its address output is outside guest memory");
+    expect(MEM_R32(size_out) == sentinel,
+           "volatile-memory TryLock leaves its valid size output unchanged on refusal");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = size_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_LOCK) == 0u,
+           "volatile-memory Lock still succeeds with two valid output spans");
+    expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
+           "volatile-memory Lock preserves the existing 4 MiB scratch-buffer route");
+
+    MEM_W32(paddr_out, sentinel);
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = size_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK) == 0u,
+           "volatile-memory TryLock preserves the existing successful route");
+    expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
+           "volatile-memory TryLock writes both valid outputs");
+
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = size_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_LOCK) == 0u,
+           "volatile-memory Lock retains NULL address-output tolerance");
+    expect(MEM_R32(size_out) == 0x00400000u,
+           "volatile-memory Lock still writes the non-NULL size output");
+
+    MEM_W32(paddr_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK) == 0u,
+           "volatile-memory TryLock retains NULL size-output tolerance");
+    expect(MEM_R32(paddr_out) == 0x08400000u,
+           "volatile-memory TryLock still writes the non-NULL address output");
+
 }
 
 /* ---- sceUtilityOsk. The keyboard is answered by a person through a native Win32 box
@@ -16443,6 +16523,7 @@ int main(int argc, char **argv) {
     test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
+    test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);

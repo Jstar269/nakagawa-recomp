@@ -471,6 +471,77 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertTrue(any("exactly one release root package; found 0" in error
                             for error in errors), str(errors))
 
+    def test_spdx3_root_id_shared_by_generation_and_verification(self):
+        manifest_path = generate_sbom.ROOT / "assets" / "release_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for version in (manifest["version"], "9.9.9-nondefault"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temp_dir:
+                candidate = dict(manifest)
+                candidate["version"] = version
+                spdx3 = generate_sbom.generate_spdx301(candidate, [])
+                expected_id = generate_sbom.spdx3_root_package_id(version)
+                root = next(
+                    item for item in spdx3["@graph"]
+                    if item.get("@type") == "spdx:Package"
+                    and item.get("@id") == expected_id
+                )
+                self.assertEqual(root["spdx:name"], candidate.get("name", "nakagawa-recomp"))
+                self.assertEqual(root["spdx:packageVersion"], version)
+                self.assertEqual(
+                    spdx3["@graph"][0]["@id"],
+                    f"{generate_sbom.DOCUMENT_NAMESPACE_BASE}-{version}#Document",
+                )
+                self.assertTrue(
+                    expected_id.startswith(
+                        f"{generate_sbom.DOCUMENT_NAMESPACE_BASE}-{version}#"
+                    )
+                )
+                spdx3_path = Path(temp_dir) / "sbom-spdx3.jsonld"
+                candidate_manifest = Path(temp_dir) / "release_manifest.json"
+                spdx3_path.write_text(json.dumps(spdx3), encoding="utf-8")
+                candidate_manifest.write_text(json.dumps(candidate), encoding="utf-8")
+                self.assertEqual(
+                    verify_sbom.verify_additional_sbom_root_versions(
+                        spdx3_path, None, candidate_manifest),
+                    [],
+                )
+                drifted = json.loads(json.dumps(spdx3))
+                for item in drifted["@graph"]:
+                    if item.get("@id") == expected_id:
+                        item["@id"] = generate_sbom.spdx3_root_package_id(
+                            f"{version}-drifted")
+                spdx3_path.write_text(json.dumps(drifted), encoding="utf-8")
+                errors = verify_sbom.verify_additional_sbom_root_versions(
+                    spdx3_path, None, candidate_manifest)
+                self.assertTrue(any(
+                    "exactly one release root package; found 0" in error
+                    for error in errors), str(errors))
+
+    def test_spdx3_root_id_is_one_helper_used_by_both_call_paths(self):
+        manifest_path = generate_sbom.ROOT / "assets" / "release_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        sentinel = "urn:example:spdx3-root-shared-helper"
+        with mock.patch.object(
+            generate_sbom, "spdx3_root_package_id", return_value=sentinel,
+        ) as helper:
+            spdx3 = generate_sbom.generate_spdx301(manifest, [])
+        helper.assert_called_once_with(manifest["version"])
+        sentinel_root = next(
+            item for item in spdx3["@graph"] if item.get("@id") == sentinel
+        )
+        self.assertEqual(sentinel_root["@type"], "spdx:Package")
+        self.assertEqual(sentinel_root["spdx:name"], manifest["name"])
+        self.assertEqual(sentinel_root["spdx:packageVersion"], manifest["version"])
+        with mock.patch.object(
+            generate_sbom, "spdx3_root_package_id", return_value=sentinel,
+        ):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                spdx3_path = Path(temp_dir) / "sbom-spdx3.jsonld"
+                spdx3_path.write_text(json.dumps(spdx3), encoding="utf-8")
+                errors = verify_sbom.verify_additional_sbom_root_versions(
+                    spdx3_path, None, manifest_path)
+        self.assertEqual(errors, [])
+
     def test_empty_release_root_manifest_fields_fail_closed_for_sboms(self):
         manifest_path = generate_sbom.ROOT / "assets" / "release_manifest.json"
         original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

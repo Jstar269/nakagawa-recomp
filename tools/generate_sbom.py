@@ -884,11 +884,23 @@ def generate_spdx23(manifest_data: dict, py_packages: list[dict],
     return document
 
 
+def spdx3_root_package_id(version: object) -> str:
+    """Canonical SPDX 3.0.1 release-root package identifier.
+
+    Generation (generate_spdx301) and verification
+    (verify_sbom.verify_additional_sbom_root_versions) must both build the
+    root identifier here, so the two call paths cannot drift apart
+    (PR #574 follow-up).
+    """
+    return f"{DOCUMENT_NAMESPACE_BASE}-{version}#Package-nakagawa-recomp"
+
+
 def generate_spdx301(manifest_data: dict, py_packages: list[dict],
                      shipped_dlls: list[dict] | None = None) -> dict:
     if shipped_dlls is None:
         shipped_dlls = resolve_shipped_dlls(manifest_data=manifest_data)
-    base_id = f"{DOCUMENT_NAMESPACE_BASE}-{manifest_data.get('version', '0.1.0')}"
+    version = manifest_data.get("version", "0.1.0")
+    base_id = f"{DOCUMENT_NAMESPACE_BASE}-{version}"
     graph = [
         {
             "@id": f"{base_id}#Document",
@@ -898,10 +910,10 @@ def generate_spdx301(manifest_data: dict, py_packages: list[dict],
             "spdx:dataLicense": "http://spdx.org/licenses/CC0-1.0",
         },
         {
-            "@id": f"{base_id}#Package-nakagawa-recomp",
+            "@id": spdx3_root_package_id(version),
             "@type": "spdx:Package",
             "spdx:name": manifest_data.get("name", "nakagawa-recomp"),
-            "spdx:packageVersion": manifest_data.get("version", "0.1.0"),
+            "spdx:packageVersion": version,
             "spdx:concludedLicense": f"http://spdx.org/licenses/{manifest_data.get('license', 'GPL-3.0-or-later')}",
         },
     ]
