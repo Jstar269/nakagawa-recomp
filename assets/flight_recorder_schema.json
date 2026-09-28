@@ -39,9 +39,9 @@
         "enabled_classes": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 6,
+          "maxItems": 7,
           "uniqueItems": true,
-          "items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal"]}
+          "items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]}
         },
         "limit": {"type": "integer", "minimum": 1, "maximum": 4096},
         "recorded": {"type": "integer", "minimum": 0},
@@ -79,7 +79,7 @@
         "properties": {
           "schema_version": {"enum": [1, 2, 3]},
           "sequence": {"type": "integer", "minimum": 1},
-          "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal"]},
+          "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]},
           "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295},
           "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295},
           "arg1": {"type": "integer", "minimum": 0, "maximum": 4294967295},

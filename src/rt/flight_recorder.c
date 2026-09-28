@@ -224,6 +224,7 @@ static const SrFlightClassName s_flight_class_names[] = {
     {SR_FLIGHT_CLASS_PRX, "prx"},
     {SR_FLIGHT_CLASS_FAULT, "fault"},
     {SR_FLIGHT_CLASS_FATAL, "fatal"},
+    {SR_FLIGHT_CLASS_MEDIA, "media"},
 };
 
 static int token_is(const char *text, size_t length, const char *name) {

@@ -29,6 +29,7 @@
 
 #include "psmf_producer.h"
 #include "sr_h264.h"
+#include "flight_recorder.h"
 #include "perf.h"
 #include "mpeg.c"
 #include <stdint.h>
@@ -41,6 +42,16 @@ static int checks, failures;
 /* Bounded diagnostics for the acceptance runs: SR_PSMF_MEDIA_DEBUG=1 prints the counters that
  * say where a media chain stopped, without making the normal run noisy. */
 #define MEDIA_DEBUG(...) do { if (getenv("SR_PSMF_MEDIA_DEBUG")) fprintf(stderr, __VA_ARGS__); } while (0)
+
+/* The flight recorder sees only these scalar milestones when the selftest is
+ * explicitly run with SR_FLIGHT=media;N. They describe this source-owned
+ * fixture, not a PSP media ABI or a private-title observation. */
+static void flight_media_test_milestone(uint32_t stage, uint32_t arg1,
+                                        uint32_t arg2, uint32_t arg3) {
+    (void)stage; (void)arg1; (void)arg2; (void)arg3;
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE,
+                           stage, arg1, arg2, arg3);
+}
 
 /* ---- guest arena ------------------------------------------------------------------------ */
 /* sr_h264_frame() writes into guest memory through SR_HOST(), so the selftest owns a flat
@@ -501,6 +512,7 @@ static void test_demux_and_au_contract(void) {
     uint8_t *bytes = build_psmf(&size, au_off, au_len);
     CHECK(bytes != NULL, "fixture allocated");
     if (!bytes) return;
+    flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_SOURCE_READY, size, FIX_PICTURES, 0u);
     /* The generator is deterministic, so the expected elementary stream can be rebuilt here
      * and compared against what the producer hands back. */
     static uint8_t es[65536];
@@ -511,6 +523,9 @@ static void test_demux_and_au_contract(void) {
     SrPsmfProducer *p = open_fixture(bytes, size, &mem, 7u);   /* 7-byte reads */
     CHECK(p != NULL, "producer opens the synthetic PSMF");
     if (!p) { free(bytes); return; }
+    flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_PRODUCER_OPEN,
+                                sr_psmf_producer_video_streams(p),
+                                sr_psmf_producer_audio_streams(p), 7u);
 
     uint32_t got_sizes[FIX_PICTURES + 2];
     uint32_t got_pts[FIX_PICTURES + 2];
@@ -530,6 +545,11 @@ static void test_demux_and_au_contract(void) {
                 au.data = NULL;
             }
             sr_psmf_au_release(&au);
+            if (n < FIX_PICTURES + 2) {
+                flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_AU_READY,
+                                            (uint32_t)n, got_sizes[n],
+                                            (uint32_t)got_has_pts[n]);
+            }
             n++;
         }
     }
@@ -564,6 +584,9 @@ static void test_demux_and_au_contract(void) {
     CHECK(st.source_failures == 0, "fragmented reads never report a source failure");
     CHECK(st.failed == 0, "no parser failure on well-formed input");
     CHECK(st.eof, "the producer reaches end of file");
+    flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_EOF,
+                                (uint32_t)st.video_aus, (uint32_t)st.audio_aus,
+                                st.eof ? 1u : 0u);
     sr_psmf_producer_close(p);
     free(bytes);
 }
@@ -619,6 +642,9 @@ static void test_real_decode_into_guest_buffer(void) {
                   "guest delivery format remains explicit");
             CHECK(info.stride == 64 * 4, "guest delivery stride is explicit");
             frames_before_eos++;
+            flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_FRAME_READY,
+                                        (uint32_t)frames_before_eos,
+                                        (uint32_t)info.width, (uint32_t)info.height);
         }
         if (sr_psmf_producer_eof(p) && r == 0) break;
     }
@@ -1323,6 +1349,7 @@ static void test_mpeg_ycbcr_guest_contract(void) {
 
 int main(int argc, char **argv) {
     sr_perf_init();
+    sr_flight_init();
     unsigned fuzz_iterations = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--fuzz-iters") == 0 && i + 1 < argc) {
