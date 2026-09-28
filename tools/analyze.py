@@ -1065,6 +1065,14 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
         "interior_entries": sorted(interior_entries, key=lambda item: (item["address"], item["source"], item["owner"])),
         "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
         "ownership_conflicts": conflicts,
+        "ownership_map": [
+            {
+                "address": address,
+                "classification": nodes[address]["classification"],
+                "owners": sorted(owners.get(address, ())),
+            }
+            for address in sorted(nodes)
+        ],
         "byte_classification": byte_classification,
         "padding": padding,
         "unowned_executable": unowned_executable,
@@ -1351,6 +1359,14 @@ class CanonicalCfgState:
             ],
             "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
             "ownership_conflicts": conflicts,
+            "ownership_map": [
+                {
+                    "address": address,
+                    "classification": self._classification(index),
+                    "owners": list(self._owners_for_index(index)),
+                }
+                for index, address in enumerate(self.addresses)
+            ],
             "byte_classification": byte_classification,
             "padding": [
                 address for index, address in enumerate(self.addresses)
@@ -1955,6 +1971,41 @@ def verify_canonical_cfg_report(report):
             finding("owner-classification-mismatch", node)
         if len(owners) <= 1 and node.get("classification") == "owner-conflict":
             finding("owner-classification-mismatch", node)
+    if "ownership_map" in report:
+        ownership_rows = report.get("ownership_map")
+        if not isinstance(ownership_rows, list):
+            finding("ownership-map-type", ownership_rows)
+        else:
+            actual_ownership = []
+            seen_ownership = set()
+            for row in ownership_rows:
+                if not isinstance(row, dict):
+                    finding("ownership-map-row-invalid", row)
+                    continue
+                address = row.get("address")
+                classification = row.get("classification")
+                owners = row.get("owners")
+                if type(address) is not int or address not in node_by_address:
+                    finding("ownership-map-address-invalid", row)
+                    continue
+                if address in seen_ownership:
+                    finding("ownership-map-duplicate", row)
+                seen_ownership.add(address)
+                if classification not in allowed_classifications:
+                    finding("ownership-map-classification-invalid", row)
+                if not isinstance(owners, list) or any(type(owner) is not int for owner in owners):
+                    finding("ownership-map-owners-invalid", row)
+                    continue
+                node = node_by_address[address]
+                if classification != node.get("classification") or owners != node.get("owners"):
+                    finding("ownership-map-node-mismatch", row)
+                actual_ownership.append((address, classification, tuple(owners)))
+            expected_ownership = [
+                (address, node.get("classification"), tuple(node.get("owners", ())))
+                for address, node in sorted(node_by_address.items())
+            ]
+            if sorted(actual_ownership) != expected_ownership:
+                finding("ownership-map-projection-mismatch", ownership_rows)
     for conflict in conflicts:
         address = conflict.get("address") if isinstance(conflict, dict) else None
         node = node_by_address.get(address)
@@ -1980,6 +2031,46 @@ def canonical_cfg_json(report):
     """Serialize a CFG report deterministically for regression/build-cache use."""
     import json
     return json.dumps(report, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def canonical_cfg_gate(report):
+    """Return fail-closed ownership-gate findings for a CFG report.
+
+    ``verify_canonical_cfg_report`` checks that the serialized projections agree
+    with one another.  This gate adds the semantic rule needed by the analyzer
+    bring-up path: every non-padding executable word must have an explicit
+    ownership result, and ambiguous ownership or unmapped entries must remain
+    visible instead of becoming native fall-through.  Continuation/interior
+    entries are valid classifications and therefore do not fail the gate.
+    """
+    findings = verify_canonical_cfg_report(report)
+    if findings:
+        return findings
+    if not isinstance(report, dict):
+        return [{"code": "report-invalid", "message": "CFG report is not an object"}]
+    if "ownership_map" not in report:
+        findings.append({
+            "code": "ownership-map-missing",
+            "message": "machine-readable ownership map is absent",
+        })
+
+    for address in report.get("unowned_executable", ()):
+        findings.append({
+            "code": "ownership-gap",
+            "message": f"unowned executable word at 0x{address:08x}",
+        })
+    for conflict in report.get("ownership_conflicts", ()):
+        address = conflict.get("address") if isinstance(conflict, dict) else conflict
+        findings.append({
+            "code": "ownership-conflict",
+            "message": f"ambiguous ownership at 0x{address:08x}",
+        })
+    for address in report.get("unmapped_entries", ()):
+        findings.append({
+            "code": "entry-unmapped",
+            "message": f"entry outside executable coverage at 0x{address:08x}",
+        })
+    return sorted(findings, key=lambda item: (item["code"], item["message"]))
 
 
 def code_pointer_evidence(elf, ranges):
@@ -2545,21 +2636,57 @@ def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     opts = [a for a in argv[1:] if a.startswith("--")]
     if not args:
-        sys.stderr.write("usage: analyze.py <elf> [--base=HEX] [--extra-span=LO,HI] [--toml=out.toml] [--check=workdir] [--quiet]\n")
+        sys.stderr.write(
+            "usage: analyze.py <elf> [--base=HEX] [--extra-span=LO,HI] "
+            "[--toml=out.toml] [--check=workdir] "
+            "[--cfg-report=out.json] [--cfg-gate] [--quiet]\n"
+        )
         return 2
     base = None
     extra_span_arg = None
+    cfg_report_path = None
+    cfg_gate = False
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
+        elif o.startswith("--cfg-report="):
+            cfg_report_path = o.split("=", 1)[1]
+            if not cfg_report_path:
+                sys.stderr.write("--cfg-report requires a path\n")
+                return 2
+        elif o == "--cfg-gate":
+            cfg_gate = True
     elf = Elf(args[0], base=base)
     starts, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts
     rc = 0
+    if cfg_report_path is not None or cfg_gate:
+        cfg_report = canonical_cfg_report(elf, ranges=ranges, entries=starts)
+        if cfg_report_path is not None:
+            parent = os.path.dirname(cfg_report_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
+                output.write(canonical_cfg_json(cfg_report))
+            print("wrote CFG report:", cfg_report_path)
+        if cfg_gate:
+            cfg_findings = canonical_cfg_gate(cfg_report)
+            if cfg_findings:
+                for finding in cfg_findings:
+                    sys.stderr.write(
+                        f"CFG_GATE {finding['code']}: {finding['message']}\n"
+                    )
+                rc = 1
+            else:
+                print(
+                    "CFG_GATE PASS: "
+                    f"{len(cfg_report['instructions'])} executable words, "
+                    f"{len(cfg_report['entries'])} entries"
+                )
     truth = elf.func_symbols()
     if truth is not None:
         truth_in = set(a for a in truth if in_ranges(a, ranges))

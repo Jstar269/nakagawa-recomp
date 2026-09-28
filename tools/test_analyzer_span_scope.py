@@ -13,6 +13,7 @@ process can never inherit the primary module's span.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import struct
@@ -512,6 +513,117 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_cfg_report_preserves_continuation_and_call_ownership(self) -> None:
+        target = PRIMARY_BASE + 0x10
+        words = [
+            0x0C000000 | ((target >> 2) & 0x03FFFFFF),  # jal target
+            0x00000000,                                  # delay slot
+            0x03E00008,                                  # continuation entry
+            0x00000000,                                  # delay slot
+            0x00000000,
+            0x00000000,
+            0x03E00008,                                  # called entry
+            0x00000000,                                  # delay slot
+        ]
+        elf_path = self.root / "cfg-owned.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+        report = analyze.canonical_cfg_report(
+            image,
+            ranges=[(PRIMARY_BASE, PRIMARY_BASE + len(words) * 4)],
+            entries=[PRIMARY_BASE, PRIMARY_BASE + 8, target],
+        )
+
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+        by_address = {row["address"]: row for row in report["instructions"]}
+        self.assertEqual(by_address[PRIMARY_BASE + 8]["classification"], "interior-entry")
+        self.assertTrue(
+            any(
+                edge["source"] == PRIMARY_BASE
+                and edge["target"] == PRIMARY_BASE + 8
+                for edge in report["continuation_edges"]
+            )
+        )
+        self.assertTrue(
+            any(
+                edge["source"] == PRIMARY_BASE
+                and edge["target"] == target
+                and edge["kind"] == "call"
+                for edge in report["call_edges"]
+            )
+        )
+
+    def test_cfg_gate_kills_an_unowned_executable_word(self) -> None:
+        # The nonzero word after an early return is executable-range content, not
+        # padding. It must remain an explicit ownership failure.
+        words = [
+            0x03E00008,  # jr $ra
+            0x00000000,  # delay slot
+            0x3C020001,  # unreachable, non-padding instruction word
+            0x00000000,
+        ]
+        elf_path = self.root / "cfg-gap.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+        report = analyze.canonical_cfg_report(
+            image,
+            ranges=[(PRIMARY_BASE, PRIMARY_BASE + len(words) * 4)],
+            entries=[PRIMARY_BASE],
+        )
+
+        findings = analyze.canonical_cfg_gate(report)
+        self.assertIn(
+            {"code": "ownership-gap", "message": "unowned executable word at 0x00001008"},
+            findings,
+        )
+
+    def test_cfg_cli_writes_machine_report_and_runs_gate(self) -> None:
+        report_path = self.root / "reports" / "cfg.json"
+        proc = subprocess.run(
+            [
+                sys.executable, str(TOOLS / "analyze.py"), str(self.elf),
+                "--base=0", f"--cfg-report={report_path}", "--cfg-gate",
+            ],
+            cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        report = json.loads(report_path.read_text(encoding="ascii"))
+        self.assertEqual(report["schema_version"], analyze.CFG_SCHEMA_VERSION)
+        self.assertEqual(
+            [row["address"] for row in report["ownership_map"]],
+            [row["address"] for row in report["instructions"]],
+        )
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+        self.assertIn("CFG_GATE PASS", proc.stdout)
+
+    def test_codegen_cfg_gate_is_opt_in_and_writes_the_same_report(self) -> None:
+        out_c = self.root / "cfg-gated.c"
+        report_path = self.root / "reports" / "codegen-cfg.json"
+        proc = subprocess.run(
+            [
+                sys.executable, str(TOOLS / "codegen.py"), str(self.elf), str(out_c),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000",
+                f"--cfg-report={report_path}", "--cfg-gate",
+            ],
+            cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertTrue(out_c.is_file())
+        report = json.loads(report_path.read_text(encoding="ascii"))
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+        self.assertIn("CFG_GATE PASS", proc.stdout)
+
+    def test_cfg_report_verifier_kills_missing_projection(self) -> None:
+        image = analyze.Elf(str(self.elf), base=0)
+        report = analyze.canonical_cfg_report(
+            image,
+            ranges=[(PRIMARY_BASE, PRIMARY_BASE + 8)],
+            entries=[PRIMARY_BASE],
+        )
+        report["byte_classification"].pop()
+        findings = analyze.canonical_cfg_gate(report)
+        self.assertTrue(any(item["code"] == "executable-coverage-gap" for item in findings))
 
     def test_codegen_cli_scans_only_the_ranges_it_was_given(self) -> None:
         # codegen reports the ranges it actually scanned, which is the externally

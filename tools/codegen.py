@@ -18,7 +18,10 @@ if _TOOLS_DIRECTORY not in sys.path:
 
 # Import the local analyzer
 import build_profile
-from analyze import analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans
+from analyze import (
+    analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
+    canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
+)
 from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
 
@@ -2375,7 +2378,8 @@ def main(argv):
     if len(args) < expected:
         sys.stderr.write(
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
-            "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] [--extra-elf=ELF@BASE]...\n"
+            "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
+            "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -2402,6 +2406,8 @@ def main(argv):
     funcs_per_chunk = 2000
     chunk_target_bytes = 0
     extra_span_arg = None
+    cfg_report_path = None
+    cfg_gate = False
     omit_aot = _OmitAot()
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
@@ -2410,6 +2416,13 @@ def main(argv):
             base = int(o.split("=", 1)[1], 16)
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
+        elif o.startswith("--cfg-report="):
+            cfg_report_path = o.split("=", 1)[1]
+            if not cfg_report_path:
+                sys.stderr.write("--cfg-report requires a path\n")
+                return 2
+        elif o == "--cfg-gate":
+            cfg_gate = True
         elif o == "--static-verify":
             global SV_ENABLED
             SV_ENABLED = True
@@ -2493,6 +2506,31 @@ def main(argv):
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     analyzed, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
+    if cfg_report_path is not None or cfg_gate:
+        # This opt-in gate audits the primary image. Extra modules have their own
+        # analyzer invocation below and remain a separate bring-up surface until
+        # their ownership roots have an equivalent source-owned contract.
+        cfg_report = canonical_cfg_report(elf, ranges=ranges, entries=analyzed)
+        if cfg_report_path is not None:
+            parent = os.path.dirname(cfg_report_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
+                output.write(canonical_cfg_json(cfg_report))
+            print("wrote CFG report:", cfg_report_path)
+        if cfg_gate:
+            cfg_findings = canonical_cfg_gate(cfg_report)
+            if cfg_findings:
+                for finding in cfg_findings:
+                    sys.stderr.write(
+                        f"CFG_GATE {finding['code']}: {finding['message']}\n"
+                    )
+                return 1
+            print(
+                "CFG_GATE PASS: "
+                f"{len(cfg_report['instructions'])} executable words, "
+                f"{len(cfg_report['entries'])} entries"
+            )
     owned_exec_ranges = list(ranges)
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
     omitted = omit_aot.apply(catalog, elf.entry)
