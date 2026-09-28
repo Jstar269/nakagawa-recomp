@@ -14,7 +14,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "assets" / "flight_recorder_schema.json"
-CLASS_ORDER = ("hle", "unsupported", "sched", "prx", "fault", "fatal")
+CLASS_ORDER = ("hle", "unsupported", "sched", "prx", "media", "fault", "fatal")
 
 
 class FlightDiffError(ValueError):

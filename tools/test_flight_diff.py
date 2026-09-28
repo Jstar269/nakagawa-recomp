@@ -45,7 +45,7 @@ def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit",
         "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
         "build": build,
         "recorder": {
-            "enabled_classes": ["hle", "unsupported", "sched", "prx", "fault", "fatal"],
+            "enabled_classes": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"],
             "limit": 4,
             "recorded": recorded,
             "dropped": dropped,
