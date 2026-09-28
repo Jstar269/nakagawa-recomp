@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a5e117ff8aadfc652178e88cab5302a1cff1bc3f9242df4f4dd32aef51adfd96"
+      "sha256": "69c6ce53a113a1982ae592e74c06316e8f68bb8ae9c1aa9df9b071c565a01b84"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4563,7 +4563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9a3100584a3efeb67424f9dfd22b9d7a81a066a043900e10acf5710d290be66"
+      "sha256": "289048453b048e11aca6d556317e68aaa81d258874a07bf3ef47f957fafc980b"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5891,7 +5891,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50c68fd8b39d822d44c55bdd9f90288fbbb995e8d574267ee1ef44dd08daa891"
+      "sha256": "0f18c7fec36b761da2a48ae1bb1158a5df3d8de403fa6a206023394fce5e58d3"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -8696,7 +8696,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65a0333479abbfaf6a816737c85f49216b357f4d816b213ed85038997b118449"
+      "sha256": "3d59b8badb336003201c25cc90dcfe00d45ec7dd8abe9e76db47466644b6f3b3"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9357,7 +9357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "129d428a4606f968f7a20536cee2ac620dca5bc6edfded4d09e9201a3040e99d"
+      "sha256": "368db359546b637fc277410e601da0aabcd2d93c7ae6295bbbc6b97510eeb653"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
@@ -9472,11 +9472,10 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "b290fb911e3a63d588e683193f4adb17a6b5cf01",
-    "candidate_tree": "7c0ce89d54f83f4abc75010de72c62340f80e0a4",
+    "candidate_tree": "0cfb1be6f7cad5e0b384bf8195f35cbb127b05b9",
     "refreshed_paths": [
-      "tools/generate_sbom.py",
-      "tools/test_sbom.py",
-      "tools/verify_sbom.py"
+      "src/rt/hle.c",
+      "src/rt/hle_thread_selftest.c"
     ]
   }
 }
