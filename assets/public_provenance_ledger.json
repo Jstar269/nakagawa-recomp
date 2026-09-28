@@ -1069,7 +1069,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e06ed6583b394aed126242cf68930fb1af4ed0197140e5d0e396a7ba4e4def5e"
+      "sha256": "7c3e707c76ab69b3b7052e2a198c6ad14d176e0d453e069f72a75c4de265956f"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -6084,7 +6084,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c7f3e1a21667f459032df174e5173243cc8f6f2514647f30c24bbee77bd315e"
+      "sha256": "2a757776de5411e2f37f9e49eec549d7a0f07ec286a6902d1b9208160b8d5fcc"
     },
     {
       "path": "tools/lint_docs.py",
@@ -7915,7 +7915,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c5913eb113457afbcab02d55aa96b29bc42c97aa71e0df31c632fdf778969b03"
+      "sha256": "c93ee3205e12596a94a4f21d9e146feae64963d6ad400a8cefcfa9b9cdb5142f"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -9471,11 +9471,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "1dc176ab06f10088acbf9d130957c9f3382683b1",
-    "candidate_tree": "6fb3998545c2aa9468c4973a1f93e43e6c8225a3",
+    "trusted_tree": "023dbbf2a19906a39b665b4ad99b60bc8212a8f3",
+    "candidate_tree": "202c80bf9bd8aa78caca2752a2412033cb57e7f4",
     "refreshed_paths": [
-      "tools/nk_cli.py",
-      "tools/test_production_smoke.py"
+      "docs/COMPATIBILITY.md",
+      "tools/library_sweep.py",
+      "tools/test_library_sweep.py"
     ]
   }
 }
