@@ -562,13 +562,14 @@ class MakeIdentityResolutionTests(unittest.TestCase):
         """The direct media selftest compile emits identity-bound bundles."""
         make = shutil.which("mingw32-make") or shutil.which("make")
         self.assertTrue(make, "GNU Make is required for the build-identity check")
+        environment = os.environ.copy()
+        environment["SOURCE_DATE_EPOCH"] = FAKE_EPOCH
         result = subprocess.run(
             [
                 make,
                 "--no-print-directory",
                 "--dry-run",
                 "BUILD_DIR=build/flight-media-identity-dry-run",
-                f"SOURCE_DATE_EPOCH={FAKE_EPOCH}",
                 f"SR_SOURCE_COMMIT={FAKE_COMMIT}",
                 "psmf-media-selftest",
             ],
@@ -576,6 +577,7 @@ class MakeIdentityResolutionTests(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=300,
+            env=environment,
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
