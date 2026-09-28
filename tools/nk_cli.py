@@ -2350,7 +2350,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             raise PackageBuildError("The generated package executable is missing.")
         env = os.environ.copy()
         env.update({
+            # SDL3 prefers the singular selector names. Pin both spellings so
+            # an inherited modern or legacy selector cannot replace the
+            # dummy backend used by this headless route.
+            "SDL_VIDEO_DRIVER": "dummy",
             "SDL_VIDEODRIVER": "dummy",
+            "SDL_AUDIO_DRIVER": "dummy",
             "SDL_AUDIODRIVER": "dummy",
             "PSP_ISO": str(iso_path),
             "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
