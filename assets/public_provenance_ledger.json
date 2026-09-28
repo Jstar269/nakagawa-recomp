@@ -6084,7 +6084,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0afdb45b4330f5e2778b525e3fdf6b87613e0078429977f443e7116bef080237"
+      "sha256": "2a757776de5411e2f37f9e49eec549d7a0f07ec286a6902d1b9208160b8d5fcc"
     },
     {
       "path": "tools/lint_docs.py",
@@ -9468,5 +9468,15 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "023dbbf2a19906a39b665b4ad99b60bc8212a8f3",
+    "candidate_tree": "202c80bf9bd8aa78caca2752a2412033cb57e7f4",
+    "refreshed_paths": [
+      "docs/COMPATIBILITY.md",
+      "tools/library_sweep.py",
+      "tools/test_library_sweep.py"
+    ]
+  }
 }
