@@ -6084,7 +6084,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9bb12af85ea7a96bbfe3a7a2083b5c0c1e9488a7a7ad5dca80b12fae475600a9"
+      "sha256": "0afdb45b4330f5e2778b525e3fdf6b87613e0078429977f443e7116bef080237"
     },
     {
       "path": "tools/lint_docs.py",
@@ -7915,7 +7915,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b43b0b8280339cb81f08a07713512316440df2b67c0c342a079354883a43b893"
+      "sha256": "c93ee3205e12596a94a4f21d9e146feae64963d6ad400a8cefcfa9b9cdb5142f"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -9468,15 +9468,5 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "023dbbf2a19906a39b665b4ad99b60bc8212a8f3",
-    "candidate_tree": "e69fc0ef777f8fdc5bcd769600b406314625a99b",
-    "refreshed_paths": [
-      "docs/COMPATIBILITY.md",
-      "tools/library_sweep.py",
-      "tools/test_library_sweep.py"
-    ]
-  }
+  ]
 }
