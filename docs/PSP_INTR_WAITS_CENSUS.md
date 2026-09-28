@@ -21,15 +21,15 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 ## Summary
 
-- total exact APIs: **73**
-- missing: **22**
+- total exact APIs: **72**
+- missing: **21**
 - registered (fake success): **0**
 - implemented: **51**
 - controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #339: 22
+- #339: 21
 - #341: 42
 
 ## Census
@@ -41,7 +41,6 @@ Open-owner counts:
 | `sceAudioSRCChReserve` | missing | #339 | missing | - | - | - |
 | `sceAudioSRCOutputBlocking` | missing | #339 | missing | - | - | - |
 | `sceCtrlReadBufferPositive` | implemented | #341 | dedicated | unreviewed | `h_CtrlReadBuffer` | `0x1f803938` |
-| `sceDisplay` | missing | #339 | missing | - | - | - |
 | `sceDisplayIsVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayIsVblank` | `0x4d4e10ec` |
 | `sceDisplayWaitVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblank` | `0x36cdfade` |
 | `sceDisplayWaitVblankCB` | missing | #339 | missing | - | - | - |
