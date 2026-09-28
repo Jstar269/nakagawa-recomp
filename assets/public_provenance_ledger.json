@@ -5891,7 +5891,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0f18c7fec36b761da2a48ae1bb1158a5df3d8de403fa6a206023394fce5e58d3"
+      "sha256": "50c68fd8b39d822d44c55bdd9f90288fbbb995e8d574267ee1ef44dd08daa891"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -8696,7 +8696,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3d59b8badb336003201c25cc90dcfe00d45ec7dd8abe9e76db47466644b6f3b3"
+      "sha256": "65a0333479abbfaf6a816737c85f49216b357f4d816b213ed85038997b118449"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9357,7 +9357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "368db359546b637fc277410e601da0aabcd2d93c7ae6295bbbc6b97510eeb653"
+      "sha256": "129d428a4606f968f7a20536cee2ac620dca5bc6edfded4d09e9201a3040e99d"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
@@ -9471,11 +9471,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "b290fb911e3a63d588e683193f4adb17a6b5cf01",
-    "candidate_tree": "0cfb1be6f7cad5e0b384bf8195f35cbb127b05b9",
+    "trusted_tree": "788f1e13aa2b41bb5865226da8fb0b581c47f3e2",
+    "candidate_tree": "172357a2a713ca6a1f8455cf8405c7595ea56966",
     "refreshed_paths": [
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c"
+      "tools/generate_sbom.py",
+      "tools/test_sbom.py",
+      "tools/verify_sbom.py"
     ]
   }
 }
