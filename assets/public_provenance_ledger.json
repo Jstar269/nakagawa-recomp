@@ -1219,7 +1219,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "91c49f63ffba0f04933bf723f2b40a3666fd83c64541e9e2498d36b704aa7c5e"
+      "sha256": "b99ff833900c16704993466f0631a3800dea50afb22ea75b732f868b6bc490dd"
     },
     {
       "path": "docs/PORTING.md",
@@ -8864,7 +8864,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6c12b627ba9d2f469d8a806d00a0747098b789e40c225c1ed9b8fec0927110d9"
+      "sha256": "8546a79f58877f82968991e5305c5a65a697888a95348ca1564b26849c9c394c"
     },
     {
       "path": "tools/test_title_codegen_plan.py",
@@ -9468,14 +9468,5 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "1dc176ab06f10088acbf9d130957c9f3382683b1",
-    "candidate_tree": "6fb3998545c2aa9468c4973a1f93e43e6c8225a3",
-    "refreshed_paths": [
-      "tools/nk_cli.py",
-      "tools/test_production_smoke.py"
-    ]
-  }
+  ]
 }
