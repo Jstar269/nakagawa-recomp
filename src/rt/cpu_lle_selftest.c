@@ -68,6 +68,9 @@ uint64_t SDL_GetTicksNS(void) { return 0u; }
 /* ---- harness ---------------------------------------------------------------------- */
 
 static int g_failed = 0;
+static unsigned g_aot_exception_handler_calls = 0;
+static unsigned g_aot_exception_body_fallthroughs = 0;
+static unsigned g_aot_exception_caller_after_call = 0;
 
 #define CHECK(cond, ...) do { \
     if (!(cond)) { fprintf(stderr, "FAIL L%d: ", __LINE__); \
@@ -81,6 +84,10 @@ static int g_failed = 0;
 #define TEST_SPAN_END 0x08811000u
 #define TEST_VECTOR 0x80000180u
 #define TEST_VSPAN_END 0x80001000u
+#define AOT_EXCEPTION_ENTRY (TEST_BASE + 0x100u)
+#define AOT_EXCEPTION_VECTOR (TEST_VECTOR + 0x100u)
+#define AOT_EXCEPTION_RESUME (TEST_BASE + 0x200u)
+#define AOT_EXCEPTION_CALLER (TEST_BASE + 0x300u)
 
 /* Measured pre-exception Status for campaign psp-hw-20260917 (PSP-A1-01,
  * PSP-A2-01, PSP-A3-01): KSU user, IE 1, IM 0x86, EXL 0 before entry. The
@@ -1198,6 +1205,129 @@ static void test_dispatch_interpreter_flow(void) {
     CHECK(s.flow_target == 0u, "flow_target must be cleared");
 }
 
+/* A registered AOT body must hand an LLE exception to the production dispatcher.
+ * This mirrors the generated --lle-cpu syscall statement: the helper owns the
+ * architectural frame, and the native body must leave immediately when it sets
+ * runtime transfer metadata. */
+static void aot_exception_syscall_body(CpuState *s) {
+    if (sr_cpu_raise_exception(
+            s, SR_EXC_SYS, AOT_EXCEPTION_ENTRY, AOT_EXCEPTION_ENTRY,
+            0u, 0u, 0u) < 0) {
+        return;
+    }
+    /* A helper failure would incorrectly fall through into the interrupted body. */
+    g_aot_exception_body_fallthroughs++;
+}
+
+static void aot_exception_handler_body(CpuState *s) {
+    g_aot_exception_handler_calls++;
+    s->r[2] = 0xA321u;
+}
+
+/* This is a registered AOT caller-shaped body.  Its nested dispatch_call is a
+ * real production boundary, so the marker after it tells us whether the
+ * dispatcher returns after a vector body returns.  The vector below is a
+ * synthetic handler that does not execute eret; this test therefore states the
+ * host dispatch contract and does not claim guest resume semantics. */
+static void aot_exception_caller_body(CpuState *s) {
+    dispatch_call(s, AOT_EXCEPTION_ENTRY, AOT_EXCEPTION_RESUME);
+    g_aot_exception_caller_after_call++;
+}
+
+static void test_dispatch_aot_exception_flow(void) {
+    CpuState s;
+    int r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_VECTOR, AOT_EXCEPTION_VECTOR,
+                           AOT_EXCEPTION_VECTOR);
+    CHECK(sr_exec_span_owns_fetch(AOT_EXCEPTION_ENTRY),
+          "AOT exception entry must have executable ownership");
+    CHECK(sr_exec_span_owns_fetch(AOT_EXCEPTION_VECTOR),
+          "AOT exception vector must have executable ownership");
+    CHECK(sr_exec_span_owns_fetch(AOT_EXCEPTION_CALLER),
+          "AOT exception caller must have executable ownership");
+
+    g_aot_exception_handler_calls = 0;
+    g_aot_exception_body_fallthroughs = 0;
+    g_aot_exception_caller_after_call = 0;
+    sr_register(AOT_EXCEPTION_ENTRY, aot_exception_syscall_body);
+    sr_register(AOT_EXCEPTION_VECTOR, aot_exception_handler_body);
+    sr_register(AOT_EXCEPTION_CALLER, aot_exception_caller_body);
+
+    s.pc = AOT_EXCEPTION_ENTRY;
+    s.r[2] = 0xDEADBEEFu;
+    s.r[31] = AOT_EXCEPTION_RESUME;
+    r = dispatch_call_try(&s, AOT_EXCEPTION_ENTRY, AOT_EXCEPTION_RESUME);
+
+    CHECK(r == SR_GUEST_INTERP_AOT_HANDOFF,
+          "AOT exception dispatch must report handoff (got %d)", r);
+    CHECK(g_aot_exception_handler_calls == 1,
+          "AOT exception handler must run exactly once (got %u)",
+          g_aot_exception_handler_calls);
+    CHECK(g_aot_exception_body_fallthroughs == 0,
+          "AOT exception body continued after raising (got %u)",
+          g_aot_exception_body_fallthroughs);
+    CHECK(s.r[2] == 0xA321u, "AOT exception handler result was not retained (got 0x%08x)",
+          s.r[2]);
+    CHECK(s.cop0[SR_CP0_EPC] == AOT_EXCEPTION_ENTRY,
+          "AOT exception EPC=0x%08x, want 0x%08x",
+          s.cop0[SR_CP0_EPC], AOT_EXCEPTION_ENTRY);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS,
+          "AOT exception Cause.ExcCode=%u, want SYS",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u,
+          "plain AOT syscall must leave Cause.BD clear");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u,
+          "AOT exception must set Status.EXL");
+    CHECK(s.flow_kind == SR_FLOW_NONE && s.flow_target == 0u,
+          "AOT dispatcher must consume flow metadata (kind=%u target=0x%08x)",
+          s.flow_kind, s.flow_target);
+
+    /* A nested dispatch_call returns after the synthetic vector body returns;
+     * only the exception body itself is interrupted by the helper transfer. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_VECTOR, AOT_EXCEPTION_VECTOR,
+                           AOT_EXCEPTION_VECTOR);
+    g_aot_exception_handler_calls = 0;
+    g_aot_exception_body_fallthroughs = 0;
+    g_aot_exception_caller_after_call = 0;
+    s.pc = AOT_EXCEPTION_CALLER;
+    s.r[2] = 0xDEADBEEFu;
+    s.r[31] = AOT_EXCEPTION_RESUME;
+    r = dispatch_call_try(&s, AOT_EXCEPTION_CALLER, AOT_EXCEPTION_RESUME);
+
+    CHECK(r == SR_GUEST_INTERP_AOT_HANDOFF,
+          "nested AOT exception dispatch must report handoff (got %d)", r);
+    CHECK(g_aot_exception_handler_calls == 1,
+          "nested AOT exception handler must run exactly once (got %u)",
+          g_aot_exception_handler_calls);
+    CHECK(g_aot_exception_body_fallthroughs == 0,
+          "nested AOT exception body continued after raising (got %u)",
+          g_aot_exception_body_fallthroughs);
+    CHECK(g_aot_exception_caller_after_call == 1,
+          "nested dispatch_call must return after its vector body (got %u)",
+          g_aot_exception_caller_after_call);
+    CHECK(s.r[2] == 0xA321u,
+          "nested AOT exception handler result was not retained (got 0x%08x)",
+          s.r[2]);
+    CHECK(s.cop0[SR_CP0_EPC] == AOT_EXCEPTION_ENTRY,
+          "nested AOT exception EPC=0x%08x, want 0x%08x",
+          s.cop0[SR_CP0_EPC], AOT_EXCEPTION_ENTRY);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS,
+          "nested AOT exception Cause.ExcCode=%u, want SYS",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u,
+          "nested plain AOT syscall must leave Cause.BD clear");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u,
+          "nested AOT exception must set Status.EXL");
+    CHECK(s.flow_kind == SR_FLOW_NONE && s.flow_target == 0u,
+          "nested AOT dispatcher must consume flow metadata (kind=%u target=0x%08x)",
+          s.flow_kind, s.flow_target);
+}
+
 static void test_interp_flow_trace(void) {
     CpuState s;
     SrGuestInterpFault fault;
@@ -1371,6 +1501,7 @@ int main(void) {
     sr_mem_init();
     setup_spans();
     test_dispatch_interpreter_flow();
+    test_dispatch_aot_exception_flow();
     test_interp_flow_trace();
     test_exception_entry_plain();
     test_exception_delay_slot();

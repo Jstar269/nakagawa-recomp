@@ -3944,7 +3944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a814c39d60850cd3fb3655f32914a090ac906c6c21ec417031d68c4ce197edd0"
+      "sha256": "ebd0f9ea28ba7035b56986c69cd1c0d172df394409fd15ec5d1805ff969164f7"
     },
     {
       "path": "src/rt/debug.c",
@@ -9471,12 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "788f1e13aa2b41bb5865226da8fb0b581c47f3e2",
-    "candidate_tree": "172357a2a713ca6a1f8455cf8405c7595ea56966",
+    "trusted_tree": "fda9d2ca6ea5e7bff32c4b218a540418a2c07447",
+    "candidate_tree": "b9a32e8f4a82bdae53354560fb05452e6259702e",
     "refreshed_paths": [
-      "tools/generate_sbom.py",
-      "tools/test_sbom.py",
-      "tools/verify_sbom.py"
+      "src/rt/cpu_lle_selftest.c"
     ]
   }
 }
