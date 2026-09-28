@@ -1276,7 +1276,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "504ee5f776db03f88afdbbd573eb44b489534fcf7e0bd08a5920b2950b163a5a"
+      "sha256": "235ef530991422ccb3e81e2156d075256233bdecab796b03979ae80746641977"
     },
     {
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
@@ -1285,7 +1285,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "950e0e4c1889fce0f2399d3f44ccc5b4ce55b262e117f12f9f7a2e30770395f6"
+      "sha256": "bdb4a5828eed99a73a3e30bb94e02524e4e75a8521c382065758b7744407d001"
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
@@ -9200,7 +9200,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92ce7353d1fa7937ea6e2847250897d1868a41d20aebf0dfcd26237f78fc2705"
+      "sha256": "a942a985634845eff5445b06d4200c35ee5459200192cb577cef0f7deeae7b01"
     },
     {
       "path": "tools/test_workspace_paths.py",
@@ -9471,12 +9471,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "788f1e13aa2b41bb5865226da8fb0b581c47f3e2",
-    "candidate_tree": "172357a2a713ca6a1f8455cf8405c7595ea56966",
+    "trusted_tree": "fda9d2ca6ea5e7bff32c4b218a540418a2c07447",
+    "candidate_tree": "eba302cc6785ba24dc9ff0bc2f5acca54e8504c0",
     "refreshed_paths": [
-      "tools/generate_sbom.py",
-      "tools/test_sbom.py",
-      "tools/verify_sbom.py"
+      "docs/PSP_INTR_WAITS_CENSUS.md",
+      "docs/PSP_INTR_WAITS_MATRIX.md",
+      "tools/test_waits_census.py"
     ]
   }
 }
