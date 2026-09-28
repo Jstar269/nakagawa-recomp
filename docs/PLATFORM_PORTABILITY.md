@@ -103,6 +103,18 @@ portable decoder implementation.
    - Validated on Windows 11 with MinGW GCC 16.1.0 (`-Wall -Wextra -Werror` zero warnings).
    - Validated on Ubuntu 24.04 via WSL (`gcc 13.3.0`, CTest 100% pass).
 
+### Tracked title-catalog artifacts
+
+The generated catalog outputs
+`src/core/generated/nk_title_catalog.h` and `src/core/generated/nk_title_catalog.c`
+are intentionally tracked. Make and CMake builds consume these reviewed source-tree
+artifacts during ordinary builds, so the catalog generator is not required as a build
+prerequisite. To regenerate the outputs, run `python tools/title_catalog_codegen.py`;
+to verify that the tracked outputs exactly match the public title manifests, run
+`python tools/title_catalog_codegen.py --verify`. The exact-output regression is
+`TitleCatalogTests.test_live_catalog_verify_passes` in `tools/test_title_catalog.py`.
+These tracked source artifacts do not include generated binaries or private title data.
+
 ## Verifying the POSIX backend before CI does
 
 The local inner loop on the Windows development host is mingw32 only, but hosted CI compiles
