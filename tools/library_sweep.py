@@ -900,7 +900,7 @@ def _public_aggregate(
 ) -> dict:
     _validate_sweep_rows(rows)
     if not isinstance(total_isos, int) or isinstance(total_isos, bool) or total_isos < len(rows):
-        raise ValueError("public aggregate total ISO count is smaller than recorded rows")
+        raise ValueError("public aggregate total ISO count is smaller than the number of recorded rows")
     stage_counts = Counter(row.get("furthest_stage", "identify") for row in rows)
     histogram = {stage: stage_counts.get(stage, 0) for stage in STAGES}
     blocker_rows: dict[str, dict] = {}
@@ -931,6 +931,8 @@ def _public_aggregate(
             family_counts.items(), key=lambda item: (-item[1], item[0].casefold(), item[0])
         )
     ]
+    # Blocker rows carry one boundary code each; a title can name several NID families,
+    # so the family title counts can legitimately add up to more than recorded_routes.
     aggregate = {
         "schema_version": 1,
         "source_commit": source_commit,
@@ -950,6 +952,8 @@ def _public_aggregate(
     }
 
     if previous_aggregate is not None:
+        # The CLI loader already validates its file input. Keep this check so direct
+        # callers of _public_aggregate cannot bypass the previous-output contract.
         previous_aggregate = _validate_public_aggregate(previous_aggregate)
     current_histogram = aggregate["furthest_stage_histogram"]
     current_coverage = aggregate["coverage"]
