@@ -384,10 +384,7 @@ def verify_additional_sbom_root_versions(
             errors.append(f"Failed to parse SPDX 3 SBOM {spdx3_path}: {exc}")
         else:
             graph = document.get("@graph") if isinstance(document, dict) else None
-            root_id = (
-                f"{generate_sbom.DOCUMENT_NAMESPACE_BASE}-{expected_version}"
-                "#Package-nakagawa-recomp"
-            )
+            root_id = generate_sbom.spdx3_root_package_id(expected_version)
             roots = [item for item in graph if isinstance(item, dict)
                      and item.get("@id") == root_id
                      and item.get("@type") == "spdx:Package"] if isinstance(graph, list) else []
