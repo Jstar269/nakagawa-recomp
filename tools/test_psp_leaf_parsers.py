@@ -17,16 +17,12 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from psp_oracle.parse_audio_query import (
-    SPEC as AUDIO_SPEC,
+from psp_oracle.parse_golden import (
+    AUDIO_SPEC,
+    CACHE_SPEC,
+    IO_SPEC,
     parse_audio_query_output,
-)
-from psp_oracle.parse_cache_alias import (
-    SPEC as CACHE_SPEC,
     parse_cache_alias_output,
-)
-from psp_oracle.parse_io_matrix import (
-    SPEC as IO_SPEC,
     parse_io_matrix_output,
 )
 from psp_oracle.protocol import ProtocolError, StreamSpec
