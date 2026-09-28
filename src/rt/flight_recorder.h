@@ -17,7 +17,8 @@ enum {
     SR_FLIGHT_CLASS_PRX = 1u << 3,
     SR_FLIGHT_CLASS_FAULT = 1u << 4,
     SR_FLIGHT_CLASS_FATAL = 1u << 5,
-    SR_FLIGHT_CLASS_ALL = (1u << 6) - 1u,
+    SR_FLIGHT_CLASS_MEDIA = 1u << 6,
+    SR_FLIGHT_CLASS_ALL = (1u << 7) - 1u,
     SR_FLIGHT_MAX_EVENTS = 4096u,
     SR_FLIGHT_SCHEMA_VERSION = 3u
 };
@@ -39,7 +40,18 @@ enum {
     SR_FLIGHT_KIND_FATAL_UNIMPLEMENTED = 14u,
     SR_FLIGHT_KIND_FATAL_CPU_FLOW = 15u,
     SR_FLIGHT_KIND_FATAL_IMPORT = 16u,
-    SR_FLIGHT_KIND_FATAL_HOST = 17u
+    SR_FLIGHT_KIND_FATAL_HOST = 17u,
+    SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE = 18u
+};
+
+/* Synthetic media-selftest labels only. They describe source-owned fixture
+ * milestones; they are not claims about PSP hardware event names or timing. */
+enum {
+    SR_FLIGHT_MEDIA_TEST_SOURCE_READY = 1u,
+    SR_FLIGHT_MEDIA_TEST_PRODUCER_OPEN = 2u,
+    SR_FLIGHT_MEDIA_TEST_AU_READY = 3u,
+    SR_FLIGHT_MEDIA_TEST_FRAME_READY = 4u,
+    SR_FLIGHT_MEDIA_TEST_EOF = 5u
 };
 
 enum {

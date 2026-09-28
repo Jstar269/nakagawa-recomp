@@ -1,0 +1,16 @@
+{
+  "schema_version": 3,
+  "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
+  "build": {"compiler": "gcc", "source_date_epoch": null, "build_id": "a8f58451acf816bdbd6792f590fa407b27b92c97", "pointer_bits": 64},
+  "recorder": {"enabled_classes": ["media"], "limit": 16, "recorded": 7, "dropped": 0, "triggers": {"first_fatal": true, "first_unsupported_nid": true, "fired": 0}},
+  "terminal": {"reason": "exit", "sequence": 7, "kind": 0, "arg0": 0},
+  "events": [
+    {"schema_version": 3, "sequence": 1, "class": "media", "kind": 18, "arg0": 1, "arg1": 21018, "arg2": 3, "arg3": 0},
+    {"schema_version": 3, "sequence": 2, "class": "media", "kind": 18, "arg0": 2, "arg1": 1, "arg2": 1, "arg3": 7},
+    {"schema_version": 3, "sequence": 3, "class": "media", "kind": 18, "arg0": 3, "arg1": 0, "arg2": 6205, "arg3": 1},
+    {"schema_version": 3, "sequence": 4, "class": "media", "kind": 18, "arg0": 3, "arg1": 1, "arg2": 6188, "arg3": 1},
+    {"schema_version": 3, "sequence": 5, "class": "media", "kind": 18, "arg0": 3, "arg1": 2, "arg2": 6188, "arg3": 0},
+    {"schema_version": 3, "sequence": 6, "class": "media", "kind": 18, "arg0": 5, "arg1": 3, "arg2": 2, "arg3": 1},
+    {"schema_version": 3, "sequence": 7, "class": "media", "kind": 18, "arg0": 4, "arg1": 1, "arg2": 64, "arg3": 64}
+  ]
+}
