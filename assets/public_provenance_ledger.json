@@ -658,7 +658,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f948ebfe994eaa2500637530dd19cc6dae0ad5c5a4f33a93313153b2cc481b2f"
+      "sha256": "cf7d10448e4b6cea9e34dfb8e71eb05e14425b5cc7f20288fa6462d431a1582a"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -6656,76 +6656,16 @@
       "sha256": "759a530feca782352bda4ec23e1217fcda06e83a3100b175d5a532431b76323a"
     },
     {
-      "path": "tools/psp_oracle/parse_audio_query.py",
+      "path": "tools/psp_oracle/parse_golden.py",
       "classification": "project_authored_attested",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
+        "record_id": "psp-oracle-consolidation-20260927",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3640c6dc822d0f736e122ff31683e018a341c3b73af86a9bf535154312deafee"
-    },
-    {
-      "path": "tools/psp_oracle/parse_cache_alias.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c88d647af7519375a5f28c3ad5b9dd9c0be6087ca93a9982b6dfb3ff6a5b16c3"
-    },
-    {
-      "path": "tools/psp_oracle/parse_ctrl_clock.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "e727160d50dc141a81a000031c71ca725b02593aef15da404dd12d451f24e374"
-    },
-    {
-      "path": "tools/psp_oracle/parse_fpu_vector.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "ee8e5f6bfc1c7b3a3b2bf0ee9930e13c6e6e7a0855f239a527f62a9ba49b86a3"
-    },
-    {
-      "path": "tools/psp_oracle/parse_io_matrix.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "5bbe31908c829954f0d8ec088f327678d89fdae5bf47835caecc1e1732fc4afe"
-    },
-    {
-      "path": "tools/psp_oracle/parse_phaseb.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "psp-oracle-campaign-20260921",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "e057120e817670ee46c072cce41882ad2187bc8a92f1f561865f739ab00e2824"
+      "sha256": "aee15d28f3321467971a3a27ad49c58dc631c293e31400b2d6142d59ea553971"
     },
     {
       "path": "tools/psp_oracle/protocol.py",
@@ -8515,7 +8455,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a53bc34293df4b9935fedfd54958de5696b8fcf4d5ae45c44a9e716705877331"
+      "sha256": "43e11c5f7f4754d4664d98f35a585ec80b2ea6e03afaae5f8ecda66d8c38a2fd"
     },
     {
       "path": "tools/test_psp_oracle.py",
@@ -8539,7 +8479,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "892436aaa43385e7f2f0b2c27119352849f02ae4b95f3202c0619ea3dc76f361"
+      "sha256": "f06289b938773d9568f1af6e7c5351e464b5b0848c0c6c8578f486f38521b548"
     },
     {
       "path": "tools/test_psp_readiness.py",
