@@ -660,7 +660,7 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
    `INVALID_SIZE` (`0x80000104`) for count 256 and `CAN_NOT_WAIT` (`0x800201a7`) for valid across 3 contexts (6 cells). Test-only prerequisite first.
 7. **PR-G - registration of the 26 unregistered `waits.cpp` APIs**, in whatever order
    their subsystems land (Mbx, Tlspl, MsgPipe blocking forms,
-   `DelaySysClockThread`, the `sceDisplay` CB/Multi variants, `sceIoGetAsyncStat`).
+   `DelaySysClockThread`, the `sceDisplayWaitVblank*` CB/Multi variants, `sceIoGetAsyncStat`).
    The full VPL set (`CreateVpl`, `DeleteVpl`, `TryAllocateVpl`, `AllocateVpl`, `AllocateVplCB`,
    `FreeVpl`, `ReferVplStatus`) is now registered with wait queue integration.
    Each expands the matrix rather than changing it.

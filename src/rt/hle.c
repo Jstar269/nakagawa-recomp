@@ -7010,10 +7010,11 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
 }
 
 static uint32_t h_VolatileMemLock(CpuState *s) {
-    /* sceKernelVolatileMemLock(type, void **paddr, int *psize): hand the app the 4MB volatile
-     * partition. PPSSPP returns base 0x08400000, size 0x00400000; the game uses it as the
-     * destination scratch buffer for decompressing/copying loaded assets, so the out-params
-     * must be filled or the copy targets NULL. */
+    /* Keep the established 4 MiB success route and NULL-output tolerance. Check
+     * both complete non-NULL output spans before writing either one. */
+    if ((A1 && !sr_guest_span_writable(A1, 4u)) ||
+        (A2 && !sr_guest_span_writable(A2, 4u)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A1) MEM_W32(A1, 0x08400000u);
     if (A2) MEM_W32(A2, 0x00400000u);
     return 0;
@@ -16998,6 +16999,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ReferLwMutexStatus);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
+    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
@@ -17560,7 +17562,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xf78ba90a, "sceKernelStderr", h_StdFd);
     /* scePower / sceSuspendForUser / LoadExecForUser: locks and registrations succeed. */
     hle_register_power_lock_handlers();
-    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
     /* Unlock takes only the type arg -- it must NOT run the Lock handler: writing the
      * out-params through leftover a1/a2 register garbage sprayed two wild 4-byte writes
      * per asset-load unlock (this zeroed the resource registry's model-slot counter,
