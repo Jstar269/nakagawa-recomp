@@ -1069,7 +1069,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e06ed6583b394aed126242cf68930fb1af4ed0197140e5d0e396a7ba4e4def5e"
+      "sha256": "7c3e707c76ab69b3b7052e2a198c6ad14d176e0d453e069f72a75c4de265956f"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1219,7 +1219,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b99ff833900c16704993466f0631a3800dea50afb22ea75b732f868b6bc490dd"
+      "sha256": "91c49f63ffba0f04933bf723f2b40a3666fd83c64541e9e2498d36b704aa7c5e"
     },
     {
       "path": "docs/PORTING.md",
@@ -6084,7 +6084,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c7f3e1a21667f459032df174e5173243cc8f6f2514647f30c24bbee77bd315e"
+      "sha256": "2a757776de5411e2f37f9e49eec549d7a0f07ec286a6902d1b9208160b8d5fcc"
     },
     {
       "path": "tools/lint_docs.py",
@@ -7915,7 +7915,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c5913eb113457afbcab02d55aa96b29bc42c97aa71e0df31c632fdf778969b03"
+      "sha256": "c93ee3205e12596a94a4f21d9e146feae64963d6ad400a8cefcfa9b9cdb5142f"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -8864,7 +8864,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8546a79f58877f82968991e5305c5a65a697888a95348ca1564b26849c9c394c"
+      "sha256": "6c12b627ba9d2f469d8a806d00a0747098b789e40c225c1ed9b8fec0927110d9"
     },
     {
       "path": "tools/test_title_codegen_plan.py",
@@ -9468,5 +9468,15 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ]
+  ],
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "023dbbf2a19906a39b665b4ad99b60bc8212a8f3",
+    "candidate_tree": "202c80bf9bd8aa78caca2752a2412033cb57e7f4",
+    "refreshed_paths": [
+      "docs/COMPATIBILITY.md",
+      "tools/library_sweep.py",
+      "tools/test_library_sweep.py"
+    ]
+  }
 }
