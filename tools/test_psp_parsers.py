@@ -9,13 +9,14 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from psp_oracle.parse_fpu_vector import (
+from psp_oracle.parse_golden import (
     EXPECTED_CELLS as FPU_EXPECTED_CELLS,
-    EXPECTED_TERMINAL_COUNT,
+    EXPECTED_ORDERED_CASES as PHASEB_EXPECTED_CASES,
+    FPU_EXPECTED_TERMINAL_COUNT as EXPECTED_TERMINAL_COUNT,
+    parse_ctrl_clock_output,
     parse_fpu_vector_output,
+    parse_phaseb_output,
 )
-from psp_oracle.parse_phaseb import EXPECTED_ORDERED_CASES as PHASEB_EXPECTED_CASES, parse_phaseb_output
-from psp_oracle.parse_ctrl_clock import parse_ctrl_clock_output
 from psp_oracle.protocol import ProtocolError
 
 SAMPLE_META = (
