@@ -1219,7 +1219,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "91c49f63ffba0f04933bf723f2b40a3666fd83c64541e9e2498d36b704aa7c5e"
+      "sha256": "b99ff833900c16704993466f0631a3800dea50afb22ea75b732f868b6bc490dd"
     },
     {
       "path": "docs/PORTING.md",
@@ -8864,7 +8864,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6c12b627ba9d2f469d8a806d00a0747098b789e40c225c1ed9b8fec0927110d9"
+      "sha256": "8546a79f58877f82968991e5305c5a65a697888a95348ca1564b26849c9c394c"
     },
     {
       "path": "tools/test_title_codegen_plan.py",
@@ -9471,12 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "023dbbf2a19906a39b665b4ad99b60bc8212a8f3",
-    "candidate_tree": "202c80bf9bd8aa78caca2752a2412033cb57e7f4",
+    "trusted_tree": "da51ad6eff36523f0f85e9f285fe9786aabee0bb",
+    "candidate_tree": "98cee9b9d7e3f3b80a1f551764cf9cdd456e79e4",
     "refreshed_paths": [
-      "docs/COMPATIBILITY.md",
-      "tools/library_sweep.py",
-      "tools/test_library_sweep.py"
+      "docs/PLATFORM_PORTABILITY.md",
+      "tools/test_title_catalog.py"
     ]
   }
 }
