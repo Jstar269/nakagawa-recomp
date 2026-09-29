@@ -2834,7 +2834,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e882148a46f3c17f89a1ec80ea2a4d818216d6ba69eefd66f83c200df6f37610"
+      "sha256": "461c779934d734568761fa0df6c1671768b233fdb7d82c57b889e7e381c9eee7"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2870,7 +2870,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48e6e1bbbafc20f72898ca294797d7b0a59732462d5fcef0341b11d34d0da88d"
+      "sha256": "40ebabaaf027df358e069126bbdf6f521b6d1ee4bbc0248692f6880a5de57b1f"
     },
     {
       "path": "src/player/player_state.h",
@@ -2882,7 +2882,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5f998c8c5b9f0c42c4d05b2f91de01d8d85e9ca8fdeaec436cc35f781e303329"
+      "sha256": "92e27ca1726d8d0199a8149a6ee25d3abc316b9b80902e7386dd3203f7391dcb"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -2930,7 +2930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae256aff8f40d7899985ed068bc61e472ce3ef32e0e549c08913404e8056d9ed"
+      "sha256": "a3e1b778dc820257a487ef7a3f9aa9a4b0aa4b9c3771aef94d8cd79cefca658d"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -5364,7 +5364,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eeb5cd2d8fd449d8296a6860210a1913b70d97ed2b45ccf9b0e585c152d63275"
+      "sha256": "5e702106b1dbf3261e0bd2199d3ca3a9a508d3cc0626af5f63289848ff8cbee9"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -5376,7 +5376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aaeac0ecf631748f1cccd8674e7cea365dddd1eef7793a38c14a83c7dca6e514"
+      "sha256": "f12e405efe274d0597c638a960eecdd01bee2397e31ba736d1ca20a06747ef95"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -9471,11 +9471,20 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "da51ad6eff36523f0f85e9f285fe9786aabee0bb",
-    "candidate_tree": "98cee9b9d7e3f3b80a1f551764cf9cdd456e79e4",
+    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
+    "candidate_tree": "9101f271ffe1512be5f9c195b38c0fd820f1d1fe",
     "refreshed_paths": [
-      "docs/PLATFORM_PORTABILITY.md",
-      "tools/test_title_catalog.py"
+      "src/core/nk_launch.c",
+      "src/core/nk_launch.h",
+      "src/core/nk_platform_win32.c",
+      "src/player/main.c",
+      "src/player/package_builder.c",
+      "src/player/player_state.c",
+      "src/player/player_state.h",
+      "src/player/ui_renderer.c",
+      "tests/native/test_package_builder.c",
+      "tests/native/test_player_state.c",
+      "tests/native/test_player_ui.py"
     ]
   }
 }
