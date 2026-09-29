@@ -283,6 +283,11 @@ static void player_apply_launcher_fullscreen(PlayerApp *app, SDL_Window *window,
 }
 
 static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
+    if (player_app_take_close_confirmation_fallback(app)) {
+        fprintf(stderr,
+                "[PLAYER] Close confirmation was unavailable; the second close request is treated as explicit force-quit.\n");
+        return player_app_close_decision(app, true) == PLAYER_CLOSE_QUIT;
+    }
     if (player_app_close_decision(app, false) != PLAYER_CLOSE_CONFIRM_REQUIRED) {
         return true;
     }
@@ -303,7 +308,21 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
         NULL
     };
     int button_id = 0;
-    if (!SDL_ShowMessageBox(&dialog, &button_id)) return false;
+    bool dialog_shown = false;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (!getenv("NK_UI_TEST_MESSAGEBOX_FAIL")) {
+        dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
+    }
+#else
+    dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
+#endif
+    if (!dialog_shown) {
+        player_app_note_close_confirmation_failure(app);
+        fprintf(stderr,
+                "[PLAYER] Close confirmation failed: %.160s. Repeat the close request to force-quit safely.\n",
+                SDL_GetError());
+        return false;
+    }
     return player_app_close_decision(app, button_id == 1) == PLAYER_CLOSE_QUIT;
 }
 
@@ -609,6 +628,10 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->type = SDL_EVENT_QUIT;
         return 1;
     }
+    if (strcmp(token, "CLOSE") == 0) {
+        event->type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+        return 1;
+    }
     if (strncmp(token, "WAIT_MS=", 8) == 0) {
         uint64_t duration = 0;
         if (!player_ui_test_parse_positive_u64(token + 8, &duration) ||
@@ -785,9 +808,12 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     }
     SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
     bool badge_valid = ui_last_status_badge_rect(&badge);
+    int settings_two_col = app->active_view == VIEW_SETTINGS
+        ? (player_settings_uses_two_columns(app->window_width,
+                                             app->window_height) ? 1 : 0) : -1;
     printf("[PLAYER_UI_TEST] frame=%d ticks_ms=%llu view=%s "
            "selected=%d selected_disc=%s selected_title_id=%s "
-           "focus=%d focus_count=%d wizard_step=%s "
+           "focus=%d focus_count=%d settings_two_col=%d wizard_step=%s "
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
@@ -803,7 +829,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->selected_game_index,
            selected ? selected->disc_id : "NONE",
            selected ? selected->title_id : "NONE",
-           app->focus_index, ui_focus_count(app),
+           app->focus_index, ui_focus_count(app), settings_two_col,
            player_ui_test_wizard_step_name(app->wizard.step),
            app->wizard.font_confirmed ? 1 : 0,
            app->wizard.is_extracting ? 1 : 0, app->wizard.extraction_percent,
@@ -1507,6 +1533,7 @@ int main(int argc, char *argv[]) {
     bool ui_test_waiting_for_view = false;
     uint64_t ui_test_wait_deadline = 0;
     uint32_t ui_test_wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
+    bool ui_test_fake_game_running = false;
 #endif
     bool launch_now = false;
     bool stage_initial_iso = false;
@@ -1581,6 +1608,10 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    {
+        const char *fake_running = getenv("NK_UI_TEST_GAME_RUNNING");
+        ui_test_fake_game_running = ui_test_mode && fake_running && fake_running[0];
+    }
     if (ui_test_mode) setvbuf(stdout, NULL, _IONBF, 0);
 #endif
 
@@ -1929,6 +1960,7 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_fake_game_running) app.is_game_running = true;
     if (ui_test_error_code) {
         player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
                              "Synthetic UI regression error state.",
@@ -2518,7 +2550,14 @@ int main(int argc, char *argv[]) {
         }
 
         /* Monitor running game process */
-        bool child_exited = player_app_monitor_game_session(&app, SDL_GetTicks());
+        bool child_exited = false;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (!(ui_test_mode && ui_test_fake_game_running)) {
+#endif
+            child_exited = player_app_monitor_game_session(&app, SDL_GetTicks());
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        }
+#endif
         (void)child_exited;
         if (interactive_window && launcher_minimized_for_game &&
             !app.is_game_running) {
@@ -2536,10 +2575,13 @@ int main(int argc, char *argv[]) {
             SDL_RaiseWindow(window);
             launcher_minimized_for_game = false;
         }
+        /* Interactive launches must have a boot-event path and a real
+           window_ready/first_frame marker before the launcher yields focus.
+           Missing evidence keeps the launcher visible. */
         if (interactive_window && app.is_game_running &&
             !launcher_minimized_for_game &&
-            (!app.launch_session.boot_event_file_path[0] ||
-             player_app_child_window_ready(&app))) {
+            app.launch_session.boot_event_file_path[0] &&
+            player_app_child_window_ready(&app)) {
             player_capture_window_settings(&app, window);
             player_app_save_settings(&app, NULL);
             launcher_restore_flags = SDL_GetWindowFlags(window);

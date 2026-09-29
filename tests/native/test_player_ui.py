@@ -107,6 +107,8 @@ class NativePlayerUiTests(unittest.TestCase):
         drop_invalid_iso: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
+        width: int = 1280,
+        height: int = 720,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -151,6 +153,8 @@ class NativePlayerUiTests(unittest.TestCase):
             args.append("--ui-test-events=" + ";".join(event_script))
             screenshot = scratch / "last-frame.bmp"
             args.append(f"--ui-test-screenshot={screenshot}")
+            args.append(f"--width={width}")
+            args.append(f"--height={height}")
             if error_code:
                 args.append(f"--ui-test-error-code={error_code}")
 
@@ -188,7 +192,7 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertTrue(all(int(frame["pixels"], 16) != 0 for frame in frames))
             self.assertTrue(screenshot.is_file())
             bmp = read_bmp(screenshot)
-            self.assertEqual((bmp[0], bmp[1]), (1280, 720))
+            self.assertEqual((bmp[0], bmp[1]), (width, height))
             return {
                 "frames": frames,
                 "bmp": bmp,
@@ -244,6 +248,20 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["focus"], "1")
         self.assertEqual(frames[2]["view"], "library")
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
+
+    def test_settings_layout_avoids_launcher_save_overlap_at_client_widths(self) -> None:
+        cases = (
+            (1044, 900, "0"),
+            (1187, 900, "0"),
+            (1188, 619, "0"),
+            (1188, 620, "1"),
+        )
+        for width, height, expected_two_col in cases:
+            with self.subTest(width=width, height=height):
+                run = self.run_player("settings", width=width, height=height)
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["settings_two_col"], expected_two_col)
 
     def test_script_can_wait_for_a_view_and_a_minimum_duration(self) -> None:
         started = time.monotonic()
@@ -443,6 +461,23 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "library")
         self.assertEqual(frames[-1]["running"], "0")
+
+    def test_failed_close_confirmation_needs_a_second_explicit_close(self) -> None:
+        run = self.run_player(
+            "library",
+            ("CLOSE", "CLOSE"),
+            env_extra={
+                "NK_UI_TEST_GAME_RUNNING": "1",
+                "NK_UI_TEST_MESSAGEBOX_FAIL": "1",
+            },
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["game_running"], "1")
+        self.assertEqual(frames[-1]["game_running"], "1")
+        self.assertEqual(frames[-1]["running"], "0")
+        self.assertIn("Repeat the close request", run["stderr"])
+        self.assertIn("explicit force-quit", run["stderr"])
 
     def test_font_fallback_reason_is_reported(self) -> None:
         """Every frame names the active text path and, on fallback, why (#421)."""

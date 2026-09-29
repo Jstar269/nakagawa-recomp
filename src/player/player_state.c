@@ -11,6 +11,7 @@
 #include "nk_json.h"
 #include "nk_platform.h"
 #include "nk_psp_container.h"
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -840,6 +841,32 @@ PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
     return PLAYER_CLOSE_QUIT;
 }
 
+void player_app_note_close_confirmation_failure(PlayerApp *app) {
+    if (!app) return;
+    app->close_confirmation_pending = true;
+}
+
+bool player_app_take_close_confirmation_fallback(PlayerApp *app) {
+    if (!app || !app->close_confirmation_pending) return false;
+    app->close_confirmation_pending = false;
+    return true;
+}
+
+bool player_settings_uses_two_columns(int window_width, int window_height) {
+    float width = (float)window_width;
+    float card_width = width - 64.0f;
+    if (card_width < 340.0f) {
+        card_width = width > 32.0f ? width - 32.0f : width;
+    }
+    if (card_width > 1216.0f) card_width = 1216.0f;
+    /* The wide settings controls reserve 220 px plus a 310 px button in the
+       first column. The right column begins at half the card, so 1124 px is
+       the first card width that leaves the columns disjoint. The management
+       row sits below the launcher toggle; 620 px is the first raw client
+       height where the compressed card keeps those rows disjoint. */
+    return card_width >= 1124.0f && window_height >= 620;
+}
+
 bool player_app_boot_event_is_window_ready(const char *line) {
     return line && (strstr(line, "BOOT_EVENT phase=window_ready") != NULL ||
                     strstr(line, "BOOT_EVENT phase=first_frame") != NULL);
@@ -883,41 +910,52 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
     int right = frame.right > 0 ? frame.right : 0;
     int top = frame.top > 0 ? frame.top : 0;
     int bottom = frame.bottom > 0 ? frame.bottom : 0;
-    int64_t max_width = (int64_t)usable.width - left - right;
-    int64_t max_height = (int64_t)usable.height - top - bottom;
-    if (max_width <= 0 || max_height <= 0) return false;
+
+    /* The fitted rectangle is a CLIENT rectangle: SDL_SetWindowSize and
+       SDL_SetWindowPosition both address the client area, and the geometry the
+       launcher persists (SDL_GetWindowSize/SDL_GetWindowPosition) is a client
+       rectangle too, so a saved rect round-trips without a frame conversion.
+       Clamping therefore happens against the display's client area -- the
+       usable bounds reduced by the window frame. Clamping against the raw
+       usable bounds instead placed the frame outside the display: on a real
+       3840x2160 display a saved window at (0,0) was measured at a Win32 outer
+       rect of (-11,-45), putting the title bar off-screen. */
+    int64_t min_x = (int64_t)usable.x + left;
+    int64_t min_y = (int64_t)usable.y + top;
+    int64_t area_width = (int64_t)usable.width - left - right;
+    int64_t area_height = (int64_t)usable.height - top - bottom;
+    if (area_width <= 0 || area_height <= 0) return false;
 
     int requested_width = requested.width > 0 ? requested.width : 1280;
     int requested_height = requested.height > 0 ? requested.height : 720;
     double scale = 1.0;
-    if ((double)max_width / requested_width < scale) {
-        scale = (double)max_width / requested_width;
+    if ((double)area_width / requested_width < scale) {
+        scale = (double)area_width / requested_width;
     }
-    if ((double)max_height / requested_height < scale) {
-        scale = (double)max_height / requested_height;
+    if ((double)area_height / requested_height < scale) {
+        scale = (double)area_height / requested_height;
     }
 
     int width = (int)(requested_width * scale);
     int height = (int)(requested_height * scale);
     if (width < 1 || height < 1) return false;
+    /* Rounding must never produce a client rectangle larger than the area. */
+    if ((int64_t)width > area_width) width = (int)area_width;
+    if ((int64_t)height > area_height) height = (int)area_height;
 
-    int64_t outer_width = (int64_t)width + left + right;
-    int64_t outer_height = (int64_t)height + top + bottom;
-    int64_t min_x = usable.x;
-    int64_t min_y = usable.y;
-    int64_t max_x = (int64_t)usable.x + usable.width - outer_width;
-    int64_t max_y = (int64_t)usable.y + usable.height - outer_height;
+    int64_t max_x = min_x + area_width - width;
+    int64_t max_y = min_y + area_height - height;
     int64_t x = requested.x;
     int64_t y = requested.y;
 
     bool intersects = requested_position_valid &&
-        x < (int64_t)usable.x + usable.width &&
-        x + outer_width > usable.x &&
-        y < (int64_t)usable.y + usable.height &&
-        y + outer_height > usable.y;
+        x < min_x + area_width &&
+        x + width > min_x &&
+        y < min_y + area_height &&
+        y + height > min_y;
     if (!intersects) {
-        x = min_x + ((int64_t)usable.width - outer_width) / 2;
-        y = min_y + ((int64_t)usable.height - outer_height) / 2;
+        x = min_x + (area_width - width) / 2;
+        y = min_y + (area_height - height) / 2;
     } else {
         if (x < min_x) x = min_x;
         if (x > max_x) x = max_x;
@@ -1084,13 +1122,25 @@ static bool player_prepare_boot_event_file(PlayerApp *app) {
         return false;
     }
 
-    remove(app->boot_event_file_path);
+    int removal_result = remove(app->boot_event_file_path);
+    /* An absent marker is the only expected remove() failure. Any other
+       filesystem error leaves the handoff path unproven and must not let a
+       stale readable marker authorize launcher minimization. Recheck both
+       regular-file and directory paths so a concurrent replacement also
+       fails closed. */
+    if ((removal_result != 0 && errno != ENOENT) ||
+        nk_platform_file_exists(app->boot_event_file_path) ||
+        nk_platform_dir_exists(app->boot_event_file_path)) {
+        app->boot_event_file_path[0] = '\0';
+        return false;
+    }
     return true;
 }
 
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
+    app->close_confirmation_pending = false;
     /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
     app->launch_session.config.gui_mode = !app->launch_headless;
@@ -1107,8 +1157,20 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     }
 
     app->child_window_ready = false;
+    app->launch_session.boot_event_file_path[0] = '\0';
     if (app->enable_focus_handoff) {
-        player_prepare_boot_event_file(app);
+        if (!player_prepare_boot_event_file(app)) {
+            player_app_set_error(
+                app,
+                "WINDOW_HANDOFF_UNAVAILABLE",
+                "Window Handoff Unavailable",
+                "Nakagawa could not prepare the boot-event handoff file. "
+                "The game was not launched; check the per-user cache directory and retry.",
+                "Return to Library",
+                VIEW_LIBRARY
+            );
+            return false;
+        }
     } else {
         app->boot_event_file_path[0] = '\0';
     }
@@ -1202,10 +1264,15 @@ bool player_app_register_staged_game(PlayerApp *app) {
 }
 
 void player_app_stop_game(PlayerApp *app) {
-    if (!app || !app->is_game_running) return;
+    if (!app) return;
+    if (!app->is_game_running) {
+        app->close_confirmation_pending = false;
+        return;
+    }
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+    app->close_confirmation_pending = false;
     app->child_window_ready = false;
     if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
 }
@@ -1267,6 +1334,7 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
         ? (now_ms - app->launch_time_ms) : 0;
     int code = nk_launch_wait(&app->launch_session, 0);
     app->is_game_running = false;
+    app->close_confirmation_pending = false;
     /* The child has exited and been reaped: release its process and job
        handles before the session is reused. The natural-exit path used to
        drop them on the floor; the next launch's nk_launch_prepare_session

@@ -293,6 +293,7 @@ typedef struct {
     bool logical_ui;
     bool enable_focus_handoff;
     bool child_window_ready;
+    bool close_confirmation_pending;
     char boot_event_file_path[MAX_PATH_LEN];
     bool should_quit;
 } PlayerApp;
@@ -354,8 +355,17 @@ void player_app_toggle_fullscreen(PlayerApp *app);
 void player_app_toggle_launcher_fullscreen(PlayerApp *app);
 PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
                                               bool user_confirmed);
+/* If the host confirmation dialog cannot be shown, keep the running game
+ * alive and require a second explicit close request before forcing quit. */
+void player_app_note_close_confirmation_failure(PlayerApp *app);
+bool player_app_take_close_confirmation_fallback(PlayerApp *app);
 bool player_app_boot_event_is_window_ready(const char *line);
 bool player_app_child_window_ready(PlayerApp *app);
+/* Fit a requested client rectangle into a display. `usable` is the display's
+ * usable bounds and `frame` the window decoration, so the client area is
+ * `usable` reduced by `frame`; `out` receives a CLIENT rectangle that fits
+ * inside that area, ready for SDL_SetWindowSize/SDL_SetWindowPosition and for
+ * the launcher's persisted launcher_window_* geometry. */
 bool player_window_fit_to_display(PlayerWindowRect requested,
                                   PlayerWindowRect usable,
                                   PlayerWindowFrame frame,
@@ -381,6 +391,11 @@ void player_app_move_selection(PlayerApp *app, int delta);
 
 /* How many library cards fit in the current window, at least one. */
 int player_app_visible_library_cards(const PlayerApp *app);
+
+/* Whether the settings renderer has enough client width and height for its
+ * two-column layout. This is pure state logic so the threshold is tested
+ * independently of SDL and the renderer cannot drift from the layout contract. */
+bool player_settings_uses_two_columns(int window_width, int window_height);
 
 /* How many keyboard/gamepad focus stops the current view offers, at least
  * one. Pure state logic (no SDL): the renderer draws its buttons in this

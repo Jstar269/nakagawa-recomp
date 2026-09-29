@@ -2011,10 +2011,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (card_w > 1216.0f) card_w = 1216.0f;
     float card_x = centered_card_x(w, card_w);
     float card_y = 96.0f;
-    /* Two columns need the four resolution presets (left) to clear the
-     * audio column (right); below this the cursor-flow single column
-     * below takes over, which cannot overlap by construction. */
-    bool two_col = card_w >= 980.0f;
+    /* Two columns need the launcher fullscreen control and save-directory
+     * text to clear one another; below this the single-column flow cannot
+     * overlap by construction. */
+    bool two_col = player_settings_uses_two_columns(app->window_width,
+                                                     app->window_height);
     float card_h = two_col ? 520.0f : 660.0f;
     if (card_y + card_h > h - 40.0f && h > 560.0f) {
         card_h = h - 40.0f - card_y;
