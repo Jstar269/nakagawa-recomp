@@ -333,7 +333,6 @@ class ComparabilityContractTests(unittest.TestCase):
         # readable as "these captured events and outcomes agree", not "the two
         # builds are equivalent".
         baseline, candidate = self._comparable_pair()
-        candidate["recorder"]["enabled_classes"] = ["sched", "hle", "prx"]
         for bundle in (baseline, candidate):
             bundle["recorder"]["enabled_classes"] = ["sched", "hle", "prx"]
         result = self._run_cli(baseline, candidate)
