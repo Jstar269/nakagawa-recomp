@@ -9471,8 +9471,8 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
-    "candidate_tree": "e303bd3ffb721e3eb3ecabdb348b9cfb0b887401",
+    "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
+    "candidate_tree": "12a4c0c1a41eb67be1b3a9e8013185b4bbb4a2d2",
     "refreshed_paths": [
       "src/core/nk_launch.c",
       "src/core/nk_launch.h",
@@ -9482,8 +9482,6 @@
       "src/player/player_state.c",
       "src/player/player_state.h",
       "src/player/ui_renderer.c",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c",
       "tests/native/test_package_builder.c",
       "tests/native/test_player_state.c",
       "tests/native/test_player_ui.py"
