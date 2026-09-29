@@ -540,6 +540,154 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertTrue(findings)
         self.assertTrue(any(finding.code in {"UNRESOLVED_PUBLIC", "POLICY_UNCLASSIFIED"} for finding in findings))
+class BoundedJsonArtifactTests(unittest.TestCase):
+    """#319: externally supplied package/cache JSON must fail closed and bounded.
+
+    Every malformed case targets a production entry point and expects the
+    named controlled error (BoundedJsonError, or the entry point's own named
+    failure that embeds it) -- never a parser-implementation exception.
+    """
+
+    def _pkg(self, tmp: Path, name: str, payload: str) -> Path:
+        package_dir = Path(tmp) / name
+        package_dir.mkdir(parents=True)
+        (package_dir / "package.json").write_text(payload, encoding="utf-8")
+        return package_dir
+
+    def _deep_text(self, depth: int, payload: str = '1') -> str:
+        return '{"format": "nakagawa-aot-package", "n": ' + '{"n":' * depth + payload + '}' * depth + '}'
+
+    def test_valid_package_at_exact_byte_limit_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "at_limit"
+            package_dir.mkdir()
+            base = '{"format": "nakagawa-aot-package", "schema_version": 2, "pad": "'
+            text = base + "A" * (package_cache.MAX_CACHE_JSON_BYTES - len(base) - 2) + '"}'
+            self.assertEqual(len(text.encode("utf-8")), package_cache.MAX_CACHE_JSON_BYTES)
+            (package_dir / "package.json").write_text(text, encoding="utf-8")
+            (package_dir / "build-report.json").write_text("{}", encoding="utf-8")
+            # Valid JSON at the exact ceiling parses; validation fails on contract
+            # fields only, with no byte-limit or parse complaint.
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertNotIn("limit", reason)
+            self.assertNotIn("unreadable", reason)
+
+    def test_one_byte_over_limit_is_rejected_with_named_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = '{"format": "nakagawa-aot-package", "pad": "'
+            pad = package_cache.MAX_CACHE_JSON_BYTES + 1 - len(prefix) - 2
+            package_dir = self._pkg(tmp, "over", prefix + "A" * pad + '"}')
+            size = (package_dir / "package.json").stat().st_size
+            self.assertEqual(size, package_cache.MAX_CACHE_JSON_BYTES + 1)
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("byte", reason)
+
+    def test_growing_file_during_read_cannot_bypass_the_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "growing.json"
+            path.write_text("{}", encoding="utf-8")
+            limit = package_cache.MAX_CACHE_JSON_BYTES
+
+            def growing_read(fd: int, amount: int) -> bytes:
+                # Simulate the file growing past the ceiling while the handle
+                # is open, after fstat saw the small size: the kernel returns
+                # more data than fstat accounted for.
+                return b"x" * (limit + 1)
+
+            with mock.patch.object(package_cache.os, "read", side_effect=growing_read):
+                with self.assertRaisesRegex(package_cache.BoundedJsonError, "grew past"):
+                    package_cache.read_bounded_json(path)
+
+    def test_deep_package_json_fails_closed_with_named_error(self) -> None:
+        # 100k levels stays under the byte ceiling so the depth gate is the
+        # one that fires.
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._pkg(tmp, "deep", self._deep_text(100_000))
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("nesting", reason)
+
+    def test_read_bounded_json_depth_and_counts_have_named_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "deep.json"
+            path.write_text(self._deep_text(33), encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "nesting exceeds 32"):
+                package_cache.read_bounded_json(path)
+            path.write_text(
+                '{"a":' + '[' * 33 + ']' * 33 + '}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "nesting exceeds 32"):
+                package_cache.read_bounded_json(path)
+
+    def test_excessive_member_count_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "members.json"
+            members = ",".join(f'"k{i}": 1' for i in range(package_cache.MAX_CACHE_JSON_MEMBERS + 1))
+            path.write_text("{" + members + "}", encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "object members"):
+                package_cache.read_bounded_json(path)
+
+    def test_excessive_node_count_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nodes.json"
+            items = ",".join("1" for _ in range(package_cache.MAX_CACHE_JSON_NODES + 1))
+            path.write_text("[" + items + "]", encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "structural nodes"):
+                package_cache.read_bounded_json(path)
+
+    def test_duplicate_keys_are_rejected_with_named_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dup.json"
+            path.write_text('{"format": "a", "format": "b"}', encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "duplicate JSON field: format"):
+                package_cache.read_bounded_json(path)
+
+    def test_malformed_utf8_is_a_named_controlled_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_utf8.json"
+            path.write_bytes(b'{"format": "\xff\xfe"}')
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "not valid UTF-8"):
+                package_cache.read_bounded_json(path)
+
+    def test_invalid_json_is_a_named_controlled_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "invalid.json"
+            path.write_text("{not json", encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "not valid JSON"):
+                package_cache.read_bounded_json(path)
+
+    def test_wrong_top_level_type_fails_the_cache_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._pkg(tmp, "wrong_top", "[1, 2, 3]")
+            (package_dir / "build-report.json").write_text("{}", encoding="utf-8")
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("JSON objects", reason)
+
+    def test_oversize_completion_manifest_fails_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "big_completion"
+            package_dir.mkdir()
+            (package_dir / "completion-manifest.json").write_text(
+                '{"format": "x", "pad": "' + "A" * package_cache.MAX_CACHE_JSON_BYTES + '"}',
+                encoding="utf-8",
+            )
+            valid, reason, _ = package_cache.validate_completion_manifest(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("unreadable", reason)
+
+    def test_deep_completion_manifest_fails_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "deep_completion"
+            package_dir.mkdir()
+            (package_dir / "completion-manifest.json").write_text(
+                self._deep_text(100_000), encoding="utf-8"
+            )
+            valid, reason, _ = package_cache.validate_completion_manifest(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("unreadable", reason)
 
 
 if __name__ == "__main__":
