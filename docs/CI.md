@@ -362,15 +362,27 @@ can actually vouch for each other. The CLI verdicts map to exit codes
 - **Incomparable (INCOMPARABLE):** differing bundle schema versions, runtime
   blocks, enabled event classes, or armed trigger policies; any dropped event
   on either side (the ring slides, so a divergence inside the dropped window
-  is invisible); a terminal whose events cannot vouch for the missing window
-  is reported through the same refusal rather than a MATCH.
+  is invisible).
 - **Divergent (DIVERGENCE):** the first differing event (sequence or class
   alignment), then the terminal reason/sequence/kind/arg0. Same retained
-  events with a different terminal outcome is a divergence, not a MATCH.
+  events with a different terminal outcome is a divergence, not a MATCH. A
+  terminal difference is never an incomparability: a `running` terminal is a
+  mid-run cut rather than a ring overflow, so over a complete window it hides
+  no events and stays an ordinary compared value.
 - **Malformed (error):** a bundle that fails schema validation, sanitization,
   or the recorder truncation invariants (retained sequences exactly
   `dropped+1..recorded`, `dropped == recorded - min(recorded, limit)`) exits 2
   on stderr as before.
+
+MATCH is a statement about the capture, never about the whole program. It
+certifies exactly two things: that the two runs agree on every event retained
+for the enabled classes over a complete window that dropped nothing, and that
+both reached the same terminal outcome. It does not certify behaviour outside
+the enabled classes, where a class one side never recorded is silence rather
+than agreement; behaviour before the recorded window; or behaviour the recorder
+does not model at all. Two builds that MATCH here can still differ anywhere the
+recorder was not looking, which is what the enabled class list is for, and that
+list is printed alongside both identities.
 
 A bundle that records any dropped event can never produce a MATCH against any
 other bundle; re-capture with a larger limit when a comparison is the goal.

@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1d49d2edbea396acea2aba3cd600305ef3d19d08938e398af984bac590ec4c53"
+      "sha256": "0c8d1978c11d826331a7e1a5ab4888e00c6f0a1de4a84134ea34618689678b49"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -9472,7 +9472,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
-    "candidate_tree": "70d194c7136b394892689483738ec2c01e4b25b5",
+    "candidate_tree": "22608215e147530f96f7970a3ae4839126f721c6",
     "refreshed_paths": [
       "docs/CI.md",
       "docs/ENHANCEMENT_CONTRACT.md",
