@@ -16391,15 +16391,20 @@ static void lifecycle_export_b_fn(CpuState *s) { s_lifecycle_export_calls_b++; s
 static void lifecycle_start_fn(CpuState *s) { s_lifecycle_start_calls++; s->r[2] = 0x5u; }
 static void lifecycle_stop_fn(CpuState *s) { s_lifecycle_stop_calls++; s->r[2] = 0x6u; }
 
-/* Build a synthetic PRX whose export table publishes `nid` at `patch_off` and whose
- * module_start/module_stop entries sit at the fixed offsets the lifecycle registers as
- * guest bodies. `payload` is written into the image so a reload with different bytes is
- * observable in guest memory. This reuses the production prx_loader.c and
- * register_prx_exports() parsers: only the bytes are synthetic. */
-/* Writes the synthetic module image. The export is published by the load hook
- * (sr_hle_test_load_prx_image), not by the image bytes, so this deliberately takes no
- * nid or export offset: passing them here would read as if the export table drove the
- * registration when it does not. `payload` is the reload marker. */
+/* Build a synthetic PRX image. Only the bytes are synthetic: the production
+ * prx_loader.c parser consumes the file, exactly as a real module's would.
+ *
+ * The image carries `jr ra` stubs at the fixed offsets the lifecycle registers as guest
+ * bodies (LIFECYCLE_START_OFF, LIFECYCLE_STOP_OFF, and always LIFECYCLE_PATCH_OFF_A_1),
+ * and `payload` is written to the reload marker so that a reload with different bytes is
+ * observable in guest memory.
+ *
+ * There is deliberately no nid or export-offset parameter. This image's export table is
+ * empty; the export is published by the load hook (sr_hle_test_load_prx_image) against
+ * the registry, not by an export table in the file. Passing the pair here would read as
+ * if the image's export table drove the registration, which it does not. (The reload case
+ * binds the export at LIFECYCLE_PATCH_OFF_A_2 instead, which is why the stub above is
+ * always written at the _A_1 offset.) */
 static int write_lifecycle_prx(const char *path, uint32_t payload) {
     enum { SIZE = 0x300, PHOFF = 0x34, MODOFF = 0x100, SHSTR_OFF = 0x180 };
     /* The loaded segment covers file [0x80, 0x80+SEGSZ), so every guest offset the

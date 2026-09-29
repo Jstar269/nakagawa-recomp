@@ -4563,7 +4563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4201f233a6ffa23cd169a0c4e703b59392d4c045991cf9ab2e19ceca34258837"
+      "sha256": "87fca6c89bc31f400ccda238e0b105e924a0049d9a5fdf63266e080082d96e27"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9472,7 +9472,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
-    "candidate_tree": "2c2f0facc6bd0dcadddf772439581a9281d5ad80",
+    "candidate_tree": "f8e02b48d3465884411b498b9d342644b3c4d551",
     "refreshed_paths": [
       "src/rt/hle.c",
       "src/rt/hle_thread_selftest.c"
