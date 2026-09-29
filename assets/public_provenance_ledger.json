@@ -4806,7 +4806,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e2a4c6bbfbb95d8c2cf03a7280ca4f64eaee76cc2a6f64717035cdc2aac69e7"
+      "sha256": "5f8d20d361a35e5544509ff3ae41dd2b006ee146f836201af208cb5c1db43256"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -4830,7 +4830,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25b857c3c6848f96d8e7199a0b2f86c0f852a6ac55245c1d83064e57a58c7d25"
+      "sha256": "535517fa8506afbbac997a8f2306a2ed5eb20773b70920acde7d7a56bb09cfd0"
     },
     {
       "path": "src/rt/recomp.c",
@@ -9471,11 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "da51ad6eff36523f0f85e9f285fe9786aabee0bb",
-    "candidate_tree": "98cee9b9d7e3f3b80a1f551764cf9cdd456e79e4",
+    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
+    "candidate_tree": "c05948892b75fedf0ada5182f098598b07c7fc7e",
     "refreshed_paths": [
-      "docs/PLATFORM_PORTABILITY.md",
-      "tools/test_title_catalog.py"
+      "src/rt/psmf_producer.c",
+      "src/rt/psmf_producer_selftest.c"
     ]
   }
 }
