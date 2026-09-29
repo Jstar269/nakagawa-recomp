@@ -348,6 +348,33 @@ one guarded resolution that yields an empty identity -- and no build-log noise -
 on a host that has none. A build with no identity is not a silent pass:
 `tools/flight_diff.py` refuses such a bundle fail closed.
 
+### Comparator comparability contract (#320)
+
+`tools/flight_diff.py` compares two flight-recorder bundles under an explicit
+comparability contract, so a MATCH is only ever printed for two captures that
+can actually vouch for each other. The CLI verdicts map to exit codes
+`MATCH` 0, `DIVERGENCE` 1, error 2 (unchanged), and `INCOMPARABLE` 3:
+
+- **Comparable and matching (MATCH):** every compared field agrees. Build
+  identity (`build_id`, `source_date_epoch`, `compiler`, `pointer_bits`) and
+  the recorder limit never block a comparison; both identity lines are printed
+  on stdout, because comparing different builds is a legitimate use.
+- **Incomparable (INCOMPARABLE):** differing bundle schema versions, runtime
+  blocks, enabled event classes, or armed trigger policies; any dropped event
+  on either side (the ring slides, so a divergence inside the dropped window
+  is invisible); a terminal whose events cannot vouch for the missing window
+  is reported through the same refusal rather than a MATCH.
+- **Divergent (DIVERGENCE):** the first differing event (sequence or class
+  alignment), then the terminal reason/sequence/kind/arg0. Same retained
+  events with a different terminal outcome is a divergence, not a MATCH.
+- **Malformed (error):** a bundle that fails schema validation, sanitization,
+  or the recorder truncation invariants (retained sequences exactly
+  `dropped+1..recorded`, `dropped == recorded - min(recorded, limit)`) exits 2
+  on stderr as before.
+
+A bundle that records any dropped event can never produce a MATCH against any
+other bundle; re-capture with a larger limit when a comparison is the goal.
+
 ## Public release-path gates (#294)
 
 The hosted matrix now exercises the same public, source-owned release path a

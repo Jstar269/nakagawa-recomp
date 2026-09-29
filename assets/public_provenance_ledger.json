@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "457b94ef5509f1247ed77ff4e446fbe3895a236e6b56f91b4573959b4b4af084"
+      "sha256": "1d49d2edbea396acea2aba3cd600305ef3d19d08938e398af984bac590ec4c53"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1108,7 +1108,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26749c31fab8a65aa648474b30f0faf4ca0bcf5e3718cec51b323fcfcc82ac19"
+      "sha256": "2eba6ffd587a1c2090253b1a86feb6476c7070b970eaeb9637c76e8d60d78c9c"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -5781,7 +5781,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "62745cf053637ba2813e698ddb5708975549211d061dcd3b529a4bfcd8b066a8"
+      "sha256": "c55f3dfb2d011ff65cc59b2c6bdabb2e025c84f0976a64ad529e667761a2f295"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7530,7 +7530,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25efed3f775484e1fc8d08b09bf1dd2e767029dc282eeced0fb6933b645bbb42"
+      "sha256": "0e1d7fb44d60ffcf6f49c5d63256fd3358663033f6415988e49ce3afa34a88f7"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -7542,7 +7542,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e70417c00842f350ff05fe4f5972e85220d8d36b9c77e92d2d88bbc5a321a7cb"
+      "sha256": "11c766ef575860f89bf2f966d4f03a9cf9572d5a18a23aecfcb16c01945f2321"
     },
     {
       "path": "tools/test_font_provisioning.py",
@@ -9471,11 +9471,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "da51ad6eff36523f0f85e9f285fe9786aabee0bb",
-    "candidate_tree": "98cee9b9d7e3f3b80a1f551764cf9cdd456e79e4",
+    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
+    "candidate_tree": "70d194c7136b394892689483738ec2c01e4b25b5",
     "refreshed_paths": [
-      "docs/PLATFORM_PORTABILITY.md",
-      "tools/test_title_catalog.py"
+      "docs/CI.md",
+      "docs/ENHANCEMENT_CONTRACT.md",
+      "tools/flight_diff.py",
+      "tools/test_flight_build_identity.py",
+      "tools/test_flight_diff.py"
     ]
   }
 }
