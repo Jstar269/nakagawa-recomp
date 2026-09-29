@@ -153,10 +153,9 @@ class ComparabilityContractTests(unittest.TestCase):
         # The truncation invariant pins dropped to recorded - min(recorded,
         # limit); a bundle claiming a different dropped count does not describe
         # a ring-buffer capture at all, so it is an error, not INCOMPARABLE.
+        # recorded 5 at limit 4 would permit dropped 1, so claim 2.
         baseline, candidate = self._comparable_pair()
-        candidate["recorder"]["dropped"] = 1
-        candidate["recorder"]["recorded"] = 5  # limit 4 -> dropped must be 1? no: 5-4=1 is valid;
-        # force a genuinely impossible count instead:
+        candidate["recorder"]["recorded"] = 5
         candidate["recorder"]["dropped"] = 2
         with self.assertRaisesRegex(flight_diff.FlightDiffError, "dropped must equal"):
             flight_diff.diff_bundles(baseline, candidate, "sequence")
@@ -186,11 +185,14 @@ class ComparabilityContractTests(unittest.TestCase):
             flight_diff.diff_bundles(baseline, candidate, "sequence")
         self.assertTrue(any("trigger" in reason for reason in caught.exception.reasons))
 
-    def test_fired_outcome_difference_alone_still_compares(self):
-        # fired records which run tripped a trigger; the armed policy is what
-        # bounds the window, and identical policies with different outcomes are
-        # ordinary divergence evidence, not incomparability. The terminal
-        # sequence of a triggered bundle is its trigger site.
+    def test_triggered_bundles_with_identical_policy_stay_comparable(self):
+        # A fired trigger is an outcome field, not part of the armed policy, so
+        # it never blocks a comparison. A *differing* fired value is in fact
+        # unreachable through the public API: validate_bundle pins fired to
+        # "reason != exit", so any pair that differs in fired also differs in
+        # terminal reason and diverges there instead (see the terminal-reason
+        # test below). What is reachable -- and asserted here -- is a triggered
+        # pair that shares the armed policy and diverges only in terminal kind.
         baseline = make_bundle(
             [event(1, "fatal", arg0=1, version=3)],
             terminal_reason="fatal",
@@ -315,23 +317,31 @@ class ComparabilityContractTests(unittest.TestCase):
         divergent["events"][0]["arg0"] = 0x55
         malformed = copy.deepcopy(baseline)
         malformed["recorder"]["recorded"] = 99  # breaks retained+dropped
-        with tempfile.TemporaryDirectory() as temp:
-            temp_path = Path(temp)
-            paths = {}
-            for name, bundle in (("left", baseline), ("incomp", candidate),
-                                 ("divergent", divergent), ("malformed", malformed)):
-                paths[name] = temp_path / f"{name}.json"
-                paths[name].write_text(json.dumps(bundle), encoding="utf-8")
-            incomparable = self._run_cli(baseline, candidate)
-            divergence = self._run_cli(baseline, divergent)
-            error = self._run_cli(baseline, malformed)
-            self.assertEqual(incomparable.returncode, 3, incomparable.stdout)
-            self.assertIn("INCOMPARABLE:", incomparable.stdout)
-            self.assertIn("enabled event classes differ", incomparable.stdout)
-            self.assertEqual(divergence.returncode, 1, divergence.stdout)
-            self.assertIn("DIVERGENCE: sequence 1", divergence.stdout)
-            self.assertEqual(error.returncode, 2, error.stderr)
-            self.assertIn("error:", error.stderr)
+        incomparable = self._run_cli(baseline, candidate)
+        divergence = self._run_cli(baseline, divergent)
+        error = self._run_cli(baseline, malformed)
+        self.assertEqual(incomparable.returncode, 3, incomparable.stdout)
+        self.assertIn("INCOMPARABLE:", incomparable.stdout)
+        self.assertIn("enabled event classes differ", incomparable.stdout)
+        self.assertEqual(divergence.returncode, 1, divergence.stdout)
+        self.assertIn("DIVERGENCE: sequence 1", divergence.stdout)
+        self.assertEqual(error.returncode, 2, error.stderr)
+        self.assertIn("error:", error.stderr)
+
+    def test_cli_scopes_a_match_to_the_enabled_classes(self):
+        # The MATCH line and the printed class list are what keep the verdict
+        # readable as "these captured events and outcomes agree", not "the two
+        # builds are equivalent".
+        baseline, candidate = self._comparable_pair()
+        candidate["recorder"]["enabled_classes"] = ["sched", "hle", "prx"]
+        for bundle in (baseline, candidate):
+            bundle["recorder"]["enabled_classes"] = ["sched", "hle", "prx"]
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MATCH:", result.stdout)
+        self.assertIn("enabled classes: sched, hle, prx", result.stdout)
+        self.assertIn("agrees on these enabled classes and the terminal outcome",
+                      result.stdout)
 
     def _run_cli(self, left, right) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as temp:

@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0c8d1978c11d826331a7e1a5ab4888e00c6f0a1de4a84134ea34618689678b49"
+      "sha256": "7503a9c028fa8aa16803056d9aaa50640fec5f217d7d422fd1e3e6cd5d761968"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5781,7 +5781,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c55f3dfb2d011ff65cc59b2c6bdabb2e025c84f0976a64ad529e667761a2f295"
+      "sha256": "2c990465a13702ba37485992b776b0bf6e0c715a9b5dc5a21720a069900db007"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7542,7 +7542,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "11c766ef575860f89bf2f966d4f03a9cf9572d5a18a23aecfcb16c01945f2321"
+      "sha256": "324085eee8790e235ef1a15853b8b775012d2c04130ebb9142fb91f918cca1cf"
     },
     {
       "path": "tools/test_font_provisioning.py",
@@ -9472,7 +9472,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
-    "candidate_tree": "22608215e147530f96f7970a3ae4839126f721c6",
+    "candidate_tree": "c0756fa0a4eba93bd7884da7b9eb04c91ac3a585",
     "refreshed_paths": [
       "docs/CI.md",
       "docs/ENHANCEMENT_CONTRACT.md",

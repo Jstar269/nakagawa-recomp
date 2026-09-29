@@ -381,8 +381,8 @@ both reached the same terminal outcome. It does not certify behaviour outside
 the enabled classes, where a class one side never recorded is silence rather
 than agreement; behaviour before the recorded window; or behaviour the recorder
 does not model at all. Two builds that MATCH here can still differ anywhere the
-recorder was not looking, which is what the enabled class list is for, and that
-list is printed alongside both identities.
+recorder was not looking, so the CLI prints the enabled class list that bounds
+the verdict next to the two identity lines.
 
 A bundle that records any dropped event can never produce a MATCH against any
 other bundle; re-capture with a larger limit when a comparison is the goal.

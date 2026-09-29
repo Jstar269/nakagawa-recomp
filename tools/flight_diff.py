@@ -354,6 +354,17 @@ def _identity_fields(bundle: dict[str, Any]) -> str:
     return " ".join(fields)
 
 
+def _enabled_classes(bundle: dict[str, Any]) -> str:
+    """The recorder's class coverage, which is what bounds the verdict.
+
+    Comparability already requires both sides to agree on this set, so one
+    line describes a MATCH or DIVERGENCE; printing it is what keeps a MATCH
+    honest about the channel it was actually able to observe.
+    """
+    classes = bundle["recorder"]["enabled_classes"]
+    return ", ".join(classes) if classes else "<none>"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compare two source-safe flight-recorder bundles")
     parser.add_argument("baseline", type=Path)
@@ -374,8 +385,10 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
     print(f"identity baseline: {_identity_fields(baseline)}")
     print(f"identity candidate: {_identity_fields(candidate)}")
+    print(f"enabled classes: {_enabled_classes(baseline)}")
     if divergence is None:
-        print(f"{MATCH}: {len(baseline['events'])} events aligned by {args.align}")
+        print(f"{MATCH}: {len(baseline['events'])} events aligned by {args.align}; "
+              "agrees on these enabled classes and the terminal outcome")
         return EXIT_MATCH
     label, first, second = divergence
     print(f"{DIVERGENCE}: {label}")
