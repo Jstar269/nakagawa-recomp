@@ -75,6 +75,12 @@ extern uint32_t sr_hle_test_stop_module(CpuState *s);
 extern uint32_t sr_hle_test_unload_module(CpuState *s);
 extern uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop);
 extern void sr_hle_test_module_reset(void);
+extern uint32_t sr_hle_test_started_export(uint32_t nid);
+extern unsigned sr_hle_test_image_count(void);
+extern unsigned sr_hle_test_module_count(void);
+extern int sr_hle_test_started_image_count(void);
+extern uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
+                                           uint32_t patch_nid, uint32_t patch_off);
 extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
 extern void ge_finish_latch_assist(void);
 
@@ -16341,6 +16347,444 @@ static void test_real_module_start_lifecycle(void) {
     sr_hle_test_module_reset();
 }
 
+/* ---- #280: real late-PRX stop/unload/reload lifecycle and export invalidation ----
+ *
+ * One coherent production-path sequence over a synthetic PRX, using the real
+ * sceKernelStartModule/StopModule/UnloadModule handlers through sr_syscall and the
+ * real late-import registry, export gate and user-partition allocator:
+ *
+ *   load image -> start -> call a dynamic export through a real importer -> stop
+ *   -> unload -> the old export is no longer authorized -> only that image's exact
+ *   reservation came back -> reload the same base with changed bytes and a changed
+ *   export target -> start -> the new export is the one observed.
+ *
+ * A second module is loaded alongside the first and must survive the first's unload
+ * with its own export and reservation intact, and a repeated cycle count exceeds the
+ * 16-entry module and image tables so a leak that never reclaims them is caught.
+ *
+ * The two NIDs are synthetic and deliberately not real PSP exports, so this asserts
+ * the runtime's own lifecycle contract and not an unmeasured hardware error code.
+ */
+#define LIFECYCLE_EXPORT_A   0x7a0000a1u   /* module A's dynamic export */
+#define LIFECYCLE_EXPORT_B   0x7b0000b2u   /* module B's dynamic export */
+#define LIFECYCLE_MOD_A_BASE 0x09000000u
+#define LIFECYCLE_MOD_B_BASE 0x09100000u
+/* The span the loader reserves for each fixture image (the fixture's declared segment
+ * size, rounded into the image's [base, end) reservation). */
+#define LIFECYCLE_IMAGE_SIZE 0xC0u
+#define LIFECYCLE_PATCH_OFF_A_1 0x20u
+#define LIFECYCLE_PATCH_OFF_A_2 0x60u
+/* Guest offset of the reload marker and of the module_start/module_stop entries the
+ * fixture's export table names. All three lie inside the image's declared segment, so
+ * the bytes the loader writes to guest memory are the ones the assertions read. */
+#define LIFECYCLE_MARKER_OFF   0x30u
+#define LIFECYCLE_START_OFF   0x70u
+#define LIFECYCLE_STOP_OFF    0x78u
+/* Distinct child-process results for the stale-import proof, so returning from the
+ * retired import is distinguishable from failing closed before it. */
+#define LIFECYCLE_STALE_STOPPED 21
+#define LIFECYCLE_STALE_REACHED 22
+
+static uint32_t s_lifecycle_export_calls_a1, s_lifecycle_export_calls_a2;
+static uint32_t s_lifecycle_export_calls_b;
+static uint32_t s_lifecycle_start_calls, s_lifecycle_stop_calls;
+
+static void lifecycle_export_a1_fn(CpuState *s) { s_lifecycle_export_calls_a1++; s->r[2] = 0xa1u; }
+static void lifecycle_export_a2_fn(CpuState *s) { s_lifecycle_export_calls_a2++; s->r[2] = 0xa2u; }
+static void lifecycle_export_b_fn(CpuState *s) { s_lifecycle_export_calls_b++; s->r[2] = 0xb2u; }
+static void lifecycle_start_fn(CpuState *s) { s_lifecycle_start_calls++; s->r[2] = 0x5u; }
+static void lifecycle_stop_fn(CpuState *s) { s_lifecycle_stop_calls++; s->r[2] = 0x6u; }
+
+/* Build a synthetic PRX whose export table publishes `nid` at `patch_off` and whose
+ * module_start/module_stop entries sit at the fixed offsets the lifecycle registers as
+ * guest bodies. `payload` is written into the image so a reload with different bytes is
+ * observable in guest memory. This reuses the production prx_loader.c and
+ * register_prx_exports() parsers: only the bytes are synthetic. */
+static int write_lifecycle_prx(const char *path, uint32_t nid, uint32_t patch_off,
+                               uint32_t payload) {
+    enum { SIZE = 0x300, PHOFF = 0x34, MODOFF = 0x100, SHSTR_OFF = 0x180 };
+    /* The loaded segment covers file [0x80, 0x80+SEGSZ), so every guest offset the
+     * lifecycle reads or calls has to sit below SEGSZ. */
+    enum { SEGSZ = 0xC0 };
+    static const char section_names[] = "\0.rodata.sceModuleInfo\0.shstrtab\0";
+    uint32_t shoff = (SHSTR_OFF + (uint32_t)sizeof(section_names) + 3u) & ~3u;
+    uint8_t image[SIZE];
+    memset(image, 0, sizeof(image));
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 16, 0xFFA0);
+    fixture_wr16(image + 18, 8);
+    fixture_wr32(image + 20, 1);
+    fixture_wr32(image + 24, 0);
+    fixture_wr32(image + 28, PHOFF);
+    fixture_wr32(image + 32, shoff);
+    fixture_wr16(image + 40, 52);
+    fixture_wr16(image + 42, 32);
+    fixture_wr16(image + 44, 1);
+    fixture_wr16(image + 46, 40);
+    fixture_wr16(image + 48, 3);
+    fixture_wr16(image + 50, 2);
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);
+    fixture_wr32(ph + 4, 0x80);
+    fixture_wr32(ph + 8, 0);
+    fixture_wr32(ph + 12, MODOFF);
+    fixture_wr32(ph + 16, SEGSZ);
+    fixture_wr32(ph + 20, SEGSZ);
+    fixture_wr32(ph + 24, 5);
+    fixture_wr32(ph + 28, 4);
+    /* Module info: name, and an empty export span. A PRX's export span is read two
+     * different ways by the two production consumers -- hle.c's register_prx_exports
+     * walks it as a base-relative virtual address, prx_loader.c validates it as an
+     * already-rebased guest address -- so for a module loaded at a nonzero base no
+     * single value satisfies both. The span is therefore left empty (exactly as the
+     * existing guest-module fixture does) and the dynamic export under test is
+     * registered through the production late-import registry instead. The image bytes,
+     * segment bounds and module-info validation all still run for real. */
+    uint8_t *modinfo = image + MODOFF;
+    memcpy(modinfo + 4, "lifecycle", 10);
+    memcpy(image + SHSTR_OFF, section_names, sizeof(section_names));
+    uint8_t *shdr = image + shoff;
+    fixture_wr32(shdr + 0, 1);
+    fixture_wr32(shdr + 4, 3);
+    fixture_wr32(shdr + 8, 0x40);
+    fixture_wr32(shdr + 12, MODOFF);
+    fixture_wr32(shdr + 16, MODOFF);
+    fixture_wr32(shdr + 20, 52);
+    uint8_t *strtab = image + shoff + 40;
+    fixture_wr32(strtab + 0, 1u + (uint32_t)sizeof(".rodata.sceModuleInfo"));
+    fixture_wr32(strtab + 4, 3);
+    fixture_wr32(strtab + 16, SHSTR_OFF);
+    fixture_wr32(strtab + 20, (uint32_t)sizeof(section_names));
+    fixture_wr32(strtab + 32, 1);
+    /* Body bytes inside the declared segment: the module_start / module_stop entry
+     * addresses the lifecycle uses, the export under test, and the reload marker. */
+    fixture_wr32(image + 0x80 + LIFECYCLE_START_OFF, 0x03e00008u); /* MIPS jr ra */
+    fixture_wr32(image + 0x80 + LIFECYCLE_STOP_OFF, 0x03e00008u);
+    fixture_wr32(image + 0x80 + LIFECYCLE_PATCH_OFF_A_1, 0x03e00008u);
+    fixture_wr32(image + 0x80 + LIFECYCLE_MARKER_OFF, payload);
+    (void)nid;
+    (void)patch_off;
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
+static void test_late_prx_unload_reload_lifecycle(void) {
+    const char *path_a = "hle_lifecycle_a.prx";
+    const char *path_b = "hle_lifecycle_b.prx";
+    const uint32_t marker_1 = 0x1111aaaa;
+    const uint32_t marker_2 = 0x2222bbbb;
+    CpuState cpu;
+    uint32_t uid_a, uid_b;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=1");
+
+    /* The real load path: the manifest binding this suite runs under declares one
+     * module, so drive the production loader directly with a file it parses. */
+    expect(write_lifecycle_prx(path_a, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1, marker_1),
+           "lifecycle: synthetic module A image written");
+    expect(write_lifecycle_prx(path_b, LIFECYCLE_EXPORT_B, LIFECYCLE_PATCH_OFF_A_1, marker_1),
+           "lifecycle: synthetic module B image written");
+    uid_a = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                       LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid_a != 0, "lifecycle: module A image loads at its declared base");
+    if (uid_a == 0) {
+        remove(path_a);
+        remove(path_b);
+        return;
+    }
+    uid_b = sr_hle_test_load_prx_image(path_b, LIFECYCLE_MOD_B_BASE, LIFECYCLE_EXPORT_B,
+                                       LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid_b != 0, "lifecycle: module B image loads alongside A");
+    expect(MEM_R32(LIFECYCLE_MOD_A_BASE + LIFECYCLE_MARKER_OFF) == marker_1,
+           "lifecycle: module A bytes are present in guest memory at its base");
+    expect(sr_hle_test_image_count() == 2u, "lifecycle: both images are resident");
+
+    /* The load hook already bound each image to a live module record whose
+     * module_start/module_stop are the real entries the loader recorded; only the
+     * guest bodies those entries and the export address need to be supplied. */
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_a1_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_b_fn);
+
+    expect(sr_hle_test_module_count() == 2u, "lifecycle: both module records are live");
+
+    /* ---- start both ---- */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "lifecycle: start module A returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "lifecycle: start module B returns 0");
+    expect(s_lifecycle_start_calls == 2u, "lifecycle: both module_start entries ran");
+
+    /* ---- call a dynamic export through a real importer ----
+     * sr_syscall is the production import seam: it consults the started-export gate
+     * before the host handler table, exactly as a real importer stub is linked. */
+    s_lifecycle_export_calls_a1 = s_lifecycle_export_calls_b = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t ra = sr_syscall(&cpu, LIFECYCLE_EXPORT_A);
+    expect(ra == 0xa1u, "lifecycle: module A's export returns its own result to the importer");
+    expect(s_lifecycle_export_calls_a1 == 1u, "lifecycle: module A's export body ran once");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, LIFECYCLE_EXPORT_B) == 0xb2u,
+           "lifecycle: module B's export is callable and independent");
+    expect(s_lifecycle_export_calls_b == 1u, "lifecycle: module B's export body ran once");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+           "lifecycle: A's export is authorized at its guest address while started");
+
+    /* A second load while the module is still resident must not disturb the running
+     * image: it is idempotent, and the live image's bytes are left alone. This is the
+     * one case where load_prx_image legitimately short-circuits on an existing base. */
+    uint32_t uid_a_again = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE,
+                                                      LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid_a_again != 0, "lifecycle: re-loading a still-resident module succeeds");
+    expect(MEM_R32(LIFECYCLE_MOD_A_BASE + LIFECYCLE_MARKER_OFF) == marker_1,
+           "lifecycle: re-loading a running module does not overwrite its live image");
+    expect(sr_hle_test_image_count() == 2u,
+           "lifecycle: re-loading a running module does not add a second image record");
+    /* Retire the duplicate handle so the counts below describe A and B only. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a_again;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "lifecycle: the duplicate handle unloads without disturbing the first");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+           "lifecycle: unloading the duplicate handle leaves the running module's export linked");
+
+    /* ---- stop (required before unload by the established contract) ---- */
+    s_lifecycle_stop_calls = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module A returns 0");
+    expect(s_lifecycle_stop_calls == 1u, "lifecycle: module A's module_stop ran once");
+
+    /* A stopped module is still loaded: its export stays authorized, which is what
+     * makes the unload boundary (not the stop boundary) the export-retirement point. */
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) != 0,
+           "lifecycle: stop alone does not retire the image's export authority");
+    expect(sr_hle_test_started_image_count() == 2,
+           "lifecycle: both started images are still counted while both are loaded");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module B returns 0");
+
+    /* ---- unload A: retire exactly its own state ---- */
+    unsigned images_before = sr_hle_test_image_count();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: unload module A returns 0");
+
+    /* Stale-export result: the old export is no longer authorized, and the registry no
+     * longer resolves it at all. The dispatch itself is observed in a child process
+     * (run_lifecycle_stale_import), because an import that reaches no live module
+     * correctly fails closed on the unimplemented-dispatch path rather than returning. */
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: A's export is no longer authorized after unload");
+    expect(sr_hle_test_started_image_count() == 1,
+           "lifecycle: unloading A retired exactly its own started-image state");
+    expect(sr_hle_resolve_late_import(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: the late-import registry no longer resolves the retired export");
+    expect(s_lifecycle_export_calls_a1 == 1u,
+           "lifecycle: the export body ran once and was not re-entered by unloading");
+
+    /* Unload is a one-shot transition: the reclaimed uid no longer resolves. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_BAD_ID,
+           "lifecycle: double unload fails closed on an unknown module id");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_ERROR_MODULE_BAD_ID,
+           "lifecycle: stop after unload fails closed on an unknown module id");
+
+    /* Exact reservation retired: A's range is free again, B's is still held. The probe
+     * asks for the image's own span, so a release of a different range would not
+     * satisfy it. */
+    uint32_t freed_a = sr_alloc_block_at(LIFECYCLE_MOD_A_BASE, LIFECYCLE_IMAGE_SIZE, "probe-a");
+    expect(freed_a != 0xFFFFFFFFu,
+           "lifecycle: unloading A released exactly A's guest reservation");
+    expect(sr_alloc_block_at(LIFECYCLE_MOD_B_BASE, LIFECYCLE_IMAGE_SIZE, "probe-b") == 0xFFFFFFFFu,
+           "lifecycle: unloading A did not release module B's reservation");
+    /* Hand the probe range back so the reload below starts from a clean partition. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = freed_a;
+    sr_syscall(&cpu, 0xb6d61d02u); /* sceKernelFreePartitionMemory */
+
+    /* B preserved: still started, still callable, still registered. */
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_B) == LIFECYCLE_MOD_B_BASE + LIFECYCLE_PATCH_OFF_A_1,
+           "lifecycle: module B keeps its export authority after A is unloaded");
+    s_lifecycle_export_calls_b = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, LIFECYCLE_EXPORT_B) == 0xb2u,
+           "lifecycle: module B's export is still callable after A is unloaded");
+    expect(s_lifecycle_export_calls_b == 1u, "lifecycle: module B's export body still runs");
+    expect(sr_hle_test_image_count() == images_before - 1u,
+           "lifecycle: unloading A reclaimed exactly one image record");
+
+    /* Unload B too, so the same-base reload below is the only resident state. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: unload module B returns 0");
+    expect(sr_hle_test_image_count() == 0u, "lifecycle: both image records are reclaimed");
+    expect(sr_hle_test_module_count() == 0u, "lifecycle: both module records are reclaimed");
+    expect(sr_hle_test_started_image_count() == 0,
+           "lifecycle: no started-image state survives the unloads");
+
+    /* ---- reload at the same base with changed bytes and a changed export target ---- */
+    expect(write_lifecycle_prx(path_a, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_2, marker_2),
+           "lifecycle: reloaded module A image written with changed bytes");
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_2,
+                              lifecycle_export_a2_fn);
+    uint32_t uid_a2 = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE,
+                                                 LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_2);
+    expect(uid_a2 != 0, "lifecycle: module A reloads at the same base after unload");
+    expect(uid_a2 != uid_a,
+           "lifecycle: the reloaded module is a distinct handle from the unloaded one");
+    expect(sr_hle_test_image_count() == 1u,
+           "lifecycle: the reload created a fresh image record rather than reusing one");
+    expect(MEM_R32(LIFECYCLE_MOD_A_BASE + LIFECYCLE_MARKER_OFF) == marker_2,
+           "lifecycle: the reused address range holds the new image, not the old bytes");
+    expect(s_lifecycle_export_calls_a1 == 1u && s_lifecycle_export_calls_a2 == 0u,
+           "lifecycle: the reload rebuilt the export target before anything called it");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: the reloaded image grants no export before it is started");
+
+    s_lifecycle_start_calls = 0;
+    s_lifecycle_export_calls_a1 = s_lifecycle_export_calls_a2 = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a2;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "lifecycle: the reloaded module starts");
+    expect(s_lifecycle_start_calls == 1u, "lifecycle: the reloaded module_start ran again");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_2,
+           "lifecycle: the new export is the one authorized after reload");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, LIFECYCLE_EXPORT_A) == 0xa2u,
+           "lifecycle: the reloaded export is the one the importer observes");
+    expect(s_lifecycle_export_calls_a2 == 1u, "lifecycle: the new export body ran");
+    expect(s_lifecycle_export_calls_a1 == 0u,
+           "lifecycle: the old export body is unreachable after reload");
+
+    /* Retire the reloaded module through the real lifecycle, so the repeated cycles
+     * below start from a partition with no live reservation of their own. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a2;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: the reloaded module stops");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a2;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: the reloaded module unloads");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: unloading the reloaded module retires its new export too");
+    expect(sr_hle_test_image_count() == 0u, "lifecycle: no image is left resident");
+    expect(sr_hle_test_module_count() == 0u, "lifecycle: no module record is left live");
+
+    /* ---- repeated cycles must not exhaust the fixed module/image tables ----
+     * More cycles than the 16-entry tables hold: a module or image record that is
+     * never reclaimed shows up here as a failed load or a stale authorized export. */
+    sr_test_guest_fn_reset();
+    int cycles_ok = 1;
+    for (unsigned i = 0; i < 24u; i++) {
+        const uint32_t marker = 0x3000u + i;
+        if (!write_lifecycle_prx(path_a, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1, marker))
+            break;
+        uint32_t cmod = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE,
+                                                   LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1);
+        if (cmod == 0) break;
+        CpuState ccpu;
+        memset(&ccpu, 0, sizeof(ccpu));
+        ccpu.r[4] = cmod;
+        if (sr_syscall(&ccpu, 0x50f0c1ecu) != 0) { cycles_ok = 0; break; }
+        memset(&ccpu, 0, sizeof(ccpu));
+        ccpu.r[4] = cmod;
+        if (sr_syscall(&ccpu, 0xd1ff982au) != 0) { cycles_ok = 0; break; }
+        memset(&ccpu, 0, sizeof(ccpu));
+        ccpu.r[4] = cmod;
+        if (sr_syscall(&ccpu, 0x2e0911aau) != 0) { cycles_ok = 0; break; }
+        if (sr_hle_test_started_export(LIFECYCLE_EXPORT_A) != 0) { cycles_ok = 0; break; }
+        if (sr_hle_test_module_count() != 0u || sr_hle_test_image_count() != 0u) { cycles_ok = 0; break; }
+    }
+    expect(cycles_ok, "lifecycle: 24 load/start/stop/unload cycles reclaim every record");
+    expect(sr_hle_test_module_count() == 0u,
+           "lifecycle: repeated cycles do not exhaust the 16-entry module table");
+    expect(sr_hle_test_image_count() == 0u,
+           "lifecycle: repeated cycles do not exhaust the 16-entry image table");
+
+    remove(path_a);
+    remove(path_b);
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
+static void test_late_prx_stale_import_is_unreachable(const char *self) {
+    if (!self) {
+        expect(0, "stale-import regression knows its own executable path");
+        return;
+    }
+    intptr_t rc = _spawnl(_P_WAIT, self, self, "--lifecycle-stale-import", (const char *)NULL);
+    expect(rc != -1, "stale-import child process starts");
+    if (rc == -1) return;
+    expect((int)rc != LIFECYCLE_STALE_REACHED,
+           "an import after unload does not reach the unloaded module's export");
+    expect((int)rc != LIFECYCLE_STALE_STOPPED,
+           "the stale-import child completed the load/start/export/stop/unload sequence");
+}
+
+/* Child half of the stale-import proof: run the lifecycle far enough to unload module A,
+ * then make the importer call A's retired export. Before the fix the call is linked to
+ * the unloaded image and returns the old export's result; after the fix nothing is
+ * linked, so the import falls through to the unimplemented-dispatch path and the
+ * process ends there. Both outcomes are observable, so the parent can assert the
+ * retired export is unreachable without that dispatch taking the suite down with it. */
+static int run_lifecycle_stale_import(void) {
+    const char *path = "hle_lifecycle_stale.prx";
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    SetEnvironmentVariableA("SR_REAL_MODULE_START", "1");
+    if (!write_lifecycle_prx(path, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1, 0x1234u))
+        return LIFECYCLE_STALE_STOPPED;
+    uint32_t uid = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                              LIFECYCLE_PATCH_OFF_A_1);
+    if (uid == 0) return LIFECYCLE_STALE_STOPPED;
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_a1_fn);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    if (sr_syscall(&cpu, 0x50f0c1ecu) != 0) return LIFECYCLE_STALE_STOPPED;
+    if (sr_syscall(&cpu, LIFECYCLE_EXPORT_A) != 0xa1u) return LIFECYCLE_STALE_STOPPED;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    if (sr_syscall(&cpu, 0xd1ff982au) != 0) return LIFECYCLE_STALE_STOPPED;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    if (sr_syscall(&cpu, 0x2e0911aau) != 0) return LIFECYCLE_STALE_STOPPED;
+    /* The retired import: returning from here at all means it still reached the old
+     * export body, so the process result distinguishes the two outcomes. */
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, LIFECYCLE_EXPORT_A);
+    remove(path);
+    return LIFECYCLE_STALE_REACHED;
+}
+
 static void test_flight_recorder_trace(void) {
     const char *output = "flight_recorder_hle_selftest.json";
     char bundle[16384];
@@ -16485,6 +16929,8 @@ int main(int argc, char **argv) {
         return run_psp_oracle(argc, argv);
     if (argc > 1 && strcmp(argv[1], "--exit-game-poisoned") == 0)
         return run_exit_game_poisoned();
+    if (argc > 1 && strcmp(argv[1], "--lifecycle-stale-import") == 0)
+        return run_lifecycle_stale_import();
     g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
     if (!g_mem_base) {
         fprintf(stderr, "hle_thread_selftest: cannot allocate guest arena\n");
@@ -16627,6 +17073,8 @@ int main(int argc, char **argv) {
     test_intr_context_conformance();
     test_psp_mutex();
     test_real_module_start_lifecycle();
+    test_late_prx_unload_reload_lifecycle();
+    test_late_prx_stale_import_is_unreachable(argv[0]);
     test_flight_recorder_trace();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
