@@ -16380,10 +16380,6 @@ static void test_real_module_start_lifecycle(void) {
 #define LIFECYCLE_MARKER_OFF   0x30u
 #define LIFECYCLE_START_OFF   0x70u
 #define LIFECYCLE_STOP_OFF    0x78u
-/* Distinct child-process results for the stale-import proof, so returning from the
- * retired import is distinguishable from failing closed before it. */
-#define LIFECYCLE_STALE_STOPPED 21
-#define LIFECYCLE_STALE_REACHED 22
 
 static uint32_t s_lifecycle_export_calls_a1, s_lifecycle_export_calls_a2;
 static uint32_t s_lifecycle_export_calls_b;
@@ -16400,8 +16396,11 @@ static void lifecycle_stop_fn(CpuState *s) { s_lifecycle_stop_calls++; s->r[2] =
  * guest bodies. `payload` is written into the image so a reload with different bytes is
  * observable in guest memory. This reuses the production prx_loader.c and
  * register_prx_exports() parsers: only the bytes are synthetic. */
-static int write_lifecycle_prx(const char *path, uint32_t nid, uint32_t patch_off,
-                               uint32_t payload) {
+/* Writes the synthetic module image. The export is published by the load hook
+ * (sr_hle_test_load_prx_image), not by the image bytes, so this deliberately takes no
+ * nid or export offset: passing them here would read as if the export table drove the
+ * registration when it does not. `payload` is the reload marker. */
+static int write_lifecycle_prx(const char *path, uint32_t payload) {
     enum { SIZE = 0x300, PHOFF = 0x34, MODOFF = 0x100, SHSTR_OFF = 0x180 };
     /* The loaded segment covers file [0x80, 0x80+SEGSZ), so every guest offset the
      * lifecycle reads or calls has to sit below SEGSZ. */
@@ -16465,9 +16464,6 @@ static int write_lifecycle_prx(const char *path, uint32_t nid, uint32_t patch_of
     fixture_wr32(image + 0x80 + LIFECYCLE_STOP_OFF, 0x03e00008u);
     fixture_wr32(image + 0x80 + LIFECYCLE_PATCH_OFF_A_1, 0x03e00008u);
     fixture_wr32(image + 0x80 + LIFECYCLE_MARKER_OFF, payload);
-    (void)nid;
-    (void)patch_off;
-
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
     size_t written = fwrite(image, 1, sizeof(image), f);
@@ -16491,16 +16487,22 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 
     /* The real load path: the manifest binding this suite runs under declares one
      * module, so drive the production loader directly with a file it parses. */
-    expect(write_lifecycle_prx(path_a, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1, marker_1),
+    expect(write_lifecycle_prx(path_a, marker_1),
            "lifecycle: synthetic module A image written");
-    expect(write_lifecycle_prx(path_b, LIFECYCLE_EXPORT_B, LIFECYCLE_PATCH_OFF_A_1, marker_1),
+    expect(write_lifecycle_prx(path_b, marker_1),
            "lifecycle: synthetic module B image written");
     uid_a = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
                                        LIFECYCLE_PATCH_OFF_A_1);
     expect(uid_a != 0, "lifecycle: module A image loads at its declared base");
     if (uid_a == 0) {
+        /* Leave the process the way the end of this test does. Returning with
+         * SR_REAL_MODULE_START still set and module records live would run every
+         * later test in an environment it was not written for. */
         remove(path_a);
         remove(path_b);
+        _putenv("SR_REAL_MODULE_START=0");
+        sr_test_guest_fn_reset();
+        sr_hle_test_module_reset();
         return;
     }
     uid_b = sr_hle_test_load_prx_image(path_b, LIFECYCLE_MOD_B_BASE, LIFECYCLE_EXPORT_B,
@@ -16590,9 +16592,11 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: unload module A returns 0");
 
     /* Stale-export result: the old export is no longer authorized, and the registry no
-     * longer resolves it at all. The dispatch itself is observed in a child process
-     * (run_lifecycle_stale_import), because an import that reaches no live module
-     * correctly fails closed on the unimplemented-dispatch path rather than returning. */
+     * longer resolves it at all. These are the two conditions link_started_export()
+     * consults, so an import after unload cannot be linked to A: it has no authorized
+     * started image and no resolvable target. (An actual dispatch would additionally
+     * fail closed on the unimplemented-dispatch path, which terminates the process and
+     * so cannot be asserted in-process. That is not claimed here.) */
     expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
            "lifecycle: A's export is no longer authorized after unload");
     expect(sr_hle_test_started_image_count() == 1,
@@ -16646,7 +16650,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
            "lifecycle: no started-image state survives the unloads");
 
     /* ---- reload at the same base with changed bytes and a changed export target ---- */
-    expect(write_lifecycle_prx(path_a, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_2, marker_2),
+    expect(write_lifecycle_prx(path_a, marker_2),
            "lifecycle: reloaded module A image written with changed bytes");
     sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_2,
                               lifecycle_export_a2_fn);
@@ -16699,7 +16703,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     int cycles_ok = 1;
     for (unsigned i = 0; i < 24u; i++) {
         const uint32_t marker = 0x3000u + i;
-        if (!write_lifecycle_prx(path_a, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1, marker))
+        if (!write_lifecycle_prx(path_a, marker))
             break;
         uint32_t cmod = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE,
                                                    LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1);
@@ -16730,59 +16734,79 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     sr_hle_test_module_reset();
 }
 
-static void test_late_prx_stale_import_is_unreachable(const char *self) {
-    if (!self) {
-        expect(0, "stale-import regression knows its own executable path");
-        return;
-    }
-    intptr_t rc = _spawnl(_P_WAIT, self, self, "--lifecycle-stale-import", (const char *)NULL);
-    expect(rc != -1, "stale-import child process starts");
-    if (rc == -1) return;
-    expect((int)rc != LIFECYCLE_STALE_REACHED,
-           "an import after unload does not reach the unloaded module's export");
-    expect((int)rc != LIFECYCLE_STALE_STOPPED,
-           "the stale-import child completed the load/start/export/stop/unload sequence");
-}
-
-/* Child half of the stale-import proof: run the lifecycle far enough to unload module A,
- * then make the importer call A's retired export. Before the fix the call is linked to
- * the unloaded image and returns the old export's result; after the fix nothing is
- * linked, so the import falls through to the unimplemented-dispatch path and the
- * process ends there. Both outcomes are observable, so the parent can assert the
- * retired export is unreachable without that dispatch taking the suite down with it. */
-static int run_lifecycle_stale_import(void) {
-    const char *path = "hle_lifecycle_stale.prx";
+/* Two handles can name one resident image: a second load of an already-resident base
+ * reuses that image instead of staging a second copy, so both records hold entry
+ * addresses into the same range. Unloading the handle that *owns* the image first must
+ * not free that range out from under the survivor. Retiring on the last reference
+ * instead is what keeps the survivor's module_start/module_stop valid. */
+static void test_late_prx_duplicate_base_last_reference(void) {
+    const char *path = "hle_lifecycle_dup.prx";
     CpuState cpu;
+    uint32_t owner, survivor;
+
     reset_fixture();
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    SetEnvironmentVariableA("SR_REAL_MODULE_START", "1");
-    if (!write_lifecycle_prx(path, LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1, 0x1234u))
-        return LIFECYCLE_STALE_STOPPED;
-    uint32_t uid = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
-                                              LIFECYCLE_PATCH_OFF_A_1);
-    if (uid == 0) return LIFECYCLE_STALE_STOPPED;
+    _putenv("SR_REAL_MODULE_START=1");
+
+    expect(write_lifecycle_prx(path, 0x3333ccccu),
+           "duplicate-base: synthetic module image written");
+    owner = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                       LIFECYCLE_PATCH_OFF_A_1);
+    expect(owner != 0, "duplicate-base: the first handle loads the image");
     sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
     sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
     sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
                               lifecycle_export_a1_fn);
+
+    /* The second handle names the same already-resident base. */
+    survivor = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                          LIFECYCLE_PATCH_OFF_A_1);
+    expect(survivor != 0 && survivor != owner,
+           "duplicate-base: a second handle names the resident image");
+    expect(sr_hle_test_image_count() == 1u,
+           "duplicate-base: both handles share one image record");
+
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = uid;
-    if (sr_syscall(&cpu, 0x50f0c1ecu) != 0) return LIFECYCLE_STALE_STOPPED;
-    if (sr_syscall(&cpu, LIFECYCLE_EXPORT_A) != 0xa1u) return LIFECYCLE_STALE_STOPPED;
+    cpu.r[4] = owner;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "duplicate-base: the owner starts");
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = uid;
-    if (sr_syscall(&cpu, 0xd1ff982au) != 0) return LIFECYCLE_STALE_STOPPED;
+    cpu.r[4] = owner;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "duplicate-base: the owner stops");
+
+    /* Unload the image OWNER first: the survivor still references that image. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = uid;
-    if (sr_syscall(&cpu, 0x2e0911aau) != 0) return LIFECYCLE_STALE_STOPPED;
-    /* The retired import: returning from here at all means it still reached the old
-     * export body, so the process result distinguishes the two outcomes. */
+    cpu.r[4] = owner;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "duplicate-base: unloading the image owner returns 0");
+    expect(sr_hle_test_image_count() == 1u,
+           "duplicate-base: the image survives while another handle still references it");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) != 0,
+           "duplicate-base: the shared image's export is still authorized");
+
+    /* The last reference retires it. */
     memset(&cpu, 0, sizeof(cpu));
-    (void)sr_syscall(&cpu, LIFECYCLE_EXPORT_A);
+    cpu.r[4] = survivor;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "duplicate-base: the survivor starts");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = survivor;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "duplicate-base: the survivor stops");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = survivor;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "duplicate-base: unloading the last handle returns 0");
+    expect(sr_hle_test_image_count() == 0u,
+           "duplicate-base: the image is retired with its last reference");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "duplicate-base: the shared export is no longer authorized");
+    expect(sr_hle_test_module_count() == 0u,
+           "duplicate-base: both handles' records are reclaimed");
+
     remove(path);
-    return LIFECYCLE_STALE_REACHED;
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
 }
 
 static void test_flight_recorder_trace(void) {
@@ -16929,8 +16953,6 @@ int main(int argc, char **argv) {
         return run_psp_oracle(argc, argv);
     if (argc > 1 && strcmp(argv[1], "--exit-game-poisoned") == 0)
         return run_exit_game_poisoned();
-    if (argc > 1 && strcmp(argv[1], "--lifecycle-stale-import") == 0)
-        return run_lifecycle_stale_import();
     g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
     if (!g_mem_base) {
         fprintf(stderr, "hle_thread_selftest: cannot allocate guest arena\n");
@@ -17074,7 +17096,7 @@ int main(int argc, char **argv) {
     test_psp_mutex();
     test_real_module_start_lifecycle();
     test_late_prx_unload_reload_lifecycle();
-    test_late_prx_stale_import_is_unreachable(argv[0]);
+    test_late_prx_duplicate_base_last_reference();
     test_flight_recorder_trace();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real

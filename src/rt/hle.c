@@ -2231,7 +2231,16 @@ static LoadedModule *find_loaded_module(uint32_t uid) {
  * table. Returns NULL only when all slots hold live modules. */
 static LoadedModule *alloc_loaded_module_slot(void) {
     for (int i = 0; i < s_nloaded_modules; i++) {
-        if (!s_loaded_modules[i].in_use) return &s_loaded_modules[i];
+        if (!s_loaded_modules[i].in_use) {
+            /* A released record still holds the dead module's uid, path and entry
+             * addresses. Clear it and claim it here, so the caller cannot install a
+             * module that find_loaded_module() and retire_loaded_module() both refuse
+             * to see because in_use was never set. */
+            LoadedModule *reused = &s_loaded_modules[i];
+            memset(reused, 0, sizeof(*reused));
+            reused->in_use = 1;
+            return reused;
+        }
     }
     if (s_nloaded_modules >= (int)(sizeof(s_loaded_modules) / sizeof(s_loaded_modules[0])))
         return NULL;
@@ -2490,8 +2499,16 @@ static void unload_prx_image(uint32_t base) {
 }
 
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
-    for (unsigned i = 0; i < s_prx_image_count; i++)
-        if (s_prx_images[i].base == base) return 1;
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (s_prx_images[i].base != base) continue;
+        /* The image is already resident and is not re-staged over a running module's
+         * live data, but this load still depends on it. Report the base so the new
+         * record references that image; recording image_base == 0 would leave it
+         * holding module_start/module_stop addresses into a range the image owner
+         * frees on its own unload, and unload would never know to keep it alive. */
+        s_last_prx_base = base;
+        return 1;
+    }
     if (s_prx_image_count >= sizeof(s_prx_images) / sizeof(s_prx_images[0])) return 0;
 
     SrPrxImage img;
@@ -3436,6 +3453,20 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
     return 0;
 }
 
+/* True when a live module record other than `mod` still depends on the same PRX image.
+ * Two handles can name one base: a second load of an already-resident base reuses that
+ * image instead of staging a second copy, and both records then hold entry addresses
+ * into it. Retiring the image while either record is alive would free the range out
+ * from under the other handle's module_start/module_stop. */
+static int another_record_references_image(const LoadedModule *mod) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        const LoadedModule *other = &s_loaded_modules[i];
+        if (other == mod || !other->in_use || other->unloaded) continue;
+        if (other->image_base == mod->image_base) return 1;
+    }
+    return 0;
+}
+
 static uint32_t h_UnloadModule_Trace(CpuState *s) {
     if (!real_module_start_enabled()) {
         uint32_t uid = sched_current_uid();
@@ -3461,7 +3492,9 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
      * the only point at which a stopped module's export authority is retired. Stop
      * deliberately leaves the image resident: a stopped module is still loaded and can
      * be started again, so retiring its exports at stop would be an invented semantic. */
-    if (mod->image_base) unload_prx_image(mod->image_base);
+    if (mod->image_base && !another_record_references_image(mod)) {
+        unload_prx_image(mod->image_base);
+    }
     retire_loaded_module(mod);
     return 0;
 }
