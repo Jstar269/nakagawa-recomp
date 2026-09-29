@@ -288,6 +288,44 @@ class BoundedJsonError(ValueError):
     """Named, controlled failure while reading a bounded external JSON artifact."""
 
 
+# Diagnostics are attacker-reachable: every key and scalar in an externally
+# supplied artifact is attacker-chosen text, and a rejection message is usually
+# the one thing that gets logged or echoed back to a user. Bounding the artifact
+# therefore does not by itself bound the message it produces, so untrusted
+# values are quoted only as a short prefix and untrusted name lists only as a
+# short sample. Rejection itself is unchanged; only the echoed detail is.
+MAX_JSON_ECHO_CHARS = 64
+MAX_JSON_ECHO_FIELDS = 8
+
+
+def bounded_echo(value: Any, *, max_chars: int = MAX_JSON_ECHO_CHARS) -> str:
+    """Render one untrusted value for a message without echoing bulk data.
+
+    Strings are truncated before any quoting, so a multi-hundred-kilobyte key
+    cannot inflate an exception message (or the log record that captures it)
+    past ``max_chars``. Non-strings are rendered with ``repr`` and truncated
+    afterwards; that transient repr is bounded by the artifact ceiling already
+    accepted by the reader, so it is not a new amplification path.
+    """
+    if type(value) is str:
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars] + "...[truncated]"
+    text = repr(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...[truncated]"
+
+
+def bounded_echo_fields(names: Any, *, max_chars: int = MAX_JSON_ECHO_CHARS) -> str:
+    """Render a set of untrusted field names as a short, fixed-size sample."""
+    ordered = sorted(names)
+    shown = ", ".join(bounded_echo(name, max_chars=max_chars) for name in ordered[:MAX_JSON_ECHO_FIELDS])
+    if len(ordered) > MAX_JSON_ECHO_FIELDS:
+        shown += f", ... (+{len(ordered) - MAX_JSON_ECHO_FIELDS} more)"
+    return shown
+
+
 def _bounded_json_bytes(path: Path, max_bytes: int) -> bytes:
     """Read at most ``max_bytes`` (+1) bytes of ``path`` through one handle.
 
@@ -306,7 +344,7 @@ def _bounded_json_bytes(path: Path, max_bytes: int) -> bytes:
             )
         chunks: list[bytes] = []
         remaining = max_bytes + 1
-        while remaining:
+        while remaining > 0:
             chunk = os.read(fd, remaining)
             if not chunk:
                 break
@@ -336,7 +374,10 @@ def _bounded_json_scan(
     ceiling instead of first recursing inside the standard parser. Strings and
     escapes are skipped with a state machine; counts are conservative upper
     bounds, so a document that passes can never exceed the ceilings after
-    parsing either.
+    parsing either. The node count is re-checked after the loop because the
+    in-string branch continues before the per-character test, which would
+    otherwise let a document whose final node is a string closer finish one
+    node past the ceiling.
     """
     depth = 0
     members = 0
@@ -344,7 +385,12 @@ def _bounded_json_scan(
     nodes = 0
     in_string = False
     escaped = False
-    prev = ""
+    # Tracks whether the previous character can continue a number, so a number
+    # is counted once at its leading character. A boolean rather than a
+    # sentinel character: "" is a substring of every string, so a ""-seeded
+    # "not previously numeric" test would silently never fire for a document
+    # that starts with a digit.
+    prev_numeric = False
     for char in text:
         if in_string:
             if escaped:
@@ -371,7 +417,7 @@ def _bounded_json_scan(
         elif char == ",":
             items += 1
         elif char in "-0123456789":
-            if prev not in "-0123456789.eE":
+            if not prev_numeric:
                 nodes += 1
         elif char in "tfn":
             nodes += 1
@@ -379,7 +425,11 @@ def _bounded_json_scan(
             raise BoundedJsonError(
                 f"JSON document exceeds {max_nodes} structural nodes"
             )
-        prev = char
+        prev_numeric = char in "-0123456789.eE"
+    if nodes > max_nodes:
+        raise BoundedJsonError(
+            f"JSON document exceeds {max_nodes} structural nodes"
+        )
     if members > max_members:
         raise BoundedJsonError(
             f"JSON document exceeds {max_members} object members"
@@ -456,7 +506,7 @@ def _no_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise BoundedJsonError(f"duplicate JSON field: {key}")
+            raise BoundedJsonError(f"duplicate JSON field: {bounded_echo(key)}")
         result[key] = value
     return result
 

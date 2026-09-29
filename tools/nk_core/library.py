@@ -18,6 +18,8 @@ from .package_cache import (
     MAX_CACHE_JSON_ITEMS,
     MAX_CACHE_JSON_MEMBERS,
     MAX_CACHE_JSON_NODES,
+    bounded_echo,
+    bounded_echo_fields,
     read_bounded_json,
 )
 
@@ -78,7 +80,7 @@ class LibraryGameRecord:
         unknown = set(data) - _GAME_RECORD_FIELDS
         if unknown:
             raise ValueError(
-                "game record has unsupported fields: " + ", ".join(sorted(unknown))
+                "game record has unsupported fields: " + bounded_echo_fields(unknown)
             )
 
         disc_id = data.get("disc_id")
@@ -238,12 +240,12 @@ class GameLibrary:
         unknown = set(data) - _LIBRARY_ROOT_FIELDS
         if unknown:
             raise ValueError(
-                f"{path}: library root has unsupported fields: " + ", ".join(sorted(unknown))
+                f"{path}: library root has unsupported fields: " + bounded_echo_fields(unknown)
             )
         schema = data.get("schema_version")
         if type(schema) is not int or schema != LIBRARY_SCHEMA_VERSION:
             raise ValueError(
-                f"{path}: unsupported library schema_version {schema!r}; "
+                f"{path}: unsupported library schema_version {bounded_echo(schema)}; "
                 f"this build reads version {LIBRARY_SCHEMA_VERSION}"
             )
         updated_at = data.get("updated_at")
@@ -267,7 +269,7 @@ class GameLibrary:
             key = rec.disc_id.upper().strip()
             if key in lib._games:
                 raise ValueError(
-                    f"{path}: game record {index} repeats disc_id {rec.disc_id}"
+                    f"{path}: game record {index} repeats disc_id {bounded_echo(rec.disc_id)}"
                 )
             lib.add_or_update_game(rec)
 

@@ -689,6 +689,102 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             self.assertFalse(valid)
             self.assertIn("unreadable", reason)
 
+    def test_duplicate_key_diagnosis_does_not_echo_attacker_bulk(self) -> None:
+        """#319: rejection stays named, but a hostile key is not quoted back.
+
+        Bounding the artifact does not bound the message it produces. A
+        duplicate key under the byte ceiling is attacker-chosen text that would
+        otherwise land verbatim in an exception and in whatever log captures
+        it, so only a short prefix is echoed. The rejection itself is
+        unchanged: still a named BoundedJsonError, not a silent last-wins.
+        """
+        bulk = "A" * 400_000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dup.json"
+            # Two copies of the bulk key stay under MAX_CACHE_JSON_BYTES, so
+            # this is a duplicate-key rejection, not a byte-ceiling rejection.
+            text = '{"%s": 1, "%s": 2}' % (bulk, bulk)
+            self.assertLess(len(text.encode("utf-8")), package_cache.MAX_CACHE_JSON_BYTES)
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaises(package_cache.BoundedJsonError) as caught:
+                package_cache.read_bounded_json(path)
+            message = str(caught.exception)
+            self.assertIn("duplicate JSON field", message)
+            self.assertIn("...[truncated]", message)
+            self.assertLess(len(message), 256)
+            self.assertNotIn(bulk, message)
+
+    def test_node_counter_never_undercounts_any_scalar_or_trailing_string(self) -> None:
+        """#319: the structural node count is a true lower bound, not a leaky one.
+
+        Two ways the counter used to lose a node: a document whose final node
+        was a string closer finished past the ceiling, because the in-string
+        branch continues before the per-character test and there was no
+        post-loop test; and the "was the previous character numeric" seed was
+        the empty string, which is a substring of every string, so a document
+        that *starts* with a digit had its leading number skipped entirely.
+        """
+        one_node = ["1", "-2", "1.5", "1e5", "-1.5e-3", "true", "false",
+                    "null", '"s"', '""', "{}", "[]"]
+        for text in one_node:
+            with self.subTest(text=text):
+                # Zero nodes is below any document, so it must be rejected.
+                with self.assertRaises(package_cache.BoundedJsonError):
+                    package_cache._bounded_json_scan(
+                        text, max_depth=32, max_members=1 << 20,
+                        max_items=1 << 20, max_nodes=0,
+                    )
+                # One node is exactly the document, so it must be accepted.
+                package_cache._bounded_json_scan(
+                    text, max_depth=32, max_members=1 << 20,
+                    max_items=1 << 20, max_nodes=1,
+                )
+        # A document whose last node is a string closer: 2 nodes, not 1.
+        with self.assertRaises(package_cache.BoundedJsonError):
+            package_cache._bounded_json_scan(
+                '["a"]', max_depth=32, max_members=1 << 20,
+                max_items=1 << 20, max_nodes=1,
+            )
+        package_cache._bounded_json_scan(
+            '["a"]', max_depth=32, max_members=1 << 20,
+            max_items=1 << 20, max_nodes=2,
+        )
+
+    def test_read_loop_is_bounded_even_if_a_read_returns_more_than_requested(self) -> None:
+        """#319: the reader must terminate and fail closed, not loop.
+
+        A real read never returns more than it was asked for, but the loop
+        condition is written so that an over-long read short-circuits instead
+        of driving the counter negative and re-entering os.read.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "short.json"
+            path.write_text('{"a": 1}', encoding="utf-8")
+            real_read = os.read
+
+            def overlong_read(fd: int, n: int) -> bytes:
+                return real_read(fd, n) + b"A" * (package_cache.MAX_CACHE_JSON_BYTES + 1)
+
+            with mock.patch.object(package_cache.os, "read", side_effect=overlong_read):
+                with self.assertRaises(package_cache.BoundedJsonError) as caught:
+                    package_cache.read_bounded_json(path)
+            self.assertIn("grew past", str(caught.exception))
+
+    def test_bounded_echo_truncates_strings_and_bounds_field_samples(self) -> None:
+        """#319: untrusted text is quoted as a prefix, untrusted lists as a sample."""
+        self.assertEqual(package_cache.bounded_echo("short"), "short")
+        self.assertEqual(
+            package_cache.bounded_echo("A" * 200),
+            "A" * package_cache.MAX_JSON_ECHO_CHARS + "...[truncated]",
+        )
+        # Non-strings are rendered but still truncated, so a huge nested value
+        # cannot be quoted whole either.
+        self.assertEqual(package_cache.bounded_echo(7), "7")
+        self.assertLess(len(package_cache.bounded_echo(["B" * 5000])), 256)
+        many = package_cache.bounded_echo_fields({"f%03d" % i for i in range(500)})
+        self.assertIn("(+492 more)", many)
+        self.assertLess(len(many), 8 * (package_cache.MAX_JSON_ECHO_CHARS + 2) + 64)
+
 
 if __name__ == "__main__":
     unittest.main()

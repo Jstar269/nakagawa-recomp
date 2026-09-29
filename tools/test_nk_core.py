@@ -1782,6 +1782,55 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported library schema_version"):
             GameLibrary.load(path)
 
+    def test_library_diagnoses_reject_hostile_content_without_echoing_it(self) -> None:
+        """#319: every attacker-reachable rejection stays named AND bounded.
+
+        library.json is attacker-supplied, so each untrusted value that a
+        diagnosis would otherwise quote -- an unknown root field, an unknown
+        record field, a non-integer schema_version, a repeated disc_id -- is
+        echoed only as a short prefix. Each case still fails closed with a
+        ValueError naming the condition; only the echoed detail is bounded.
+        """
+        bulk = "A" * 400_000
+        cases = {
+            "unknown_root": (
+                '{"schema_version": 1, "updated_at": null, "games": [], "%s": 1}' % bulk,
+                "unsupported fields",
+            ),
+            "unknown_record": (
+                '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "%s": 1}]}' % bulk,
+                "unsupported fields",
+            ),
+            "schema_echo": (
+                '{"schema_version": "%s", "games": []}' % bulk,
+                "unsupported library schema_version",
+            ),
+            "duplicate_disc": (
+                '{"schema_version": 1, "games": [{"disc_id": "%s"}, {"disc_id": "%s"}]}'
+                % (bulk, bulk),
+                "repeats disc_id",
+            ),
+        }
+        for name, (text, expected) in cases.items():
+            path = self._write(name + ".json", text)
+            with self.assertRaises(ValueError) as caught:
+                GameLibrary.load(path)
+            message = str(caught.exception)
+            self.assertIn(expected, message, name)
+            self.assertNotIn(bulk, message, name)
+            # A fixed prefix, plus the resolved local path and the index.
+            self.assertLess(len(message), 512, name)
+
+        # Many unknown fields are sampled, not concatenated.
+        many = '{"schema_version": 1, "games": []' + "".join(
+            ', "f%03d": 1' % i for i in range(500)
+        ) + "}"
+        path = self._write("many_fields.json", many)
+        with self.assertRaises(ValueError) as caught:
+            GameLibrary.load(path)
+        self.assertIn("(+492 more)", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 1024)
+
     def test_nk_cli_library_route_enforces_the_same_ceilings(self) -> None:
         user_root = self.temp_dir / "user"
         user_root.mkdir()

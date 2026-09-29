@@ -543,8 +543,8 @@
           "tools/nk_cli.py:180"
         ]
       },
-      "allocation_time": "JSON memory/time is bounded by the byte and structural ceilings; RecursionError inside json.loads is contained to the named BoundedJsonError. Artifact digests stream in 1 MiB blocks.",
-      "failure_atomicity": "Validation is read-only; package promotion stages and rejects invalid copies. Malformed or hostile input raises the named BoundedJsonError (or the entry point's named failure embedding it) -- never AttributeError, TypeError, RecursionError, or UnicodeDecodeError. Nothing is truncated silently.",
+      "allocation_time": "JSON memory/time is bounded by the byte and structural ceilings; RecursionError inside json.loads is contained to the named BoundedJsonError. Artifact digests stream in 1 MiB blocks. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
+      "failure_atomicity": "Validation is read-only; package promotion stages and rejects invalid copies. Malformed or hostile input raises the named BoundedJsonError (or the entry point's named failure embedding it) -- never AttributeError, TypeError, RecursionError, or UnicodeDecodeError. Nothing is truncated silently. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
       "harness": "tools/test_package_cache.py; tools/test_nk_core.py; no mutation harness",
       "gap": "Resource ceilings, deterministic hostile-input corpus, and named controlled errors are now executable behavior on production entry points. No seeded-mutation loop or sanitizer target for this Python parser route.",
       "status": "PARTIAL",
@@ -560,7 +560,8 @@
       ],
       "malformed_input_coverage": [
         "Contract corruption, duplicate keys, invalid cache identity/artifact path, digest mismatch and incomplete package cases.",
-        "Bounded-input regression: exactly-at-limit valid JSON accepted; one-byte-over limit rejected; excessive nesting (100k levels) and member/node counts rejected with named errors; duplicate keys rejected; malformed UTF-8 rejected; wrong top-level type rejected; growth during read cannot bypass the ceiling."
+        "Bounded-input regression: exactly-at-limit valid JSON accepted; one-byte-over limit rejected; excessive nesting (100k levels) and member/node counts rejected with named errors; duplicate keys rejected; malformed UTF-8 rejected; wrong top-level type rejected; growth during read cannot bypass the ceiling.",
+        "Bounded-diagnostics regression: no rejection message on any of these routes echoes attacker-supplied bulk data; an oversized key, unknown field name, non-integer schema_version, or repeated disc_id is quoted only as a short prefix and an oversized unknown-field list only as a fixed-size sample, while the rejection itself stays a named controlled error. The structural node count is a true lower bound for every scalar and trailing-string document."
       ],
       "resource_gaps": [],
       "campaigns": {
@@ -1352,11 +1353,12 @@
           "tools/nk_core/package_cache.py:read_bounded_json"
         ]
       },
-      "allocation_time": "Read memory is bounded by the byte ceiling; decoded structure is bounded by the structural ceilings and the record limit; RecursionError inside json.loads is contained to the named controlled ValueError.",
-      "failure_atomicity": "A new temporary GameLibrary is returned only after all records validate; malformed input raises the named controlled ValueError before the caller receives it -- never AttributeError, TypeError, RecursionError, or UnicodeDecodeError. Nothing is truncated silently. Save-format compatibility with earlier valid libraries is preserved.",
+      "allocation_time": "Read memory is bounded by the byte ceiling; decoded structure is bounded by the structural ceilings and the record limit; RecursionError inside json.loads is contained to the named controlled ValueError. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
+      "failure_atomicity": "A new temporary GameLibrary is returned only after all records validate; malformed input raises the named controlled ValueError before the caller receives it -- never AttributeError, TypeError, RecursionError, or UnicodeDecodeError. Nothing is truncated silently. Save-format compatibility with earlier valid libraries is preserved. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
       "malformed_input_coverage": [
         "Valid library save/load round trip preserves every field.",
-        "Bounded-input regression on the production GameLibrary.load and nk_cli._load_library_entry routes: exactly-at-limit valid JSON accepted; one-byte-over limit rejected; excessive nesting rejected; excessive record count rejected; duplicate keys rejected; malformed UTF-8 rejected; wrong top-level type rejected; games:[null], scalar, list, and string records rejected with named errors; per-field scalar/list/object substitutions rejected; unknown root or record fields rejected; duplicate disc_id records rejected; missing games field and unsupported schema_version rejected."
+        "Bounded-input regression on the production GameLibrary.load and nk_cli._load_library_entry routes: exactly-at-limit valid JSON accepted; one-byte-over limit rejected; excessive nesting rejected; excessive record count rejected; duplicate keys rejected; malformed UTF-8 rejected; wrong top-level type rejected; games:[null], scalar, list, and string records rejected with named errors; per-field scalar/list/object substitutions rejected; unknown root or record fields rejected; duplicate disc_id records rejected; missing games field and unsupported schema_version rejected.",
+        "Bounded-diagnostics regression: no rejection message on any of these routes echoes attacker-supplied bulk data; an oversized key, unknown field name, non-integer schema_version, or repeated disc_id is quoted only as a short prefix and an oversized unknown-field list only as a fixed-size sample, while the rejection itself stays a named controlled error. The structural node count is a true lower bound for every scalar and trailing-string document."
       ],
       "resource_gaps": [],
       "campaigns": {
