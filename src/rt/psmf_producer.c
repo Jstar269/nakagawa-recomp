@@ -445,12 +445,11 @@ static int drain_track(SrPsmfProducer *p, SrPsmfAuKind kind) {
 
 /* ---- MPEG program stream ------------------------------------------------------------- */
 
-static int parse_pts(const uint8_t *p, int64_t *out) {
-    /* MPEG PTS marker layout: 0010/0011, 3, 15, 15 bits with marker bits.  The
-     * 4-bit prefix is deliberately not enforced: PTS_DTS_flags already states which
-     * fields follow, and no PSP-muxed evidence yet shows every retail stream sets it
-     * exactly (#288).  Marker bits are enforced. */
-    if (!p || !out || (p[0] & 1u) == 0 || (p[2] & 1u) == 0 || (p[4] & 1u) == 0)
+static int parse_pts(const uint8_t *p, uint8_t expected_prefix, int64_t *out) {
+    /* ISO/IEC 13818-1:2018 2.4.3.6 Table 2-21 assigns prefix 0010 to PTS-only,
+     * 0011 to PTS with DTS, and 0001 to DTS.  The marker bits are also mandatory. */
+    if (!p || !out || (p[0] & 0xf0u) != expected_prefix ||
+        (p[0] & 1u) == 0 || (p[2] & 1u) == 0 || (p[4] & 1u) == 0)
         return 0;
     *out = ((int64_t)((p[0] >> 1) & 7u) << 30) |
            ((int64_t)p[1] << 22) |
@@ -570,9 +569,9 @@ static int parse_one(SrPsmfProducer *p) {
         int64_t pts = 0, dts = 0;
         uint32_t optional = p->cursor + 9u;
         if (has_pts && !read_exact(p, optional, h + 9, 5)) { free(payload); return -1; }
-        if (has_pts && !parse_pts(h + 9, &pts)) { free(payload); return -1; }
+        if (has_pts && !parse_pts(h + 9, has_dts ? 0x30u : 0x20u, &pts)) { free(payload); return -1; }
         if (has_dts && !read_exact(p, optional + 5u, h + 14, 5)) { free(payload); return -1; }
-        if (has_dts && !parse_pts(h + 14, &dts)) { free(payload); return -1; }
+        if (has_dts && !parse_pts(h + 14, 0x10u, &dts)) { free(payload); return -1; }
         p->cursor += total;
         p->stats.pes_packets++;
         if (is_video) p->stats.video_pes++; else p->stats.audio_pes++;
