@@ -1,6 +1,7 @@
 # Nakagawa Recomp v0.0.1 Release Notes
 
 Status: DRAFT. The maintainer publishes releases; agents never create tags or releases.
+Release qualification authority: [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278).
 Audience: players and contributors trying the first public build.
 
 ## What v0.0.1 is
@@ -19,6 +20,31 @@ Nakagawa Recomp is an experimental static recompiler that translates user-suppli
 - **Serve game assets directly through archive-backed VFS**: The runtime serves game data directly from validated `.xb` archives using a read-only archive-backed virtual filesystem (`sceIoOpen`, `sceIoGetstat`, `sceIoDopen`), eliminating the need to pre-extract loose files before running ([#475](https://github.com/Jstar269/nakagawa-recomp/pull/475)).
 - **Import PSP system fonts into a validated local cache**: Import dumped PSP console firmware fonts (`jpn0.pgf`, `ltn0.pgf`–`ltn15.pgf`, `kr0.pgf`) into `<user data>/fonts/v1/` using `python tools/nk_cli.py fonts import <folder>`, with structural header validation, atomic manifest generation, and the project-authored public PGF reader ([#441](https://github.com/Jstar269/nakagawa-recomp/pull/441), [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)).
 
+## Public verification you can reproduce
+
+The public, game-input-free verification suite and the media subsystem are the parts of v0.0.1 you can
+confirm yourself, with no retail ISO, PRX, save, key, or decrypted module:
+
+- **Native player application:** `mingw32-make player` compiles `build/nakagawa_player.exe` using SDL3. It supports drag-and-drop and file-dialog ISO loading, parses the ISO9660 PVD and `PARAM.SFO` metadata in C, performs asset census staging, and handles gamepad navigation.
+- **Display smoke verification:** `mingw32-make display-smoke` and `mingw32-make display-smoke-player` prove the two-phase pipeline, loader, NID imports, vblank delivery, display latch, and native player child runtime launch.
+- **Production smoke:** `mingw32-make production-smoke` generates a synthetic PSP PRX, statically recompiles it MIPS-to-C-to-native, and verifies and runs the AOT output.
+- **Fail-closed dispatch:** `mingw32-make production-smoke-gap` proves the fail-closed dispatch path when a synthetic function is intentionally omitted from AOT emission.
+- **Differential cosimulation:** `mingw32-make cosim-selftest` compares AOT and interpreter traces, writes, memory, and architectural state over synthetic cases.
+- **Platform ladder:** `mingw32-make platform-ladder` exercises relocations, scheduler threading, scalar FPU, and filesystem semantics across synthetic workloads.
+- **Core runtime selftests:** `selftest`, `sched-selftest`, `hle-thread-selftest`, and `public-safe-verify` pass on the verified Windows host.
+- **Media subsystem:** PSMF demuxing and H.264 video decoding pipelines process video cutscenes.
+
+From a clean Windows checkout with the supported toolchain, the four headline commands are:
+
+```powershell
+mingw32-make --no-print-directory production-smoke
+mingw32-make --no-print-directory production-smoke-gap
+mingw32-make --no-print-directory player
+mingw32-make --no-print-directory display-smoke
+```
+
+The commands generate their synthetic inputs beneath the ignored `build/` tree.
+
 ## What v0.0.1 is not
 
 - **No bundled games**: This repository does not include game binaries, proprietary game assets, firmware modules, decryption keys, or private oracle traces. Nakagawa Recomp never downloads games or game data. With your consent, it downloads only the build tools declared in the prerequisite manifest. Users must supply their own lawfully obtained PSP game disc image in uncompressed standard `.iso` format ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
@@ -26,6 +52,7 @@ Nakagawa Recomp is an experimental static recompiler that translates user-suppli
 - **Experimental titles**: A valid PSP disc that has no profile yet is imported as **Experimental**. The card notes that compatibility is unknown, checklist items indicate what is missing, and Play stays unavailable until a matching runtime package exists. PAC-MAN Championship Edition reaches its menu and plays a stage through generic fixes with no title-specific branch ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)); full-game compatibility and other title candidates are in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Non-PSP images are refused.
 - **Fonts need the user's own firmware fonts**: Authentic in-game typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped from a real PSP console (`flash0:/font/`). These proprietary files cannot legally be bundled and must be user-provided; import them into the validated local cache via `python tools/nk_cli.py fonts import <folder>` ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)). Public builds read these fonts with the project-authored PGF reader ([#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)); the project-authored open-font converter is in the works ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 - **Windows is the supported player platform and Linux is development-only**: Only Windows 11 x64 is supported today for the desktop player runtime. Linux host runtime/player support is in progress after backend seams are portable ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)), followed by macOS (Apple Silicon) ([#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)) and Android ARM64 ([#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)). Linux/WSL currently serves as a development platform for building the player and portable core and running native tests ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#471](https://github.com/Jstar269/nakagawa-recomp/pull/471)).
+- **Audio output requires a connected audio device**: Public builds drive one SDL3 audio stream per `sceAudio` channel ([#301](https://github.com/Jstar269/nakagawa-recomp/issues/301), [#411](https://github.com/Jstar269/nakagawa-recomp/pull/411)); with no audio device the game runs silently after one message. The SAS hardware conformance group is planned ([#311](https://github.com/Jstar269/nakagawa-recomp/issues/311)).
 
 ## Requirements when running the packaged player
 
@@ -57,9 +84,11 @@ loader and a Vulkan-capable graphics driver remain host-provided:
   landed in #547. In an unpackaged run, set `NK_INSTALL_ROOT` to the unzipped
   `source/` folder so the player uses this package's CLI.
 
+The exact package command and its fail-closed scan are in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md).
+
 ## Known issues
 
-- **Transient model corruption at main-menu transitions**: Transient character-model corruption occurs on main-menu transitions near the first switch to the second guest framebuffer. The corruption already exists in guest VRAM upstream of final presentation; root cause is under active investigation ([#69](https://github.com/Jstar269/nakagawa-recomp/issues/69)).
+- **One-frame skinned-character geometry corruption**: A single frame of skinned character geometry can render corrupted at the title-to-main-menu transition, then recovers. Root cause is not established, so other titles' skinned models may be affected. The maintainer deferred this known issue to v0.0.2 with disclosure; investigation remains in the works ([#69](https://github.com/Jstar269/nakagawa-recomp/issues/69), [decision](https://github.com/Jstar269/nakagawa-recomp/issues/69#issuecomment-5858768374)).
 - **Second-title scope**: PAC-MAN Championship Edition reaches its menu and plays a stage through generic fixes with no title-specific branches ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)). This is not full-game compatibility; other candidates stop at named unsupported imports and further title bring-up is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
 - **GPU vertex transform, lighting, and skinning**: In-game rendering currently uses software transformation with Vulkan presentation; moving GE transform, lighting, and skinning to Vulkan waits for GE correctness and CPU cost measurements behind software-reference differential proof ([#318](https://github.com/Jstar269/nakagawa-recomp/issues/318)).
 - **Networking APIs unimplemented**: All networking APIs (`sceNet`, `sceNetAdhoc`, `sceNetApctl`) are unimplemented. Network module loading (`sceUtilityLoadNetModule`) returns controlled refusal (`0x80110001` `SCE_ERROR_UTILITY_INVALID_STATUS`); sockets and infrastructure return unsupported with no fake success or phantom connections ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281), [#307](https://github.com/Jstar269/nakagawa-recomp/issues/307)).

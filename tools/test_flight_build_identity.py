@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -249,6 +250,228 @@ class RecorderBundleTests(unittest.TestCase):
         self.assertEqual(bundle["build"]["build_id"], FAKE_COMMIT.lower())
         flight_diff.validate_bundle(bundle)
 
+    def test_flight_diff_localizes_first_change_in_c_recorder_bundles(self):
+        """The production C writer and diff CLI agree on first divergence."""
+        harness = r'''#include "flight_recorder.h"
+
+#ifdef SR_TEST_INJECT_DIVERGENCE
+#define TEST_NID 0x12345678u
+#else
+#define TEST_NID 0x50f0c1ecu
+#endif
+
+int main(void) {
+    uint64_t sequence;
+    sr_flight_init();
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK,
+                     0x10u, 0x20u, 0u, 0u);
+    sequence = sr_flight_hle_import(TEST_NID, 0x55u, 0x66u, 0x100u, 0x104u);
+    sr_flight_hle_arguments(sequence, 0x77u, 2u, 3u, 4u);
+    sr_flight_hle_return(sequence, 0u);
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK,
+                     0x10u, 0x20u, 0x30u, 0u);
+    sr_flight_exit(0u);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            source = temp_path / "flight_diff_recorder_fixture.c"
+            source.write_text(harness, encoding="utf-8")
+            bundles: dict[str, Path] = {}
+            for name, extra_defines in (
+                ("baseline", []),
+                ("injected", ["-DSR_TEST_INJECT_DIVERGENCE"]),
+            ):
+                executable = temp_path / f"{name}{'.exe' if os.name == 'nt' else ''}"
+                bundle_path = temp_path / f"{name}.json"
+                compile_result = subprocess.run(
+                    [
+                        COMPILER,
+                        "-std=c99",
+                        "-O0",
+                        "-Wall",
+                        "-Wextra",
+                        "-Werror",
+                        "-I",
+                        str(SRC_RT),
+                        "-DSR_FLIGHT_RECORDER_LINKED",
+                        f'-DSR_BUILD_ID="{FAKE_COMMIT}"',
+                        *extra_defines,
+                        str(source),
+                        "src/rt/flight_recorder.c",
+                        "-o",
+                        str(executable),
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    compile_result.returncode,
+                    0,
+                    compile_result.stdout + compile_result.stderr,
+                )
+                env = dict(os.environ)
+                env.pop("SR_WATCH", None)
+                env["SR_FLIGHT"] = "hle,sched,prx;8"
+                env["SR_FLIGHT_OUTPUT"] = str(bundle_path)
+                run_result = subprocess.run(
+                    [str(executable)],
+                    cwd=temp_path,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(run_result.returncode, 0, run_result.stderr)
+                bundles[name] = bundle_path
+
+            baseline = flight_diff.load_bundle(bundles["baseline"])
+            injected = flight_diff.load_bundle(bundles["injected"])
+            self.assertEqual(
+                [event["class"] for event in baseline["events"]],
+                ["sched", "hle", "prx", "sched"],
+            )
+            self.assertEqual(
+                [event["class"] for event in injected["events"]],
+                ["sched", "hle", "sched"],
+            )
+            self.assertEqual(baseline["events"][1]["arg0"], 0x50F0C1EC)
+            self.assertEqual(injected["events"][1]["arg0"], 0x12345678)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "flight_diff.py"),
+                    str(bundles["baseline"]),
+                    str(bundles["injected"]),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: sequence 2", result.stdout)
+        self.assertIn(f'"arg0":{0x50F0C1EC}', result.stdout)
+        self.assertIn(f'"arg0":{0x12345678}', result.stdout)
+
+    def test_flight_diff_localizes_first_media_change_in_mixed_recorder_bundles(self):
+        """A source-owned media milestone diverges before the later symptom."""
+        harness = r'''#include "flight_recorder.h"
+
+#ifdef SR_TEST_INJECT_MEDIA
+#define MEDIA_MARK 0x2222u
+#else
+#define MEDIA_MARK 0x1111u
+#endif
+
+int main(void) {
+    uint64_t sequence;
+    sr_flight_init();
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK,
+                     0x10u, 0x20u, 0u, 0u);
+    sequence = sr_flight_hle_import(0x50f0c1ecu, 0x55u, 0x66u, 0x100u, 0x104u);
+    sr_flight_hle_arguments(sequence, 0x77u, 2u, 3u, 4u);
+    sr_flight_hle_return(sequence, 0u);
+    sr_flight_record(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE,
+                     SR_FLIGHT_MEDIA_TEST_AU_READY, MEDIA_MARK, 0u, 1u);
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK,
+                     0x10u, 0x20u, 0x30u, 0u);
+    sr_flight_exit(0u);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            source = temp_path / "flight_media_recorder_fixture.c"
+            source.write_text(harness, encoding="utf-8")
+            bundles: dict[str, Path] = {}
+            for name, extra_defines in (
+                ("baseline", []),
+                ("injected", ["-DSR_TEST_INJECT_MEDIA"]),
+            ):
+                executable = temp_path / f"{name}{'.exe' if os.name == 'nt' else ''}"
+                bundle_path = temp_path / f"{name}.json"
+                compile_result = subprocess.run(
+                    [
+                        COMPILER,
+                        "-std=c99",
+                        "-O0",
+                        "-Wall",
+                        "-Wextra",
+                        "-Werror",
+                        "-I",
+                        str(SRC_RT),
+                        "-DSR_FLIGHT_RECORDER_LINKED",
+                        f'-DSR_BUILD_ID="{FAKE_COMMIT}"',
+                        *extra_defines,
+                        str(source),
+                        "src/rt/flight_recorder.c",
+                        "-o",
+                        str(executable),
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    compile_result.returncode,
+                    0,
+                    compile_result.stdout + compile_result.stderr,
+                )
+                env = dict(os.environ)
+                env.pop("SR_WATCH", None)
+                env["SR_FLIGHT"] = "hle,sched,prx,media;4"
+                env["SR_FLIGHT_OUTPUT"] = str(bundle_path)
+                run_result = subprocess.run(
+                    [str(executable)],
+                    cwd=temp_path,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(run_result.returncode, 0, run_result.stderr)
+                bundles[name] = bundle_path
+
+            baseline = flight_diff.load_bundle(bundles["baseline"])
+            injected = flight_diff.load_bundle(bundles["injected"])
+            self.assertEqual(
+                [event["class"] for event in baseline["events"]],
+                ["hle", "prx", "media", "sched"],
+            )
+            self.assertEqual(
+                [event["sequence"] for event in baseline["events"]],
+                [2, 3, 4, 5],
+            )
+            self.assertEqual(baseline["recorder"]["limit"], 4)
+            self.assertEqual(baseline["recorder"]["recorded"], 5)
+            self.assertEqual(baseline["recorder"]["dropped"], 1)
+            self.assertEqual(baseline["events"][2]["arg1"], 0x1111)
+            self.assertEqual(injected["events"][2]["arg1"], 0x2222)
+            divergence = flight_diff.diff_bundles(baseline, injected, "sequence")
+            self.assertIsNotNone(divergence)
+            self.assertEqual(divergence[0], "sequence 4")
+            self.assertEqual(divergence[1]["arg1"], 0x1111)
+            self.assertEqual(divergence[2]["arg1"], 0x2222)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "flight_diff.py"),
+                    str(bundles["baseline"]),
+                    str(bundles["injected"]),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("DIVERGENCE: sequence 4", result.stdout)
+            self.assertIn('"arg1":4369', result.stdout)
+            self.assertIn('"arg1":8738', result.stdout)
+
 
 class MakeIdentityResolutionTests(unittest.TestCase):
     """How the Makefile resolves the commit that becomes ``build.build_id``.
@@ -334,6 +557,43 @@ class MakeIdentityResolutionTests(unittest.TestCase):
         )
         self.assertEqual(values, {FAKE_COMMIT}, output)
         self.assertNotIn("process_begin", output)
+
+    def test_psmf_media_selftest_recipe_forwards_build_identity(self):
+        """The direct media selftest compile emits identity-bound bundles."""
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        self.assertTrue(make, "GNU Make is required for the build-identity check")
+        environment = os.environ.copy()
+        environment["SOURCE_DATE_EPOCH"] = FAKE_EPOCH
+        result = subprocess.run(
+            [
+                make,
+                "--no-print-directory",
+                "--dry-run",
+                "BUILD_DIR=build/flight-media-identity-dry-run",
+                f"SR_SOURCE_COMMIT={FAKE_COMMIT}",
+                "psmf-media-selftest",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        continuation_crlf = chr(92) + chr(13) + chr(10)
+        continuation_lf = chr(92) + chr(10)
+        flattened = result.stdout.replace(continuation_crlf, " ").replace(
+            continuation_lf, " "
+        )
+        compile_line = next(
+            line
+            for line in flattened.splitlines()
+            if "src/rt/psmf_media_selftest.c" in line
+        )
+        self.assertIn("-DSR_BUILD_ID=", compile_line)
+        self.assertIn(FAKE_COMMIT, compile_line)
+        self.assertIn(f"-DSR_SOURCE_DATE_EPOCH={FAKE_EPOCH}", compile_line)
 
 
 if __name__ == "__main__":

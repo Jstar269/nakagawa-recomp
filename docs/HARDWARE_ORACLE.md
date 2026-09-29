@@ -527,8 +527,8 @@ loop; route those to the batch path.
 1. `tools/TRACE_FORMAT.md` — extend `oracle=` with `hardware-psp` and `vita-epsp`; add
    model/firmware/CFW/clock fields.
 2. `tools/hwtest_gate.py` — **new**, result-vector comparison.
-3. `tools/psp_runner/` — **new**, PSPSDK sources for the resident runner, excluded from the native
-   build.
+3. `fixtures/psp_runner/` — PSPSDK sources for the resident runner, excluded from the native
+   build. Tracked; the `hw-verify` target and `tools/hwtest_gate.py` below are still unbuilt.
 4. ~~`tools/hw_doctor.py` — **new**, the machine-checkable precondition check.~~ Superseded by the
    shipped `tools/psp_readiness.py`; add the live `host0:` round-trip check there.
 5. `Makefile` — a `hw-verify` target reporting BLOCKED when no device is attached.

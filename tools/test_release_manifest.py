@@ -253,7 +253,7 @@ class TestReleaseManifest(unittest.TestCase):
         data = load_manifest()
         self.assertEqual(set(data["lockfiles"]), {"python"})
         self.assertFalse((ROOT / "interface").exists())
-        release_notes = (ROOT / "docs" / "PREVIEW_RELEASE_NOTES.md").read_text(encoding="utf-8")
+        release_notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text(encoding="utf-8")
         self.assertNotIn("dashboard", release_notes.lower())
 
 

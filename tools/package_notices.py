@@ -89,13 +89,13 @@ def notice_file_name(record: dict[str, Any]) -> str:
 def component_license_sources(
     record: dict[str, Any], toolchain_root: Path | None, repo_root: Path
 ) -> list[tuple[Path, str]]:
-    """Return the (path, display label) license texts for one component record.
+    """Resolve every declared license text, preferring in-tree copies.
 
-    The in-tree text under ``third_party/licenses/`` is authoritative because it
-    travels with the source; the local toolchain copy is the fallback so a host
-    whose toolchain is newer than the checked-in text still resolves one.
+    Each inventory entry is required. The local toolchain is a per-entry
+    fallback; finding one declared text must not hide another missing notice.
     """
     sources: list[tuple[Path, str]] = []
+    missing: list[str] = []
     for entry in record.get("license_texts", []):
         in_tree = repo_root / entry["file"]
         if in_tree.is_file():
@@ -106,6 +106,17 @@ def component_license_sources(
             candidate = toolchain_root / toolchain_rel
             if candidate.is_file():
                 sources.append((candidate, toolchain_rel))
+                continue
+        missing.append(entry["file"])
+
+    if missing:
+        component = record.get("name", "component")
+        declared = ", ".join(missing)
+        raise PackageRouteError(
+            "PACKAGE_LICENSE_TEXT_MISSING",
+            f"LICENSE_TEXT_MISSING: required license text(s) for {component} "
+            f"were not found in the source tree or local toolchain: {declared}",
+        )
     return sources
 
 

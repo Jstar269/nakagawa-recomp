@@ -357,6 +357,11 @@
             "file": "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
             "copied_from": "FFmpeg n4.4 upstream COPYING.LGPLv2.1 as imported into src/rt/atrac3p/",
             "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+          },
+          {
+            "file": "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt",
+            "copied_from": "MIPS Technologies, Inc. notice in the byte-identical FFmpeg n4.4 headers src/rt/atrac3p/libavcodec/fft_init_table.c and src/rt/atrac3p/libavcodec/fft_table.h",
+            "sha256": "7f8e4bf527a9c2f387485429f0bf1cf7982dfb70c7d3e87cc53086dd5ebf202c"
           }
         ]
       }

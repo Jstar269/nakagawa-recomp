@@ -19,6 +19,7 @@ Streams:
 
 from __future__ import annotations
 
+import json
 import random
 import shutil
 import struct
@@ -330,6 +331,67 @@ class TestParseFuzz(unittest.TestCase):
             except ValueError:
                 pass
         self.assertGreater(accepted, 0)
+
+
+class TestParserSafetyInventory(unittest.TestCase):
+    """Keep the maintained #319 inventory machine-readable and source-backed."""
+
+    def test_every_inventory_row_has_live_sources_tests_and_campaign_status(self) -> None:
+        path = ROOT / "docs" / "PARSER_SAFETY_INVENTORY.json"
+        inventory = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(inventory["schema_version"], 2)
+        self.assertEqual(inventory["issue"], 319)
+        self.assertEqual(
+            set(inventory["status_definition"]), set(inventory["status_values"])
+        )
+
+        surfaces = inventory["surfaces"]
+        ids = [surface["id"] for surface in surfaces]
+        self.assertEqual(len(ids), len(set(ids)))
+        required = {
+            "iso9660-pvd-directory-c", "param-sfo-c", "encrypted-psp-kirk",
+            "elf32-mips-classifier-c", "prx-loader-c", "prx-relocation-a-c",
+            "prx-relocation-b-c", "title-manifest-c", "runtime-package-json-c",
+            "private-package-cache-json", "xb-provider-c", "library-json-c",
+            "psmf-header-c", "mpeg-ps-pes-c", "h264-au-framing-c",
+            "windows-mf-demux", "atrac-frame-framing-c", "pgf-public-reader-c",
+            "python-iso-sfo-inspector", "python-elf-prx-import",
+            "python-title-manifest", "python-xb-archive-extractor",
+            "python-gim-image", "python-library-json",
+            "atrac3plus-bitstream-decoder",
+        }
+        self.assertTrue(required.issubset(set(ids)), sorted(required - set(ids)))
+
+        for surface in surfaces:
+            with self.subTest(surface=surface["id"]):
+                self.assertIn(surface["status"], inventory["status_values"])
+                self.assertTrue(surface["source_paths"])
+                self.assertTrue(surface["test_paths"])
+                self.assertIsInstance(surface["malformed_input_coverage"], list)
+                self.assertTrue(surface["malformed_input_coverage"])
+                self.assertIsInstance(surface["resource_gaps"], list)
+                for ref in surface["source_paths"] + surface["test_paths"]:
+                    self.assertTrue((ROOT / ref).is_file(), ref)
+
+                campaigns = surface["campaigns"]
+                self.assertEqual(
+                    set(campaigns),
+                    {
+                        "deterministic_regression", "seeded_mutations", "sanitizer",
+                        "coverage_guided_fuzzer", "overflow_oob_mutation_kill",
+                    },
+                )
+                self.assertIsInstance(campaigns["coverage_guided_fuzzer"], str)
+                self.assertTrue(campaigns["coverage_guided_fuzzer"])
+                self.assertIsInstance(campaigns["overflow_oob_mutation_kill"], str)
+                self.assertTrue(campaigns["overflow_oob_mutation_kill"])
+                sanitizer = campaigns["sanitizer"]
+                self.assertIn("status", sanitizer)
+                self.assertIn("ci", sanitizer)
+                if sanitizer["ci"]:
+                    self.assertTrue(sanitizer["status"].startswith("CI_"))
+
+        self.assertTrue(inventory["campaign_facts"]["overflow_oob_mutation_kill"])
 
 
 if __name__ == "__main__":
