@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "68010840231fcb07346ee4751d4c861cbaff40da0d68b23a670da282cfecefe2"
+      "sha256": "888764df7961910c03c6c5f084be300451605f493e97241e575261014483afb1"
     },
     {
       "path": "NOTICE.md",
@@ -4137,7 +4137,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cc1d3e827bc08ac6e7770f75edbdc3d83957acc2d26101e79c3e764e9d1ef51b"
+      "sha256": "4a68d934da36d8d5895d14a96f5832e7c42bcd050c93952dc31c66fc20bde09b"
     },
     {
       "path": "src/rt/fp_convert.h",
@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "00064f59a41ad6557cd3d90d474d84034b3a6618d1ec8c2ac8c850ccf1c27c2e"
+      "sha256": "b8519785482daf43510b2cf92a08ef5da5e5ea7dde26035f4191a17592f97982"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4563,7 +4563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "87fca6c89bc31f400ccda238e0b105e924a0049d9a5fdf63266e080082d96e27"
+      "sha256": "8620d27400476991ef5f2045042655f32e28e19ff6a0f8eeea8ea5a089614c4e"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4806,7 +4806,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5f8d20d361a35e5544509ff3ae41dd2b006ee146f836201af208cb5c1db43256"
+      "sha256": "4a0660d0dcd0650f00e84a4ac4bcc5c519c231b78f4a96d2b7ae1ae070443d69"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -4818,7 +4818,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "efd9b02af857f49e9bc85e5f23d1c934b6a9042d43baa9370c6794b8da4bac77"
+      "sha256": "45dfcefa26c0ee2768c53e04b5c65f7373dd22eea9fed328c1b663bf0ca925d8"
     },
     {
       "path": "src/rt/psmf_producer_selftest.c",
@@ -4830,7 +4830,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "535517fa8506afbbac997a8f2306a2ed5eb20773b70920acde7d7a56bb09cfd0"
+      "sha256": "b2d689dc12688064c0ecfdac2b0d033f4c41356aa9694f7ea82c62a014879ea4"
     },
     {
       "path": "src/rt/recomp.c",
@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36f61dc1f266d272abb06e92f7f83008c515e0cf060d8ce6ea9f39fc4c614ac9"
+      "sha256": "825c59f17d24ccc9f542d209e388e5d3e85ae68f21f8564a3d5725280a283f5b"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7735,7 +7735,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "507ed8d5a420c6df8b87724fe742357b926bffce7dc67b77b46fc7158dfcfe36"
+      "sha256": "7c1f97dff172f3169185e8bce3b9f2f57f76044ae29581231c46f726e1825d09"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -9471,18 +9471,18 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "779fc304cb94bf8d97751c21a148fe2625335efc",
-    "candidate_tree": "1c2217a08152e1248489c44947ce31c47b81d9de",
+    "trusted_tree": "b6add89a5ba03648316fc1ec6815117726772193",
+    "candidate_tree": "9903f72cfa5b319fd1aa5440ecc3b0a63bd8f7b0",
     "refreshed_paths": [
-      "fixtures/psp_oracle/Makefile",
-      "fixtures/psp_oracle/probe.c",
-      "tools/psp_oracle/manifest.json",
-      "tools/psp_oracle/parse_golden.py",
-      "tools/psp_oracle/protocol.py",
-      "tools/psp_oracle/run_psplink.py",
-      "tools/test_hardware_runner_protocol.py",
-      "tools/test_psp_leaf_parsers.py",
-      "tools/test_psp_oracle.py"
+      "Makefile",
+      "src/rt/flight_recorder.h",
+      "src/rt/hle.c",
+      "src/rt/hle_thread_selftest.c",
+      "src/rt/psmf_producer.c",
+      "src/rt/psmf_producer.h",
+      "src/rt/psmf_producer_selftest.c",
+      "tools/nk_cli.py",
+      "tools/test_hle_manifest.py"
     ]
   }
 }
