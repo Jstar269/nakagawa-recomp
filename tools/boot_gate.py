@@ -29,6 +29,9 @@ from evidence_model import milestones_in_order
 
 EVENT_RE = re.compile(r"\bBOOT_EVENT\s+(.+)$")
 PAIR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\S+)')
+# ``window_ready`` is the historical name for the host-presenter initialization
+# milestone. Interactive backends use a real window; the explicit offscreen
+# backend uses the same phase with ``backend=offscreen`` and makes no window claim.
 EXPECTED = ("image_loaded", "runtime_registered", "window_ready", "guest_start", "display_flip", "first_frame")
 FAULT_MARKERS = ("ERROR:", "MEM OOR", "Unhandled")
 

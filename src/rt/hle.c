@@ -12999,12 +12999,11 @@ static void display_present_active(void) {
                 s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         return;
     }
-    if (getenv("SR_PRESENT_TRACE"))
+    if (gui_present(s_display_active.addr, s_display_active.fmt,
+                    (uint32_t)s_display_active.stride) && getenv("SR_PRESENT_TRACE"))
         fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
                 s_vcount, s_display_active.addr, s_display_active.fmt,
                 s_display_active.stride);
-    gui_present(s_display_active.addr, s_display_active.fmt,
-                (uint32_t)s_display_active.stride);
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------

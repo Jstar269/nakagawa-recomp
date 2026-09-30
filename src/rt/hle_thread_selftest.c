@@ -396,11 +396,12 @@ void gui_analog(uint8_t *lx, uint8_t *ly) {
     if (ly) *ly = 128;
 }
 int gui_pad_present(void) { return 0; }
-void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
+int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_test_gui_present_calls++;
     s_test_gui_last_addr = fbaddr;
     s_test_gui_last_fmt = fmt;
     s_test_gui_last_stride = stride;
+    return 1;
 }
 /* The host-neutral HLE selftest omits the Vulkan backend. With no live GPU target,
  * a fully validated descriptor is correctly classified as guest-authoritative.
