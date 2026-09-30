@@ -6458,7 +6458,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e52d8531fe627343837cfbe370b91d396d5b675b26d18eeb5fbbce3fde9334e"
+      "sha256": "bd191ef14b3483bb6c10b9f230bf4bee0285e50241e457a75e139b5aae6527df"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8179,7 +8179,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "532550c6672fa3f4f4353ace4ab8b8f3be9a4d5a1900f8ba55f9c051d37caab5"
+      "sha256": "b37113f300d1d68a2438b190ffdc348e23ac3daa8dc4ad914418e46a47d3cd41"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -9471,14 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
-    "candidate_tree": "da2e68dd2e1bf33a36dc84e5c60da3dd951d40fe",
+    "trusted_tree": "9a2d310fdf967bbbef2be131d01659e2da951720",
+    "candidate_tree": "9ced79e497bfc8a6bf03c7a70444ded19fd00326",
     "refreshed_paths": [
-      "docs/CI.md",
-      "docs/ENHANCEMENT_CONTRACT.md",
-      "tools/flight_diff.py",
-      "tools/test_flight_build_identity.py",
-      "tools/test_flight_diff.py"
+      "tools/perf_summary_diff.py",
+      "tools/test_perf_summary_diff.py"
     ]
   }
 }
