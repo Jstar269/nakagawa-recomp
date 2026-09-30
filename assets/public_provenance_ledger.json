@@ -670,7 +670,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aea83af76dc0bc7b340b759b35b6e198eee95070fe553f2502dd0f1db83305d7"
+      "sha256": "bb3795caae0972d5bac6c253398f8505db86ba44b1924558ffd2e8f95b8414e1"
     },
     {
       "path": "assets/release_manifest.json",
@@ -5891,7 +5891,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50c68fd8b39d822d44c55bdd9f90288fbbb995e8d574267ee1ef44dd08daa891"
+      "sha256": "dfae881322a6c38003bbc10fe898df82dab212b960fb2fdba97b35d1a94104d9"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -8696,7 +8696,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a48e8d6d280d77faf968d2c8322420e295f37ee5b91078fa5b32159f5024f0f"
+      "sha256": "24fd26046546be45650785690d53864639f2c307c1cf089a9d8e504132429228"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -9472,12 +9472,13 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
-    "candidate_tree": "de957e4386a51f0e6e80c38d8134fcefc9a0d5fa",
+    "candidate_tree": "ebb70bf71ba335c39d1bdd41f89a63a6b1419956",
     "refreshed_paths": [
       ".pre-commit-config.yaml",
       "assets/prereq_manifest.json",
       "assets/pypi_tool_metadata_2026-09-25.json",
       "assets/third_party_components.json",
+      "tools/generate_sbom.py",
       "tools/requirements-lock.txt",
       "tools/test_sbom.py",
       "tools/test_sbom_fail_closed.py"
