@@ -1392,6 +1392,102 @@ class TrustedScopeTests(GateCase):
         self.assertPasses(self.run_verify(head))
 
 
+class IncludedPathDeclarationTests(GateCase):
+    """An include_paths entry that no longer resolves is not a quiet removal.
+
+    The ledger is built from tracked files intersected with include_paths, and
+    the gate's inherited universe is the trusted base policy over the paths
+    still present in the candidate tree.  A path dropped from the tree while
+    its include_paths entry survives therefore leaves the audited universe
+    through both filters at once: no ledger entry, no inherited claim, no
+    finding.  The profile still says the path is published, so the policy
+    document and the tree disagree about what ships -- silently.
+    """
+
+    BACKED = "src/rt/widget.c"
+
+    # -- fixture helpers -----------------------------------------------------
+
+    def declared_paths(self) -> set[str]:
+        """The include_paths the trusted base policy actually carries."""
+        document = json.loads(
+            (self.repo.root / verifier.POLICY_PATH).read_text(encoding="utf-8"),
+        )
+        return set(document["include_paths"])
+
+    def _rebase_with_stale_declaration(self, path: str) -> None:
+        """Move the trusted base onto a policy that already declares a dead path.
+
+        This is the state the real repository is in: an entry that no longer
+        resolves, inherited from commits that deleted the file and left the
+        declaration behind.
+        """
+        self.repo.branch("base-amend", self.base)
+        document = dict(POLICY)
+        document["include_paths"] = sorted(self.declared_paths() | {path})
+        self.repo.write(verifier.POLICY_PATH, json.dumps(document, indent=2) + "\n")
+        self.base = self.repo.commit("base already carried a stale declaration")
+
+    def _untrack_but_keep_declared(self, path: str) -> str:
+        """Delete the file, regenerate every control, and leave the entry."""
+        self.repo.branch("drop", self.base)
+        self.repo.remove(path)
+        self.write_ledger([e for e in self.current_entries(self.base) if e["path"] != path])
+        return self.repo.commit("stop tracking a path the profile still publishes")
+
+    # -- cases ---------------------------------------------------------------
+
+    def test_untracking_a_published_path_is_fatal(self) -> None:
+        head = self._untrack_but_keep_declared(self.BACKED)
+        verdict = self.run_verify(head)
+        self.assertEqual(
+            verdict["verdict"], "fail",
+            msg="an untracked path the profile still publishes dropped out of the "
+                "audited universe without any finding",
+        )
+        self.assertIn("INCLUDED_PATH_UNTRACKED", self.codes(verdict), msg=f"findings: {verdict['findings']}")
+
+    def test_declaring_a_path_that_never_existed_is_fatal(self) -> None:
+        """The other half of the same hole: inventing coverage, not losing it."""
+        self.repo.branch("invent", self.base)
+        self.write_policy(list(self.FILES) + ["src/rt/never_existed.c"])
+        head = self.repo.commit("publish a path that does not exist")
+        self.assertFatal(self.run_verify(head), "INCLUDED_PATH_UNTRACKED")
+
+    def test_debt_already_in_the_base_is_reported_but_not_fatal(self) -> None:
+        """A stale entry the base already carried is news, not this change's fault.
+
+        It stays visible in every report instead of failing each change until
+        somebody removes the entry from the profile.
+        """
+        self._rebase_with_stale_declaration("docs/removed_long_ago.md")
+        self.repo.branch("inherited", self.base)
+        raw = b"# extra documentation\n"
+        self.repo.write("docs/extra.md", raw)
+        self.write_policy(sorted(self.declared_paths() | {"docs/extra.md"}))
+        self.write_ledger(self.current_entries(self.base) + [{
+            "path": "docs/extra.md", "classification": "reviewed_documentation",
+            "evidence": {"source": "public documentation review"}, "sha256": _sha(raw),
+        }])
+        head = self.repo.commit("widen scope while the stale declaration is carried forward")
+        verdict = self.run_verify(head)
+        self.assertPasses(verdict)
+        self.assertEqual(
+            [(item["path"], item["fatal"]) for item in verdict["findings"]
+             if item["code"] == "INCLUDED_PATH_UNTRACKED"],
+            [("docs/removed_long_ago.md", False)],
+        )
+
+    def test_removing_the_declaration_with_the_file_is_allowed(self) -> None:
+        """The sanctioned route: the entry goes when the file goes."""
+        self.repo.branch("work", self.base)
+        self.repo.remove(self.BACKED)
+        self.write_policy([p for p in self.declared_paths() if p != self.BACKED])
+        self.write_ledger([e for e in self.current_entries(self.base) if e["path"] != self.BACKED])
+        head = self.repo.commit("delete the file and its declaration together")
+        self.assertPasses(self.run_verify(head))
+
+
 class ClassificationFloorTests(GateCase):
     """An implementation file may not be relabelled out of content gating."""
 
@@ -2641,6 +2737,26 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.assertFalse(verdict["legacy_controls_present"]["ledger"])
         self.assertFalse(verdict["legacy_controls_present"]["export"])
 
+    def test_ephemeral_untracked_declared_path_fails_closed(self) -> None:
+        """The hosted mode must not let a declared path leave the tree silently."""
+        self.repo.branch("ephemeral-untracked-declaration", self.base)
+        self.repo.remove("src/rt/widget.c")
+        entries = json.loads(self.baseline().read_text(encoding="utf-8"))["entries"]
+        self.write_ledger([entry for entry in entries if entry["path"] != "src/rt/widget.c"])
+        head = self.repo.commit("drop a published path but keep its declaration")
+
+        verdict = self.run_ephemeral(head)
+
+        self.assertEqual(verdict["verdict"], "fail", verdict["findings"])
+        self.assertIn(
+            ("INCLUDED_PATH_UNTRACKED", "src/rt/widget.c"),
+            {
+                (finding["code"], finding["path"])
+                for finding in verdict["findings"]
+                if finding["fatal"]
+            },
+        )
+
     def test_stale_legacy_controls_cannot_hide_the_fresh_hash(self) -> None:
         self.repo.branch("stale-legacy", self.base)
         changed = b"int core(void) { return 99; }\n"
@@ -2771,11 +2887,25 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
 
     def test_blessed_candidate_policy_and_exact_delta_can_authorize_a_change(self) -> None:
         self.repo.branch("authorized-policy-change", self.base)
+        # The declaration has to resolve to a file the tree carries, so this
+        # case publishes the document it declares and the legacy controls stay
+        # coherent; what is under test is authorizing the policy change.
+        raw = b"# new documentation\n"
+        self.repo.write("docs/new.md", raw)
         policy_path = self.repo.root / verifier.POLICY_PATH
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         policy["include_paths"] = sorted(set(policy["include_paths"]) | {"docs/new.md"})
         candidate_policy_raw = _canonical(policy)
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        base_entries = json.loads(run_git(
+            ["show", f"{self.base}:{verifier.LEDGER_PATH}"], cwd=self.repo.root,
+            check=True, capture_output=True,
+        ).stdout.decode("utf-8"))["entries"]
+        classification, evidence = provenance_ledger._class_for("docs/new.md", None)
+        self.write_ledger(base_entries + [{
+            "path": "docs/new.md", "classification": classification,
+            "evidence": evidence, "sha256": _sha(raw),
+        }])
         head = self.repo.commit("authorized candidate policy change")
 
         baseline_raw = run_git(

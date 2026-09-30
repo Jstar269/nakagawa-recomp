@@ -66,6 +66,12 @@ Tier A -- absolute, whole tree, never grandfathered:
     implementation-bearing path outside it.  Scope is anchored to the trusted
     base policy over the trusted base tree and may only ever widen; letting the
     candidate policy decide was a complete bypass of every rule below.
+``INCLUDED_PATH_UNTRACKED``
+    the profile declares a path as published and the candidate tree has no
+    such file, so the path left the audited universe with no ledger entry and no
+    inherited claim.  The declaration must resolve to a tracked file or be
+    removed from the profile in the same change; a declaration the trusted base
+    already could not resolve is reported rather than blamed on the change.
 ``CLASSIFICATION_DOWNGRADE``
     a path authority still calls implementation was relabelled into a class
     that is not content-gated.
@@ -1235,6 +1241,10 @@ def _ephemeral_verdict_findings(
         trusted_policy,
         authorized_delta=authorized_policy_delta,
     ))
+    findings.extend(_declared_path_findings(
+        candidate_blobs, base_blobs, candidate_policy, trusted_policy,
+        materialized_outside=CONTROL_PATHS,
+    ))
     findings.extend(_ci_findings(candidate_blobs, base_blobs))
 
     candidate_included = {
@@ -1814,6 +1824,63 @@ def _policy_findings(
     return findings
 
 
+def _declared_path_findings(
+    candidate: dict[str, bytes],
+    base: dict[str, bytes],
+    candidate_policy,
+    trusted_policy,
+    materialized_outside: frozenset[str] = frozenset(),
+) -> list[Finding]:
+    """A published path the profile declares but the tree does not carry.
+
+    The ledger is built from tracked files intersected with include_paths, and
+    the inherited universe is the trusted base policy over the paths still
+    present in the candidate tree.  A declaration whose file is gone therefore
+    leaves the audited universe through both filters at once: no ledger entry,
+    no export contribution, no inherited claim and no finding.  The profile
+    still says the path ships, so the policy document and the tree disagree
+    about what is published -- silently.
+
+    Dropping the declaration is legitimate, but it is a policy change and
+    belongs to a maintainer-admitted delta (AGENTS.md section 4), not to an edit
+    of the tree that leaves the profile behind.  What is refused here is
+    exactly that quiet form, and a declaration invented for a path that never
+    existed.
+    """
+    findings: list[Finding] = []
+    # An entry the TRUSTED base already declared and already could not resolve
+    # is debt this change did not create.  It stays visible in the report, and
+    # it is left non-fatal so a stale profile does not block every change until
+    # somebody removes the entry.
+    inherited_debt = {
+        entry for entry in trusted_policy.include_paths
+        if trusted_policy.resolve(entry).path not in base
+    }
+    for entry in sorted(candidate_policy.include_paths):
+        if entry in materialized_outside:
+            # This run generates that control outside the candidate tree by
+            # design, so its absence from the tree is the mode, not a defect.
+            continue
+        if candidate_policy.resolve(entry).path in candidate:
+            continue
+        if entry in inherited_debt:
+            findings.append(Finding(
+                "INCLUDED_PATH_UNTRACKED", entry,
+                "the profile declares this path as published, but the trusted base tree has no "
+                "such file either, so the declaration resolved to nothing before this change; "
+                "remove it from the profile by a maintainer-admitted policy delta",
+                fatal=False,
+            ))
+        else:
+            findings.append(Finding(
+                "INCLUDED_PATH_UNTRACKED", entry,
+                "the profile declares this path as published, but the candidate tree has no such "
+                "file, so it is in no ledger, no export and no protected universe; keep tracking "
+                "the file, or remove the declaration from the profile in the same change",
+            ))
+    return findings
+
+
 #: Export fields whose value is security-relevant and therefore recomputed.
 #: Older exports may carry ``candidate_tree``; it is advisory and the actual
 #: candidate tree is bound by the verdict's repository_scope.
@@ -1987,6 +2054,9 @@ def verify(
             "is issued for it. Update the branch and re-run",
         ))
     findings.extend(_policy_findings(candidate_policy, trusted_policy))
+    findings.extend(_declared_path_findings(
+        candidate_blobs, base_blobs, candidate_policy, trusted_policy,
+    ))
     findings.extend(_ci_findings(candidate_blobs, base_blobs))
 
     for error in validate_ledger(candidate_ledger, require_hashes=True, require_resolved=True):

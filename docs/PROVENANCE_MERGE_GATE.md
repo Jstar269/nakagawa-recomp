@@ -77,6 +77,7 @@ it agree with every other artifact.
 | T38 | Probe which private record ids exist by watching whether the gate says "absent" or "does not cover" | one `TRUSTED_RECORD_UNRESOLVED` code with one wording, and the claimed id is not echoed |
 | T39 | Exhaust the runner with a huge tree, a huge blob or huge path text | `TREE_TOO_LARGE` — ceilings are enforced as the bytes stream in, not after buffering |
 | T40 | Merge a pull request whose head is behind base so conflict-resolution bytes appear after verification | `MERGE_BASE_STALE` — the base must already be an ancestor of the head, which makes the head tree the merge result for all three allowed methods |
+| T41 | Stop tracking a file the profile still publishes, so it leaves the ledger (tracked files intersect `include_paths`) and the inherited universe (candidate tree) at once, with no finding | `INCLUDED_PATH_UNTRACKED` — a declared path must resolve to a tracked file, or be removed from the profile in the same change; a declaration the trusted base already could not resolve is reported, not blamed on the change |
 
 ## Trust boundary
 
@@ -195,6 +196,13 @@ Scope is now anchored outside the candidate:
   itself;
 * **deletion is allowed** — a path genuinely removed from the tree leaves the
   universe honestly. What it may not do is make changed bytes disappear;
+* a path declared in `include_paths` must still resolve to a file in the candidate
+  tree — otherwise `INCLUDED_PATH_UNTRACKED`. Deleting the file *and* its declaration
+  in the same change is the sanctioned route; deleting only the file leaves a profile
+  that still advertises a path nothing publishes, which is how a declaration quietly
+  stopped matching reality in this repository five times already. A declaration the
+  trusted base already could not resolve is reported non-fatally, so stale profile debt
+  stays visible without blocking every change until it is removed;
 * the universe the gate then reasons over is `(inherited | candidate_included)`,
   so coverage may always widen and never narrow.
 
