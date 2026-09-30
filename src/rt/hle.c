@@ -12956,11 +12956,17 @@ static void display_present_active(void) {
                 s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         return;
     }
-    if (gui_present(s_display_active.addr, s_display_active.fmt,
-                    (uint32_t)s_display_active.stride) && getenv("SR_PRESENT_TRACE"))
-        fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
-                s_vcount, s_display_active.addr, s_display_active.fmt,
-                s_display_active.stride);
+    int presented = gui_present(s_display_active.addr, s_display_active.fmt,
+                                (uint32_t)s_display_active.stride);
+    if (presented) {
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_FRAME,
+                               s_display_active.addr, (uint32_t)s_display_active.fmt,
+                               (uint32_t)s_display_active.stride, s_vcount);
+        if (getenv("SR_PRESENT_TRACE"))
+            fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
+                    s_vcount, s_display_active.addr, s_display_active.fmt,
+                    s_display_active.stride);
+    }
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------
@@ -13253,6 +13259,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     int32_t stride = (int32_t)A1;
     int32_t fmt = (int32_t)A2;
     uint32_t sync = A3;
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_SET_FRAMEBUF,
+                           addr, (uint32_t)fmt, (uint32_t)stride, s_vcount);
     if (ge_log_on())
         fprintf(stderr, "DISPLAY_SET_FB: buf=0x%08x stride=%d fmt=%d sync=%u vcount=%u\n",
                 addr, stride, fmt, sync, s_vcount);
@@ -14094,6 +14102,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     uint32_t cbid = A2;
     uint32_t cbarg = A3;
     uint32_t list_id = 0x35000000u | (s_ge_list_next++ & 0x00ffffffu);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_ENQUEUE,
+                           list, stall, list_id, cbid);
 
     ge_enqueue_trace_emit(s, "enqueue", list_id, list, stall, cbid);
 
@@ -14144,6 +14154,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, list, stall, next_pc);
         ge_finish_callback(s, cbid, list_id, cbarg);
     } else {
         /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
@@ -14174,6 +14186,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                           slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
                           new_stall,
                           slot >= 0 ? s_ge_lists[slot].cbid : 0u);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_STALL_UPDATE,
+                           list_id, slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
+                           new_stall, slot >= 0 ? s_ge_lists[slot].stall_addr : 0u);
 
     if (slot == -1) {
         ge_enqueue_trace_result(s, "update_stall", list_id, "not_found", 0u, 0);
@@ -14217,6 +14232,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, s_ge_lists[slot].start_pc,
+                               s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
         ge_finish_callback(s, s_ge_lists[slot].cbid, list_id, s_ge_lists[slot].cbarg);
@@ -14236,6 +14254,9 @@ static uint32_t h_GeListSync(CpuState *s) {
     uint32_t syncType = A1;
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].uid == qid) {
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                                   qid, s_ge_lists[i].start_pc,
+                                   s_ge_lists[i].stall_addr, syncType);
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
@@ -14247,6 +14268,8 @@ static uint32_t h_GeListSync(CpuState *s) {
             }
         }
     }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                           qid, 0u, 0u, syncType);
     if (ge_log_on())
         fprintf(stderr, "GE_SYNC: qid=0x%08x NOT FOUND in list table\n", qid);
     return 0;
@@ -14284,6 +14307,8 @@ static uint32_t h_GeDrawSync(CpuState *s) {
     int busy = 0;
     for (int i = 0; i < GE_LIST_MAX; i++)
         if (s_ge_lists[i].status == 1) { busy = 1; break; }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
+                           mode, (uint32_t)busy, 0u, 0u);
     if (mode == 1u) return busy ? 1u : 0u;
     if (busy) sched_delay_current(1000);
     return 0;

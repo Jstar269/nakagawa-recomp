@@ -14,7 +14,37 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "assets" / "flight_recorder_schema.json"
-CLASS_ORDER = ("hle", "unsupported", "sched", "prx", "media", "fault", "fatal")
+CLASS_ORDER = ("hle", "unsupported", "sched", "prx", "media", "fault", "fatal", "ge", "present")
+EVENT_KIND_NAMES = {
+    1: "hle-import",
+    2: "unsupported-nid",
+    3: "sched-pick",
+    4: "sched-block",
+    5: "sched-wake",
+    6: "prx-load",
+    7: "prx-start",
+    8: "prx-stop",
+    9: "prx-unload",
+    10: "fault-exception",
+    11: "fatal-break",
+    12: "fatal-raw-syscall",
+    13: "fatal-dispatch",
+    14: "fatal-unimplemented",
+    15: "fatal-cpu-flow",
+    16: "fatal-import",
+    17: "fatal-host",
+    18: "media-test-milestone",
+    19: "ge-list-enqueue",
+    20: "ge-list-dequeue",
+    21: "ge-list-sync",
+    22: "ge-draw-sync",
+    23: "ge-list-stall-update",
+    24: "ge-draw",
+    25: "ge-list-finish",
+    26: "ge-finish-command",
+    27: "present-set-framebuf",
+    28: "present-frame",
+}
 
 # Verdict tokens of the comparison contract. MATCH is printed only when the two
 # bundles are comparable and every compared field agrees; the full contract is
@@ -234,10 +264,8 @@ def _first_class_divergence(
         right = [event for event in candidate["events"] if event["class"] == event_class]
         for occurrence, (first, second) in enumerate(zip_longest(left, right)):
             if first is None or second is None or not _event_equal(first, second):
-                order = max(
-                    first["sequence"] if first is not None else 0,
-                    second["sequence"] if second is not None else 0,
-                )
+                sequences = [event["sequence"] for event in (first, second) if event is not None]
+                order = min(sequences, default=0)
                 candidates.append((order, f"class {event_class} occurrence {occurrence}", first, second))
                 break
     if not candidates:
@@ -248,6 +276,28 @@ def _first_class_divergence(
 
 def _format_event(event: dict[str, Any] | None) -> str:
     return "<absent>" if event is None else json.dumps(event, sort_keys=True, separators=(",", ":"))
+
+
+def _event_identity(event: dict[str, Any] | None) -> str:
+    if event is None:
+        return "<absent>"
+    kind = event["kind"]
+    name = EVENT_KIND_NAMES.get(kind, "unknown-kind")
+    return f"event index {event['sequence'] - 1} class={event['class']} kind={name} ({kind}) " \
+           f"sequence={event['sequence']}"
+
+
+def _event_field_differences(
+    baseline: dict[str, Any] | None, candidate: dict[str, Any] | None
+) -> list[tuple[str, Any, Any]]:
+    if baseline is None or candidate is None:
+        return [("event", baseline is not None, candidate is not None)]
+    fields = sorted(set(baseline) | set(candidate))
+    return [
+        (field, baseline.get(field), candidate.get(field))
+        for field in fields
+        if baseline.get(field) != candidate.get(field)
+    ]
 
 
 def _trigger_policy(recorder: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +442,15 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_MATCH
     label, first, second = divergence
     print(f"{DIVERGENCE}: {label}")
+    if first is not None or second is not None:
+        print(f"  baseline event: {_event_identity(first)}")
+        print(f"  candidate event: {_event_identity(second)}")
+        differences = _event_field_differences(first, second)
+        if differences:
+            print("  fields differ:")
+            for field, left, right in differences:
+                print(f"    {field}: baseline={json.dumps(left, sort_keys=True)} "
+                      f"candidate={json.dumps(right, sort_keys=True)}")
     print(f"  baseline: {_format_event(first)}")
     print(f"  candidate: {_format_event(second)}")
     return EXIT_DIVERGENCE

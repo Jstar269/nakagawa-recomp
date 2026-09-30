@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/flight_recorder_schema.json",
   "$comment": "SPDX-License-Identifier: GPL-3.0-or-later",
-  "title": "Nakagawa Recomp Flight Recorder Bundle v3",
+  "title": "Nakagawa Recomp Flight Recorder Bundle v4",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "runtime", "build", "recorder", "terminal", "events"],
   "properties": {
-    "schema_version": {"enum": [1, 2, 3]},
+    "schema_version": {"enum": [1, 2, 3, 4]},
     "runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -20,7 +20,7 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; a schema_version 3 bundle must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
+      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; schema_version 3 and 4 bundles must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
       "required": ["compiler", "pointer_bits"],
       "properties": {
         "compiler": {"enum": ["gcc", "clang", "other"]},
@@ -39,9 +39,9 @@
         "enabled_classes": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 7,
+          "maxItems": 9,
           "uniqueItems": true,
-          "items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]}
+          "items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]}
         },
         "limit": {"type": "integer", "minimum": 1, "maximum": 4096},
         "recorded": {"type": "integer", "minimum": 0},
@@ -77,14 +77,14 @@
         "additionalProperties": false,
         "required": ["schema_version", "sequence", "class", "kind", "arg0", "arg1", "arg2", "arg3"],
         "properties": {
-          "schema_version": {"enum": [1, 2, 3]},
+          "schema_version": {"enum": [1, 2, 3, 4]},
           "sequence": {"type": "integer", "minimum": 1},
-          "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]},
-          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295},
-          "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295},
-          "arg1": {"type": "integer", "minimum": 0, "maximum": 4294967295},
-          "arg2": {"type": "integer", "minimum": 0, "maximum": 4294967295},
-          "arg3": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]},
+          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kinds 19-26 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 27-28 are SetFrameBuf and successful present."},
+          "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: list address; GE list operations: list id; SetFrameBuf/present: framebuffer address."},
+          "arg1": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: command address; enqueue: stall address; SetFrameBuf/present: pixel format."},
+          "arg2": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: primitive type; SetFrameBuf/present: stride."},
+          "arg3": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: vertex count; SetFrameBuf/present: frame index."},
           "arguments": {
             "type": "array",
             "minItems": 4,
@@ -108,7 +108,7 @@
             }
           },
           {
-            "if": {"properties": {"schema_version": {"enum": [2, 3]}}, "required": ["schema_version"]},
+            "if": {"properties": {"schema_version": {"enum": [2, 3, 4]}}, "required": ["schema_version"]},
             "then": {
               "if": {
                 "properties": {"class": {"const": "hle"}, "kind": {"const": 1}},
@@ -141,6 +141,10 @@
       "then": {"properties": {"events": {"items": {"properties": {"schema_version": {"const": 3}}}}}}
     },
     {
+      "if": {"properties": {"schema_version": {"const": 4}}, "required": ["schema_version"]},
+      "then": {"properties": {"events": {"items": {"properties": {"schema_version": {"const": 4}}}}}}
+    },
+    {
       "if": {"properties": {"schema_version": {"enum": [1, 2]}}, "required": ["schema_version"]},
       "then": {"properties": {"build": {"allOf": [
         {"required": ["compiled_date", "compiled_time"]},
@@ -149,13 +153,20 @@
       ]}}}
     },
     {
-      "if": {"properties": {"schema_version": {"const": 3}}, "required": ["schema_version"]},
+      "if": {"properties": {"schema_version": {"enum": [3, 4]}}, "required": ["schema_version"]},
       "then": {"properties": {"build": {"allOf": [
         {"required": ["source_date_epoch", "build_id"]},
         {"not": {"properties": {"source_date_epoch": {"type": "null"}, "build_id": {"type": "null"}}}},
         {"not": {"required": ["compiled_date"]}},
         {"not": {"required": ["compiled_time"]}}
       ]}}}
+    },
+    {
+      "if": {"properties": {"schema_version": {"enum": [1, 2, 3]}}, "required": ["schema_version"]},
+      "then": {"allOf": [
+        {"properties": {"recorder": {"properties": {"enabled_classes": {"items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]}}}}}},
+        {"properties": {"events": {"items": {"properties": {"class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]}}}}}}
+      ]}
     }
   ]
 }

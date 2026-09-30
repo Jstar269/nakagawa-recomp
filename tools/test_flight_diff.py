@@ -51,7 +51,8 @@ def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit",
         "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
         "build": build,
         "recorder": {
-            "enabled_classes": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"],
+            "enabled_classes": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]
+            + (["ge", "present"] if version >= 4 else []),
             "limit": 4,
             "recorded": recorded,
             "dropped": dropped,
@@ -343,6 +344,79 @@ class ComparabilityContractTests(unittest.TestCase):
                       result.stdout)
 
     def _run_cli(self, left, right) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            left_path = temp_path / "left.json"
+            right_path = temp_path / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
+                 str(left_path), str(right_path)],
+                capture_output=True, text=True, check=False,
+            )
+
+
+class GePresentFlightTests(unittest.TestCase):
+    def _display_bundle(self):
+        bundle = make_bundle(
+            [
+                event(1, "ge", kind=24, arg0=0x08900000, arg1=0x08900018,
+                      arg2=6, arg3=2, version=4),
+                event(2, "present", kind=28, arg0=0x04000000, arg1=3,
+                      arg2=512, arg3=4, version=4),
+            ],
+            version=4,
+        )
+        bundle["recorder"]["enabled_classes"] = ["ge", "present"]
+        return bundle
+
+    def test_identical_ge_present_runs_match(self):
+        baseline = self._display_bundle()
+        candidate = copy.deepcopy(baseline)
+        flight_diff.validate_bundle(baseline)
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MATCH: 2 events aligned by sequence", result.stdout)
+
+    def test_first_ge_draw_count_divergence_names_event_and_field(self):
+        baseline = self._display_bundle()
+        candidate = copy.deepcopy(baseline)
+        candidate["events"][0]["arg3"] = 3
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: sequence 1", result.stdout)
+        self.assertIn("event index 0", result.stdout)
+        self.assertIn("class=ge", result.stdout)
+        self.assertIn("kind=ge-draw (24)", result.stdout)
+        self.assertIn("arg3", result.stdout)
+
+    def test_first_present_framebuffer_divergence_names_event_and_field(self):
+        baseline = self._display_bundle()
+        candidate = copy.deepcopy(baseline)
+        candidate["events"][1]["arg0"] = 0x04044000
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: sequence 2", result.stdout)
+        self.assertIn("event index 1", result.stdout)
+        self.assertIn("class=present", result.stdout)
+        self.assertIn("kind=present-frame (28)", result.stdout)
+        self.assertIn("arg0", result.stdout)
+
+    def test_different_ge_present_coverage_is_incomparable(self):
+        baseline = self._display_bundle()
+        candidate = copy.deepcopy(baseline)
+        candidate["recorder"]["enabled_classes"] = ["present"]
+        candidate["events"] = [candidate["events"][1]]
+        candidate["events"][0]["sequence"] = 1
+        candidate["recorder"]["recorded"] = 1
+        candidate["terminal"]["sequence"] = 1
+        with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+            flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertTrue(any("enabled event classes differ" in reason
+                            for reason in caught.exception.reasons))
+
+    def _run_cli(self, left, right):
         with tempfile.TemporaryDirectory() as temp:
             temp_path = Path(temp)
             left_path = temp_path / "left.json"
