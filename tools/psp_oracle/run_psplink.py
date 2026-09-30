@@ -20,11 +20,16 @@ import json
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
 from typing import Callable
+
+_PACKAGE_PARENT = str(Path(__file__).resolve().parents[1])
+if _PACKAGE_PARENT not in sys.path:
+    sys.path.insert(0, _PACKAGE_PARENT)
 
 try:
     from .protocol import (
@@ -38,7 +43,7 @@ try:
         validate_dmac_size_matrix_size,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
-    from protocol import (  # type: ignore
+    from psp_oracle.protocol import (
         ProtocolError,
         compare_texts,
         decode_psp_model_code,
@@ -47,6 +52,21 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         provenance_issues,
         validate_dmac_size_matrix,
         validate_dmac_size_matrix_size,
+    )
+
+try:
+    from .parse_golden import (
+        parse_cache_alias_output,
+        parse_fpu_vector_output,
+        parse_io_matrix_output,
+        parse_mbx_delete_wait_output,
+    )
+except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
+    from psp_oracle.parse_golden import (
+        parse_cache_alias_output,
+        parse_fpu_vector_output,
+        parse_io_matrix_output,
+        parse_mbx_delete_wait_output,
     )
 
 
@@ -60,6 +80,10 @@ SHELL_VERIFICATION_ATTEMPTS = 3
 SHELL_VERIFICATION_ATTEMPT_TIMEOUT = 15.0
 DEFAULT_SHELL_VERIFICATION_TIMEOUT = 45.0
 HOST0_MTIME_TOLERANCE_NS = 1_000_000_000
+
+
+class UnsafeHost0OutputError(OSError):
+    """A host0 result path is not a regular file owned by the scratch root."""
 
 
 def _tool(name: str) -> str | None:
@@ -272,14 +296,63 @@ def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
 
 
 def _parse_campaign_records(text: str, case_id: str):
-    """Apply the stream-specific schema when a campaign case defines one."""
+    """Validate a campaign's known completion contract, then parse its rows."""
 
     if case_id in {"dma-size-matrix", "dmac-size-matrix"}:
         return validate_dmac_size_matrix(text)
     match = re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id)
     if match:
         return validate_dmac_size_matrix_size(text, int(match.group(1), 16))
-    return parse_output(text)
+
+    parsed = parse_output(text)
+    complete_parser = {
+        "fpu-vector": parse_fpu_vector_output,
+        "cache-alias": parse_cache_alias_output,
+        "io-matrix": parse_io_matrix_output,
+        "mbx-delete-wait": parse_mbx_delete_wait_output,
+    }.get(case_id)
+    if complete_parser is not None:
+        complete_parser(text, require_complete=True)
+    else:
+        expected_single = {
+            "transport-write": ("PSP-TRANSPORT-001", "host0-write-readback"),
+            "model-profile": ("PSP-SYSTEM-001", "model-profile"),
+        }.get(case_id)
+        if expected_single is not None:
+            if len(parsed.results) != 1:
+                raise ProtocolError(
+                    f"{case_id} stream must contain exactly one result record"
+                )
+            record = parsed.results[0]
+            if (record.test_id, record.case_id) != expected_single:
+                raise ProtocolError(
+                    f"{case_id} stream must contain {expected_single[0]}/{expected_single[1]}"
+                )
+    return parsed
+
+
+def _campaign_stream_complete(text: str, case_id: str) -> bool:
+    """Return whether a fresh campaign stream satisfies its known completion contract."""
+
+    if _campaign_completeness_contract(case_id) == "unregistered-no-completion-contract":
+        return False
+    try:
+        parsed = _parse_campaign_records(text, case_id)
+    except (ProtocolError, OSError, UnicodeError, ValueError):
+        return False
+    return bool(parsed.results)
+
+
+def _campaign_completeness_contract(case_id: str) -> str:
+    if case_id in {"dma-size-matrix", "dmac-size-matrix"} or re.fullmatch(
+        r"dmac-size-matrix-size-0x[0-9a-f]{8}", case_id
+    ):
+        return "strict-dmac-sequence"
+    if case_id in {"fpu-vector", "cache-alias", "io-matrix", "mbx-delete-wait"}:
+        return "strict-golden-sequence"
+    if case_id in {"transport-write", "model-profile"}:
+        return "exactly-one-known-record"
+    return "unregistered-no-completion-contract"
 
 
 def _render_argv(template: list[str], **values: str) -> list[str]:
@@ -763,36 +836,35 @@ class PsplinkCampaignRunner:
         run_started_ns: int | None,
         run_finished_ns: int,
         host0_log_cleared: bool,
+        captured_host0_text: str | None,
+        captured_host0_mtime_ns: int | None,
+        host0_capture_problem: str | None,
     ) -> dict[str, object]:
-        host0_text = ""
-        host0_mtime_ns: int | None = None
+        host0_text = captured_host0_text or ""
+        host0_mtime_ns = captured_host0_mtime_ns
         host0_fresh = False
-        host0_read_problem: str | None = None
+        host0_read_problem = host0_capture_problem
         if host0_log_path is None:
-            host0_read_problem = "host0 root is unavailable for per-case logs"
+            host0_read_problem = host0_read_problem or "host0 root is unavailable for per-case logs"
         elif not host0_log_cleared:
-            host0_read_problem = "previous host0 log could not be cleared before loading the probe"
-        elif not cleanup_ok:
-            host0_read_problem = "probe unload was not proven; per-case host0 log was not read"
+            host0_read_problem = (
+                host0_read_problem
+                or "previous host0 log could not be cleared before loading the probe"
+            )
+        elif captured_host0_text is None:
+            host0_read_problem = host0_read_problem or (
+                "per-case host0 log was not observed complete before probe unload"
+            )
         else:
-            try:
-                if host0_log_path.is_symlink() or not host0_log_path.is_file():
-                    host0_read_problem = "per-case host0 log is missing or is not a regular file"
-                else:
-                    host0_mtime_ns = host0_log_path.stat().st_mtime_ns
-                    host0_text = host0_log_path.read_text(encoding="utf-8")
-                    # The path was proven absent before launch; keep a small
-                    # boundary margin for host/filesystem timestamp conversion.
-                    host0_fresh = (
-                        run_started_ns is not None
-                        and run_started_ns - HOST0_MTIME_TOLERANCE_NS
-                        <= host0_mtime_ns
-                        <= run_finished_ns + HOST0_MTIME_TOLERANCE_NS
-                    )
-            except FileNotFoundError:
-                host0_read_problem = "per-case host0 log was not produced"
-            except (OSError, UnicodeError) as exc:
-                host0_read_problem = f"per-case host0 log could not be read ({type(exc).__name__})"
+            # Bind the envelope to the stable bytes observed before unload;
+            # never re-read a possibly completed post-unload file here.
+            host0_fresh = (
+                host0_mtime_ns is not None
+                and run_started_ns is not None
+                and run_started_ns - HOST0_MTIME_TOLERANCE_NS
+                <= host0_mtime_ns
+                <= run_finished_ns + HOST0_MTIME_TOLERANCE_NS
+            )
 
         def schema_records(text: str) -> str:
             lines = [
@@ -813,6 +885,11 @@ class PsplinkCampaignRunner:
             if message not in blockers:
                 blockers.append(message)
 
+        if _campaign_completeness_contract(case.case_id) == "unregistered-no-completion-contract":
+            disqualify(
+                f"completion contract for {case.case_id} is unregistered "
+                "(in the works: issue #352)"
+            )
         if result[3] == "TIMEOUT":
             disqualify("per-case timeout; partial output is not a semantic result")
         elif result[0] != 0:
@@ -910,6 +987,7 @@ class PsplinkCampaignRunner:
             "HOST0_RUN_STARTED_NS": run_started_ns,
             "HOST0_RUN_FINISHED_NS": run_finished_ns,
             "HOST0_LOG_FRESH": host0_fresh,
+            "STREAM_COMPLETENESS_CONTRACT": _campaign_completeness_contract(case.case_id),
             "RECOVERY_EVENTS": list(self.recovery_events),
             "QUALIFICATION_STATUS": "QUALIFIED" if case_qualified else "UNQUALIFIED",
             "QUALIFICATION_BLOCKERS": qualification_blockers,
@@ -981,6 +1059,9 @@ class PsplinkCampaignRunner:
                             run_started_ns=None,
                             run_finished_ns=time.time_ns(),
                             host0_log_cleared=False,
+                            captured_host0_text=None,
+                            captured_host0_mtime_ns=None,
+                            host0_capture_problem="per-case host0 log was unavailable before launch",
                         )
                     )
                     break
@@ -992,12 +1073,68 @@ class PsplinkCampaignRunner:
                 )
                 uid_match = self._MODULE_UID_RE.search(result[1])
                 module_uid = uid_match.group(1) if uid_match else None
+
+                captured_host0_text: str | None = None
+                captured_host0_mtime_ns: int | None = None
+                host0_capture_problem: str | None = None
+                if case_host0_log is None:
+                    host0_capture_problem = "host0 root is unavailable for per-case logs"
+                elif not host0_log_cleared:
+                    host0_capture_problem = (
+                        "previous host0 log could not be cleared before loading the probe"
+                    )
+                elif result[3] == "PROCESS_EXITED":
+                    try:
+                        capture = _wait_for_host0_output(
+                            case_host0_log,
+                            case.timeout,
+                            not_before_ns=run_started_ns - HOST0_MTIME_TOLERANCE_NS,
+                            ready=lambda text, case_id=case.case_id: _campaign_stream_complete(
+                                text, case_id
+                            ),
+                            include_mtime=True,
+                        )
+                        if not isinstance(capture, tuple):
+                            raise RuntimeError("host0 wait did not return captured metadata")
+                        captured_host0_text, captured_host0_mtime_ns = capture
+                    except TimeoutError:
+                        host0_capture_problem = (
+                            "per-case host0 stream did not become complete before probe unload"
+                        )
+                        partial, partial_mtime_ns, partial_problem = _snapshot_host0_output(
+                            case_host0_log
+                        )
+                        captured_host0_text = partial
+                        captured_host0_mtime_ns = partial_mtime_ns
+                        if partial_problem:
+                            host0_capture_problem += f"; {partial_problem}"
+                    except UnsafeHost0OutputError as exc:
+                        host0_capture_problem = str(exc)
+                    except (OSError, UnicodeError) as exc:
+                        host0_capture_problem = (
+                            "per-case host0 log could not be observed before probe unload "
+                            f"({type(exc).__name__})"
+                        )
+                else:
+                    host0_capture_problem = (
+                        "per-case command timed out before a complete host0 stream was observed"
+                    )
+                    captured_host0_text, captured_host0_mtime_ns, partial_problem = (
+                        _snapshot_host0_output(case_host0_log)
+                    )
+                    if partial_problem:
+                        host0_capture_problem += f"; {partial_problem}"
+
+                host0_roundtrip_ok: bool | None = None
+                if case.case_id == "transport-write":
+                    host0_roundtrip_ok = self._verify_host0_roundtrip()
+
                 cleanup_ok = bool(module_uid and self._unload(module_uid))
                 if not cleanup_ok and self.terminal_reason is None:
                     self._recover(module_uid, f"cleanup after {case.case_id}")
                 run_finished_ns = time.time_ns()
                 if case.case_id == "transport-write":
-                    self.host0_qualified = self._verify_host0_roundtrip()
+                    self.host0_qualified = bool(host0_roundtrip_ok)
                     if not self.host0_qualified:
                         self.state = "STOPPED"
                         self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
@@ -1011,6 +1148,9 @@ class PsplinkCampaignRunner:
                         run_started_ns=run_started_ns,
                         run_finished_ns=run_finished_ns,
                         host0_log_cleared=host0_log_cleared,
+                        captured_host0_text=captured_host0_text,
+                        captured_host0_mtime_ns=captured_host0_mtime_ns,
+                        host0_capture_problem=host0_capture_problem,
                     )
                 )
                 if self.terminal_reason:
@@ -1044,35 +1184,123 @@ def _record_summary(text: str) -> tuple[str, int]:
     return "RESULT_RECORDS", len(statuses)
 
 
+def _host0_file_identity(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _read_host0_file(path: Path) -> tuple[bytes, os.stat_result]:
+    """Read one regular file through a descriptor bound to its checked path."""
+
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise UnsafeHost0OutputError(
+            f"host0 output is not a regular file: {path.name}"
+        )
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _host0_file_identity(before) != _host0_file_identity(opened)
+        ):
+            raise UnsafeHost0OutputError(
+                f"host0 output changed during capture: {path.name}"
+            )
+
+        stream = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        with stream:
+            raw = stream.read()
+            after_read = os.fstat(stream.fileno())
+
+        try:
+            after_path = path.lstat()
+        except FileNotFoundError as exc:
+            raise UnsafeHost0OutputError(
+                f"host0 output changed during capture: {path.name}"
+            ) from exc
+        if (
+            not stat.S_ISREG(after_path.st_mode)
+            or _host0_file_identity(opened) != _host0_file_identity(after_read)
+            or _host0_file_identity(after_read) != _host0_file_identity(after_path)
+        ):
+            raise UnsafeHost0OutputError(
+                f"host0 output changed during capture: {path.name}"
+            )
+        return raw, after_path
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _wait_for_host0_output(
     path: Path,
     timeout: float,
     *,
     not_before_ns: int | None = None,
     ready: Callable[[str], bool],
-) -> str:
+    include_mtime: bool = False,
+) -> str | tuple[str, int]:
     """Read a probe-owned host0 file after its complete stream is available."""
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            stat = path.stat()
+            first, first_stat = _read_host0_file(path)
             if (
-                path.is_file()
-                and stat.st_size > 0
-                and (not_before_ns is None or stat.st_mtime_ns >= not_before_ns)
+                first_stat.st_size > 0
+                and (not_before_ns is None or first_stat.st_mtime_ns >= not_before_ns)
             ):
-                first = path.read_bytes()
                 time.sleep(0.05)
-                second = path.read_bytes()
-                if first == second:
+                second, second_stat = _read_host0_file(path)
+                if _host0_file_identity(first_stat) != _host0_file_identity(second_stat):
+                    raise UnsafeHost0OutputError(
+                        f"host0 output changed during capture: {path.name}"
+                    )
+                if (
+                    first == second
+                    and len(first) == first_stat.st_size
+                    and len(second) == second_stat.st_size
+                    and first_stat.st_size == second_stat.st_size
+                    and first_stat.st_mtime_ns == second_stat.st_mtime_ns
+                ):
                     stable = first.decode("utf-8", errors="replace")
-                    if ready(stable):
+                    if (
+                        (not_before_ns is None or first_stat.st_mtime_ns >= not_before_ns)
+                        and (not_before_ns is None or second_stat.st_mtime_ns >= not_before_ns)
+                        and ready(stable)
+                    ):
+                        if include_mtime:
+                            return stable, second_stat.st_mtime_ns
                         return stable
+        except UnsafeHost0OutputError:
+            raise
         except OSError:
             pass
         time.sleep(0.1)
     raise TimeoutError(f"host0 output did not become complete: {path.name}")
+
+
+def _snapshot_host0_output(path: Path) -> tuple[str | None, int | None, str | None]:
+    """Capture bounded diagnostics without following a link or special file."""
+
+    try:
+        raw, info = _read_host0_file(path)
+    except FileNotFoundError:
+        return None, None, "per-case host0 log was not produced before probe unload"
+    except UnsafeHost0OutputError as exc:
+        return None, None, str(exc)
+    except OSError as exc:
+        return None, None, f"per-case host0 log could not be inspected ({type(exc).__name__})"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as exc:
+        return None, info.st_mtime_ns, (
+            f"per-case host0 log is not valid UTF-8 ({type(exc).__name__})"
+        )
+    return text, info.st_mtime_ns, None
 
 
 def _host0_capture_complete(text: str, args: argparse.Namespace) -> bool:
