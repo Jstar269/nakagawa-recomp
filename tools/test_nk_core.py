@@ -1949,6 +1949,17 @@ class BoundedLibraryJsonTests(unittest.TestCase):
             )
         self.assertEqual(path.read_bytes(), before)
 
+    def test_library_nonfinite_timestamps_are_controlled_errors(self) -> None:
+        for field in ("updated_at", "last_played"):
+            with self.subTest(field=field):
+                if field == "updated_at":
+                    text = '{"schema_version":1,"updated_at":NaN,"games":[]}'
+                else:
+                    text = self._library_text(self._record(last_played="1e400"))
+                path = self._write("nonfinite.json", text)
+                with self.assertRaisesRegex(ValueError, "library JSON.*finite"):
+                    GameLibrary.load(path)
+
 
 if __name__ == "__main__":
     unittest.main()

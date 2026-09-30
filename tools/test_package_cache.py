@@ -563,6 +563,41 @@ class BoundedJsonArtifactTests(unittest.TestCase):
                 '{"a":{"b":1,"c":2},"d":3}', max_members=10, max_items=1,
             )
 
+    def test_nonfinite_numbers_fail_on_the_production_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "numbers.json"
+            for number in ("NaN", "Infinity", "-Infinity", "1e400", "-1e400"):
+                with self.subTest(number=number):
+                    path.write_text('{"value":' + number + '}', encoding="utf-8")
+                    with self.assertRaisesRegex(package_cache.BoundedJsonError, "finite"):
+                        package_cache.read_bounded_json(path)
+
+    def test_oversized_integer_has_a_named_bounded_diagnosis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "integer.json"
+            path.write_text('{"value":' + "9" * 4301 + '}', encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "integer.*digit") as caught:
+                package_cache.read_bounded_json(path)
+            self.assertLess(len(str(caught.exception)), 256)
+
+    def test_integer_ceiling_is_independent_of_python_global_settings(self) -> None:
+        # Disabling Python's optional global guard must not unbound this reader.
+        with mock.patch.object(package_cache, "int", return_value=1, create=True) as conversion:
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "integer.*digit"):
+                package_cache.bounded_json_loads("9" * 4301)
+            conversion.assert_not_called()
+
+    def test_supported_numeric_values_preserve_their_types(self) -> None:
+        result = package_cache.bounded_json_loads('[0,-12,1.25,1e2,1e-2]')
+        self.assertEqual(result, [0, -12, 1.25, 100.0, 0.01])
+        self.assertEqual([type(item) for item in result], [int, int, float, float, float])
+
+    def test_integer_at_digit_ceiling_is_accepted_with_either_sign(self) -> None:
+        digits = "9" * package_cache.MAX_CACHE_JSON_INTEGER_DIGITS
+        for sign in ("", "-"):
+            with self.subTest(sign=sign):
+                self.assertEqual(package_cache.bounded_json_loads(sign + digits), int(sign + digits))
+
     def test_valid_package_at_exact_byte_limit_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             package_dir = Path(tmp) / "at_limit"

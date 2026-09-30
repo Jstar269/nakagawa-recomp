@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -282,6 +283,9 @@ MAX_CACHE_JSON_DEPTH = 32
 MAX_CACHE_JSON_MEMBERS = 16384
 MAX_CACHE_JSON_ITEMS = 16384
 MAX_CACHE_JSON_NODES = 65536
+# Keep decimal conversion bounded even when Python's process-wide guard is
+# disabled. This matches the usual 4,300-digit Python integer ceiling.
+MAX_CACHE_JSON_INTEGER_DIGITS = 4300
 
 
 class BoundedJsonError(ValueError):
@@ -440,6 +444,29 @@ def _bounded_json_scan(
         )
 
 
+def _json_integer(text: str) -> int:
+    if len(text.removeprefix("-")) > MAX_CACHE_JSON_INTEGER_DIGITS:
+        raise BoundedJsonError(
+            f"JSON integer exceeds {MAX_CACHE_JSON_INTEGER_DIGITS} digits"
+        )
+    try:
+        return int(text)
+    except ValueError as exc:
+        # A stricter host-wide digit guard may reject before the local ceiling.
+        raise BoundedJsonError("JSON integer exceeds the host integer digit limit") from exc
+
+
+def _json_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise BoundedJsonError("JSON number must be finite and representable as a float")
+    return value
+
+
+def _json_nonfinite(_text: str) -> None:
+    raise BoundedJsonError("JSON number must be finite; NaN and Infinity are unsupported")
+
+
 def bounded_json_loads(
     text: str,
     *,
@@ -457,7 +484,10 @@ def bounded_json_loads(
         max_nodes=max_nodes,
     )
     try:
-        return json.loads(text, object_pairs_hook=_no_duplicate_pairs)
+        return json.loads(
+            text, object_pairs_hook=_no_duplicate_pairs, parse_int=_json_integer,
+            parse_float=_json_float, parse_constant=_json_nonfinite,
+        )
     except BoundedJsonError:
         raise
     except UnicodeDecodeError as exc:  # defensive: callers decode bytes first
@@ -482,7 +512,8 @@ def read_bounded_json(
     """Read one externally supplied JSON artifact under explicit ceilings.
 
     Byte ceiling first (bounded read through one handle), deterministic UTF-8
-    decode, pre-parse depth/count scan, duplicate-key rejection, and
+    decode, pre-parse depth/count scan, duplicate-key and nonfinite-number
+    rejection, bounded decimal integer conversion, and
     RecursionError containment. Every malformed outcome raises the named
     ``BoundedJsonError`` rather than a parser-implementation exception.
     """
