@@ -318,11 +318,14 @@ ignored build outputs.
 
 This gate covers two load segments, PSP-header BSS recovery, type-A relocation, import discovery,
 entry/helper analysis, multiple generated chunks, the complete public-safe production link, the
-real driver and registration table, scheduler startup, real NID dispatch in `hle.c`, and a checked
-guest-memory sentinel. It is useful before bringing up another title because it catches generic
+real driver and registration table, scheduler startup, real NID dispatch in `hle.c` (one synthetic
+import plus the sceImpose language setter/getter pair, whose guest-observed round-trip the driver
+asserts), a checked guest-memory sentinel, and the absence of unimplemented-NID dispatch misses.
+It is useful before bringing up another title because it catches generic
 pipeline and composition failures without requiring an ISO: dropped production objects, stale or
 missing chunks, entry discovery regressions, bad relocations/imports, broken scheduler startup,
-guest-to-HLE dispatch failures, and public-safe link drift.
+guest-to-HLE dispatch failures, fake-success handler regressions on the covered NIDs, and
+public-safe link drift.
 
 It does **not** establish commercial-title compatibility or legality, PSP timing, rendering or
 audio correctness, physical UMD behavior, or title-specific runtime bindings. Those remain separate
@@ -331,15 +334,16 @@ private-title, visual/audio, and hardware evidence domains.
 #### AOT-gap dispatch seam
 
 `mingw32-make production-smoke-gap` builds the same source-owned fixture in its `aot-gap` mode:
-identical guest addresses (entry, helper at `0x08804028`, import stub, result slot, sentinel), but
-the mode's build-time codegen choice `--omit-aot=0x08804028` removes the helper from native
+identical guest addresses (entry, helper at `0x08804068`, import stubs, out-slots, result slot,
+sentinel), but
+the mode's build-time codegen choice `--omit-aot=0x08804068` removes the helper from native
 emission/registration only. The guest bytes stay complete in the image inside the ordinary
 executable `.text` extent; region A's direct `jal` therefore compiles to the ordinary production
-`dispatch(s, 0x08804028)` statement — the same mechanism real generated code uses when control
+`dispatch(s, 0x08804068)` statement — the same mechanism real generated code uses when control
 leaves its directly compiled destination set. Generated `sr_register_all()` records the analyzer's
 exact executable ranges before registering native functions; mapped guest RAM outside those ranges
 is never implicit code. The production interpreter executes the omitted helper's source-owned bytes
-and its delay slot, then transfers to registered AOT region B at `0x08804058`. Region B commits the
+and its delay slot, then transfers to registered AOT region B at `0x08804098`. Region B commits the
 interpreted `0x00001235` value before the real HLE path and production-driver assertion. Nothing
 patches generated C after codegen and nothing substitutes host-side helpers.
 

@@ -51,9 +51,9 @@ generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 
 
-EXPECTED_PRX_SHA256 = "0e70188438318b1dd7324d9d08237634b4cb9f42b0078b189f72c569df9d9ace"
-EXPECTED_PSP_SHA256 = "835e63d84cc41a67a868dd34d57b2cb39fdc153039f1c8c4dba781e54ae257e3"
-GAP_EXPECTED_PRX_SHA256 = "065cfc9092448d5689c922482e1b56d25b2abf56e52568c9582baea7f72f74c4"
+EXPECTED_PRX_SHA256 = "bcbc14f27058263bdfbe086f542c22f3d6274539966b521c25c3d90679c546f6"
+EXPECTED_PSP_SHA256 = "678288e4c033fb4b3ba6cd9ff0a857daa959aafcc0acfac26e2450e3cc976c5d"
+GAP_EXPECTED_PRX_SHA256 = "ebc81e3a82ea47d1745e07d8ae5ffa0133bc74adbfd919db7c64eb1d7305c06f"
 
 
 def build_synthetic_cfw_loader(library: bytes = b"SystemCtrlForKernel") -> bytes:
@@ -156,7 +156,7 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertEqual(manifest["kind"], "source-owned-psp-production-smoke")
         self.assertEqual(manifest["mode"], "aot")
         self.assertEqual(manifest["load_segments"], 2)
-        self.assertEqual(manifest["relocation_count"], 10)
+        self.assertEqual(manifest["relocation_count"], 18)
         self.assertEqual(manifest["bss_size"], 0x40)
 
     def test_gap_fixture_is_pinned_and_keeps_guest_bytes(self):
@@ -169,22 +169,23 @@ class TestProductionSmoke(unittest.TestCase):
         )
         # The omitted region keeps its full body in the guest IMAGE bytes: an
         # AOT gap is an emission choice, never a byte removal.
-        raw_helper = generator.build_text_segment("aot-gap")[0x28:0x80]
-        self.assertIn(struct.pack("<I", 0x08000016), raw_helper)  # j REGION_B
+        helper_off = generator.HELPER - generator.BASE
+        raw_helper = generator.build_text_segment("aot-gap")[helper_off:helper_off + 0x68]
+        self.assertIn(struct.pack("<I", 0x08000026), raw_helper)  # j REGION_B
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x08)[0], 0x24091234)
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x0C)[0], 0xAD090000)
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x10)[0], 0x8D020000)
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x18)[0], 0x24420001)
         manifest = json.loads((gap_dir / "manifest.json").read_text(encoding="ascii"))
-        self.assertEqual(manifest["relocation_count"], 12)
+        self.assertEqual(manifest["relocation_count"], 20)
 
     def test_real_loader_analyzer_and_import_parser_accept_fixture(self):
         loaded = prxload.Prx(self.prx_path, generator.BASE, psp_header=self.psp_path)
         load_segments = [segment for segment in loaded.segments if segment["type"] == 1]
         self.assertEqual(len(load_segments), 2)
         self.assertEqual(loaded.psp_bss_size, 0x40)
-        self.assertEqual(loaded.relocate(), 10)
-        self.assertEqual(len(loaded.mem), 0x10B0)
+        self.assertEqual(loaded.relocate(), 18)
+        self.assertEqual(len(loaded.mem), 0x10B8)
         pointer_offset = generator.RESULT_POINTER - generator.BASE
         result_offset = generator.RESULT - generator.BASE
         self.assertEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0], generator.RESULT)
@@ -195,18 +196,21 @@ class TestProductionSmoke(unittest.TestCase):
         starts, ranges = analyze.analyze(elf)
         self.assertEqual(
             starts,
-            {generator.ENTRY, generator.HELPER, generator.IMPORT_STUB},
+            {generator.ENTRY, generator.HELPER, generator.IMPORT_STUB,
+             generator.STUB_SET, generator.STUB_GET},
         )
         self.assertEqual(
             ranges,
             [
-                (generator.BASE, generator.BASE + 0x48),
-                (generator.IMPORT_STUB, generator.IMPORT_STUB + 8),
+                (generator.BASE, generator.BASE + generator.TEXT_SECTION_SIZE_AOT),
+                (generator.IMPORT_STUB, generator.STUB_GET + 8),
             ],
         )
         self.assertEqual(
             imports_tool.parse_imports(elf),
-            {generator.IMPORT_STUB: (generator.LIBRARY, generator.NID)},
+            {generator.IMPORT_STUB: (generator.LIBRARY, generator.NID),
+             generator.STUB_SET: (generator.LIBRARY, generator.NID_SET),
+             generator.STUB_GET: (generator.LIBRARY, generator.NID_GET)},
         )
 
     def test_plain_elf_without_section_names_keeps_imports_as_hle_stubs(self):
@@ -287,7 +291,7 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertIn(f"f_{generator.REGION_B:08x}(", omitted_text)
         self.assertIn(
             f"sr_exec_span_register(0x{generator.BASE:08x}u, "
-            f"0x{generator.IMPORT_STUB + 8:08x}u)",
+            f"0x{generator.STUB_GET + 8:08x}u)",
             omitted_text,
         )
         self.assertEqual(omitted_text.count("sr_exec_span_register("), 1)
@@ -298,16 +302,17 @@ class TestProductionSmoke(unittest.TestCase):
         record_index = len(generator.relocation_records()) - 1
         record_offset = generator.RELOCATION_FILE_OFFSET + record_index * 8
         offset, info = struct.unpack_from("<II", mutated, record_offset)
-        self.assertEqual(offset, 0x68)
+        self.assertEqual(offset, 0x70)
         self.assertEqual(info & 0xF, generator.R_MIPS_32)
         struct.pack_into("<II", mutated, record_offset, offset, info & ~0xF)
         mutated_path = self.out_dir / "guest-no-result-relocation.prx"
         mutated_path.write_bytes(mutated)
 
         loaded = prxload.Prx(mutated_path, generator.BASE, psp_header=self.psp_path)
-        self.assertEqual(loaded.relocate(), 10)
+        self.assertEqual(loaded.relocate(), 18)
         pointer_offset = generator.RESULT_POINTER - generator.BASE
-        self.assertEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0], 0x6C)
+        self.assertEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0],
+                         generator.RESULT - generator.DATA_BASE)
         self.assertNotEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0], generator.RESULT)
 
     def test_unknown_run_mode_is_refused(self):
@@ -324,6 +329,16 @@ class TestProductionSmoke(unittest.TestCase):
             f"GUEST_INTERP_AOT_HANDOFF pc=0x{generator.REGION_B:08x} instructions=7\n"
             f"DISPATCH 0x{generator.REGION_B:08x} from 0x{generator.REGION_B:08x}\n"
             f"HLE: calling sceKernelSetCompiledSdkVersion (0x{generator.NID:08x})\n"
+            f"HLE: calling sceImposeSetLanguageMode (0x{generator.NID_SET:08x})\n"
+            f"sceImposeSetLanguageMode: language={generator.IMPOSE_LANG} "
+            f"buttonConfirm={generator.IMPOSE_BTN}\n"
+            f"HLE: calling sceImposeGetLanguageMode (0x{generator.NID_GET:08x})\n"
+            f"DRIVER_EXPECT_U32 addr=0x{generator.SLOT_LANG:08x} "
+            f"got=0x{generator.IMPOSE_LANG:08x} "
+            f"expected=0x{generator.IMPOSE_LANG:08x} status=PASS\n"
+            f"DRIVER_EXPECT_U32 addr=0x{generator.SLOT_BTN:08x} "
+            f"got=0x{generator.IMPOSE_BTN:08x} "
+            f"expected=0x{generator.IMPOSE_BTN:08x} status=PASS\n"
             f"DRIVER_EXPECT_U32 addr=0x{generator.RESULT:08x} "
             f"got=0x{generator.INTERP_RESULT:08x} "
             f"expected=0x{generator.INTERP_RESULT:08x} status=PASS\n"
@@ -343,6 +358,20 @@ class TestProductionSmoke(unittest.TestCase):
                 "AOT_REGION_B_SKIPPED",
             ),
             "old-fatal-miss": good + "NONPLT_MISS\n",
+            "no-impose-dispatch": good.replace(
+                f"HLE: calling sceImposeSetLanguageMode (0x{generator.NID_SET:08x})\n",
+                "",
+            ),
+            "impose-setter-silent": good.replace(
+                f"sceImposeSetLanguageMode: language={generator.IMPOSE_LANG} "
+                f"buttonConfirm={generator.IMPOSE_BTN}\n",
+                "",
+            ),
+            "impose-roundtrip-lost": good.replace(
+                f"got=0x{generator.IMPOSE_LANG:08x} expected=0x{generator.IMPOSE_LANG:08x} status=PASS",
+                f"got=0xDEADBEEF expected=0x{generator.IMPOSE_LANG:08x} status=FAIL",
+            ),
+            "unimplemented-nid": good + "HLE: unimplemented nid 0x24fd7bcf (sceImposeGetLanguageMode)\n",
             "delay-slot-skipped": good.replace(
                 f"got=0x{generator.INTERP_RESULT:08x} expected=0x{generator.INTERP_RESULT:08x} status=PASS",
                 f"got=0x{generator.INTERP_STORE:08x} expected=0x{generator.INTERP_RESULT:08x} status=FAIL",
@@ -362,7 +391,7 @@ class TestProductionSmoke(unittest.TestCase):
         fixture.mkdir()
         self.assertEqual(generator.generate(fixture), 0)
 
-        image = bytearray(0x10B0)
+        image = bytearray(0x10B8)
         struct.pack_into("<I", image, generator.RESULT_POINTER - generator.BASE, generator.RESULT)
         helper_bytes = generator.expected_helper_bytes("aot")
         image[generator.HELPER - generator.BASE:generator.HELPER - generator.BASE + len(helper_bytes)] = helper_bytes
@@ -373,10 +402,11 @@ class TestProductionSmoke(unittest.TestCase):
             f"sr_exec_span_register(0x{generator.BASE:08x}u, "
             f"0x{generator.BASE + generator.TEXT_SECTION_SIZE_AOT:08x}u);\n"
             f"sr_exec_span_register(0x{generator.IMPORT_STUB:08x}u, "
-            f"0x{generator.IMPORT_STUB + 8:08x}u);\n"
+            f"0x{generator.STUB_GET + 8:08x}u);\n"
             'fprintf(stderr, "sr_register_all: registered 2 executable span(s)\\n");\n'
-            'fprintf(stderr, "sr_register_all: starting 3 registrations\\n");\n'
-            "sr_register_chunk_0();\nsr_register_chunk_1();\nsr_register_chunk_2();\n",
+            'fprintf(stderr, "sr_register_all: starting 5 registrations\\n");\n'
+            "sr_register_chunk_0();\nsr_register_chunk_1();\nsr_register_chunk_2();\n"
+            "sr_register_chunk_3();\nsr_register_chunk_4();\n",
             encoding="ascii",
         )
         (build_dir / "production_smoke_recomp_funcs.h").write_text(
@@ -386,13 +416,18 @@ class TestProductionSmoke(unittest.TestCase):
             f"void f_{generator.ENTRY:08x}(CpuState *s) {{}}\n"
             f"void f_{generator.HELPER:08x}(CpuState *s) {{}}\n"
             f"void f_{generator.IMPORT_STUB:08x}(CpuState *s) {{}}\n"
+            f"void f_{generator.STUB_SET:08x}(CpuState *s) {{}}\n"
+            f"void f_{generator.STUB_GET:08x}(CpuState *s) {{}}\n"
             f"sr_syscall(s, 0x{generator.NID:08x}u);\n"
+            f"sr_syscall(s, 0x{generator.NID_SET:08x}u);\n"
+            f"sr_syscall(s, 0x{generator.NID_GET:08x}u);\n"
         )
-        for index in range(3):
+        for index in range(5):
             (build_dir / f"production_smoke_recomp_{index}.c").write_text(generated, encoding="ascii")
             (build_dir / f"production_smoke_recomp_{index}.o").write_bytes(b"\0")
         (build_dir / "production_smoke_imports.toml").write_text(
-            f'{generator.LIBRARY} = ["0x{generator.NID:08x}"]\n', encoding="ascii"
+            f'{generator.LIBRARY} = ["0x{generator.NID:08x}", '
+            f'"0x{generator.NID_SET:08x}", "0x{generator.NID_GET:08x}"]\n', encoding="ascii"
         )
 
         required = [
@@ -400,6 +435,8 @@ class TestProductionSmoke(unittest.TestCase):
             "production_smoke_recomp_0.o",
             "production_smoke_recomp_1.o",
             "production_smoke_recomp_2.o",
+            "production_smoke_recomp_3.o",
+            "production_smoke_recomp_4.o",
             "ge.o", "flight_recorder.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
             "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
