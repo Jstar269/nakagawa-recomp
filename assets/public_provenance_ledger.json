@@ -162,7 +162,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aa0c7f62b3425fe9c34c44205b4b8ac58e1d5c042fa5b73c89f9500a7957bbd6"
+      "sha256": "ca98497da14aeca58ace372c57e54fdb69c4a7fe141a64bb54d9554b944d6f79"
     },
     {
       "path": ".github/workflows/osv-scanner.yml",
@@ -9471,11 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "d3530dc20198e81417d4248c64ef073d4b0a94fe",
-    "candidate_tree": "a6d4d846fd5174c91457fd0e810365b970922dcd",
+    "trusted_tree": "b42e9ab790bb700833b653ca83e8fcc584e88c76",
+    "candidate_tree": "99c29781b6ef89eb0f3aa01ec5075a3b466c83a4",
     "refreshed_paths": [
-      "tools/perf_summary_diff.py",
-      "tools/test_perf_summary_diff.py"
+      ".github/workflows/dependency-review.yml"
     ]
   }
 }
