@@ -3992,7 +3992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a35d3346c6816a6e075cde63a398378f425d3d7c5056a00c7a2c2574cb528b2d"
+      "sha256": "a0196a77591a8ccadaa36c973b52fb3b416183444be56fc3cc1e2d83e85e8db3"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -4843,7 +4843,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "000326a72644e36ead5b3d7af87dda012d27f6ddae3d3decb057b2adda5293da"
+      "sha256": "b4d423059e22fe4a7d0e2c2d929fd90318bd83a9a441de9cdfdfe3bf98663ca0"
     },
     {
       "path": "src/rt/recomp.h",
@@ -7386,7 +7386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65ddf39a57f366e65abc5953247d8e3f22ef8190e2ad5c0f89d5fe3c2ca3394c"
+      "sha256": "88137cd36e1505325fa7f22276d52091e1e3142a43baa53b0ba2d1b948e22c71"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -9471,11 +9471,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "822fb80605d8e4e726984973a32c163651b25ee5",
-    "candidate_tree": "ef9475e2b4d5588b221dd8aeeb5111ef885aee22",
+    "trusted_tree": "c4cdf65dfba8d12a06085de3593b3d66058cac5d",
+    "candidate_tree": "72451347fc586ba561e76de86f4d48d92a2daa90",
     "refreshed_paths": [
-      ".betterleaks.toml",
-      ".pre-commit-config.yaml"
+      "src/rt/dispatch_isolation_selftest.c",
+      "src/rt/recomp.c",
+      "tools/test_dispatch_call_boundary.py"
     ]
   }
 }
