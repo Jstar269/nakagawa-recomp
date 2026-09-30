@@ -368,7 +368,7 @@ def _bounded_json_scan(
     max_items: int,
     max_nodes: int,
 ) -> None:
-    """Count containers, members, items, and scalars in raw JSON text.
+    """Count containers, members, comma separators, and scalars in raw JSON text.
 
     Runs before json.loads so hostile nesting or bulk fails at the named
     ceiling instead of first recursing inside the standard parser. Strings and
@@ -381,7 +381,7 @@ def _bounded_json_scan(
     """
     depth = 0
     members = 0
-    items = 0
+    separators = 0
     nodes = 0
     in_string = False
     escaped = False
@@ -415,7 +415,7 @@ def _bounded_json_scan(
         elif char == ":":
             members += 1
         elif char == ",":
-            items += 1
+            separators += 1
         elif char in "-0123456789":
             if not prev_numeric:
                 nodes += 1
@@ -434,9 +434,9 @@ def _bounded_json_scan(
         raise BoundedJsonError(
             f"JSON document exceeds {max_members} object members"
         )
-    if items > max_items:
+    if separators > max_items:
         raise BoundedJsonError(
-            f"JSON document exceeds {max_items} array items"
+            f"JSON document exceeds {max_items} comma separators"
         )
 
 

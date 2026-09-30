@@ -29,13 +29,10 @@ LIBRARY_SCHEMA_VERSION = 1
 # Externally supplied library.json is one bounded JSON artifact (#319): the
 # byte ceiling is enforced with a bounded read (never a whole-file read), the
 # structural ceilings run before json.loads, and record-level limits bound the
-# decoded list. All limits exceed any legitimate library by orders of
-# magnitude; nothing is ever truncated silently.
+# decoded list. Byte, structure, and record limits apply independently;
+# nothing is ever truncated silently.
 MAX_LIBRARY_JSON_BYTES = MAX_CACHE_JSON_BYTES
 MAX_LIBRARY_JSON_DEPTH = MAX_CACHE_JSON_DEPTH
-MAX_LIBRARY_JSON_MEMBERS = MAX_CACHE_JSON_MEMBERS
-MAX_LIBRARY_JSON_ITEMS = MAX_CACHE_JSON_ITEMS
-MAX_LIBRARY_JSON_NODES = MAX_CACHE_JSON_NODES
 MAX_LIBRARY_GAMES = 4096
 
 _GAME_RECORD_FIELDS = frozenset({
@@ -45,6 +42,23 @@ _GAME_RECORD_FIELDS = frozenset({
     "last_played", "play_count", "settings_override",
 })
 _LIBRARY_ROOT_FIELDS = frozenset({"schema_version", "updated_at", "games"})
+
+# A saved record emits every dataclass field, even defaults. The package-cache
+# structural budgets would reject an ordinary saved library around 1,170 games.
+# Give this route budgets derived from its own record schema; the independent
+# 1 MiB byte limit still applies, including to large settings overrides.
+MAX_LIBRARY_JSON_MEMBERS = max(
+    MAX_CACHE_JSON_MEMBERS,
+    MAX_LIBRARY_GAMES * len(_GAME_RECORD_FIELDS) + len(_LIBRARY_ROOT_FIELDS),
+)
+MAX_LIBRARY_JSON_ITEMS = max(
+    MAX_CACHE_JSON_ITEMS, MAX_LIBRARY_JSON_MEMBERS + MAX_LIBRARY_GAMES,
+)
+MAX_LIBRARY_JSON_NODES = max(
+    MAX_CACHE_JSON_NODES,
+    MAX_LIBRARY_GAMES * (2 * len(_GAME_RECORD_FIELDS) + 1)
+    + 2 * len(_LIBRARY_ROOT_FIELDS) + 2,
+)
 
 
 @dataclass
@@ -188,7 +202,7 @@ class GameLibrary:
             )
 
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_file = out_file.with_suffix(".tmp")
+        tmp_file = out_file.with_name(out_file.name + ".tmp")
 
         payload = {
             "schema_version": LIBRARY_SCHEMA_VERSION,
@@ -196,11 +210,16 @@ class GameLibrary:
             "games": [rec.to_dict() for rec in self._games.values()],
         }
 
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-
-        # Atomic replacement
-        tmp_file.replace(out_file)
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            # Validate with the exact reader before replacing a working library.
+            # Oversized settings or invalid in-memory records must never install
+            # a file that this same loader cannot read back.
+            GameLibrary.load(tmp_file)
+            tmp_file.replace(out_file)
+        finally:
+            tmp_file.unlink(missing_ok=True)
 
     @classmethod
     def load(cls, file_path: Path | str) -> "GameLibrary":

@@ -557,6 +557,12 @@ class BoundedJsonArtifactTests(unittest.TestCase):
     def _deep_text(self, depth: int, payload: str = '1') -> str:
         return '{"format": "nakagawa-aot-package", "n": ' + '{"n":' * depth + payload + '}' * depth + '}'
 
+    def test_object_separators_are_diagnosed_as_separators(self) -> None:
+        with self.assertRaisesRegex(package_cache.BoundedJsonError, "comma separators"):
+            package_cache.bounded_json_loads(
+                '{"a":{"b":1,"c":2},"d":3}', max_members=10, max_items=1,
+            )
+
     def test_valid_package_at_exact_byte_limit_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             package_dir = Path(tmp) / "at_limit"

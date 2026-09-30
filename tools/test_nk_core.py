@@ -1671,6 +1671,48 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertEqual(loaded.count(), 1)
         self.assertIsNotNone(loaded.get_game("ules00123"))
 
+    def test_large_fully_populated_library_round_trip(self) -> None:
+        path = self.temp_dir / "large_library.json"
+        lib = GameLibrary(storage_file=path)
+        for index in range(1200):
+            lib.add_or_update_game(LibraryGameRecord(
+                disc_id=f"SYNTH{index:05d}", title_name=f"Synthetic {index}",
+                iso_path="synthetic.iso", settings_override={"scale": 2},
+            ))
+        lib.save()
+        self.assertLess(path.stat().st_size, package_cache.MAX_CACHE_JSON_BYTES)
+        loaded = GameLibrary.load(path)
+        self.assertEqual(loaded.count(), 1200)
+        self.assertEqual(loaded.get_game("SYNTH01199").to_dict(),
+                         lib.get_game("SYNTH01199").to_dict())
+
+    def test_save_rejects_unreadable_output_without_replacing_library(self) -> None:
+        path = self.temp_dir / "preserved_library.json"
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord(
+            disc_id="SYNTH00001", title_name="Synthetic", iso_path="synthetic.iso",
+        ))
+        lib.save()
+        before = path.read_bytes()
+        lib.get_game("SYNTH00001").settings_override = {
+            "padding": "x" * package_cache.MAX_CACHE_JSON_BYTES,
+        }
+        with self.assertRaisesRegex(ValueError, "byte.*limit"):
+            lib.save()
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(path.with_name(path.name + ".tmp").exists())
+        self.assertEqual(GameLibrary.load(path).count(), 1)
+
+    def test_library_target_with_tmp_suffix_is_preserved(self) -> None:
+        path = self.temp_dir / "library.tmp"
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord(
+            disc_id="SYNTH00001", title_name="Synthetic", iso_path="synthetic.iso",
+        ))
+        lib.save()
+        self.assertEqual(GameLibrary.load(path).count(), 1)
+        self.assertFalse(path.with_name(path.name + ".tmp").exists())
+
     def test_library_one_byte_over_limit_is_rejected(self) -> None:
         limit = package_cache.MAX_CACHE_JSON_BYTES
         prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "ULES00123", "settings_override": {"pad": "'
