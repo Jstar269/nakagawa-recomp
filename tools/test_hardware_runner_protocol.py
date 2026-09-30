@@ -1653,6 +1653,36 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertTrue(any("model is the fixture placeholder 'unknown'" in blocker
                             for blocker in envelope["ACCEPTANCE_BLOCKERS"]))
 
+    def test_unmeasured_labels_are_placeholders_not_identity(self):
+        from psp_oracle.protocol import is_unmeasured
+
+        for label in ("unmeasured", "Unmeasured", "not-measured", "N/A", "un measured",
+                      "unverified", "TBD", "?", "-", " "):
+            with self.subTest(label=label):
+                self.assertTrue(is_unmeasured(label))
+        for label in ("PSP-3000", "04g", "6.61", "psp3000-ark5"):
+            with self.subTest(label=label):
+                self.assertFalse(is_unmeasured(label))
+
+    def test_campaign_unmeasured_model_is_not_acceptance_eligible(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-unmeasured-model-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="unmeasured",
+                source_commit=SOURCE_COMMIT,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        envelope = report["envelopes"][0]
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertTrue(any("model is the fixture placeholder 'unmeasured'" in blocker
+                            for blocker in envelope["ACCEPTANCE_BLOCKERS"]))
+
     def test_shell_verification_respects_total_deadline_and_per_attempt_cap(self):
         now = [0.0]
         timeouts = []
