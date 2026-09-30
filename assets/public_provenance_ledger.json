@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91301427e37eee89d73ec3183c47afc0a49d085cd0bc72fd2e67d22fa78f5eba"
+      "sha256": "cbfeb7309f68dd7ba832fa9860e8f18867bba4998b6ddd8d4b46d6ba4c9abcd5"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -162,7 +162,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aa0c7f62b3425fe9c34c44205b4b8ac58e1d5c042fa5b73c89f9500a7957bbd6"
+      "sha256": "ca98497da14aeca58ace372c57e54fdb69c4a7fe141a64bb54d9554b944d6f79"
     },
     {
       "path": ".github/workflows/osv-scanner.yml",
@@ -264,7 +264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "47a13a9afee7552e4ce8a8886f3ab8b540eb7ac5f421714345418be76b8f3673"
+      "sha256": "08aaa0011943b59ff6311107db230d760f6b0b6d9b18a19d59b481edaa6fffa9"
     },
     {
       "path": "CREDITS.md",
@@ -9471,18 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "779fc304cb94bf8d97751c21a148fe2625335efc",
-    "candidate_tree": "1c2217a08152e1248489c44947ce31c47b81d9de",
+    "trusted_tree": "14878772ffc510df6942ad7a3d6664ff2a6cb809",
+    "candidate_tree": "21c1fc68d16fc77cb1c6ae308a3fdfd462ececf3",
     "refreshed_paths": [
-      "fixtures/psp_oracle/Makefile",
-      "fixtures/psp_oracle/probe.c",
-      "tools/psp_oracle/manifest.json",
-      "tools/psp_oracle/parse_golden.py",
-      "tools/psp_oracle/protocol.py",
-      "tools/psp_oracle/run_psplink.py",
-      "tools/test_hardware_runner_protocol.py",
-      "tools/test_psp_leaf_parsers.py",
-      "tools/test_psp_oracle.py"
+      ".github/workflows/dependency-review.yml"
     ]
   }
 }
