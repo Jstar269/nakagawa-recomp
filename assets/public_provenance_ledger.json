@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2b4753122c2041d19280bdae4f9e999e0c97255bfd9f263770ec614d30f797a8"
+      "sha256": "7fd06e5ada5479c14579e6d76f89bf49b9f7a6aaa983523f32bef69bd815b055"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1294,7 +1294,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "16fcb74d84c710d9c9f9d614fcf4b9a80e0b53a47707113701a3aa599edcf76d"
+      "sha256": "b1d018078a14fec35a6deb768a31b2a46f61aec5fb7f49d88a43a4405957560c"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -6580,7 +6580,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff9077d57da539083a4466784053941532617bc976b5fe8f4f4a68ebd6ef7d30"
+      "sha256": "0708a244bf3a2bf047f8adfa0571de106385e7936e56089b433dc330e181e3c3"
     },
     {
       "path": "tools/prxload.py",
@@ -8323,7 +8323,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "004ef3ef8f1ccd21e94e1a14ab36165a74dd7b86f973a38685ec23581f6e6141"
+      "sha256": "e4bb1f0bf596257b20e9713c65d73e9df0452c2292295886b21c6ac9193fa60e"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -9468,16 +9468,5 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "5d688f3037434f5eef366ffbc989c907e7716611",
-    "candidate_tree": "c363f2c9c2c3209d4431cea8f4b66adfbb5638b4",
-    "refreshed_paths": [
-      "tools/README.md",
-      "tools/ci_paths.py",
-      "tools/test_ci_paths.py",
-      "tools/test_lint_docs.py"
-    ]
-  }
+  ]
 }
