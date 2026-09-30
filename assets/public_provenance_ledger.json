@@ -6568,7 +6568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a621e5345e6a28aa6bac23c63830ef4de54b0b14ea8ca6d3dabcb1e9fc235b25"
+      "sha256": "da08d399efe3664e6b7be1ead2a680ceacfe7ca408172b51f3eae20c8d39b5e4"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -8371,7 +8371,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6177cd4cd03fab813292213fd59b83ed559d62f5288d4a0334ffbd684857da57"
+      "sha256": "a9e423e01f763415dcbdb2db9927511796cc92d78734152a44a590a88751e3ff"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -9471,10 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "9180e74bd1e09063622415b9ae3239390ed22906",
-    "candidate_tree": "8ec0a165272ab6dc817ecacdaa6d3ba75410b3ed",
+    "trusted_tree": "0c69f2f8291490932dcb1d96802ccbbf0db76733",
+    "candidate_tree": "3ac012410cf8c4aacccff9d5248cfb653c3f31d9",
     "refreshed_paths": [
-      "ISSUES.md"
+      "tools/provenance_record_gap.py",
+      "tools/test_provenance_record_gap.py"
     ]
   }
 }
