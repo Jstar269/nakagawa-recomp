@@ -282,7 +282,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a212c53002a8b5daeb4fe150a757fc7dfdc9add784a46698bc12447e012cb9f0"
+      "sha256": "5da1130b9012aa6a65c4111974e182d97f0e94c1be28357d43236070421c6b99"
     },
     {
       "path": "LICENSE",
@@ -9471,11 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
-    "candidate_tree": "c05948892b75fedf0ada5182f098598b07c7fc7e",
+    "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
+    "candidate_tree": "7eab622b4998b11340e1fee1d595a405a7e272cb",
     "refreshed_paths": [
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "ISSUES.md"
     ]
   }
 }
