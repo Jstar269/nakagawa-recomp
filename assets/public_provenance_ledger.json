@@ -1795,7 +1795,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4ae6b0e860e3bead3cc4fa9e29ab9db67fa9f5180aa0e47a8b7ab478d3030873"
+      "sha256": "9c3ab1c8f666e0b622506805ad4b8a5832b03ed39fb23f76d407c44c9b6cf96f"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -1804,7 +1804,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "18972ff9cff5932c52da31bb5d4fde6b23ada48ad343bc07c9e6d6a0b1bd6340"
+      "sha256": "36eb56b7a029ab42e6e49688a5126455b94a34ce1153cde11f34eae57bdb6ff2"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -1825,7 +1825,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "804c233c87eb99da4a204277e38e12fe4be4c5a642a48475065a54f2a4f43661"
+      "sha256": "b8c3a7e814bd01cd545b774d821c48ad7adce7ef948ac97067585fdbe2d5d858"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -6677,7 +6677,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "691d843488459b398ccedb8102a95ae80b875899c436d9f9cc8a847d975a597b"
+      "sha256": "e4be593316510aa228bb33c5f712c0eac685c624f731abf92af8134b9e9afe63"
     },
     {
       "path": "tools/psp_oracle/run_nakagawa.py",
@@ -6713,7 +6713,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "78390c2b9783c338387767b8b04542992b5a2c1ba467af86077ac24ffaa5d5ee"
+      "sha256": "9f243e7a8afc084ad1a0928419c1da8953e9cd94ca2ead2934c1dcf9185f197e"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -6773,7 +6773,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "531b321631ff79aeb9238330a4386c120811b80fa7a2acf7fd2242b3e2aa444b"
+      "sha256": "0ebf86f76965427c1dad8738dbaf70d4322862d85320b94fc1a0b47affb1e61c"
     },
     {
       "path": "tools/pspdev_lock.py",
@@ -7710,7 +7710,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8e34aaaa8f4564d0b4d25e7330e62c09b2bfc314427d9ded357a2035620f0962"
+      "sha256": "ef0a4d8692b129152ffe24881cd89d34c24af4226d8b705828655d562e17febc"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -8467,7 +8467,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8c18207a84a59233bbe0ddd47558be8da5fc1c0410918eaf5fb906a7d3f3fb2a"
+      "sha256": "03f1c9eacb046bf5b8c7dfcbf8d2de7a59720bab10a1f2bf49d1aca04cfec3e5"
     },
     {
       "path": "tools/test_psp_parsers.py",
@@ -8503,7 +8503,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f7205850bc56da3893cbc54e12a395f23fc6a0d5a8d0037979e2193b3aa8b7e9"
+      "sha256": "01f62f9713fac8bd493092efcd7c9a138469217cce31e250a553f7c77b05d5cf"
     },
     {
       "path": "tools/test_pspdev_lock.py",
@@ -9471,10 +9471,18 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "14878772ffc510df6942ad7a3d6664ff2a6cb809",
-    "candidate_tree": "21c1fc68d16fc77cb1c6ae308a3fdfd462ececf3",
+    "trusted_tree": "53090fb87a16bff2e24387e5fec081775f478c72",
+    "candidate_tree": "c1e0a59884b8188d68a38ef414869e2cda212726",
     "refreshed_paths": [
-      ".github/workflows/dependency-review.yml"
+      "fixtures/psp_oracle/Makefile",
+      "fixtures/psp_oracle/README.md",
+      "fixtures/psp_oracle/probe.c",
+      "tools/psp_oracle/protocol.py",
+      "tools/psp_oracle/run_psplink.py",
+      "tools/psp_threading_oracle/parser.py",
+      "tools/test_hardware_runner_protocol.py",
+      "tools/test_psp_oracle.py",
+      "tools/test_psp_threading_oracle.py"
     ]
   }
 }
