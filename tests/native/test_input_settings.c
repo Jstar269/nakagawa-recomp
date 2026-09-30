@@ -690,7 +690,138 @@ static void test_per_title_scope_and_atomic_save(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 10 PASSED!\n");
 }
 
+/* -----------------------------------------------------------------------------
+ * 11. Hostile Profile Files Through The Player Loader
+ * -------------------------------------------------------------------------- */
+static void test_hostile_profile_files(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 11: hostile files leave the player at defaults...\n");
+
+    /* A file the user can edit is a file the user can break. Every shape here
+     * has to leave the settings screen on the safe default mapping with the
+     * diagnostic on screen, never with half a mapping the pad cannot see. */
+    static const char *const kHostileFiles[] = {
+        "",                                                                     /* empty */
+        "   \n",                                                                /* blank */
+        "{",                                                                    /* cut short */
+        "{\"schema_version\": 2, \"device\": {\"guid\": \"g\"},",                  /* cut mid-object */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[{\"control\":\"cross\"}],\"navigation_bindings\":[]}", /* unbound control */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":99999,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[]}",                       /* out of range */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\xFF\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[]}",                       /* invalid UTF-8 */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[],"
+        "\"per_title\":[{\"disc_id\":\"NUL\",\"profile\":{}}]}",                  /* reserved name */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[],"
+        "\"per_title\":[{\"disc_id\":\"../../escape\",\"profile\":{}}]}",         /* traversal */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[]} TRAILING",               /* garbage */
+    };
+    static const char *const kRawNulFile =
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\0h\"}}";
+    size_t hostile_count = sizeof(kHostileFiles) / sizeof(kHostileFiles[0]);
+    const char *path = "build/test_hostile_settings.json";
+
+    assert(nk_platform_mkdir_p("build"));
+
+    for (size_t i = 0; i < hostile_count; i++) {
+        InputSettingsState state;
+        FILE *f = fopen(path, "wb");
+        assert(f != NULL);
+        assert(fwrite(kHostileFiles[i], 1, strlen(kHostileFiles[i]), f) ==
+               strlen(kHostileFiles[i]));
+        assert(fclose(f) == 0);
+
+        NkResult res = input_settings_load(&state, path);
+        if (res == NK_OK || !state.has_load_diagnostic || state.load_diagnostic[0] == '\0') {
+            printf("  hostile file %zu: expected a refusal with a diagnostic, got res=%d\n",
+                   i, (int)res);
+            assert(0 && "hostile profile file was not refused with a diagnostic");
+        }
+        assert(state.loaded_from_file);
+        assert(state.profile.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
+        assert(state.profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner ==
+               NK_INPUT_DEFAULT_DEADZONE_INNER);
+        assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_CROSS].primary.type !=
+               NK_BINDING_NONE);
+        assert(state.file.title_count == 0);
+        assert(state.editing_disc_id[0] == '\0');
+        assert(!input_settings_is_title_scope(&state));
+        assert(!input_settings_has_conflicts(&state));
+        /* A refused document leaves the player usable: a save from here writes
+         * the defaults, and that file loads back. */
+        if (i == 0 || i == 2) {
+            assert(input_settings_save(&state, path) == NK_OK);
+            assert(!state.has_save_diagnostic);
+            InputSettingsState reloaded;
+            assert(input_settings_load(&reloaded, path) == NK_OK);
+            assert(!reloaded.has_load_diagnostic);
+            assert(reloaded.file.title_count == 0);
+        }
+    }
+
+    /* A NUL byte inside the file is data, not an end of file. */
+    {
+        InputSettingsState state;
+        FILE *f = fopen(path, "wb");
+        assert(f != NULL);
+        assert(fwrite(kRawNulFile, 1, strlen(kRawNulFile) + 1, f) == strlen(kRawNulFile) + 1);
+        assert(fclose(f) == 0);
+        assert(input_settings_load(&state, path) != NK_OK);
+        assert(state.has_load_diagnostic);
+        assert(state.file.title_count == 0);
+    }
+
+    /* A disc ID the whitelist refuses never becomes a file name: the write is
+     * refused before the profile directory is touched. */
+    {
+        static const char *const kUnusableIds[] = {
+            "", "..", "../escape", "a/b", "NUL", "nul.json", "COM1", "LPT9", "AUX"
+        };
+        size_t n_ids = sizeof(kUnusableIds) / sizeof(kUnusableIds[0]);
+        for (size_t i = 0; i < n_ids; i++) {
+            InputSettingsState state;
+            char out_path[NK_MAX_PATH];
+            char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+            input_settings_init(&state);
+            out_path[0] = 'X';
+            diag[0] = '\0';
+            assert(input_settings_write_disc_profile(&state, kUnusableIds[i], out_path,
+                                                    sizeof(out_path), diag, sizeof(diag)) != NK_OK);
+            assert(out_path[0] == '\0');
+            assert(strstr(diag, "disc ID") != NULL);
+        }
+    }
+
+    remove(path);
+    printf("[INPUT_SETTINGS_TEST] Subtest 11 PASSED!\n");
+}
+
 int main(void) {
+    /* Unbuffered: a failing case names itself on stdout, and the harness reads
+     * that line even when the run aborts on the assert that follows. */
+    setbuf(stdout, NULL);
+
     printf("=================================================================\n");
     printf("Starting Nakagawa Native Player Input Settings Test Suite\n");
     printf("=================================================================\n");
@@ -705,6 +836,7 @@ int main(void) {
     test_sr_padscript_semantics_untouched();
     test_guided_calibration_and_resting_extremes();
     test_per_title_scope_and_atomic_save();
+    test_hostile_profile_files();
 
     printf("=================================================================\n");
     printf("ALL INPUT SETTINGS TESTS PASSED SUCCESSFULLY!\n");

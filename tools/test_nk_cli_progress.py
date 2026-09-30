@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +20,57 @@ CLI_PATH = ROOT / "tools" / "nk_cli.py"
 
 
 class NkCliProgressTests(unittest.TestCase):
+    def test_launch_anchors_runtime_lookup_to_cli_checkout(self) -> None:
+        import argparse
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        import nk_cli
+
+        with tempfile.TemporaryDirectory(prefix="nk_cli_launch_paths_") as temp:
+            temp_root = Path(temp)
+            cli_root = temp_root / "cli checkout"
+            other_cwd = temp_root / "invoking checkout"
+            game_dir = temp_root / "prepared game"
+            runtime_dir = cli_root / "build" / "synthetic"
+            runtime_dir.mkdir(parents=True)
+            other_cwd.mkdir()
+            game_dir.mkdir()
+
+            executable = runtime_dir / "synthetic.exe"
+            executable.write_bytes(b"synthetic runtime fixture")
+            (runtime_dir / "synthetic_image.bin").write_bytes(b"synthetic image fixture")
+            (game_dir / "manifest.json").write_text(
+                json.dumps({"title_id": "synthetic-allegrex-v1"}),
+                encoding="utf-8",
+            )
+
+            args = argparse.Namespace(
+                game_dir=game_dir,
+                profile="Standard",
+                fps_cap=30,
+                software=False,
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(other_cwd)
+                with (
+                    patch.object(nk_cli, "ROOT", cli_root),
+                    patch.object(nk_cli.subprocess, "Popen") as popen,
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                ):
+                    result = nk_cli.cmd_launch(args)
+            finally:
+                os.chdir(original_cwd)
+
+        popen.assert_not_called()
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertIn(f"Executable: {executable}", stdout.getvalue())
+
     def test_progress_json_invalid_disc_id(self) -> None:
         """Verify --progress-json reports failure for an invalid disc ID format."""
         cmd = [
