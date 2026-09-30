@@ -5539,7 +5539,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "173761a3a4c90cefab40066b21c1e6446e442d51e397afb0668d569a23e77856"
+      "sha256": "5271c27949b650c3055ada28f81d03335a5894e0b3e1e7e08acf36323b2f4d7c"
     },
     {
       "path": "tools/betterleaks_canary.py",
@@ -7025,7 +7025,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dcaa95fe2b993f48d7663fcdbf71025a33b4fca35cce5c2391224b0cf4331462"
+      "sha256": "f8ad7a5f294cbb19f56ed5d5fd5a88893d083ab57d357c19a4b4e31ab2f9e7f4"
     },
     {
       "path": "tools/test_boot_gate.py",
@@ -9471,11 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "0c69f2f8291490932dcb1d96802ccbbf0db76733",
-    "candidate_tree": "3ac012410cf8c4aacccff9d5248cfb653c3f31d9",
+    "trusted_tree": "0b72895bd3e2187403ca8f09c21e5ec85dcb775f",
+    "candidate_tree": "deea79cec7db3c4b5eacddb5f91cd566999ae421",
     "refreshed_paths": [
-      "tools/provenance_record_gap.py",
-      "tools/test_provenance_record_gap.py"
+      "tools/audit_public_issue_links.py",
+      "tools/test_audit_public_issue_links.py"
     ]
   }
 }
