@@ -21,6 +21,7 @@
       "url": "https://pypi.org/pypi/ruff/0.16.9/json",
       "name": "ruff",
       "version": "0.16.9",
+      "retrieved_utc": "2026-09-30",
       "artifacts": [
         {
           "filename": "ruff-0.16.9-py3-none-linux_armv6l.whl",
