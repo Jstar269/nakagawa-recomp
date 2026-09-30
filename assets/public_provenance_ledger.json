@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3363c999eccb3dca87fb26a6e94429517cefb754afc52430de92b5262aa09444"
+      "sha256": "3b657b32074caa4e3527bb1aa538d188daa8da5abf136161af70e8e152d5be9d"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aff8cdff02c05b7af512d86da9237bdfd3c62426766d60331dd8403f9651c37f"
+      "sha256": "8789f38005b984fbd0a753ddeb1e166869159b7c8e6b05d824388220677e4c77"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7503a9c028fa8aa16803056d9aaa50640fec5f217d7d422fd1e3e6cd5d761968"
+      "sha256": "2b4753122c2041d19280bdae4f9e999e0c97255bfd9f263770ec614d30f797a8"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1162,7 +1162,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "99008a74645f0024f56ff41f3c02e5bf3296c7ecbcc684552e3f177a9ac56087"
+      "sha256": "4e41da6074d2fde89db5f9e0a11ba5bf22a7f9cdb8350180f500e900deacdaeb"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1339,7 +1339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "020e80e400ac24325559bf3656f51446f82d6cd7eb26dbdd61bf1bf12b52af60"
+      "sha256": "8cc73e8bd28550f2c27ae8b2f246967b9ff6f932aa1042e379138b2210a65cc5"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -8563,7 +8563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da376b8f987ba75c05535d2a42a75ce317f635e6e5c8deba96641a65014f8c67"
+      "sha256": "9b949fbc627957c2427b05490ab986c9952f6507e812a1771e65fd36b5795ba6"
     },
     {
       "path": "tools/test_public_export.py",
@@ -9471,23 +9471,15 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "53090fb87a16bff2e24387e5fec081775f478c72",
-    "candidate_tree": "7bc3ef176346f89486461932bcd6e494468192ee",
+    "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
+    "candidate_tree": "590d97b187bba0ee98a61693cf3ad33bec189f9a",
     "refreshed_paths": [
       ".github/workflows/ci.yml",
-      "Makefile",
-      "assets/bringup_report.schema.json",
-      "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
-      "fixtures/display_smoke/generate.py",
-      "src/rt/gui.c",
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c",
-      "src/rt/recomp.h",
-      "tools/boot_gate.py",
-      "tools/gate_stub.c",
-      "tools/nk_cli.py",
-      "tools/test_boot_gate.py",
-      "tools/test_production_smoke.py"
+      "CMakeLists.txt",
+      "docs/CI.md",
+      "docs/LINUX_DEVELOPMENT.md",
+      "docs/SETUP.md",
+      "tools/test_public_ci_wiring.py"
     ]
   }
 }
