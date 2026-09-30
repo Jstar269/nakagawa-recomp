@@ -2493,7 +2493,10 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
             os.close(flight_fd)
             flight_output = Path(flight_name)
-            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal;4096"
+            # media is in the class list so a named media boundary (for example a PSMF
+            # stream the demuxer refused) is retained as a structured event in the flight
+            # bundle instead of existing only as text in this run's output.
+            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal,media;4096"
             env["SR_FLIGHT_OUTPUT"] = str(flight_output)
         except OSError:
             env.pop("SR_FLIGHT", None)

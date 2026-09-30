@@ -41,7 +41,12 @@ enum {
     SR_FLIGHT_KIND_FATAL_CPU_FLOW = 15u,
     SR_FLIGHT_KIND_FATAL_IMPORT = 16u,
     SR_FLIGHT_KIND_FATAL_HOST = 17u,
-    SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE = 18u
+    SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE = 18u,
+    /* A production media stream the demuxer refused.  arg0/arg1 are the low and high
+     * halves of the source offset of the refused element; the reason itself is named in
+     * the always-on stderr boundary the same code prints.  This is a project-owned
+     * diagnostic label, not a PSP hardware event name. */
+    SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED = 19u
 };
 
 /* Synthetic media-selftest labels only. They describe source-owned fixture

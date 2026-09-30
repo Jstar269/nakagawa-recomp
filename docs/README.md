@@ -43,8 +43,19 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
   player discovery, and their profile-zero acceptance status (#309).
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
-  runtime and supported tooling parser boundaries, resource limits, deterministic
+  runtime and supported tooling parser boundaries, including every native and Python
+  JSON consumer (title manifest, runtime package, library, cache/identity, font cache,
+  input profile, player settings and package-builder documents) plus performance
+  summaries, frame-dump and other tooling readers; each row carries resource limits, deterministic
   regression/mutation status, sanitizer availability, and unresolved gaps (#319).
+  Every source anchor is a stable `path:symbol` reference checked against current
+  definitions by `tools/test_parse_fuzz.py`; line-number anchors are rejected.
+  Python methods use `Class.method` where needed, and anchors must resolve to one
+  definition (including supported constants). The checker rejects a `never reaches`
+  claim when a listed Python test has a syntactic call path to that reader, and a
+  row may only call a route untested when it names the kind of test that is missing.
+  The document is `schema_version` 4: `arithmetic.safe` remains a string status
+  rather than a boolean, and `schema_notes` records both changes.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
