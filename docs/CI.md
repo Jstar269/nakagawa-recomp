@@ -113,9 +113,9 @@ attestation, reads the trusted public ledger from the exact base commit, and
 requires the external detailed ledger through `NK_TRUSTED_LEDGER`. Stage the
 intended candidate changes first. The target stages the generated controls and
 the profile when `--apply-policy` is requested; it does not stage the rest of
-the worktree. It writes a refresh audit block for
-the changed existing public paths and computes the export from those generated
-ledger bytes in the same invocation, so a second pass is not needed.
+the worktree. The committed ledger stays a per-path
+document (no `refresh` audit block), and the export is computed from those
+generated ledger bytes in the same invocation, so a second pass is not needed.
 
 The base defaults to `merge-base(HEAD, origin/main)`. When the pull request's
 exact base differs, set `PROVENANCE_BASE_SHA` to its full 40-character commit
