@@ -821,6 +821,7 @@ def selftest_dispatched_nids(selftest_text: str) -> set[int]:
 
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 
 
 def _heading_slug(heading: str) -> str:
@@ -859,15 +860,33 @@ def _cited_section(ref: str, test_id: str) -> str:
             f"test {test_id!r} evidence_ref cites {path_text!r}, which is not readable "
             f"in this tree ({error.strerror})"
         ) from error
+    # Headings are recognised the way GitHub renders them: a `#` line inside a
+    # fenced code block is not a heading, and a repeated heading gets the
+    # `-1`, `-2` ... anchor suffix, so a citation resolves to the section a
+    # reader sees or fails closed.
+    fence: str | None = None
+    seen: dict[str, int] = {}
     for line in lines:
-        heading = _HEADING_RE.match(line)
+        marker = _FENCE_RE.match(line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+        heading = None if fence is not None or marker else _HEADING_RE.match(line)
         if heading:
             if section == slug:
                 return "\n".join(body)
-            section, body = _heading_slug(heading.group(1)), []
+            base = _heading_slug(heading.group(1))
+            count = seen.get(base, 0)
+            seen[base] = count + 1
+            section, body = (base if count == 0 else f"{base}-{count}"), []
             continue
         if section == slug:
             body.append(line)
+    if section == slug:
+        return "\n".join(body)
     raise ManifestError(
         f"test {test_id!r} evidence_ref {ref!r} names no heading in {path_text!r}"
     )
@@ -878,8 +897,11 @@ def measured_evidence_section(test: dict) -> str:
 
     A MEASURED row must name the cases the citation covers in `evidence_cases`,
     every one of them must be one of the row's own `case_ids`/`apis`, and the
-    cited section must contain each of them verbatim.  A row that cannot show
-    that its evidence exercised exactly what it claims is not measured.
+    cited section must contain each of them verbatim.  Every one of the row's
+    `case_ids` must be either cited that way or listed in `uncited_cases`, so a
+    partial citation is explicit rather than silently standing for the whole
+    row.  Only the `apis` named in `evidence_cases` are granted the tier (see
+    `oracle_exercised_apis`).
     """
     test_id = test.get("id", "?")
     ref = test.get("evidence_ref")
@@ -901,6 +923,25 @@ def measured_evidence_section(test: dict) -> str:
     if undeclared:
         raise ManifestError(
             f"test {test_id!r} evidence_cases {undeclared} are neither its case_ids nor its apis"
+        )
+    uncited = test.get("uncited_cases", [])
+    if not isinstance(uncited, list) or not all(isinstance(c, str) and c for c in uncited):
+        raise ManifestError(f"test {test_id!r} uncited_cases must be a list of case ids")
+    stray = sorted(set(uncited) - set(test.get("case_ids", [])))
+    if stray:
+        raise ManifestError(f"test {test_id!r} uncited_cases {stray} are not its case_ids")
+    both = sorted(set(uncited) & set(cases))
+    if both:
+        raise ManifestError(
+            f"test {test_id!r} lists {both} in both evidence_cases and uncited_cases"
+        )
+    unaccounted = sorted(
+        set(test.get("case_ids", [])) - set(cases) - set(uncited)
+    )
+    if unaccounted:
+        raise ManifestError(
+            f"test {test_id!r} case_ids {unaccounted} are neither cited in evidence_cases "
+            "nor listed in uncited_cases; a partial citation must say what it omits"
         )
     section = _cited_section(ref, test_id)
     unnamed = sorted({case for case in cases if case not in section})
@@ -936,8 +977,12 @@ def oracle_exercised_apis(manifest: dict) -> dict[str, list[str]]:
         if hardware_evidence != "MEASURED":
             continue
         measured_evidence_section(test)
+        # The tier follows the citation, not the row: an API the cited section
+        # does not name is not measured by it, whatever else the row lists.
+        cited = set(test.get("evidence_cases", []))
         for api in test.get("apis", []):
-            out.setdefault(api, []).append(test.get("id", "?"))
+            if api in cited:
+                out.setdefault(api, []).append(test.get("id", "?"))
     return out
 
 

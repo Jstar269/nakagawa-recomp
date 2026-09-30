@@ -792,17 +792,67 @@ class EvidenceTierTests(unittest.TestCase):
             "id": "PSP-CITED-001",
             "status": "implemented",
             "hardware_evidence": "MEASURED",
-            "apis": ["sceDisplayGetVcount"],
+            "apis": ["sceDisplayGetAccumulatedHcount"],
             "case_ids": ["display-ge-mask"],
             "evidence_ref": "docs/ARCHITECTURE.md#clocks",
-            "evidence_cases": ["display-ge-mask"],
+            "evidence_cases": ["display-ge-mask", "sceDisplayGetAccumulatedHcount"],
         }
         row.update(overrides)
         return row
 
-    def test_a_resolvable_citation_promotes_the_row(self) -> None:
+    def test_a_resolvable_citation_promotes_the_apis_it_names(self) -> None:
         oracle_apis = hle_manifest.oracle_exercised_apis({"tests": [self._measured_row()]})
-        self.assertEqual(oracle_apis, {"sceDisplayGetVcount": ["PSP-CITED-001"]})
+        self.assertEqual(oracle_apis, {"sceDisplayGetAccumulatedHcount": ["PSP-CITED-001"]})
+
+    def test_an_api_the_citation_does_not_name_is_not_promoted(self) -> None:
+        # A citation of one case must not stand for every API the row lists.
+        row = self._measured_row(apis=["sceDisplayGetAccumulatedHcount", "sceGeSetCallback"])
+        oracle_apis = hle_manifest.oracle_exercised_apis({"tests": [row]})
+        self.assertEqual(oracle_apis, {"sceDisplayGetAccumulatedHcount": ["PSP-CITED-001"]})
+
+    def test_every_case_id_is_cited_or_explicitly_uncited(self) -> None:
+        row = self._measured_row(case_ids=["display-ge-mask", "display-mask-duty"])
+        with self.assertRaisesRegex(ManifestError, "neither cited in evidence_cases nor listed"):
+            hle_manifest.oracle_exercised_apis({"tests": [row]})
+        row["uncited_cases"] = ["display-mask-duty"]
+        self.assertIn("sceDisplayGetAccumulatedHcount",
+                      hle_manifest.oracle_exercised_apis({"tests": [row]}))
+        for bad, message in (
+            (["not-a-case"], "are not its case_ids"),
+            (["display-ge-mask", "display-mask-duty"], "in both evidence_cases and uncited_cases"),
+            ("display-mask-duty", "must be a list"),
+        ):
+            with self.subTest(uncited=bad):
+                row["uncited_cases"] = bad
+                with self.assertRaisesRegex(ManifestError, message):
+                    hle_manifest.oracle_exercised_apis({"tests": [row]})
+
+    def test_citations_resolve_headings_the_way_github_renders_them(self) -> None:
+        text = "\n".join([
+            "# Doc",
+            "## Clocks",
+            "first-clocks-body",
+            "```sh",
+            "# not a heading",
+            "fenced-body",
+            "```",
+            "## Clocks",
+            "second-clocks-body",
+            "",
+        ])
+        policy = mock.Mock()
+        policy.resolve.return_value = mock.Mock(disposition="included", rule="include_paths")
+        with mock.patch.object(hle_manifest.publication_policy, "load_policy", return_value=policy), \
+                mock.patch.object(hle_manifest.Path, "read_text", return_value=text):
+            first = hle_manifest._cited_section("docs/X.md#clocks", "T")
+            second = hle_manifest._cited_section("docs/X.md#clocks-1", "T")
+            with self.assertRaisesRegex(ManifestError, "names no heading"):
+                hle_manifest._cited_section("docs/X.md#not-a-heading", "T")
+        self.assertIn("first-clocks-body", first)
+        self.assertIn("fenced-body", first)
+        self.assertNotIn("second-clocks-body", first)
+        self.assertIn("second-clocks-body", second)
+        self.assertNotIn("first-clocks-body", second)
 
     def test_measured_without_a_citation_fails_closed(self) -> None:
         for missing in ("evidence_ref", "evidence_cases"):
