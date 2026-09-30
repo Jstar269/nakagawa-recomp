@@ -355,6 +355,9 @@ void player_app_toggle_fullscreen(PlayerApp *app);
 void player_app_toggle_launcher_fullscreen(PlayerApp *app);
 PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
                                               bool user_confirmed);
+/* SDL may report one host close action with more than one close event type.
+ * Claim the first such event in a drained event batch only. */
+bool player_app_close_request_batch_claim(bool *close_request_handled);
 /* If the host confirmation dialog cannot be shown, keep the running game
  * alive and require a second explicit close request before forcing quit. */
 void player_app_note_close_confirmation_failure(PlayerApp *app);

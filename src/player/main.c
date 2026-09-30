@@ -331,13 +331,18 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
  * remain owned by the loop because they carry live handles. */
 static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                                      SDL_Window *window, bool *running,
+                                     bool *close_request_handled_in_batch,
                                      const SDL_Event *event) {
     if (!app || !input || !running || !event) return false;
 
     switch (event->type) {
     case SDL_EVENT_QUIT:
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-        if (player_confirm_quit(window, app)) *running = false;
+        if (player_app_close_request_batch_claim(
+                close_request_handled_in_batch) &&
+            player_confirm_quit(window, app)) {
+            *running = false;
+        }
         return true;
     case SDL_EVENT_WINDOW_RESIZED:
         if (!app->logical_ui) {
@@ -2409,6 +2414,7 @@ int main(int argc, char *argv[]) {
 
         input.mouse_clicked = false;
         input.activate_pressed = false;
+        bool close_request_handled_in_batch = false;
         SDL_Event event;
         bool event_available = SDL_WaitEventTimeout(&event, 50);
         if (event_available) {
@@ -2426,7 +2432,9 @@ int main(int argc, char *argv[]) {
                      event.type == SDL_EVENT_PEN_UP)) {
                     SDL_ConvertEventToRenderCoordinates(renderer, &event);
                 }
-                if (!player_dispatch_ui_event(&app, &input, window, &running, &event)) {
+                if (!player_dispatch_ui_event(&app, &input, window, &running,
+                                              &close_request_handled_in_batch,
+                                              &event)) {
                     switch (event.type) {
                     case SDL_EVENT_GAMEPAD_ADDED:
                         if (!gamepad) {

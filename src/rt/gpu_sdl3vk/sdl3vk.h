@@ -31,27 +31,6 @@ int  sdl3vk_init(const char *title);
 /* Raise the initialized SDL window. On Windows, also request OS foreground activation. */
 bool sdl3vk_raise_window(void);
 
-/* Shared one-shot gate used by the visible presenters. The boot-event file is the
- * launcher's existing handoff marker; a headless presenter or an already-serviced launch
- * never invokes the supplied window operation. */
-typedef void (*SrGuiForegroundRequestFn)(void *context);
-static inline bool sr_gui_request_launcher_foreground_once(
-    const char *boot_event_file,
-    bool window_visible,
-    bool headless_presenter,
-    bool *request_issued,
-    void *context,
-    SrGuiForegroundRequestFn raise_window
-) {
-    if (!boot_event_file || !boot_event_file[0] || !window_visible ||
-        headless_presenter || !request_issued || *request_issued || !raise_window) {
-        return false;
-    }
-    *request_issued = true;
-    raise_window(context);
-    return true;
-}
-
 /* Swapchain present-mode choice for the SR_VSYNC setting (pure, no window needed).
  * `available` lists VkPresentModeKHR values as plain ints so this header stays
  * Vulkan-free: 0 = IMMEDIATE, 1 = MAILBOX, 2 = FIFO. vsync != 0 locks presentation

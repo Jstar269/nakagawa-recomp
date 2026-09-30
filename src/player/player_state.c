@@ -841,6 +841,12 @@ PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
     return PLAYER_CLOSE_QUIT;
 }
 
+bool player_app_close_request_batch_claim(bool *close_request_handled) {
+    if (!close_request_handled || *close_request_handled) return false;
+    *close_request_handled = true;
+    return true;
+}
+
 void player_app_note_close_confirmation_failure(PlayerApp *app) {
     if (!app) return;
     app->close_confirmation_pending = true;

@@ -28,7 +28,7 @@
 #include "iso_reader.h"
 #include "nk_font.h"
 #include "nk_platform.h"
-#include "../../src/rt/gpu_sdl3vk/sdl3vk.h"
+#include "../../src/rt/recomp.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -1879,6 +1879,35 @@ int main(int argc, char **argv) {
         player_app_note_close_confirmation_failure(s_app2);
         assert(player_app_take_close_confirmation_fallback(s_app2));
         assert(!player_app_take_close_confirmation_fallback(s_app2));
+
+        /* One host close may enter SDL as both QUIT and WINDOW_CLOSE_REQUESTED.
+           Canceling the first confirmation leaves the child running, but a
+           second close event in that drained batch must not ask again. */
+        bool close_request_handled_in_batch = false;
+        int confirmation_count = 0;
+        for (int event = 0; event < 2; ++event) {
+            if (player_app_close_request_batch_claim(
+                    &close_request_handled_in_batch) &&
+                player_app_close_decision(s_app2, false) ==
+                    PLAYER_CLOSE_CONFIRM_REQUIRED) {
+                ++confirmation_count;
+                /* Cancel keeps s_app2->is_game_running set. */
+            }
+        }
+        assert(confirmation_count == 1);
+        assert(s_app2->is_game_running);
+
+        /* A later close starts a new batch and prompts once again. */
+        close_request_handled_in_batch = false;
+        for (int event = 0; event < 2; ++event) {
+            if (player_app_close_request_batch_claim(
+                    &close_request_handled_in_batch) &&
+                player_app_close_decision(s_app2, false) ==
+                    PLAYER_CLOSE_CONFIRM_REQUIRED) {
+                ++confirmation_count;
+            }
+        }
+        assert(confirmation_count == 2);
         s_app2->is_game_running = false;
 
         /* Settings stay single-column until the wide launcher control and the
