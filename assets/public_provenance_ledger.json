@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7d7c49c1d985bbb313d3a68ae15ecc6d2cdbc0c194bc4bce9b3cf42839f64cae"
+      "sha256": "36f61dc1f266d272abb06e92f7f83008c515e0cf060d8ce6ea9f39fc4c614ac9"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8107,7 +8107,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1ed8baebc0de97a26b03ec4083323cb5be5edfdddee15cd3032d70ee4b8b682c"
+      "sha256": "0284044f67a0acaef6eb6bdf42a1ebebeaf8685d1a95983565625db2a1552bd9"
     },
     {
       "path": "tools/test_nk_core.py",
@@ -9471,11 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "d3530dc20198e81417d4248c64ef073d4b0a94fe",
-    "candidate_tree": "a6d4d846fd5174c91457fd0e810365b970922dcd",
+    "trusted_tree": "b42e9ab790bb700833b653ca83e8fcc584e88c76",
+    "candidate_tree": "754e0a11169b117da4df2db2349ec56d7a26160c",
     "refreshed_paths": [
-      "tools/perf_summary_diff.py",
-      "tools/test_perf_summary_diff.py"
+      "tools/nk_cli.py",
+      "tools/test_nk_cli_progress.py"
     ]
   }
 }
