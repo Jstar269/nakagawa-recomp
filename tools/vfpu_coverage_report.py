@@ -2,7 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Generate the deterministic Nakagawa VFPU compatibility census."""
+"""Generate the deterministic Nakagawa VFPU compatibility census.
+
+Besides the census itself, the tool classifies an encounter word list
+(--encodings) and the VFPU words a generated AOT route actually emits
+(--route), so every word a real route executes carries an explicit
+census disposition.
+"""
 
 from __future__ import annotations
 
@@ -44,6 +50,23 @@ PAYLOAD_VALUES = tuple(
             for low in (0x00, 0x01, 0x0F, 0x7F, 0x8F, 0x90, 0xFF)
         }
     )
+)
+# The three dispositions whose words are a named #326 boundary: the AOT raised
+# Unsupported and/or the production interpreter answers SR_VFPU_OTHER.
+BOUNDARY_DISPOSITIONS = frozenset(
+    {
+        "interpreter-only",
+        "supported-opcode-form-unmodeled",
+        "unsupported-encoding",
+    }
+)
+# Every emitted guest instruction carries its word literal in sr_begin().
+ROUTE_SR_BEGIN_PATTERN = re.compile(
+    r"sr_begin\(\s*s\s*,\s*0x[0-9a-fA-F]{8}u\s*,\s*0x([0-9a-fA-F]{8})u\s*\)"
+)
+ROUTE_FAIL_RULE = (
+    "route census exits nonzero when any emitted VFPU word is AOT Unsupported "
+    "or interpreter SR_VFPU_OTHER"
 )
 
 
@@ -942,6 +965,134 @@ def build_encounter_report(path: Path) -> dict[str, object]:
     }
 
 
+def route_opcodes() -> frozenset[int]:
+    """Opcodes the production AOT routes to the VFPU decoder or owns directly."""
+    routed, controls = production_vfpu_opcodes()
+    return frozenset(routed) | frozenset(controls)
+
+
+def _route_generated_files(path: Path) -> list[Path]:
+    files = [path]
+    if path.suffix == ".c":
+        files.extend(sorted(path.parent.glob(f"{path.stem}_*.c")))
+    return files
+
+
+def _collect_route_words(paths: Iterable[Path]) -> tuple[Counter[int], int]:
+    """Recover the VFPU words a generated route emits, from its sr_begin() literals.
+
+    Returns the VFPU word counts plus the total number of emitted guest
+    instructions seen, so a report can show how much AOT it scanned.
+    """
+    opcodes = route_opcodes()
+    files = [path for path in paths if path.is_file()]
+    if not files:
+        raise CensusError("route input produced no readable generated C")
+    counts: Counter[int] = Counter()
+    emitted = 0
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise CensusError(f"route input {path.name} is not readable generated C") from exc
+        for match in ROUTE_SR_BEGIN_PATTERN.finditer(text):
+            emitted += 1
+            word = int(match.group(1), 16)
+            if (word >> 26) in opcodes:
+                counts[word] += 1
+    if not emitted:
+        raise CensusError(
+            "route input emitted no guest instructions (no sr_begin literals); "
+            "refusing an empty route census"
+        )
+    return counts, emitted
+
+
+def _run_route_codegen(elf: Path, route_args: list[str]) -> tuple[Counter[int], int]:
+    """Reproduce the route's AOT by running the production code generator."""
+    with tempfile.TemporaryDirectory(prefix="nakagawa_vfpu_route_") as tmp:
+        out = Path(tmp) / "route_recomp.c"
+        command = [sys.executable, str(TOOLS / "codegen.py"), str(elf), str(out), *route_args]
+        try:
+            completed = subprocess.run(
+                command, cwd=ROOT, capture_output=True, text=True, timeout=600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CensusError(f"route AOT generation failed to start: {exc}") from exc
+        if completed.returncode != 0:
+            detail = ((completed.stderr or completed.stdout).strip())[-2000:]
+            raise CensusError(
+                f"route AOT generation failed with status {completed.returncode}: {detail}"
+            )
+        return _collect_route_words([out, *sorted(Path(tmp).glob("route_recomp_*.c"))])
+
+
+def _route_words(path: Path, route_args: list[str]) -> tuple[Counter[int], int]:
+    path = path.resolve()
+    try:
+        with open(path, "rb") as handle:
+            magic = handle.read(4)
+    except OSError as exc:
+        raise CensusError(f"route input cannot be read: {path}") from exc
+    if magic == b"\x7fELF":
+        return _run_route_codegen(path, route_args)
+    if route_args:
+        raise CensusError("--route-arg applies only to an ELF route input")
+    if path.suffix != ".c":
+        raise CensusError("route input must be an ELF or a generated .c file")
+    return _collect_route_words(_route_generated_files(path))
+
+
+def build_route_report(
+    path: Path | str, route_args: Iterable[str] = ()
+) -> dict[str, object]:
+    """Classify every VFPU word a route's AOT emits with the census decoders.
+
+    A word fails the route when its census disposition is a named boundary:
+    the AOT raised Unsupported and/or the production interpreter answers
+    SR_VFPU_OTHER. AOT-owned direct controls (vflush) never reach the
+    interpreter and stay pass.
+    """
+    counts, emitted = _route_words(Path(path), list(route_args))
+    entries: list[dict[str, object]] = []
+    failures: list[str] = []
+    records: list[dict[str, object]] = []
+    if counts:
+        records = classify_words(tuple(sorted(counts)))
+        if any(record["aot_source"] is None for record in records):
+            raise CensusError("route contains a word outside the production VFPU decoders")
+        validate_agreement(records)
+    for record in records:
+        disposition = compatibility_disposition(record)
+        boundary = disposition in BOUNDARY_DISPOSITIONS
+        word = f"0x{int(record['word']):08x}"
+        entries.append(
+            {
+                "word": word,
+                "count": counts[int(record["word"])],
+                "disposition": disposition,
+                "aot": record["aot_disposition"],
+                "interpreter": record["interpreter_kind"],
+                "reason": record["aot_reason"],
+                "status": "boundary" if boundary else "pass",
+                "tracking_issue": TRACKING_ISSUE if boundary else None,
+            }
+        )
+        if boundary:
+            failures.append(word)
+    return {
+        "schema": CENSUS_SCHEMA,
+        "tracking_issue": TRACKING_ISSUE,
+        "fail_rule": ROUTE_FAIL_RULE,
+        "status": "fail" if failures else "pass",
+        "route_emitted_words": emitted,
+        "route_words": len(entries),
+        "route_occurrences": sum(counts.values()),
+        "failures": failures,
+        "entries": entries,
+    }
+
+
 def text_report() -> str:
     return render_markdown(build_census())
 
@@ -956,10 +1107,45 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--markdown", nargs="?", const=ROOT / "build" / "vfpu_census.md", type=Path)
     parser.add_argument("--format", choices=("text", "json"))
     parser.add_argument("--encodings", type=Path)
+    parser.add_argument(
+        "--route",
+        type=Path,
+        help="classify the VFPU words a generated AOT route emits "
+        "(an ELF, or a generated .c plus its chunk files) and exit 1 "
+        "when any word is Unsupported or OTHER",
+    )
+    parser.add_argument(
+        "--route-arg",
+        action="append",
+        default=[],
+        metavar="CODEGEN_ARG",
+        help="extra tools/codegen.py argument for an ELF --route input; "
+        "repeat it and use the --flag=value form",
+    )
     args = parser.parse_args(argv)
     if args.encodings is not None and (args.json is not None or args.markdown is not None):
         parser.error("--encodings cannot be combined with census output paths")
+    if args.route is not None and (
+        args.encodings is not None
+        or args.json is not None
+        or args.markdown is not None
+        or args.format is not None
+    ):
+        parser.error("--route cannot be combined with census output paths or --encodings")
+    if args.route_arg and args.route is None:
+        parser.error("--route-arg requires --route")
     try:
+        if args.route is not None:
+            report = build_route_report(args.route, args.route_arg)
+            sys.stdout.write(_canonical_json(report))
+            if report["status"] != "pass":
+                sys.stderr.write(
+                    "vfpu_coverage_report: route census FAIL: "
+                    + ", ".join(str(word) for word in report["failures"])
+                    + f" ({ROUTE_FAIL_RULE})\n"
+                )
+                return 1
+            return 0
         if args.encodings is not None:
             sys.stdout.write(_canonical_json(build_encounter_report(args.encodings)))
             return 0

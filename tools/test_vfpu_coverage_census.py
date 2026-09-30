@@ -16,6 +16,15 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import vfpu_coverage_report as census
+from test_codegen_fp_convert import _synthetic_elf
+
+# A VFPU0 word the AOT translates directly and the interpreter accepts.
+ROUTE_CLEAN_WORD = 0x60000000
+# Reserved VFPU4 jump form: codegen raises Unsupported and sr_vfpu_interp
+# returns SR_VFPU_OTHER, so a route containing it must fail the route census.
+ROUTE_OTHER_WORD = 0xD3E00000
+# jr ra; nop -- ends the synthetic route body; neither word is VFPU.
+ROUTE_TAIL = (0x03E00008, 0x00000000)
 
 
 class VfpuCoverageCensusTests(unittest.TestCase):
@@ -233,6 +242,113 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             self.assertIn("# VFPU Compatibility Census", markdown)
             self.assertIn("issue #326", markdown)
             self.assertIn("No SIMD path exists", markdown)
+
+
+class VfpuRouteCensusTests(unittest.TestCase):
+    """Join the census to the VFPU words a route's AOT actually emits."""
+
+    def _run_route(self, words):
+        with tempfile.TemporaryDirectory(prefix="vfpu_route_census_") as tmp:
+            elf = Path(tmp) / "route.elf"
+            elf.write_bytes(_synthetic_elf(list(words)))
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = census.main(["--route", str(elf)])
+            return rc, json.loads(output.getvalue())
+
+    def test_route_census_passes_clean_synthetic_route(self):
+        rc, report = self._run_route([ROUTE_CLEAN_WORD, *ROUTE_TAIL])
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["failures"], [])
+        self.assertEqual(report["route_emitted_words"], 3)
+        self.assertEqual(report["route_words"], 1)
+        entries = {entry["word"]: entry for entry in report["entries"]}
+        clean = entries[f"0x{ROUTE_CLEAN_WORD:08x}"]
+        self.assertEqual(clean["disposition"], "aot-direct")
+        self.assertEqual(clean["status"], "pass")
+        self.assertIsNone(clean["tracking_issue"])
+        self.assertNotIn(f"0x{ROUTE_TAIL[0]:08x}", entries)
+
+    def test_route_census_fails_closed_on_other_word(self):
+        rc, report = self._run_route(
+            [ROUTE_CLEAN_WORD, ROUTE_OTHER_WORD, *ROUTE_TAIL]
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["failures"], [f"0x{ROUTE_OTHER_WORD:08x}"])
+        entries = {entry["word"]: entry for entry in report["entries"]}
+        clean = entries[f"0x{ROUTE_CLEAN_WORD:08x}"]
+        self.assertEqual(clean["status"], "pass")
+        other = entries[f"0x{ROUTE_OTHER_WORD:08x}"]
+        self.assertEqual(other["disposition"], "unsupported-encoding")
+        self.assertEqual(other["aot"], "aot-unsupported")
+        self.assertEqual(other["interpreter"], "unsupported")
+        self.assertEqual(other["status"], "boundary")
+        self.assertEqual(other["tracking_issue"], 326)
+
+    def test_route_census_scans_generated_route_files(self):
+        with tempfile.TemporaryDirectory(prefix="vfpu_route_gen_") as tmp:
+            main_c = Path(tmp) / "route.c"
+            chunk_c = Path(tmp) / "route_0.c"
+            main_c.write_text(
+                f"    sr_begin(s, 0x00001000u, 0x{ROUTE_CLEAN_WORD:08x}u); sr_end(s, 0u, 0);\n",
+                encoding="ascii",
+            )
+            chunk_c.write_text(
+                f"    sr_begin(s, 0x00001004u, 0x{ROUTE_OTHER_WORD:08x}u); sr_end(s, 0u, 0);\n",
+                encoding="ascii",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = census.main(["--route", str(main_c)])
+            report = json.loads(output.getvalue())
+        self.assertEqual(rc, 1)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["route_emitted_words"], 2)
+        self.assertEqual(report["failures"], [f"0x{ROUTE_OTHER_WORD:08x}"])
+        self.assertEqual(
+            {entry["word"] for entry in report["entries"]},
+            {f"0x{ROUTE_CLEAN_WORD:08x}", f"0x{ROUTE_OTHER_WORD:08x}"},
+        )
+
+    def test_route_census_rejects_non_route_input(self):
+        with tempfile.TemporaryDirectory(prefix="vfpu_route_bad_") as tmp:
+            binary = Path(tmp) / "route.bin"
+            binary.write_bytes(b"\x00\x01\x02\x03")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = census.main(["--route", str(binary)])
+            self.assertEqual(rc, 2)
+            self.assertEqual(output.getvalue(), "")
+            # A parseable C file with no emitted guest words must not report a pass.
+            empty_c = Path(tmp) / "route.c"
+            empty_c.write_text("/* no emitted instructions */\n", encoding="ascii")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = census.main(["--route", str(empty_c)])
+            self.assertEqual(rc, 2)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_profile_zero_route_has_no_boundary_vfpu_words(self):
+        """The committed public profile-zero route emits no Unsupported/OTHER word."""
+        elf = ROOT / "fixtures" / "profile_zero" / "prebuilt" / "profile_zero_guest.prx"
+        self.assertTrue(elf.is_file(), f"committed profile-zero fixture is missing: {elf}")
+        manifest = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        base = manifest["executable"]["base"]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            rc = census.main(["--route", str(elf), f"--route-arg=--base={base:x}"])
+        report = json.loads(output.getvalue())
+        self.assertEqual(rc, 0, report)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["failures"], [])
+        self.assertGreater(report["route_emitted_words"], 0)
+        # The committed fixture executes VFPU memory operations; the route census
+        # must see them (and only boundary-free ones), not an empty scan.
+        self.assertGreaterEqual(report["route_words"], 1)
 
 
 if __name__ == "__main__":
