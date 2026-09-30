@@ -302,7 +302,7 @@ def _pspsdk_license() -> bytes:
 def _package_fingerprint(demo: dict[str, object], prx: Path) -> str:
     digest = hashlib.sha256()
     inputs = [
-        ROOT / "Makefile", ROOT / "copy_build_assets.ps1",
+        ROOT / "Makefile", ROOT / "tools" / "copy_build_assets.ps1",
         ROOT / "tools" / "analyze.py", ROOT / "tools" / "codegen.py",
         ROOT / "tools" / "imports.py", ROOT / "tools" / "title_codegen_plan.py",
         ROOT / "tools" / "title_runtime_config.py", ROOT / "tools" / "build_profile.py",

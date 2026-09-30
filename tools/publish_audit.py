@@ -181,8 +181,8 @@ DEBT_BUDGETS: dict[str, int] = {
 }
 
 POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
-    "copy_build_assets.ps1": 1,
     "nk_manager.ps1": 25,
+    "tools/copy_build_assets.ps1": 1,
     "tools/nk_safety.ps1": 11,
     "tools/test_manager_safety.ps1": 3,
     "tools/test_visual_oracle.ps1": 3,
@@ -1846,7 +1846,7 @@ def _default_provenance(
     if rel_path.startswith(".github/") or rel_path.startswith(".") or rel_path in (".gitignore", ".gitattributes", ".clang-format", ".editorconfig", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml"):
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", "configuration", "included", policy_public
 
-    if rel_path.startswith(("src/", "tools/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1"):
+    if rel_path.startswith(("src/", "tools/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "nk.ps1", "nk_manager.ps1"):
         gen_kind = "documentation" if (rel_path.startswith("docs/") or ext == ".md") else ("data" if ext in (".json", ".jsonc", ".dat") else ("script" if ext in (".ps1", ".sh") else "source"))
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", gen_kind, "included", policy_public
 

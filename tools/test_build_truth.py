@@ -1759,7 +1759,7 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_copy_build_assets_script_has_toolchain_discovery_fallback(self) -> None:
         """copy_build_assets.ps1 must attempt compiler toolchain discovery if SDL3.dll is absent from local dirs."""
-        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (ROOT / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("Get-Command gcc", script_text)
         self.assertIn("SDL3.dll", script_text)
 
@@ -1842,19 +1842,99 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_copy_build_assets_supports_explicit_sdl3_dll_path(self) -> None:
         """copy_build_assets.ps1 must declare Sdl3DllPath parameter and Makefile must pass SDL3_DLL."""
-        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (ROOT / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("[string]$Sdl3DllPath", script_text)
         self.assertIn("Copy-Item $Sdl3DllPath", script_text)
 
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("-Sdl3DllPath \"$(SDL3_DLL)\"", makefile_text)
 
+    def test_copy_build_assets_helper_is_a_tools_script_everywhere_it_is_named(self) -> None:
+        """The post-link asset copy helper is tools/copy_build_assets.ps1.
+
+        The Makefile step, the publication policy and the PowerShell debt
+        inventory are the three places that resolve the helper by path. If any
+        of them still names the repository root, `make compile` stops staging
+        SDL3, the runtime DLLs and font/ without saying so.
+        """
+        helper = ROOT / "tools" / "copy_build_assets.ps1"
+        self.assertTrue(helper.is_file(), "tools/copy_build_assets.ps1 is missing")
+        self.assertFalse(
+            (ROOT / "copy_build_assets.ps1").exists(),
+            "the helper still exists at the repository root",
+        )
+
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn(
+            "$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1",
+            makefile_text,
+        )
+        self.assertNotIn(
+            "-File copy_build_assets.ps1", makefile_text,
+            "the Makefile asset copy step still names the repository root",
+        )
+
+        policy = json.loads(
+            (ROOT / "assets" / "public_source_profile.json").read_text(encoding="utf-8"))
+        self.assertIn("tools/copy_build_assets.ps1", policy["include_paths"])
+        self.assertNotIn(
+            "copy_build_assets.ps1", policy["include_paths"],
+            "the public source profile still publishes the repository root path",
+        )
+
+        audit_text = (ROOT / "tools" / "publish_audit.py").read_text(encoding="utf-8")
+        self.assertIn('"tools/copy_build_assets.ps1": 1,', audit_text)
+
+    def test_no_tracked_file_names_the_root_level_copy_build_assets_path(self) -> None:
+        """A relocation is complete only when nothing still names the old path.
+
+        Every tracked mention of the helper must carry its `tools/` directory,
+        so a reader and every tool that resolves the path land on the same
+        file. The generated inventories are the only records allowed to lag;
+        the maintainer regenerates those with provenance-refresh.
+        """
+        # A mention is qualified when its `tools` directory component sits
+        # immediately before it, in plain path form (`tools/...`) or in the
+        # `ROOT / "tools" / "..."` form the tree-wide Python tests use.
+        mention = re.compile(r"copy_build_assets\.ps1")
+        qualified = re.compile(r"tools[\"'\\ /]*$")
+        # The generated inventories are rewritten by provenance-refresh, and this
+        # module has to name the old path in order to assert that nothing else does.
+        allowed = {
+            "assets/public_provenance_ledger.json",
+            "PUBLIC_EXPORT.json",
+            "docs/provenance/MODIFIED_FILE_NOTICES.json",
+            "tools/test_build_truth.py",
+        }
+        if shutil.which("git") is None:
+            self.skipTest("git is required to enumerate the tracked tree")
+        listing = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            capture_output=True, text=True, check=True).stdout
+        offenders = []
+        for entry in sorted(filter(None, listing.split("\0"))):
+            if entry in allowed:
+                continue
+            try:
+                text = (ROOT / entry).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for match in mention.finditer(text):
+                window = text[max(0, match.start() - 32):match.start()]
+                if not qualified.search(window):
+                    offenders.append(entry)
+                    break
+        self.assertEqual(
+            offenders, [],
+            "these tracked files still name the root-level copy_build_assets.ps1 path",
+        )
+
     def test_windows_package_build_uses_builtin_windows_powershell(self) -> None:
         """A consumer build must not need a separately installed PowerShell 7."""
         makefile_text = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
-        script_text = (Path(__file__).resolve().parents[1] / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (Path(__file__).resolve().parents[1] / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("POWERSHELL ?= powershell.exe", makefile_text)
-        self.assertIn("$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1", makefile_text)
+        self.assertIn("$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1", makefile_text)
         self.assertIn("#requires -Version 5.1", script_text)
 
     def test_runtime_profile_records_sdl3_identity(self) -> None:
