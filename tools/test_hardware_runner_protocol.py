@@ -49,10 +49,22 @@ from psp_oracle.run_psplink import (
     _campaign_host0_log_path,
     _parse_campaign_records,
     _parse_usbipd_psplink_devices,
+    _snapshot_host0_output,
+    _wait_for_host0_output,
     _verify_psplink_shell,
     PsplinkProcessTransport,
+    UnsafeHost0OutputError,
     _run_command,
 )
+from psp_oracle import run_psplink as run_psplink_module
+from psp_oracle.parse_golden import (
+    CACHE_SPEC,
+    EXPECTED_CELLS as FPU_EXPECTED_CELLS,
+    IO_SPEC,
+    MBX_DELETE_WAIT_EXPECTED_FIELDS,
+    MBX_DELETE_WAIT_SPEC,
+)
+from psp_oracle.protocol import ProtocolError as PspProtocolError
 
 MAGIC = b"NR"
 VERSION = 2
@@ -123,6 +135,80 @@ RUNNER_SHA = _sha(b"resident-oracle-runner v1 synthetic")
 SOURCE_COMMIT = "c75c303a1e6885eb6f8bb6875afde527d72ab688"
 EPOCH = "epoch-0001"
 
+CAMPAIGN_META = (
+    "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
+    "binary_sha256=" + "0" * 64 + " source_commit=" + "0" * 40 + " fixture=test\n"
+)
+
+
+def _campaign_fpu_line(case_id: str) -> str:
+    if case_id == "fpu-boot-fcr31":
+        return (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 "
+            f"case_id={case_id} status=PASS result=0x00000e00 "
+            "out0=0x00000e00 out1=0x0000001c out2=0x00000000\n"
+        )
+    if case_id == "fpu-ftz-contrast":
+        return (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 "
+            f"case_id={case_id} status=PASS result=0x00000000 "
+            "out0=0x00000000 out1=0x00000000 out2=0x00000000 out3=0x01000000\n"
+        )
+    if case_id == "fpu-done":
+        return (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 "
+            f"case_id={case_id} status=PASS result=0x00000000 out0=0x0000000f\n"
+        )
+    return (
+        "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FPU-001 "
+        f"case_id={case_id} status=PASS result=0x00000000 out0=0x00000000\n"
+    )
+
+
+def _campaign_spec_line(spec, case_id: str) -> str:
+    if case_id == spec.terminal_case:
+        out0 = spec.terminal_count
+    else:
+        out0 = 1
+    suffix = f"out0=0x{out0:08x}"
+    if case_id != spec.terminal_case:
+        suffix += " out1=0x00000002"
+    return (
+        f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={case_id} "
+        f"status=PASS result=0x00000000 {suffix}\n"
+    )
+
+
+def _campaign_fpu_stream(cells=FPU_EXPECTED_CELLS) -> str:
+    return CAMPAIGN_META + "".join(_campaign_fpu_line(cell) for cell in cells)
+
+
+def _campaign_spec_stream(spec, cases=None) -> str:
+    selected = spec.ordered_cases if cases is None else cases
+    return CAMPAIGN_META + "".join(_campaign_spec_line(spec, case) for case in selected)
+
+
+def _campaign_mbx_delete_wait_line(case_id: str) -> str:
+    test_id = MBX_DELETE_WAIT_SPEC.test_id
+    fields = MBX_DELETE_WAIT_EXPECTED_FIELDS[case_id]
+    line = (
+        f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} case_id={case_id} "
+        "status=PASS result=0x00000000"
+    )
+    if case_id == MBX_DELETE_WAIT_SPEC.terminal_case:
+        return line + f" out0=0x{MBX_DELETE_WAIT_SPEC.terminal_count:08x}\n"
+    count = len(fields) - 1
+    return line + " " + " ".join(
+        f"out{index}=0x{index + 1:08x}" for index in range(count)
+    ) + "\n"
+
+
+def _campaign_mbx_delete_wait_stream(cases=None) -> str:
+    selected = MBX_DELETE_WAIT_SPEC.ordered_cases if cases is None else cases
+    return CAMPAIGN_META + "".join(
+        _campaign_mbx_delete_wait_line(case_id) for case_id in selected
+    )
+
 
 class SimulatedPsplinkTransport:
     """Command-level fake for the real PSPSH adapter; never touches hardware."""
@@ -140,6 +226,7 @@ class SimulatedPsplinkTransport:
         reset_returncode: int = 0,
         stdout_record_cases: set[str] | None = None,
         stdout_result_overrides: dict[str, str] | None = None,
+        host0_log_contents: dict[str, str] | None = None,
         write_host0_logs: bool = True,
         stale_host0_mtime: bool = False,
     ):
@@ -154,6 +241,7 @@ class SimulatedPsplinkTransport:
         self.reset_returncode = reset_returncode
         self.stdout_record_cases = stdout_record_cases or set()
         self.stdout_result_overrides = stdout_result_overrides or {}
+        self.host0_log_contents = host0_log_contents or {}
         self.write_host0_logs = write_host0_logs
         self.stale_host0_mtime = stale_host0_mtime
         self.post_case_ver_failed = False
@@ -164,6 +252,7 @@ class SimulatedPsplinkTransport:
         self.commands: list[tuple[str, float]] = []
         self.host0_root: Path | None = None
         self.stale_log_present_at_load = False
+        self.host0_record_counts_at_unload: dict[str, int] = {}
         self.current_case = ""
         self.waiting_for_device = False
         self.transport_recoveries = 0
@@ -253,6 +342,12 @@ class SimulatedPsplinkTransport:
                     "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-TRANSPORT-001 "
                     "case_id=host0-write-readback status=PASS result=0x0\n"
                 )
+            elif case_id == "model-profile":
+                result_record = (
+                    "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SYSTEM-001 "
+                    "case_id=model-profile status=PASS result=0x3 "
+                    "out0=0x3 out1=0x06060110 out2=0xde\n"
+                )
             else:
                 result_record = (
                     "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=" + case_id
@@ -267,7 +362,10 @@ class SimulatedPsplinkTransport:
             if self.write_host0_logs and self.host0_root is not None:
                 assert host0_log is not None
                 host0_log.write_text(
-                    metadata_record + result_record, encoding="utf-8"
+                    self.host0_log_contents.get(
+                        case_id, metadata_record + result_record
+                    ),
+                    encoding="utf-8",
                 )
                 if self.stale_host0_mtime:
                     os.utime(host0_log, ns=(1, 1))
@@ -277,6 +375,13 @@ class SimulatedPsplinkTransport:
                 + stdout_records
             ), "", "PROCESS_EXITED"
         if command == "modstun 0x04280001":
+            if self.host0_root is not None and self.current_case:
+                host0_log = _campaign_host0_log_path(self.host0_root, self.current_case)
+                if host0_log.is_file():
+                    self.host0_record_counts_at_unload[self.current_case] = sum(
+                        line.startswith("NAKAGAWA_PSP_TEST ")
+                        for line in host0_log.read_text(encoding="utf-8").splitlines()
+                    )
             if self.fail_modstun and self.current_case != "transport-write":
                 return 1, "Module Stop/Unload failed\n", "", "PROCESS_EXITED"
             return 0, "Module Stop/Unload 0x00000000/0x04280001 Status 0xDEADBEEF\n", "", "PROCESS_EXITED"
@@ -701,7 +806,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="runner-sim-", dir=fixture_dir) as scratch_name:
             scratch = Path(scratch_name)
             cases = []
-            for case_id in ("transport-write", "probe_a", "probe_b"):
+            for case_id in ("transport-write", "model-profile"):
                 binary = scratch / f"{case_id}.prx"
                 binary.write_bytes(case_id.encode())
                 cases.append(CampaignCase(case_id, binary, 1.25))
@@ -720,7 +825,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertIsNone(report["terminal_reason"])
         self.assertEqual(
             [item["CASE_ID"] for item in report["envelopes"]],
-            ["transport-write", "probe_a", "probe_b"],
+            ["transport-write", "model-profile"],
         )
         for envelope in report["envelopes"]:
             self.assertEqual(envelope["CONSOLE_MODEL"], "PSP-3000-04g")
@@ -729,11 +834,408 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             self.assertTrue(envelope["ACCEPTANCE_ELIGIBLE"])
             self.assertNotIn("SERIAL", " ".join(envelope).upper())
         commands = [command for command, _timeout in transport.commands]
-        self.assertEqual(commands.count("modstun 0x04280001"), 3)
-        self.assertEqual(commands.count("modinfo 0x04280001"), 3)
+        self.assertEqual(commands.count("modstun 0x04280001"), 2)
+        self.assertEqual(commands.count("modinfo 0x04280001"), 2)
         self.assertEqual(
             [timeout for command, timeout in transport.commands if command.startswith("ldstart")],
-            [1.25, 1.25, 1.25],
+            [1.25, 1.25],
+        )
+
+    def test_campaign_waits_for_complete_fpu_host0_stream_before_unload(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-fpu-completion-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "fpu-vector"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+
+            partial = _campaign_fpu_stream(FPU_EXPECTED_CELLS[:5])
+            complete = _campaign_fpu_stream().replace(
+                "case_id=fpu-cvt-rm0 status=PASS",
+                "case_id=fpu-cvt-rm0 status=FAIL",
+                1,
+            )
+            transport = SimulatedPsplinkTransport(
+                stdout_record_cases={"fpu-vector"},
+                host0_log_contents={"fpu-vector": partial},
+            )
+            transport.host0_root = scratch
+            wait_observations: list[tuple[str, ...]] = []
+            real_wait = run_psplink_module._wait_for_host0_output
+
+            def finish_fpu_stream_during_wait(
+                path, timeout, *, not_before_ns=None, ready, include_mtime=False
+            ):
+                if path.name == "fpu_vector_log.txt":
+                    self.assertFalse(ready(path.read_text(encoding="utf-8")))
+                    wait_observations.append(
+                        tuple(command for command, _ in transport.commands)
+                    )
+                    # Model host0 finishing its deferred write only after the
+                    # production runner has observed and rejected the prefix.
+                    path.write_text(complete, encoding="utf-8")
+                return real_wait(
+                    path,
+                    timeout,
+                    not_before_ns=not_before_ns,
+                    ready=ready,
+                    include_mtime=include_mtime,
+                )
+
+            with patch(
+                "psp_oracle.run_psplink._wait_for_host0_output",
+                side_effect=finish_fpu_stream_during_wait,
+            ):
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000-04g",
+                    source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run(cases)
+
+        self.assertEqual(len(wait_observations), 1)
+        self.assertEqual(wait_observations[0][-1], "ldstart host0:/fpu-vector.prx")
+        fpu_start = wait_observations[0].index("ldstart host0:/fpu-vector.prx")
+        self.assertFalse(
+            any(command.startswith("modstun ") for command in wait_observations[0][fpu_start + 1 :])
+        )
+        self.assertEqual(transport.host0_record_counts_at_unload["fpu-vector"], 16)
+        envelope = report["envelopes"][1]
+        self.assertEqual(envelope["STREAM_COMPLETENESS_CONTRACT"], "strict-golden-sequence")
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertIn("status=FAIL", envelope["RAW_RESULT"])
+        self.assertIn("one or more scalar result records did not pass", envelope["ACCEPTANCE_BLOCKERS"])
+
+    def test_campaign_incomplete_fpu_timeout_still_unloads_and_stays_unqualified(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-fpu-timeout-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id, timeout in (("transport-write", 1.0), ("fpu-vector", 0.001)):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, timeout))
+
+            transport = SimulatedPsplinkTransport(
+                stdout_record_cases={"fpu-vector"},
+                host0_log_contents={
+                    "fpu-vector": _campaign_fpu_stream(FPU_EXPECTED_CELLS[:5])
+                },
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases)
+
+        envelope = report["envelopes"][1]
+        commands = [command for command, _timeout in transport.commands]
+        fpu_start = commands.index("ldstart host0:/fpu-vector.prx")
+        unload = commands.index("modstun 0x04280001", fpu_start + 1)
+        self.assertLess(fpu_start, unload)
+        self.assertEqual(transport.host0_record_counts_at_unload["fpu-vector"], 5)
+        self.assertEqual(envelope["STREAM_COMPLETENESS_CONTRACT"], "strict-golden-sequence")
+        self.assertEqual(envelope["QUALIFICATION_STATUS"], "UNQUALIFIED")
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertTrue(
+            any(
+                "did not become complete before probe unload" in blocker
+                for blocker in envelope["QUALIFICATION_BLOCKERS"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "strict protocol validation" in blocker
+                for blocker in envelope["QUALIFICATION_BLOCKERS"]
+            )
+        )
+
+    def test_campaign_rejects_nonregular_host0_result_before_reading(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-unsafe-host0-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "fpu-vector"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+
+            transport = SimulatedPsplinkTransport(stdout_record_cases={"fpu-vector"})
+            transport.host0_root = scratch
+            real_wait = run_psplink_module._wait_for_host0_output
+            unsafe_read_attempts: list[Path] = []
+            original_read_bytes = Path.read_bytes
+
+            def replace_result_with_directory(path, timeout, **kwargs):
+                if path.name != "fpu_vector_log.txt":
+                    return real_wait(path, timeout, **kwargs)
+                path.unlink()
+                path.mkdir()
+                (path / "unsafe-target.txt").write_text(
+                    "must not be read", encoding="utf-8"
+                )
+
+                def guarded_read(candidate):
+                    if candidate == path:
+                        unsafe_read_attempts.append(candidate)
+                    return original_read_bytes(candidate)
+
+                try:
+                    with patch.object(Path, "read_bytes", new=guarded_read):
+                        return real_wait(path, timeout, **kwargs)
+                except UnsafeHost0OutputError:
+                    raise
+                raise AssertionError("unsafe host0 path should be rejected by the wait")
+
+            with patch(
+                "psp_oracle.run_psplink._wait_for_host0_output",
+                side_effect=replace_result_with_directory,
+            ):
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000-04g",
+                    source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run(cases)
+
+        envelope = report["envelopes"][1]
+        commands = [command for command, _timeout in transport.commands]
+        fpu_start = commands.index("ldstart host0:/fpu-vector.prx")
+        self.assertIn("modstun 0x04280001", commands[fpu_start + 1 :])
+        self.assertEqual(unsafe_read_attempts, [])
+        self.assertEqual(envelope["QUALIFICATION_STATUS"], "UNQUALIFIED")
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertIn("not a regular file", " ".join(envelope["QUALIFICATION_BLOCKERS"]))
+        self.assertNotIn("must not be read", envelope["RAW_RESULT"])
+
+    def test_host0_wait_rejects_symlink_before_read(self):
+        with tempfile.TemporaryDirectory(prefix="runner-host0-symlink-") as scratch_name:
+            scratch = Path(scratch_name)
+            target = scratch / "target.txt"
+            target.write_text("private-target-marker", encoding="utf-8")
+            link = scratch / "result.txt"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symbolic links are unavailable in this environment: {exc}")
+
+            opens: list[Path] = []
+            original_open = os.open
+
+            def guarded_open(candidate, flags, *args, **kwargs):
+                if Path(candidate) == link:
+                    opens.append(Path(candidate))
+                    raise AssertionError("unsafe host0 symlink must not be opened")
+                return original_open(candidate, flags, *args, **kwargs)
+
+            with patch("psp_oracle.run_psplink.os.open", side_effect=guarded_open):
+                with self.assertRaises(UnsafeHost0OutputError):
+                    _wait_for_host0_output(
+                        link, 0.01, ready=lambda _text: True
+                    )
+            self.assertEqual(opens, [])
+
+    def test_host0_wait_rejects_replacement_with_pre_run_mtime(self):
+        with tempfile.TemporaryDirectory(prefix="runner-host0-replacement-") as scratch_name:
+            scratch = Path(scratch_name)
+            result_path = scratch / "result.txt"
+            replacement_path = scratch / "replacement.txt"
+            result_path.write_text("complete stable result\n", encoding="utf-8")
+            run_started_ns = result_path.stat().st_mtime_ns
+            replacement_path.write_text("complete stable result\n", encoding="utf-8")
+            os.utime(replacement_path, ns=(1, 1))
+            replaced = False
+
+            def swap_in_stale_file(_delay):
+                nonlocal replaced
+                if not replaced:
+                    os.replace(replacement_path, result_path)
+                    replaced = True
+
+            with patch("psp_oracle.run_psplink.time.sleep", side_effect=swap_in_stale_file):
+                with self.assertRaises(UnsafeHost0OutputError):
+                    _wait_for_host0_output(
+                        result_path,
+                        0.01,
+                        not_before_ns=run_started_ns,
+                        ready=lambda _text: True,
+                    )
+            self.assertTrue(replaced)
+
+    def test_host0_wait_rejects_replacement_between_stat_and_open(self):
+        with tempfile.TemporaryDirectory(prefix="runner-host0-open-race-") as scratch_name:
+            scratch = Path(scratch_name)
+            result_path = scratch / "result.txt"
+            replacement_path = scratch / "replacement.txt"
+            result_path.write_text("original complete result\n", encoding="utf-8")
+            replacement_path.write_text("replacement complete result\n", encoding="utf-8")
+            replaced = False
+            original_open = os.open
+
+            def replace_before_open(path, flags, *args, **kwargs):
+                nonlocal replaced
+                if Path(path) == result_path and not replaced:
+                    os.replace(replacement_path, result_path)
+                    replaced = True
+                return original_open(path, flags, *args, **kwargs)
+
+            with patch("psp_oracle.run_psplink.os.open", side_effect=replace_before_open):
+                with self.assertRaises(UnsafeHost0OutputError):
+                    _wait_for_host0_output(
+                        result_path, 0.1, ready=lambda _text: True
+                    )
+            self.assertTrue(replaced)
+
+    def test_host0_snapshot_rejects_replacement_between_stat_and_open(self):
+        with tempfile.TemporaryDirectory(prefix="runner-host0-snapshot-race-") as scratch_name:
+            scratch = Path(scratch_name)
+            result_path = scratch / "result.txt"
+            replacement_path = scratch / "replacement.txt"
+            result_path.write_text("original partial result\n", encoding="utf-8")
+            replacement_path.write_text("replacement partial result\n", encoding="utf-8")
+            replaced = False
+            original_open = os.open
+
+            def replace_before_open(path, flags, *args, **kwargs):
+                nonlocal replaced
+                if Path(path) == result_path and not replaced:
+                    os.replace(replacement_path, result_path)
+                    replaced = True
+                return original_open(path, flags, *args, **kwargs)
+
+            with patch("psp_oracle.run_psplink.os.open", side_effect=replace_before_open):
+                text, mtime_ns, problem = _snapshot_host0_output(result_path)
+            self.assertTrue(replaced)
+            self.assertIsNone(text)
+            self.assertIsNone(mtime_ns)
+            self.assertIn("changed during capture", problem or "")
+
+    def test_unregistered_campaign_row_is_never_a_complete_stream(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        record = (
+            CAMPAIGN_META
+            + "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC "
+            "case_id=future-case status=PASS result=0x00000001\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="runner-unregistered-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "future-case"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 0.01))
+
+            transport = SimulatedPsplinkTransport(
+                stdout_record_cases={"future-case"},
+                host0_log_contents={"future-case": record},
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(
+            envelope["STREAM_COMPLETENESS_CONTRACT"],
+            "unregistered-no-completion-contract",
+        )
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertTrue(
+            any(
+                "completion contract for future-case is unregistered (in the works: issue #352)"
+                in blocker
+                for blocker in envelope["QUALIFICATION_BLOCKERS"]
+            )
+        )
+
+    def test_campaign_known_stream_contracts_reject_truncation_and_wrong_single_row(self):
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(
+                _campaign_fpu_stream(FPU_EXPECTED_CELLS[:5]), "fpu-vector"
+            )
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(
+                _campaign_spec_stream(
+                    CACHE_SPEC, CACHE_SPEC.ordered_cases[:-1]
+                ),
+                "cache-alias",
+            )
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(
+                _campaign_spec_stream(IO_SPEC, IO_SPEC.ordered_cases[:-1]), "io-matrix"
+            )
+
+        transport_row = (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-TRANSPORT-001 "
+            "case_id=host0-write-readback status=PASS result=0x0\n"
+        )
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(CAMPAIGN_META + transport_row + transport_row, "transport-write")
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(
+                CAMPAIGN_META
+                + "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=model-profile "
+                "status=PASS result=0x0\n",
+                "model-profile",
+            )
+        unregistered = (
+            CAMPAIGN_META
+            + "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC "
+            "case_id=future-case status=PASS result=0x00000001\n"
+        )
+        self.assertEqual(
+            run_psplink_module._campaign_completeness_contract("future-case"),
+            "unregistered-no-completion-contract",
+        )
+        self.assertFalse(
+            run_psplink_module._campaign_stream_complete(unregistered, "future-case")
+        )
+
+        self.assertEqual(
+            len(_parse_campaign_records(_campaign_fpu_stream(), "fpu-vector").results),
+            16,
+        )
+        self.assertEqual(
+            len(_parse_campaign_records(_campaign_spec_stream(CACHE_SPEC), "cache-alias").results),
+            CACHE_SPEC.record_count,
+        )
+        self.assertEqual(
+            len(_parse_campaign_records(_campaign_spec_stream(IO_SPEC), "io-matrix").results),
+            IO_SPEC.record_count,
+        )
+
+    def test_campaign_mbx_delete_wait_requires_exact_complete_stream(self):
+        complete = _campaign_mbx_delete_wait_stream()
+        truncated = _campaign_mbx_delete_wait_stream(
+            MBX_DELETE_WAIT_SPEC.ordered_cases[:-1]
+        )
+
+        self.assertEqual(
+            run_psplink_module._campaign_completeness_contract("mbx-delete-wait"),
+            "strict-golden-sequence",
+        )
+        self.assertTrue(
+            run_psplink_module._campaign_stream_complete(
+                complete, "mbx-delete-wait"
+            )
+        )
+        self.assertFalse(
+            run_psplink_module._campaign_stream_complete(
+                truncated, "mbx-delete-wait"
+            )
+        )
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(truncated, "mbx-delete-wait")
+        self.assertEqual(
+            len(_parse_campaign_records(complete, "mbx-delete-wait").results),
+            MBX_DELETE_WAIT_SPEC.record_count,
         )
 
     def test_campaign_host0_only_records_qualify_without_stdout_records(self):
@@ -885,7 +1387,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="runner-timeout-", dir=fixture_dir) as scratch_name:
             scratch = Path(scratch_name)
             cases = []
-            for case_id in ("transport-write", "timeout", "good"):
+            for case_id in ("transport-write", "timeout", "model-profile"):
                 binary = scratch / f"{case_id}.prx"
                 binary.write_bytes(case_id.encode())
                 cases.append(CampaignCase(case_id, binary, 0.75))
