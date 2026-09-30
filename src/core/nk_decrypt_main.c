@@ -24,6 +24,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#endif
+
 #include "nk_psp_aes.h"
 #include "nk_psp_container.h"
 #include "nk_psp_crypto.h"
@@ -31,6 +35,31 @@
 #include "nk_psp_sha1.h"
 
 /* --------------------------- helpers --------------------------------- */
+
+/* --in/--out/--key-file name paths under the caller's per-user data root, so
+ * a profile directory holding non-ASCII characters (an accented given name, a
+ * Japanese user name) is a legal argument the narrow CRT would re-read in the
+ * active ANSI code page. This boundary is compiled by
+ * tools/nk_core/decrypt_tool.py from a fixed source list that does not include
+ * the platform layer, so the wide conversion lives here. */
+static FILE *decrypt_fopen(const char *path, const char *mode)
+{
+#if defined(_WIN32) || defined(_WIN64)
+    wchar_t wpath[32768];
+    wchar_t wmode[32];
+    if (path == NULL || mode == NULL) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath,
+                            (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0)
+        return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wmode,
+                            (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0)
+        return NULL;
+    return _wfopen(wpath, wmode);
+#else
+    if (path == NULL || mode == NULL) return NULL;
+    return fopen(path, mode);
+#endif
+}
 
 static void to_hex(const u8 *bytes, size_t n, char *out)
 {
@@ -45,7 +74,7 @@ static void to_hex(const u8 *bytes, size_t n, char *out)
 
 static int read_file(const char *path, u8 **data, size_t *size)
 {
-    FILE *f = fopen(path, "rb");
+    FILE *f = decrypt_fopen(path, "rb");
     long len;
     u8 *buf;
     size_t got;
@@ -66,7 +95,7 @@ static int read_file(const char *path, u8 **data, size_t *size)
 
 static int write_file(const char *path, const u8 *data, size_t size)
 {
-    FILE *f = fopen(path, "wb");
+    FILE *f = decrypt_fopen(path, "wb");
     size_t put;
     if (f == NULL) return -1;
     put = fwrite(data, 1, size, f);
@@ -76,7 +105,7 @@ static int write_file(const char *path, const u8 *data, size_t size)
 
 static int file_present(const char *path)
 {
-    FILE *f = fopen(path, "rb");
+    FILE *f = decrypt_fopen(path, "rb");
     if (f == NULL) return 0;
     fclose(f);
     return 1;

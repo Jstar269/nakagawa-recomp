@@ -26,6 +26,17 @@ typedef enum {
 int nk_fseek64(FILE *f, int64_t offset, int whence);
 int64_t nk_ftell64(FILE *f);
 
+/* UTF-8 file primitives. A per-user profile directory holding non-ASCII
+ * characters (an accented given name, a Japanese user name) is a legal path
+ * that the narrow CRT reinterprets in the active ANSI code page, so every host
+ * file API reached through a user-data or install path goes through these.
+ * Win32 converts strictly (invalid UTF-8 fails rather than opening a path
+ * where the bad bytes became U+FFFD); POSIX file names are already UTF-8 bytes,
+ * so these are the plain CRT calls. */
+FILE *nk_fopen_utf8(const char *path, const char *mode);
+int nk_remove_utf8(const char *path);
+int nk_rename_utf8(const char *from, const char *to);
+
 /* Filesystem and path utilities (all paths in UTF-8) */
 char nk_platform_path_separator(void);
 bool nk_platform_file_exists(const char *path);

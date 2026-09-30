@@ -447,23 +447,6 @@ static bool resolution_scale_valid(int scale) {
     return scale == 1 || scale == 2 || scale == 3 || scale == 4;
 }
 
-/* Settings paths come from the per-user config directory, which is UTF-8 and
- * may contain non-ASCII characters; the narrow CRT fopen would misread them on
- * Windows, so open through the wide API there. */
-static FILE *settings_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    WCHAR wpath[32768];
-    WCHAR wmode[16];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 32768) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wmode, 16) <= 0) {
-        return NULL;
-    }
-    return _wfopen(wpath, wmode);
-#else
-    return fopen(path, mode);
-#endif
-}
-
 static bool fps_cap_valid(int cap) {
     return cap == 30 || cap == 60 || cap == 0;
 }
@@ -502,7 +485,10 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         return NK_OK;
     }
 
-    FILE *f = settings_fopen(target, "rb");
+    /* Settings, decrypted-module, font and key paths all come from the
+     * per-user data directory, which is UTF-8 and may hold non-ASCII
+     * characters; the narrow CRT would misread them on Windows. */
+    FILE *f = nk_fopen_utf8(target, "rb");
     if (!f) {
         player_app_settings_init_default(&app->settings);
         snprintf(app->settings_notice, sizeof(app->settings_notice),
@@ -642,7 +628,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
         if (!nk_platform_dir_exists(parent)) nk_platform_mkdir_p(parent);
     }
 
-    FILE *f = settings_fopen(tmp_path, "wb");
+    FILE *f = nk_fopen_utf8(tmp_path, "wb");
     if (!f) return NK_ERROR_IO;
 
     fprintf(f, "{\n");
@@ -657,7 +643,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
 
     if (fflush(f) != 0) {
         fclose(f);
-        remove(tmp_path);
+        nk_remove_utf8(tmp_path);
         return NK_ERROR_IO;
     }
 
@@ -674,7 +660,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     WCHAR wtmp[32768], wtarget[32768];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 32768) <= 0 ||
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, target, -1, wtarget, 32768) <= 0) {
-        DeleteFileA(tmp_path);
+        nk_remove_utf8(tmp_path);
         return NK_ERROR_IO;
     }
 
@@ -1662,7 +1648,7 @@ static bool player_decrypted_eboot_paths(const char *runtime_root,
 
 static bool player_is_usable_mips_elf32(const char *path) {
     unsigned char header[52];
-    FILE *file = fopen(path, "rb");
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return false;
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
@@ -1745,7 +1731,7 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
                                       directory_size, elf_path, elf_path_size)) {
         return PLAYER_DECRYPTED_EBOOT_PATH_INVALID;
     }
-    FILE *file = fopen(elf_path, "rb");
+    FILE *file = nk_fopen_utf8(elf_path, "rb");
     if (!file) return PLAYER_DECRYPTED_EBOOT_MISSING;
     fclose(file);
     return player_is_usable_mips_elf32(elf_path)
@@ -1789,7 +1775,7 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
         snprintf(key_path, sizeof(key_path), "%s/keys/psp-keyfile.json",
                  runtime_root);
     }
-    file = fopen(key_path, "rb");
+    file = nk_fopen_utf8(key_path, "rb");
     if (!file) return PLAYER_BOUNDARY_NO_KEYFILE;
     fclose(file);
 
@@ -1800,24 +1786,24 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
     }
     snprintf(stage_in, sizeof(stage_in), "%s/%s.in.stage", stage_dir, out_name);
     snprintf(stage_out, sizeof(stage_out), "%s/%s.stage", stage_dir, out_name);
-    remove(stage_in);
-    remove(stage_out);
+    nk_remove_utf8(stage_in);
+    nk_remove_utf8(stage_out);
 
     if (nk_iso_extract_file(iso_path, disc_rel_path, stage_in) != NK_OK) {
         snprintf(detail, detail_size, "the disc copy could not be extracted");
-        remove(stage_in);
+        nk_remove_utf8(stage_in);
         return PLAYER_BOUNDARY_FAILED;
     }
-    file = fopen(stage_in, "rb");
+    file = nk_fopen_utf8(stage_in, "rb");
     if (file == NULL) {
         snprintf(detail, detail_size, "the disc copy could not be read");
-        remove(stage_in);
+        nk_remove_utf8(stage_in);
         return PLAYER_BOUNDARY_FAILED;
     }
     if (fseek(file, 0, SEEK_END) != 0 || (file_size = ftell(file)) <= 0 ||
         file_size > (long)(64u * 1024u * 1024u) || fseek(file, 0, SEEK_SET) != 0) {
         fclose(file);
-        remove(stage_in);
+        nk_remove_utf8(stage_in);
         snprintf(detail, detail_size, "the disc copy has an implausible size");
         return PLAYER_BOUNDARY_FAILED;
     }
@@ -1826,12 +1812,12 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
     if (input == NULL || fread(input, 1, input_size, file) != input_size) {
         fclose(file);
         free(input);
-        remove(stage_in);
+        nk_remove_utf8(stage_in);
         snprintf(detail, detail_size, "the disc copy could not be buffered");
         return PLAYER_BOUNDARY_FAILED;
     }
     fclose(file);
-    remove(stage_in);
+    nk_remove_utf8(stage_in);
 
     ks = nk_keystore_create();
     if (ks == NULL) {
@@ -1864,24 +1850,24 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
         snprintf(detail, detail_size, "the per-title decrypted folder is unavailable");
         return PLAYER_BOUNDARY_FAILED;
     }
-    file = fopen(stage_out, "wb");
+    file = nk_fopen_utf8(stage_out, "wb");
     if (file == NULL || fwrite(plain, 1, plain_size, file) != plain_size) {
         if (file != NULL) fclose(file);
         free(plain);
-        remove(stage_out);
+        nk_remove_utf8(stage_out);
         snprintf(detail, detail_size, "the decrypted image could not be written");
         return PLAYER_BOUNDARY_FAILED;
     }
     fclose(file);
     free(plain);
-    remove(out_path);
-    if (rename(stage_out, out_path) != 0) {
-        remove(stage_out);
+    nk_remove_utf8(out_path);
+    if (nk_rename_utf8(stage_out, out_path) != 0) {
+        nk_remove_utf8(stage_out);
         snprintf(detail, detail_size, "the decrypted image could not be moved into place");
         return PLAYER_BOUNDARY_FAILED;
     }
     if (!player_is_usable_mips_elf32(out_path)) {
-        remove(out_path);
+        nk_remove_utf8(out_path);
         snprintf(detail, detail_size, "the decrypted image is not a usable MIPS ELF32");
         return PLAYER_BOUNDARY_FAILED;
     }
@@ -2155,7 +2141,7 @@ static void player_check_guest_modules(PlayerApp *app,
             continue;
         }
         /* A user-supplied plain module always wins and is never overwritten. */
-        existing = fopen(module_path, "rb");
+        existing = nk_fopen_utf8(module_path, "rb");
         if (existing != NULL) {
             fclose(existing);
             if (player_is_usable_mips_elf32(module_path)) {

@@ -47,6 +47,32 @@ static bool wide_to_utf8(const WCHAR *wide, char *out_utf8, size_t max_utf8_byte
     return true;
 }
 
+FILE *nk_fopen_utf8(const char *path, const char *mode) {
+    if (!path || !mode) return NULL;
+    WCHAR wpath[32768];
+    WCHAR wmode[32];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0])) ||
+        !utf8_to_wide(mode, wmode, sizeof(wmode) / sizeof(wmode[0]))) return NULL;
+    return _wfopen(wpath, wmode);
+}
+
+int nk_remove_utf8(const char *path) {
+    if (!path || !*path) return -1;
+    WCHAR wpath[32768];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0]))) return -1;
+    return DeleteFileW(wpath) ? 0 : -1;
+}
+
+int nk_rename_utf8(const char *from, const char *to) {
+    if (!from || !*from || !to || !*to) return -1;
+    WCHAR wfrom[32768];
+    WCHAR wto[32768];
+    if (!utf8_to_wide(from, wfrom, sizeof(wfrom) / sizeof(wfrom[0])) ||
+        !utf8_to_wide(to, wto, sizeof(wto) / sizeof(wto[0]))) return -1;
+    return MoveFileExW(wfrom, wto,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+}
+
 bool nk_platform_file_exists(const char *path) {
     if (!path || !*path) return false;
     WCHAR wpath[32768];
