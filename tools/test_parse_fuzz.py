@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import shutil
 import struct
 import tempfile
@@ -336,14 +337,217 @@ class TestParseFuzz(unittest.TestCase):
 class TestParserSafetyInventory(unittest.TestCase):
     """Keep the maintained #319 inventory machine-readable and source-backed."""
 
+    # An inventory anchor is evidence only if a test can still resolve it, so the
+    # grammar is checked here rather than trusted to review. See the
+    # ``anchor_grammar`` object in the inventory for the plain-language form.
+    # The path must be repo-relative (it carries a directory separator): a bare
+    # filename in prose ("manifest.json", "package.json") names a product
+    # document, not a file in this tree, and is not an anchor.
+    ANCHOR = re.compile(
+        r"(?=[A-Za-z0-9_./\\-]*/)"
+        r"[A-Za-z0-9_./\\-]+\.(?:c|h|py|json|yml|yaml|md)"
+        r"(?::(?:\d+(?:@[A-Za-z_][A-Za-z0-9_]*| [A-Za-z_][A-Za-z0-9_]*)?"
+        r"|[A-Za-z_][A-Za-z0-9_./]*))?"
+    )
+    C_DEF = re.compile(
+        r"^(?:static\s+|inline\s+|extern\s+)*(?:const\s+)?"
+        r"(?:unsigned\s+|signed\s+|struct\s+\w+\s*\*?\s*)*"
+        r"[A-Za-z_][A-Za-z0-9_]*\s+\**([A-Za-z_][A-Za-z0-9_]*)\s*\("
+    )
+    PY_DEF = re.compile(r"^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+    SYMBOL_RADIUS = 6
+
+    # A route-coverage claim ("no test executes it", "never reaches the reader")
+    # has to say which kind of test is missing. A seeded-mutation, sanitizer or
+    # fuzzer sentence is a different claim about a different campaign, and a
+    # sentence about what a route does not publish is not a claim about tests.
+    CAMPAIGN_CLAIM = re.compile(
+        r"seeded|mutation|sanitiz|coverage-guided|coverage_guided|fuzz|campaign", re.IGNORECASE
+    )
+    COVERAGE_CLAIM = re.compile(
+        r"(?:\bno\b|\bnot\b|\bnever\b|\bwithout\b)[^.;\"]{0,60}?"
+        r"\b(?:tests?|testing|tested|untested|executed|exercises|exercised|reaches?|calls?)\b",
+        re.IGNORECASE,
+    )
+    DIRECT_QUALIFIER = re.compile(r"\bdirect(?:ly)?\b", re.IGNORECASE)
+    PUBLISH_CLAIM = re.compile(r"\bpublish", re.IGNORECASE)
+    # "<test path> never reaches <symbol>" and its relatives name a reachability
+    # the row then depends on, so it is checked instead of trusted. Only a claim
+    # that names a symbol defined in the row's own sources is checked; a claim
+    # whose object is prose ("do not reach the latter two readers") names nothing
+    # the checker can resolve and is left alone.
+    DOTTED_NAME = r"((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)"
+    UNREACHED_CLAIM = re.compile(
+        rf"(?:never|not)\s+reach(?:es|ed)?\b[^.;\"]*?{DOTTED_NAME}"
+        rf"|no\s+test\s+calls?\b[^.;\"]*?{DOTTED_NAME}",
+        re.IGNORECASE,
+    )
+    PY_CALL = re.compile(r"(?:\.\s*)?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+    CALL_DEPTH = 3
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.inventory = json.loads(
+            (ROOT / "docs" / "PARSER_SAFETY_INVENTORY.json").read_text(encoding="utf-8")
+        )
+        cls.source_cache: dict[str, list[str]] = {}
+
+    @classmethod
+    def source_lines(cls, rel: str) -> list[str]:
+        if rel not in cls.source_cache:
+            cls.source_cache[rel] = (ROOT / rel).read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        return cls.source_cache[rel]
+
+    @classmethod
+    def definition_line(cls, line: str) -> str | None:
+        """Return the name a line *defines*, or None when it defines nothing.
+
+        A C prototype (a line that ends in ``;``) is a declaration, not a
+        definition, so it never satisfies an anchor. This is the only place the
+        "is this a definition" question is answered, so the grammar in the
+        inventory cannot drift away from what the checker actually proves.
+        """
+        match = cls.PY_DEF.match(line)
+        if match is not None:
+            return match.group(2)
+        if line.rstrip().endswith(";"):
+            return None
+        match = cls.C_DEF.match(line)
+        return match.group(1) if match is not None else None
+
+    @classmethod
+    def definition_near(cls, lines: list[str], number: int, symbol: str) -> bool:
+        """True when *symbol* is *defined* within ``SYMBOL_RADIUS`` of *number*.
+
+        A mention is not a definition: the grammar promises a definition site, so
+        a call, a comment, or a prototype on the same lines does not satisfy it.
+        """
+        low = max(1, number - cls.SYMBOL_RADIUS)
+        high = min(len(lines), number + cls.SYMBOL_RADIUS)
+        pattern = re.compile(r"\b" + re.escape(symbol) + r"\b")
+        return any(
+            pattern.search(line) and cls.definition_line(line) == symbol
+            for line in lines[low - 1:high]
+        )
+
+    @classmethod
+    def enclosing_function(cls, rel: str) -> dict[int, str]:
+        """Map each line of *rel* to the name of the function that contains it."""
+        cache = getattr(cls, "_extent_cache", None)
+        if cache is None:
+            cache = cls._extent_cache = {}
+        if rel in cache:
+            return cache[rel]
+        lines = cls.source_lines(rel)
+        starts: list[tuple[int, int, str]] = []
+        for number, line in enumerate(lines, 1):
+            if rel.endswith(".py"):
+                match = cls.PY_DEF.match(line)
+                if match:
+                    starts.append((number, len(match.group(1)), match.group(2)))
+                    continue
+            name = cls.definition_line(line)
+            if name is not None:
+                starts.append((number, 0, name))
+        owner: dict[int, str] = {}
+        for index, (start, indent, name) in enumerate(starts):
+            end = len(lines)
+            for following, following_indent, _ in starts[index + 1:]:
+                if following_indent <= indent:
+                    end = following - 1
+                    break
+            for number in range(start, min(end, len(lines)) + 1):
+                owner[number] = name
+        cache[rel] = owner
+        return owner
+
+    @classmethod
+    def iter_strings(cls, node, field: str = ""):
+        """Yield ``(field, text)`` for every string anywhere under *node*."""
+        if isinstance(node, str):
+            yield field, node
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                child = f"{field}[{index}]" if field else f"[{index}]"
+                yield from cls.iter_strings(value, child)
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                child = f"{field}.{key}" if field else key
+                yield from cls.iter_strings(value, child)
+
+    @classmethod
+    def scan_anchors(cls, node, field: str = ""):
+        """Yield ``(field, anchor)`` for every anchor in any string under *node*.
+
+        The whole surface is walked, not a hand-picked list of fields, so a new
+        narrative field cannot carry an unchecked ``symbol:line`` claim.
+        """
+        for text_field, text in cls.iter_strings(node, field):
+            for match in cls.ANCHOR.finditer(text):
+                yield text_field, match.group(0)
+
+    def row(self, surface_id: str) -> dict:
+        for surface in self.inventory["surfaces"]:
+            if surface["id"] == surface_id:
+                return surface
+        self.fail(f"no inventory row for {surface_id}")
+
+    def check_anchor(self, ref: str, where: str) -> None:
+        """Verify one inventory anchor against current source.
+
+        ``path`` must exist; ``path:symbol`` must occur in the file;
+        ``path:line symbol`` must have the symbol *defined* within a few lines of
+        that line; ``path:line@function`` must have that line inside that
+        function. A bare ``path:line`` cannot be verified and is rejected, which
+        is what keeps a stale line number from surviving review as if it were
+        evidence.
+        """
+        rel, _, suffix = ref.partition(":")
+        self.assertTrue((ROOT / rel).is_file(), f"{where}: missing file {rel}")
+        if not suffix:
+            return
+        lines = self.source_lines(rel)
+
+        if "@" in suffix:
+            number_text, _, function = suffix.partition("@")
+            number = int(number_text)
+            self.assertTrue(1 <= number <= len(lines), f"{where}: {rel}:{number} out of range")
+            self.assertEqual(
+                self.enclosing_function(rel).get(number),
+                function,
+                f"{where}: {rel}:{number} is not inside {function}()",
+            )
+            return
+
+        head, _, symbol = suffix.partition(" ")
+        if head.isdigit():
+            number = int(head)
+            self.assertTrue(1 <= number <= len(lines), f"{where}: {rel}:{number} out of range")
+            self.assertTrue(symbol, f"{where}: {ref} names a line but no symbol")
+            self.assertTrue(
+                self.definition_near(lines, number, symbol),
+                f"{where}: {symbol} is not defined near {rel}:{number}",
+            )
+            return
+
+        self.assertTrue(head[0].isalpha() or head[0] == "_", f"{where}: unusable anchor {ref}")
+        for name in head.split("/"):
+            pattern = re.compile(r"\b" + re.escape(name) + r"\b")
+            self.assertTrue(
+                any(pattern.search(line) for line in lines),
+                f"{where}: {name} does not occur in {rel}",
+            )
+
     def test_every_inventory_row_has_live_sources_tests_and_campaign_status(self) -> None:
-        path = ROOT / "docs" / "PARSER_SAFETY_INVENTORY.json"
-        inventory = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(inventory["schema_version"], 2)
+        inventory = self.inventory
+        self.assertEqual(inventory["schema_version"], 3)
         self.assertEqual(inventory["issue"], 319)
         self.assertEqual(
             set(inventory["status_definition"]), set(inventory["status_values"])
         )
+        self.assertIn("anchor_grammar", inventory)
 
         surfaces = inventory["surfaces"]
         ids = [surface["id"] for surface in surfaces]
@@ -359,6 +563,10 @@ class TestParserSafetyInventory(unittest.TestCase):
             "python-title-manifest", "python-xb-archive-extractor",
             "python-gim-image", "python-library-json",
             "atrac3plus-bitstream-decoder",
+            "nk-json-ast-c", "nk-input-profile-json", "nk-font-cache-manifest",
+            "python-font-cache-manifest", "player-package-builder-json",
+            "player-settings-json", "python-flight-bundle-json",
+            "python-ppm-visual-tools", "python-tooling-json-readers",
         }
         self.assertTrue(required.issubset(set(ids)), sorted(required - set(ids)))
 
@@ -372,6 +580,17 @@ class TestParserSafetyInventory(unittest.TestCase):
                 self.assertIsInstance(surface["resource_gaps"], list)
                 for ref in surface["source_paths"] + surface["test_paths"]:
                     self.assertTrue((ROOT / ref).is_file(), ref)
+
+                arithmetic = surface["arithmetic"]
+                self.assertIsInstance(arithmetic["safe"], str)
+                self.assertIn(arithmetic["safe"], inventory["arithmetic_status_values"])
+                self.assertTrue(arithmetic["evidence"])
+                self.assertTrue(surface["resource_gaps"])
+                if arithmetic["safe"] != "SAFE":
+                    self.assertNotEqual(
+                        surface["status"], "COVERED",
+                        f"{surface['id']} claims COVERED with {arithmetic['safe']} arithmetic",
+                    )
 
                 campaigns = surface["campaigns"]
                 self.assertEqual(
@@ -392,6 +611,292 @@ class TestParserSafetyInventory(unittest.TestCase):
                     self.assertTrue(sanitizer["status"].startswith("CI_"))
 
         self.assertTrue(inventory["campaign_facts"]["overflow_oob_mutation_kill"])
+
+    def test_every_anchored_symbol_resolves_in_current_source(self) -> None:
+        """An anchor is evidence only while it still points at the code it names.
+
+        Every string in every surface and in the document preamble is walked, not
+        a fixed list of fields: a ``symbol:line`` claim in a runner sentence, a
+        resource gap, or a campaign note is evidence too, and a scan that skipped
+        those fields would let them rot unnoticed.
+        """
+        checked = 0
+        scanned: set[str] = set()
+        preamble = {k: v for k, v in self.inventory.items() if k != "surfaces"}
+        for node, field in [(preamble, "inventory")] + [
+            (surface, "surface") for surface in self.inventory["surfaces"]
+        ]:
+            for text_field, anchor in self.scan_anchors(node, field):
+                with self.subTest(field=text_field, anchor=anchor):
+                    self.check_anchor(anchor, text_field)
+                checked += 1
+                scanned.add(text_field)
+        # Fields the first version of this scan skipped; a narrowing of the walk
+        # would drop them from `scanned` and fail here rather than silently.
+        for prefix in (
+            "surface.campaigns.deterministic_regression.runner",
+            "surface.campaigns.seeded_mutations.campaign",
+            "surface.resource_gaps",
+            "surface.max_input",
+            "inventory.campaign_facts",
+            "inventory.issue_acceptance_remaining",
+        ):
+            self.assertTrue(
+                any(field.startswith(prefix) for field in scanned), f"no anchor scanned in {prefix}"
+            )
+        self.assertGreater(checked, 300, "inventory lost most of its anchors")
+
+    def test_anchor_scan_reaches_fields_the_original_four_field_walk_skipped(self) -> None:
+        """The walk covers every field, including the ones it used to skip.
+
+        A deliberately unresolvable anchor is planted in a runner sentence, a
+        resource gap, and a campaign note: the original four-field walk
+        (entry, harness, arithmetic evidence, campaign tests) never looked at any
+        of them, so a scan that still skipped them would report nothing here.
+        """
+        planted = {
+            "id": "synthetic-scan-coverage",
+            "entry": "tools/parse_fuzz_probe_missing.c:1 probe",
+            "harness": "nothing to see",
+            "arithmetic": {"safe": "SAFE", "evidence": ["tools/parse_fuzz_probe_missing.c:1 probe"]},
+            "campaigns": {
+                "deterministic_regression": {
+                    "status": "IN_CI",
+                    "tests": [],
+                    "runner": "reached only through tools/parse_fuzz_probe_missing.c:1 probe",
+                },
+                "seeded_mutations": {
+                    "status": "NOT_AVAILABLE",
+                    "tests": [],
+                    "campaign": "no campaign for tools/parse_fuzz_probe_missing.c:1 probe",
+                },
+            },
+            "resource_gaps": ["uncovered: tools/parse_fuzz_probe_missing.c:1 probe"],
+            "max_input": "nothing; see tools/parse_fuzz_probe_missing.c:1 probe",
+        }
+        scanned = dict(self.scan_anchors(planted, "surface"))
+        for field in (
+            "surface.campaigns.deterministic_regression.runner",
+            "surface.campaigns.seeded_mutations.campaign",
+            "surface.resource_gaps[0]",
+            "surface.max_input",
+        ):
+            self.assertIn(field, scanned)
+            with self.subTest(field=field):
+                with self.assertRaises(AssertionError):
+                    self.check_anchor(scanned[field], f"synthetic.{field}")
+
+    def test_line_anchor_requires_a_definition_not_merely_a_nearby_mention(self) -> None:
+        """The grammar says "defined", so a call or a comment must not satisfy it."""
+        lines = [
+            "static void parse_row(int row) {",
+            "    /* the old comment used to name reader_state here */",
+            "    assert(reader_state(row) == 0);",
+            "    total += 1;",
+            "}",
+            "",
+            "int other(int row) {",
+            "    return row;",
+            "}",
+            "",
+            "int reader_state(int row) {",
+            "    return row;",
+            "}",
+        ]
+        self.assertTrue(self.definition_near(lines, 11, "reader_state"))
+        self.assertFalse(self.definition_near(lines, 1, "reader_state"))
+        self.assertFalse(self.definition_near(lines, 2, "reader_state"))
+        self.assertFalse(self.definition_near(lines, 3, "reader_state"))
+        self.assertFalse(self.definition_near(lines, 4, "reader_state"))
+        # A prototype is a declaration, not a definition.
+        self.assertIsNone(self.definition_line("int reader_state(int row);"))
+        self.assertFalse(
+            self.definition_near(["int reader_state(int row);", "void use(void) {"], 1, "reader_state")
+        )
+        self.assertEqual(self.definition_line("static void row_helper(void) {"), "row_helper")
+
+    def test_arithmetic_status_change_is_versioned_and_documented(self) -> None:
+        """``arithmetic.safe`` stopped being a boolean, so the version moved with it."""
+        inventory = self.inventory
+        notes = {note["version"]: note["change"] for note in inventory["schema_notes"]}
+        self.assertIn(2, notes)
+        self.assertIn(3, notes)
+        self.assertIn("boolean", notes[2])
+        self.assertIn("boolean", notes[3])
+        self.assertIn("arithmetic_status_values", notes[3])
+        for surface in inventory["surfaces"]:
+            with self.subTest(surface=surface["id"]):
+                self.assertNotIsInstance(surface["arithmetic"]["safe"], bool)
+
+    def test_route_coverage_claims_say_which_kind_of_test_is_missing(self) -> None:
+        """A row may only call a route untested when it names the missing test kind.
+
+        Every reader in this inventory is at least reached indirectly by a listed
+        test, so an unqualified "no test executes it" / "never reaches" sentence
+        is a false claim. "No direct test" is the honest form and stays allowed.
+        """
+        for surface in self.inventory["surfaces"]:
+            for field, text in self.iter_strings(surface, "surface"):
+                for match in self.COVERAGE_CLAIM.finditer(text):
+                    claim = match.group(0)
+                    if self.CAMPAIGN_CLAIM.search(claim):
+                        continue
+                    if self.PUBLISH_CLAIM.search(claim):
+                        continue
+                    with self.subTest(surface=surface["id"], field=field, claim=claim):
+                        self.assertRegex(
+                            claim,
+                            self.DIRECT_QUALIFIER,
+                            f"{surface['id']}.{field}: {claim.strip()!r} does not say whether "
+                            "a direct test is missing, so it reads as no coverage at all",
+                        )
+
+    def test_rows_do_not_deny_a_call_path_a_listed_python_test_can_take(self) -> None:
+        """A "no test reaches this reader" claim is walked, not trusted.
+
+        Only a syntactic call path through the row's own source and test files is
+        proved, to ``CALL_DEPTH`` hops; that is enough to refuse a claim of
+        non-reachability, and it never claims the path is taken at run time.
+        """
+        for surface in self.inventory["surfaces"]:
+            py = [
+                rel
+                for rel in surface["source_paths"] + surface["test_paths"]
+                if rel.endswith(".py")
+            ]
+            if not py:
+                continue
+            edges = {rel: self.python_call_edges(rel) for rel in py}
+            defined = {name for rel in py for name in set(self.enclosing_function(rel).values())}
+            for field, text in self.iter_strings(surface, "surface"):
+                for match in self.UNREACHED_CLAIM.finditer(text):
+                    named = next(group for group in match.groups() if group)
+                    symbol = named.rsplit(".", 1)[-1]
+                    if symbol not in defined:
+                        continue
+                    path = self.call_path(surface, edges, symbol)
+                    with self.subTest(surface=surface["id"], field=field, symbol=symbol):
+                        if path is not None:
+                            self.fail(
+                                f"{surface['id']}.{field} claims {symbol} is unreached, but "
+                                f"{' -> '.join(path)} is a call path through the listed files"
+                            )
+
+    def python_call_edges(self, rel: str) -> dict[str, set[str]]:
+        """Map every function defined in a Python file to the names it calls."""
+        owner = self.enclosing_function(rel)
+        edges: dict[str, set[str]] = {}
+        for number, line in enumerate(self.source_lines(rel), 1):
+            name = owner.get(number)
+            if name is None:
+                continue
+            edges.setdefault(name, set()).update(self.PY_CALL.findall(line))
+        return edges
+
+    def call_path(
+        self, surface: dict, edges: dict[str, dict[str, set[str]]], target: str
+    ) -> list[str] | None:
+        """Return one call chain from a listed test file to *target*, or None.
+
+        The chain is a syntactic over-approximation: a name that a function body
+        spells as a call counts even if that branch never executes, which is the
+        safe direction for refusing a non-reachability claim.
+        """
+        frontier: set[str] = set()
+        for rel in surface["test_paths"]:
+            if rel.endswith(".py"):
+                frontier.update(self.PY_CALL.findall("\n".join(self.source_lines(rel))))
+        seen: set[str] = set()
+        for _ in range(self.CALL_DEPTH):
+            reached: set[str] = set()
+            for name in frontier - seen:
+                seen.add(name)
+                for rel in edges:
+                    reached.update(edges[rel].get(name, set()))
+            if target in reached:
+                return sorted(seen & reached) + [target]
+            frontier = reached
+        return None
+
+    def test_every_non_header_source_path_is_named_in_its_row(self) -> None:
+        """A listed implementation file has to have a stated role and boundary."""
+        for surface in self.inventory["surfaces"]:
+            narrative = json.dumps(
+                {
+                    key: value
+                    for key, value in surface.items()
+                    if key not in {"source_paths", "test_paths"}
+                }
+            )
+            for ref in surface["source_paths"]:
+                if ref.endswith((".h", ".hpp")):
+                    continue
+                with self.subTest(surface=surface["id"], source=ref):
+                    self.assertIn(
+                        ref,
+                        narrative,
+                        f"{surface['id']} lists {ref} but never says what it parses "
+                        "or which resource bound applies to it",
+                    )
+
+    def test_font_cache_row_states_the_real_pgf_boundary(self) -> None:
+        """nk_font_check_cache caps the manifest; nk_font_validate_pgf does not.
+
+        The digest helper streams the whole PGF through a fixed 64 KiB buffer, so
+        its peak memory is bounded while the accepted input size is not. A row
+        that calls the PGF "bounded by nk_font_validate_pgf" claims a cap the
+        source does not apply.
+        """
+        font_c = "\n".join(self.source_lines("src/core/nk_font.c"))
+        self.assertIn("mlen > 1024 * 1024", font_c)
+        self.assertIn("fread(buffer, 1, sizeof(buffer), f)", font_c)
+        max_input = self.row("nk-font-cache-manifest")["max_input"]
+        self.assertNotIn("bounded by", max_input)
+        self.assertIn("not byte-capped", max_input)
+        self.assertIn("src/core/nk_font.c:299@nk_font_check_cache", max_input)
+
+    def test_player_settings_row_matches_the_native_selftest_cases(self) -> None:
+        """The settings selftest writes a corrupt document and a wrong schema.
+
+        No megabyte-scale constant appears anywhere in the native selftest and it
+        never writes an empty settings file, so the row cannot list an oversized
+        or empty document as covered.
+        """
+        test_c = "\n".join(self.source_lines("tests/native/test_player_state.c"))
+        self.assertIn("{ invalid_json: [1, 2, ", test_c)
+        self.assertIn('\\"schema_version\\": 999', test_c)
+        for absent in ("1024 * 1024", "1 << 20", "(1<<20)"):
+            self.assertNotIn(absent, test_c, f"the selftest now builds {absent}; revisit the row")
+        self.assertNotIn('write_text_file(test_settings_path, "")', test_c)
+        row = self.row("player-settings-json")
+        covered = " ".join(row["malformed_input_coverage"]).lower()
+        for untested in ("oversize", "truncated", "empty"):
+            self.assertNotIn(untested, covered)
+        self.assertIn("oversized", " ".join(row["resource_gaps"]).lower())
+
+    def test_inventory_does_not_claim_unrun_campaign_evidence(self) -> None:
+        """The inventory must not imply sanitizer, coverage-guided, or kill coverage."""
+        for surface in self.inventory["surfaces"]:
+            campaigns = surface["campaigns"]
+            with self.subTest(surface=surface["id"]):
+                self.assertEqual(campaigns["coverage_guided_fuzzer"], "NOT_CONFIGURED")
+                self.assertEqual(campaigns["overflow_oob_mutation_kill"], "NOT_RUN")
+                seeded = campaigns["seeded_mutations"]
+                if seeded["status"] == "NOT_AVAILABLE":
+                    self.assertEqual(seeded["tests"], [])
+                else:
+                    # An in-CI seeded campaign has to say where the iteration count
+                    # comes from. A row that only repeats the default sentence is
+                    # claiming a campaign the runner never asks for.
+                    self.assertTrue(seeded["tests"], surface["id"])
+                    self.assertRegex(
+                        seeded["campaign"].lower(),
+                        r"iteration|mutation loop|mutations",
+                        f"{surface['id']} claims an in-CI seeded campaign without saying how",
+                    )
+        self.assertIn(
+            "NOT_RUN", self.inventory["campaign_facts"]["overflow_oob_mutation_kill"]
+        )
 
 
 if __name__ == "__main__":
