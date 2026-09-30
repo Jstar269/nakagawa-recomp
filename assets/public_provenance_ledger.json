@@ -2320,7 +2320,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e4c91eb52d36301a880fc7ba5e5057b58a8e9230873bc6a694d2af09c6d6720"
+      "sha256": "043e732afd10777a3ccb5c38a41161005032ca0b920373c38195e05cbef7a626"
     },
     {
       "path": "src/core/nk_input_profile.h",
@@ -5268,7 +5268,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a6d00f734169290f908cccd5fd0653dc58847a4c34e775b025bf7c18950b2c15"
+      "sha256": "e17a1dc95bfd92b41e7854f3386bbe3f6fdaf37b4a50e4821ee9ba6ded576a43"
     },
     {
       "path": "tests/native/test_input_profile.c",
@@ -5280,7 +5280,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "873ff712677f0824e353da14498c7a2e8b4d84a5348c681406e4828bff5f982f"
+      "sha256": "112c11ac20a1cf7815dfa54d5ca87931336ff2c857ecc2a5a53d32b4eafd2be1"
     },
     {
       "path": "tests/native/test_input_settings.c",
@@ -5292,7 +5292,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b322a7347efa7feb94b9b61bfa64c53c0e0f293c6ce01b05f39ad8b7afc4ab9"
+      "sha256": "d572db5f5581b25f0e955f403b98adb18c21c4aca8c42952303f39f62dd5fd6b"
     },
     {
       "path": "tests/native/test_launch_resolution.c",
@@ -9471,13 +9471,13 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "6d80938d77e0c3f29c1fe9e5847204009e30a059",
-    "candidate_tree": "e77bedc0194acdbaf228307aa177c8623b2055d5",
+    "trusted_tree": "c39f062e2e09c358607a8d023b8ba43aabca956e",
+    "candidate_tree": "4f934c84ca53196a9a2eaf6a1b013adfc987998d",
     "refreshed_paths": [
-      "docs/PROVENANCE_MERGE_GATE.md",
-      "docs/PUBLICATION_READINESS.md",
-      "tools/provenance_attest_verify.py",
-      "tools/test_provenance_attest_verify.py"
+      "src/core/nk_input_profile.c",
+      "tests/native/test_fuzz_parsers.c",
+      "tests/native/test_input_profile.c",
+      "tests/native/test_input_settings.c"
     ]
   }
 }
