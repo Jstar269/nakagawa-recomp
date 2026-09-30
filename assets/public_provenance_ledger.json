@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9f8ae4dba12c5a101f3323a715964676459d6b47aafc1712f80ee82e67212413"
+      "sha256": "68010840231fcb07346ee4751d4c861cbaff40da0d68b23a670da282cfecefe2"
     },
     {
       "path": "NOTICE.md",
@@ -3944,7 +3944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a814c39d60850cd3fb3655f32914a090ac906c6c21ec417031d68c4ce197edd0"
+      "sha256": "be8e0e804abe7a90247e23cf7a4c67b1fc3049012b86db76f7e5851690d89c5f"
     },
     {
       "path": "src/rt/debug.c",
@@ -3992,7 +3992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "60f732fe466b3c537f78ff29c5e22ae3289c900de25e1878abcf34cf8d95af86"
+      "sha256": "a35d3346c6816a6e075cde63a398378f425d3d7c5056a00c7a2c2574cb528b2d"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -4843,7 +4843,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f7814735a5c62ebfecdbf19ed5955df66bcd32e9ed56201b1b1c3d0dd2af7545"
+      "sha256": "000326a72644e36ead5b3d7af87dda012d27f6ddae3d3decb057b2adda5293da"
     },
     {
       "path": "src/rt/recomp.h",
@@ -7302,7 +7302,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "065e30f5fd13f441f516483cf289b08f65cdcc55f4b948544d80dd64ee3425f9"
+      "sha256": "ef28f17a8813e2b2ff5b1512d772f3050f5ad811237aa8fbe9080b08887e4c7d"
     },
     {
       "path": "tools/test_dco_policy.py",
@@ -9471,11 +9471,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "f1e6858ddf816a42327c37e965fcb41bbddcbc3a",
-    "candidate_tree": "c88fc7272659f8359946a66a5193d8f4583dd79f",
+    "trusted_tree": "22f665a47307168f0ba3645bf1c5656ce7663ac5",
+    "candidate_tree": "c47e14de8bdc6f8dc30d10f83e684c481ab77538",
     "refreshed_paths": [
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c"
+      "Makefile",
+      "src/rt/cpu_lle_selftest.c",
+      "src/rt/dispatch_isolation_selftest.c",
+      "src/rt/recomp.c",
+      "tools/test_cpu_lle.py"
     ]
   }
 }
