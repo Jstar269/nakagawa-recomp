@@ -1943,6 +1943,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nest
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
 hle-thread-selftest: hle-thread-selftest-build
@@ -1976,6 +1977,7 @@ hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py 
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
 
@@ -2006,6 +2008,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
 
