@@ -40,3 +40,54 @@ both files must carry one:
 ```
 
 The diff tool only compares the step lines, ignoring this header.
+
+## Strict hardware trace v2
+
+The default `tracediff.py <trace-a> <trace-b>` invocation keeps the v1
+local/cosimulation behavior above.  The opt-in strict route is selected with
+`tracediff.py --strict-hardware <trace-a> <trace-b>` and requires a complete
+v2 identity envelope on both inputs:
+
+```text
+# psp-recomp trace v2 source_tier=PSP_HARDWARE fixture_id=branch_delay_v1 cell_id=case_0001 binary_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef source_commit=0123456789abcdef0123456789abcdef01234567 model=PSP-3000 firmware=6.61 start_pc=0x08900100 steps=3 complete=1
+```
+
+The v2 fields are exact and unknown fields are rejected:
+
+| Field | Contract |
+| --- | --- |
+| `source_tier` | `PSP_HARDWARE`, `LOCAL_COSIM`, or `PPSSPP_CORROBORATIVE`; strict comparison requires at least one `PSP_HARDWARE` input and refuses `PPSSPP_CORROBORATIVE`. |
+| `fixture_id`, `cell_id` | Source-owned fixture and exact case identity. |
+| `binary_sha256` | Lowercase SHA-256 of the executed guest image or PRX. |
+| `source_commit` | Lowercase Git object ID for the source used to build the image. |
+| `model`, `firmware` | Measured PSP identity; placeholder values such as `unknown` are rejected. |
+| `start_pc` | Lowercase eight-digit guest entry PC. |
+| `steps` | Positive declared bound, at most 1,000,000, written as at most seven decimal digits; the stream must contain exactly this many records numbered from zero. |
+| `complete` | Must be `1`; a short or over-budget stream is rejected before comparison. |
+
+A strict stream carries exactly one identity header.  The first `#`-prefixed
+line must be the v2 envelope, and any later `# psp-recomp trace` header line is
+rejected as a duplicate, whether it appears before or after the step records and
+whether or not its metadata conflicts with the first header.  Other comments
+that carry no trace identity are ignored, as they are by the v1 comparator.
+
+All identity fields other than `source_tier` must match exactly between the
+two inputs.  This permits a PSP capture to be compared with a source-owned
+`LOCAL_COSIM` trace while keeping the evidence tier visible.  A PPSSPP trace
+can still be used with the v1 comparator for corroboration, but it cannot
+satisfy the strict PSP hardware route.  A strict match therefore proves only
+that the two complete, identically identified streams agree; it does not by
+itself create physical PSP evidence.
+
+Strict v2 records use the same per-step fields as v1 and additionally reject
+malformed PCs, opcodes, register names, memory-write names, values, duplicate
+writes, gaps, and out-of-order step numbers.  When records diverge, the
+comparator reports the first step and PC plus the differing opcode or the
+register/memory write context.
+
+Every contract violation is a named `REJECTED: <path>:<line>: <reason>` line
+with exit status 2.  Decimal metadata (`steps` and a record's step index) is
+length-bounded before conversion, so an oversized, signed, negative, or
+otherwise unusable value is refused by name instead of raising an interpreter
+conversion error, and a stream that is not valid UTF-8 text is refused by name
+too.
