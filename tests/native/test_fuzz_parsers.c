@@ -11,6 +11,7 @@
 #include "nk_xb.h"
 #include "nk_title_manifest.h"
 #include "nk_library.h"
+#include "nk_input_profile.h"
 #include "nk_platform.h"
 #include "prx_loader.h"
 #include "nk_psp_aes.h"
@@ -1100,6 +1101,102 @@ static void test_fuzz_manifest(unsigned iters) {
     }
 
     printf("[FUZZ] Title Manifest JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
+    fflush(stdout);
+}
+
+/* -----------------------------------------------------------------------------
+ * 6. Per-Game Input Profile JSON Seed Builder & Harness
+ * -------------------------------------------------------------------------- */
+static const char s_valid_input_profile_json[] =
+    "{\n"
+    "  \"schema_version\": 2,\n"
+    "  \"device\": { \"guid\": \"030000005e0400008e02000000007200\","
+    " \"name_hint\": \"Test Pad\" },\n"
+    "  \"calibration\": {\n"
+    "    \"trigger_threshold\": 8192,\n"
+    "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+    "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+    "  },\n"
+    "  \"psp_bindings\": [ { \"control\": \"cross\", \"primary\": \"south\" } ],\n"
+    "  \"navigation_bindings\": [ { \"action\": \"confirm\", \"primary\": \"button:south\" } ],\n"
+    "  \"per_title\": [\n"
+    "    { \"disc_id\": \"TEST00001\", \"profile\": {\n"
+    "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+    "        \"calibration\": {\n"
+    "          \"trigger_threshold\": 8192,\n"
+    "          \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+    "          \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+    "        },\n"
+    "        \"psp_bindings\": [ { \"control\": \"cross\", \"primary\": \"south\" } ],\n"
+    "        \"navigation_bindings\": [] } }\n"
+    "  ]\n"
+    "}";
+
+/* A document that loaded is a document the runtime has to be able to use
+ * unchanged, so a mutated input that is accepted must satisfy what a
+ * hand-written one does: every mapping validates, every stored disc ID is one
+ * the per-title whitelist accepts, and the table is within its bound. */
+static void assert_loaded_profile_is_usable(const NkInputProfileFile *doc) {
+    char why[256];
+    assert(nk_input_profile_validate(&doc->global, why, sizeof(why)) == NK_OK);
+    assert(doc->title_count >= 0 && doc->title_count <= NK_INPUT_MAX_PER_TITLE);
+    for (int i = 0; i < doc->title_count; i++) {
+        assert(nk_input_profile_disc_id_safe(doc->title_disc_id[i]));
+        assert(nk_input_profile_validate(&doc->title[i], why, sizeof(why)) == NK_OK);
+        assert(nk_input_profile_file_find_title(doc, doc->title_disc_id[i]) == i);
+    }
+}
+
+static void test_fuzz_input_profile(unsigned iters) {
+    printf("[FUZZ] Testing per-game input profile parser (%u iterations)...\n", iters);
+    fflush(stdout);
+
+    const char *profile_path = "build/fuzz_input_profile_temp.json";
+    size_t seed_size = strlen(s_valid_input_profile_json);
+    size_t cap = seed_size * 2u + 64u;
+    char err[256];
+    NkInputProfileFile base;
+    uint8_t *mutated = (uint8_t *)malloc(cap);
+    assert(mutated != NULL);
+
+    err[0] = '\0';
+    assert(nk_input_profile_file_parse_json(&base, s_valid_input_profile_json, seed_size,
+                                            err, sizeof(err)) == NK_OK);
+    assert(base.title_count == 1);
+    assert_loaded_profile_is_usable(&base);
+
+    unsigned accepted = 0;
+    unsigned accepted_from_file = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        NkInputProfileFile doc;
+        size_t cur_size = seed_size;
+
+        memcpy(mutated, s_valid_input_profile_json, seed_size);
+        mutate_buffer(mutated, &cur_size, cap);
+
+        err[0] = '\0';
+        if (nk_input_profile_file_parse_json(&doc, (const char *)mutated, cur_size,
+                                             err, sizeof(err)) == NK_OK) {
+            accepted++;
+            assert_loaded_profile_is_usable(&doc);
+        }
+
+        /* Every 16th input also crosses the file boundary, so the loader's
+         * size cap and read path are fuzzed and not only the parser's. */
+        if ((i % 16u) == 0u) {
+            write_file_bytes(profile_path, mutated, cur_size);
+            if (nk_input_profile_file_load(&doc, profile_path, err, sizeof(err)) == NK_OK) {
+                accepted_from_file++;
+                assert_loaded_profile_is_usable(&doc);
+            }
+        }
+    }
+
+    remove(profile_path);
+    free(mutated);
+
+    printf("[FUZZ] Input profile parser completed: %u/%u accepted, %u via the file loader, 0 crashes\n",
+           accepted, iters, accepted_from_file);
     fflush(stdout);
 }
 
@@ -2397,6 +2494,7 @@ int main(int argc, char **argv) {
     test_fuzz_xb(iters);
     test_fuzz_prx(iters);
     test_fuzz_manifest(iters);
+    test_fuzz_input_profile(iters);
     test_fuzz_package(iters > 1000 ? 1000 : iters);
     test_fuzz_library(iters > 500 ? 500 : iters);
     test_fuzz_decrypt_boundary(iters > 4000 ? 4000 : iters);
