@@ -1210,7 +1210,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5a9f6f8cf9b1c386b5212a5f815585ce0dffa0f04fd62ac1e40ab2d6949fff4a"
+      "sha256": "aef5940b36958a3a8ffe733f670a0ddc50afccf52457ee372df8569baf2307f3"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -1312,7 +1312,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4a55511cb204e2ccb867247ad9d2d75328027a320af27bcdee3ad3574854f46b"
+      "sha256": "3c894b6f2196eb74b55bd0a7acd0a7bfafbd64dd03b20e83dd66cd73df55528f"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -2368,7 +2368,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4b3b75e53eaf1ab447e39bdcd13016b85d471e16e5762e45df1e59b09cf38f80"
+      "sha256": "e263146b8e63e6f1c5ab39192f18ba9fae4439bdae9b06c6e6e21d64df51c15a"
     },
     {
       "path": "src/core/nk_json.h",
@@ -5280,7 +5280,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8f495e9105c03c0be22605ac49dc52b2c8d759b859c3bb8f5ed0c585d6d7cc1"
+      "sha256": "5ef95604ebda049f8da9df9da2c9ffe0e9664e349f1325eafd0ca18b1e50090a"
     },
     {
       "path": "tests/native/test_input_settings.c",
@@ -8167,7 +8167,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4d36426f3c3129edf217d654ea891233edbe9ed0f38566abe030eb78df46215"
+      "sha256": "1dee13bd23bf70e05dcb3bfc7b07c20b4bd510fab66dbe7980d82eccd986fbc1"
     },
     {
       "path": "tools/test_perf_summary_diff.py",
