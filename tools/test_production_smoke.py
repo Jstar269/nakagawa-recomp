@@ -25,6 +25,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
 GENERATOR_PATH = ROOT / "fixtures" / "production_smoke" / "generate.py"
+DISPLAY_GENERATOR_PATH = ROOT / "fixtures" / "display_smoke" / "generate.py"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
@@ -49,6 +50,14 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"cannot load {GENERATOR_PATH}")
 generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
+
+DISPLAY_SPEC = importlib.util.spec_from_file_location(
+    "display_smoke_generator", DISPLAY_GENERATOR_PATH
+)
+if DISPLAY_SPEC is None or DISPLAY_SPEC.loader is None:
+    raise RuntimeError(f"cannot load {DISPLAY_GENERATOR_PATH}")
+display_generator = importlib.util.module_from_spec(DISPLAY_SPEC)
+DISPLAY_SPEC.loader.exec_module(display_generator)
 
 
 EXPECTED_PRX_SHA256 = "0e70188438318b1dd7324d9d08237634b4cb9f42b0078b189f72c569df9d9ace"
@@ -1065,6 +1074,99 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertFalse((bad_output / "build-report.json").exists())
 
 
+class TestPresenterContract(unittest.TestCase):
+    def test_gdi_acceptance_requires_window_dc_and_positive_scanlines(self):
+        """The headless suite cannot open GDI, so pin its acceptance contract in source."""
+        source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
+        presenter = source[source.index("int gui_present"):]
+        gdi = presenter[:presenter.index("#else")]
+        self.assertIn("if (!s_hwnd) return 0;", gdi)
+        self.assertIn("HDC dc = GetDC(s_hwnd);", gdi)
+        self.assertIn("if (!dc) return 0;", gdi)
+        self.assertRegex(
+            gdi,
+            r"if \(!GetClientRect\(s_hwnd, &cr\)\)\s*\{\s*"
+            r"ReleaseDC\(s_hwnd, dc\);\s*return 0;\s*\}",
+        )
+        self.assertLess(
+            gdi.index("if (!GetClientRect(s_hwnd, &cr))"),
+            gdi.index("int scanlines = StretchDIBits"),
+        )
+        self.assertIn("int scanlines = StretchDIBits", gdi)
+        self.assertIn("if (scanlines <= 0) return 0;", gdi)
+
+    def test_offscreen_frame_event_is_quiet_without_present_trace(self):
+        source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
+        presenter = source[source.index("int gui_present"):]
+        offscreen = presenter[presenter.index("if (s_offscreen)"):presenter.index("int accepted")]
+        self.assertRegex(
+            offscreen,
+            r'if \(getenv\("SR_PRESENT_TRACE"\)\)\s*\{\s*'
+            r'sr_gui_boot_event\("BOOT_EVENT phase=frame_present backend=offscreen',
+        )
+
+    def test_display_smoke_offscreen_pins_inherited_sdl_selectors(self):
+        inherited = {
+            "SDL_VIDEO_DRIVER": "windows",
+            "SDL_VIDEODRIVER": "windows",
+            "SDL_AUDIO_DRIVER": "wasapi",
+            "SDL_AUDIODRIVER": "wasapi",
+        }
+        expected = f"0x{display_generator.final_frame_first_pixel(1):08x}"
+        combined = (
+            "BOOT_EVENT phase=init public_safe=1\n"
+            "BOOT_EVENT phase=image_loaded entry=0x08810000\n"
+            "BOOT_EVENT phase=runtime_registered entry=0x08810000\n"
+            f"DRIVER_EXPECT_U32 addr=0x04000000 got={expected} "
+            f"expected={expected} status=PASS\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED f=2 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["env"] = dict(kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, combined, "")
+
+        with tempfile.TemporaryDirectory(prefix="display-smoke-env-") as temp_dir:
+            build_dir = Path(temp_dir)
+            fixture = build_dir / "fixture"
+            fixture.mkdir()
+            (fixture / "manifest.json").write_text('{"frames": 1}\n', encoding="ascii")
+            suffix = ".exe" if os.name == "nt" else ""
+            (build_dir / f"{display_generator.ARTIFACT_STEM}{suffix}").write_bytes(b"runtime")
+            (build_dir / f"{display_generator.ARTIFACT_STEM}_image.bin").write_bytes(b"image")
+            with mock.patch.dict(os.environ, inherited):
+                with mock.patch.object(
+                    display_generator.subprocess, "run", side_effect=fake_run
+                ):
+                    status = display_generator.run(build_dir, gui=True, offscreen=True)
+
+        self.assertEqual(status, 0)
+        for selector in inherited:
+            self.assertEqual(captured["env"][selector], "dummy")
+        self.assertEqual(captured["env"]["SR_VIDEO"], "offscreen")
+        self.assertEqual(captured["env"]["SR_PRESENT_TRACE"], "1")
+
+    def test_offscreen_present_evidence_rejects_malformed_submission_marker(self):
+        combined = (
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED nonsense\n"
+        )
+        failure = display_generator.offscreen_present_evidence_failure(combined)
+        self.assertIsNotNone(failure)
+        self.assertIn("malformed HOST_PRESENT_SUBMITTED marker", failure)
+
+    def test_offscreen_present_evidence_rejects_malformed_frame_marker(self):
+        combined = (
+            "BOOT_EVENT phase=frame_present backend=offscreen BROKEN\n"
+            "HOST_PRESENT_SUBMITTED f=2 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        failure = display_generator.offscreen_present_evidence_failure(combined)
+        self.assertIsNotNone(failure)
+        self.assertIn("malformed offscreen frame_present marker", failure)
+
+
 class TestSanitizedBringup(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-bringup-report-")
@@ -1148,7 +1250,11 @@ class TestSanitizedBringup(unittest.TestCase):
                 }), encoding="utf-8")
             output = launch_output
             if not output and launch_code == 0:
-                output = "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+                output = (
+                    "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                    "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+                    "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+                )
             return FakeProcess(output)
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
@@ -1194,23 +1300,42 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertRegex(command[3], r"^(?:0|0x[0-9a-f]{8})$")
         self.assertRegex(command[4], r"^0x[0-9a-f]{8}$")
         self.assertEqual(command[5:], ["none", "none", "--sched", "--gui"])
-        self.assertEqual(self.last_launch_env["SR_PRESENT_TRACE"], "1")
+        self.assertEqual(self.last_launch_env.get("SR_PRESENT_TRACE"), "1")
         for selector in (
             "SDL_VIDEO_DRIVER",
             "SDL_VIDEODRIVER",
             "SDL_AUDIO_DRIVER",
             "SDL_AUDIODRIVER",
         ):
-            self.assertEqual(self.last_launch_env[selector], "dummy")
+            self.assertEqual(self.last_launch_env.get(selector), "dummy")
+        self.assertEqual(self.last_launch_env.get("SR_VIDEO"), "offscreen")
         self.assertNotIn("SR_GEWATCH", self.last_launch_env)
         self.assertEqual(report["presentation"], {
             "status": "FRAME_SUBMITTED",
             "frame_submissions": 1,
+            "backend": "offscreen",
         })
         summary = nk_cli._bringup_human_summary(report)
-        self.assertIn("GUI presenter received 1 frame submission(s)", summary)
+        self.assertIn("offscreen presenter accepted 1 frame submission(s)", summary)
         self.assertIn("Visual contents are not verified", summary)
         self.assertFalse(self.last_build_arguments.instruction_trace)
+        nk_cli.validate_bringup_report(report)
+
+    def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=offscreen t_ns=100\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1 t_ns=101\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        with mock.patch.dict(os.environ, {"SR_PERF": "1"}):
+            status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["presentation"], {
+            "status": "FRAME_SUBMITTED",
+            "frame_submissions": 1,
+            "backend": "offscreen",
+        })
         nk_cli.validate_bringup_report(report)
 
     def test_headless_bringup_overrides_inherited_sdl3_selectors(self):
@@ -1226,7 +1351,66 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 0, report)
         self.assertEqual(report["failure_class"], "NONE")
         for selector in inherited:
-            self.assertEqual(self.last_launch_env[selector], "dummy")
+            self.assertEqual(self.last_launch_env.get(selector), "dummy")
+
+    def test_headless_bringup_overrides_inherited_video_presenter(self):
+        with mock.patch.dict(os.environ, {"SR_VIDEO": "windows"}):
+            status, report = self._run_case()
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(self.last_launch_env.get("SR_VIDEO"), "offscreen")
+
+    def test_zero_exit_with_unrecognized_presenter_backend_is_not_success(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=unknown-host\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+            "backend": "unknown",
+        })
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_submission_before_frame_is_not_success(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+        )
+        status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+            "backend": "offscreen",
+        })
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_malformed_frame_marker_is_not_success(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen BROKEN\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+            "backend": "offscreen",
+        })
+        nk_cli.validate_bringup_report(report)
 
     def test_zero_exit_with_framebuffer_setup_but_no_gui_submission_is_not_success(self):
         status, report = self._run_case(launch_output="synthetic runtime had no GUI submission\n")
@@ -1235,12 +1419,34 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["presentation"], {
             "status": "NO_FRAME_SUBMISSIONS",
             "frame_submissions": 0,
+            "backend": "unknown",
         })
         self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
         self.assertIn(308, report["issue_numbers"])
         self.assertIn("no validated framebuffer was submitted",
                       nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
+
+    def test_dummy_video_driver_message_does_not_mask_named_runtime_boundary(self):
+        output = (
+            "Vulkan support is not available in current SDL video driver (dummy)\n"
+            "unsupported instruction: DIV.S at 0x08801234\n"
+        )
+        status, report = self._run_case(launch_code=1, launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["runtime_output_kind"], "UNSUPPORTED_INSTRUCTION")
+        self.assertEqual(report["failure_class"], "UNSUPPORTED_INSTRUCTION")
+        self.assertIn(118, report["issue_numbers"])
+        self.assertNotIn(297, report["issue_numbers"])
+
+    def test_dummy_video_driver_message_remains_headless_fallback(self):
+        output = "Vulkan support is not available in current SDL video driver (dummy)\n"
+        status, report = self._run_case(launch_code=1, launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["runtime_output_kind"], "VIDEO_UNAVAILABLE")
+        self.assertEqual(report["failure_class"], "HEADLESS_UNAVAILABLE")
 
     def test_instruction_trace_is_opt_in_and_stays_under_private_work_dir(self):
         status, report = self._run_case(instruction_trace=True)
@@ -1373,7 +1579,11 @@ class TestSanitizedBringup(unittest.TestCase):
             returncode = 0
 
             def communicate(self, timeout=None):
-                return "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n", None
+                return (
+                    "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                    "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+                    "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+                ), None
 
         def fake_package_build(build_args, stage_observer=None):
             stage_observer("compile", "PASS", 1)
