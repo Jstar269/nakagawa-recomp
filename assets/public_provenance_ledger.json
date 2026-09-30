@@ -6458,7 +6458,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e52d8531fe627343837cfbe370b91d396d5b675b26d18eeb5fbbce3fde9334e"
+      "sha256": "bd191ef14b3483bb6c10b9f230bf4bee0285e50241e457a75e139b5aae6527df"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8179,7 +8179,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "532550c6672fa3f4f4353ace4ab8b8f3be9a4d5a1900f8ba55f9c051d37caab5"
+      "sha256": "b37113f300d1d68a2438b190ffdc348e23ac3daa8dc4ad914418e46a47d3cd41"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -9471,14 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "22f665a47307168f0ba3645bf1c5656ce7663ac5",
-    "candidate_tree": "c47e14de8bdc6f8dc30d10f83e684c481ab77538",
+    "trusted_tree": "d3530dc20198e81417d4248c64ef073d4b0a94fe",
+    "candidate_tree": "a6d4d846fd5174c91457fd0e810365b970922dcd",
     "refreshed_paths": [
-      "Makefile",
-      "src/rt/cpu_lle_selftest.c",
-      "src/rt/dispatch_isolation_selftest.c",
-      "src/rt/recomp.c",
-      "tools/test_cpu_lle.py"
+      "tools/perf_summary_diff.py",
+      "tools/test_perf_summary_diff.py"
     ]
   }
 }
