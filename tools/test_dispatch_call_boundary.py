@@ -53,6 +53,7 @@ def _write_minimal_elf(path: Path, words: tuple[int, ...]) -> None:
 def _build_and_run_stack_census(
     words: tuple[int, ...], expected_status: str, *,
     codegen_args: tuple[str, ...] = (), expected_final_sp: int = 0x2000,
+    post_call_probe: str = "",
 ) -> tuple[int, str, int, str]:
     """Generate and execute a real codegen entry wrapper against recomp.c."""
     assert CC is not None
@@ -94,6 +95,7 @@ def _build_and_run_stack_census(
             "    RecompFn fn = sr_lookup(0x00001000u);\n"
             "    if (!fn) return 3;\n"
             "    fn(&s);\n"
+            f"{post_call_probe}"
             "    sr_register_all();\n"
             "    SrStackCensusStatus status = sr_stack_census_status();\n"
             "    sr_stack_census_report();\n"
@@ -359,6 +361,27 @@ class StackCensusPipelineTests(unittest.TestCase):
         self.assertEqual(compile_rc, 0, compile_output)
         self.assertEqual(run_rc, 0, run_output)
         self.assertIn("STACK_CENSUS status=PARTIAL entries=1 returns=1 excluded=1", run_output)
+
+    def test_unexpected_entry_is_counted_once_per_invocation(self):
+        # One unexpected invocation (enter + exit, as the generated wrapper does)
+        # must read as unexpected=1, not one count per census hook.
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x03E00008, 0x00000000),
+            "SR_STACK_CENSUS_PARTIAL",
+            post_call_probe=(
+                "    sr_stack_census_enter(0x00009990u);\n"
+                "    sr_stack_census_exit(0x00009990u, 0x2000u, 0x2000u, 0u);\n"
+                "    SrStackCensusSummary probe;\n"
+                "    sr_stack_census_snapshot(&probe);\n"
+                "    if (probe.unexpected != 1u) return 6;\n"
+            ),
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn(
+            "STACK_CENSUS status=PARTIAL entries=2 returns=2 excluded=0 unexpected=1",
+            run_output,
+        )
 
 
 if __name__ == "__main__":

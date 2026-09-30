@@ -859,6 +859,70 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             json.loads(report_path.read_text(encoding="ascii"))["unowned_executable"],
         )
 
+    def test_analyze_cfg_report_alone_does_not_change_entry_inventory(self) -> None:
+        elf_path = self.root / "analyze-report-only.elf"
+        write_elf(
+            elf_path,
+            words=(0x08000404, 0, 0x03E00008, 0, 0, 0, 0x03E00008, 0),
+        )
+
+        def inventory(name: str, *flags: str) -> str:
+            toml_path = self.root / f"{name}.toml"
+            proc = subprocess.run(
+                [
+                    sys.executable, str(TOOLS / "analyze.py"), str(elf_path),
+                    "--base=0", f"--toml={toml_path}", *flags,
+                ],
+                cwd=ROOT, env=self._clean_env(), capture_output=True, text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            return toml_path.read_text(encoding="utf-8")
+
+        default = inventory("analyze-default")
+        report_only = inventory(
+            "analyze-report-only", f"--cfg-report={self.root / 'analyze-report.json'}"
+        )
+        self.assertEqual(report_only, default)
+        self.assertNotEqual(inventory("analyze-gated", "--cfg-gate"), default)
+
+    def test_codegen_cfg_report_alone_does_not_change_generated_code(self) -> None:
+        elf_path = self.root / "cfg-report-only.elf"
+        # A direct jump followed by a `jr $ra`: the default lane seeds 0x1008 as
+        # an entry, the gate lane does not, so the two outputs differ.
+        write_elf(
+            elf_path,
+            words=(0x08000404, 0, 0x03E00008, 0, 0, 0, 0x03E00008, 0),
+        )
+
+        def generate(name: str, *flags: str) -> dict[str, bytes]:
+            out_dir = self.root / name
+            out_dir.mkdir()
+            proc = subprocess.run(
+                [
+                    sys.executable, str(TOOLS / "codegen.py"), str(elf_path),
+                    str(out_dir / "out.c"), "--base=0", "--profile=none",
+                    "--funcs-per-chunk=2000", *flags,
+                ],
+                cwd=ROOT, env=self._clean_env(), capture_output=True, text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            return {path.name: path.read_bytes() for path in sorted(out_dir.glob("*.c"))}
+
+        default = generate("cfg-default")
+        report_path = self.root / "cfg-report-only.json"
+        report_only = generate("cfg-report-only", f"--cfg-report={report_path}")
+        gated_path = self.root / "cfg-gated-report.json"
+        gated = generate("cfg-gated", f"--cfg-report={gated_path}", "--cfg-gate")
+
+        self.assertEqual(report_only, default)
+        self.assertNotEqual(gated, default, "fixture must distinguish the gate lane")
+        # The report-only lane still describes gate-mode analysis.
+        self.assertEqual(
+            report_path.read_bytes(), gated_path.read_bytes(),
+        )
+
     def test_codegen_cfg_gate_records_unreached_extra_elf_word(self) -> None:
         primary = self.root / "cfg-primary.elf"
         extra = self.root / "cfg-extra-gap.elf"

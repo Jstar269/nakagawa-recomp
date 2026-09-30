@@ -2690,17 +2690,19 @@ def main(argv):
         elif o == "--cfg-gate":
             cfg_gate = True
     elf = Elf(args[0], base=base)
-    starts, ranges = analyze(
-        elf,
-        extra_spans=resolve_extra_spans(extra_span_arg),
-        cfg_gate=cfg_gate or cfg_report_path is not None,
-    )
+    extra_spans = resolve_extra_spans(extra_span_arg)
+    starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts
     rc = 0
     if cfg_report_path is not None or cfg_gate:
-        cfg_report = canonical_cfg_report(elf, ranges=ranges, entries=starts)
+        report_entries, report_ranges = starts, ranges
+        if not cfg_gate:
+            # A report-only run describes gate-mode analysis but must not change
+            # the entry set used for the model and recall output below.
+            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+        cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
             if parent:

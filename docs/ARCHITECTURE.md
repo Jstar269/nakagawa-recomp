@@ -66,7 +66,8 @@ switched to the new adapter wholesale in this wave.
 for the production analyzer. The legacy `analyze()` path now exposes the
 canonical CFG report through opt-in `analyze.py --cfg-report/--cfg-gate` and
 `codegen.py --cfg-report/--cfg-gate`; ordinary codegen output and analysis are
-unchanged when those flags are absent. `--cfg-gate` checks the primary image and
+unchanged when those flags are absent, and `--cfg-report` alone reports gate-mode
+analysis without changing emitted code. `--cfg-gate` checks the primary image and
 each supplied extra ELF before code emission. This wiring consumes the legacy
 analyzer result. `--cfg-gate` rejects overlapping executable spans and prevents
 direct-jump adjacency from seeding a callable. It does not claim equivalence

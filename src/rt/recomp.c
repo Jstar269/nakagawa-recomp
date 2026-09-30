@@ -1423,11 +1423,8 @@ void sr_stack_census_exit(uint32_t entry, uint32_t expected_sp,
                           uint32_t actual_sp, uint32_t flow_kind) {
     sr_stack_census_lock();
     if (s_stack_census_armed) {
+        /* `unexpected` is counted once per invocation, at enter. */
         s_stack_census_returns++;
-        if (s_stack_census_invalid_expected
-            || !sr_stack_census_expected_contains(entry)) {
-            s_stack_census_unexpected++;
-        }
         if (flow_kind != 0u) {
             /* Exception/ERET/fatal exits do not have a proven ordinary return
              * contract. Preserve that uncertainty as PARTIAL, never PASS. */

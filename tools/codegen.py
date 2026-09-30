@@ -347,7 +347,7 @@ def emit_host_return(resumable, comment=None, stack_census=False):
     if stack_census:
         # The census wrapper records the actual guest SP before restoring the
         # callable ABI boundary. The ordinary generated path remains unchanged.
-        return "return;"
+        return f"return; /* {comment} */" if comment else "return;"
     if comment:
         return f"s->r[29] = _sp_entry; /* {comment} */\n    return;"
     return "s->r[29] = _sp_entry; return;"
@@ -2563,16 +2563,18 @@ def main(argv):
     # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
-    analyzed, ranges = analyze(
-        elf,
-        extra_spans=resolve_extra_spans(extra_span_arg),
-        cfg_gate=cfg_gate or cfg_report_path is not None,
-    )
+    extra_spans = resolve_extra_spans(extra_span_arg)
+    analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
     if cfg_report_path is not None or cfg_gate:
         # This opt-in gate audits the primary image. Extra modules have their own
         # analyzer invocation below and remain a separate bring-up surface until
         # their ownership roots have an equivalent source-owned contract.
-        cfg_report = canonical_cfg_report(elf, ranges=ranges, entries=analyzed)
+        report_entries, report_ranges = analyzed, ranges
+        if not cfg_gate:
+            # A report-only run describes gate-mode analysis but must not change
+            # the entry set that feeds code emission.
+            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+        cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
             if parent:
@@ -2932,9 +2934,7 @@ def main(argv):
                         )
                         return 2
         owned_exec_ranges.extend(extra_ranges)
-        extra_analyzed, _ = analyze(
-            extra_elf, cfg_gate=cfg_gate or cfg_report_path is not None
-        )
+        extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
         extra_known = set(extra_analyzed)
         extra_known = set(a for a in extra_known if in_ranges(a, extra_ranges))
         if cfg_gate:

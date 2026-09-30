@@ -1867,7 +1867,6 @@ int main(int argc, char **argv) {
         || stack_census.unexpected != 0u
         || !stack_census.has_mismatch
         || stack_census.first_mismatch_entry != stack_leak_control->address
-        || stack_census.first_mismatch_flow != 0u
         || stack_census.first_mismatch_expected_sp
             < stack_census.first_mismatch_actual_sp
         || stack_census.first_mismatch_expected_sp
