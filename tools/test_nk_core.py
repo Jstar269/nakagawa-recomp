@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -1894,6 +1895,59 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         entry = nk_cli._load_library_entry(user_root, "ULES00123")
         self.assertEqual(entry["title_id"], "NPUG80318")
         self.assertEqual(entry["iso_path"], "synthetic.iso")
+
+    def _cli_library(self, count: int) -> Path:
+        path = self.temp_dir / "library.json"
+        games = [{"disc_id": f"TEST{i:05d}", "title_id": "synthetic",
+                  "iso_path": "synthetic.iso", "selected_executable": "BOOT.BIN",
+                  "is_experimental": False} for i in range(count)]
+        path.write_text(json.dumps({"schema_version": 1, "games": games}), encoding="utf-8")
+        return path
+
+    def test_cli_library_at_record_limit_is_readable(self) -> None:
+        self._cli_library(nk_cli.MAX_LIBRARY_GAMES)
+        disc_id = f"TEST{nk_cli.MAX_LIBRARY_GAMES - 1:05d}"
+        nk_cli._write_bringup_library(
+            self.temp_dir, Path("replacement.iso"), SimpleNamespace(disc_id=disc_id),
+            "synthetic", "BOOT.BIN", False,
+        )
+        entry = nk_cli._load_library_entry(self.temp_dir, disc_id)
+        self.assertEqual(entry["title_id"], "synthetic")
+        self.assertEqual(entry["iso_path"], "replacement.iso")
+
+    def test_cli_library_append_over_limit_preserves_existing_file(self) -> None:
+        path = self._cli_library(2)
+        before = path.read_bytes()
+        with patch.object(nk_cli, "MAX_LIBRARY_GAMES", 2):
+            with self.assertRaisesRegex(nk_cli.PackageBuildError, "record limit"):
+                nk_cli._write_bringup_library(
+                    self.temp_dir, Path("synthetic.iso"),
+                    SimpleNamespace(disc_id="TEST99999"), "synthetic", "BOOT.BIN", False,
+                )
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_cli_library_oversized_write_preserves_existing_file(self) -> None:
+        path = self._cli_library(1)
+        before = path.read_bytes()
+        with self.assertRaisesRegex(nk_cli.PackageBuildError, "byte limit"):
+            nk_cli._write_bringup_library(
+                self.temp_dir, Path("synthetic.iso"),
+                SimpleNamespace(disc_id="TEST99999"),
+                "A" * package_cache.MAX_CACHE_JSON_BYTES, "BOOT.BIN", False,
+            )
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_cli_library_writer_rejects_boolean_schema(self) -> None:
+        path = self._cli_library(1)
+        path.write_text(path.read_text().replace('"schema_version": 1', '"schema_version": true'),
+                        encoding="utf-8")
+        before = path.read_bytes()
+        with self.assertRaisesRegex(nk_cli.PackageBuildError, "unsupported schema"):
+            nk_cli._write_bringup_library(
+                self.temp_dir, Path("synthetic.iso"),
+                SimpleNamespace(disc_id="TEST99999"), "synthetic", "BOOT.BIN", False,
+            )
+        self.assertEqual(path.read_bytes(), before)
 
 
 if __name__ == "__main__":
