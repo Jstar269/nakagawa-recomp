@@ -21,7 +21,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d75871c6852072d69015d9239d50088bbb04a2a7ebbb311bdc240f0823bd94cc"
+      "sha256": "98019bc91206fc5e6fce7e7113c4791a16713d090a6ba722c2e00d6b00e12900"
     },
     {
       "path": ".clang-format",
@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab32664df7f0ea9b1b6c97d2bd13aabfe7f8b06f9449c6189e86fca9ab4434f2"
+      "sha256": "f9ebf47890205caf336dcf0ddb01585821ec6af8138f01fa53740a747e158a6d"
     },
     {
       "path": "AGENTS.md",
@@ -9471,11 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "f1e6858ddf816a42327c37e965fcb41bbddcbc3a",
-    "candidate_tree": "c88fc7272659f8359946a66a5193d8f4583dd79f",
+    "trusted_tree": "22f665a47307168f0ba3645bf1c5656ce7663ac5",
+    "candidate_tree": "f4dc142b8e19dd38257de0d2fc0d1e3dffeb2a75",
     "refreshed_paths": [
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c"
+      ".betterleaks.toml",
+      ".pre-commit-config.yaml"
     ]
   }
 }
