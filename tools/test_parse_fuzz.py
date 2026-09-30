@@ -354,11 +354,11 @@ class TestParserSafetyInventory(unittest.TestCase):
         r"|[A-Za-z_][A-Za-z0-9_]*(?:[./][A-Za-z_][A-Za-z0-9_]*)*))?"
     )
     SYMBOL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
-    C_DEF = re.compile(
-        r"^(?:static\s+|inline\s+|extern\s+)*(?:const\s+)?"
-        r"(?:unsigned\s+|signed\s+|struct\s+\w+\s*\*?\s*)*"
-        r"[A-Za-z_][A-Za-z0-9_]*\s+\**([A-Za-z_][A-Za-z0-9_]*)\s*\("
-    )
+    # A C function header is checked by splitting, not by one nested regex: a
+    # repeated qualifier group such as (struct\s+\w+\s*)* backtracks
+    # exponentially on hostile lines (CodeQL py/redos).
+    C_HEADER_TEXT = re.compile(r"[A-Za-z_][A-Za-z0-9_ \t*]*")
+    C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
     C_DEFINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b")
     C_STATIC_CONST = re.compile(
         r"^\s*static\s+const\b.*?\b([A-Za-z_][A-Za-z0-9_]*)\s*"
@@ -410,6 +410,27 @@ class TestParserSafetyInventory(unittest.TestCase):
         return cls.source_cache[rel]
 
     @classmethod
+    def c_function_header(cls, line: str) -> tuple[str, int] | None:
+        """Return (name, index after its opening parenthesis) for a C function header.
+
+        The header is a return type made of identifiers and ``*`` starting in
+        column 0, then the function name and ``(``. Calls inside bodies are
+        indented and never match.
+        """
+        paren = line.find("(")
+        if paren <= 0:
+            return None
+        head = line[:paren]
+        if not cls.C_HEADER_TEXT.fullmatch(head):
+            return None
+        tokens = [token for token in re.split(r"[ \t*]+", head) if token]
+        if len(tokens) < 2 or not all(cls.C_IDENTIFIER.fullmatch(token) for token in tokens):
+            return None
+        if not head.rstrip().endswith(tokens[-1]):
+            return None
+        return tokens[-1], paren + 1
+
+    @classmethod
     def definition_line(cls, line: str) -> str | None:
         """Return the name a line *defines*, or None when it defines nothing.
 
@@ -427,15 +448,15 @@ class TestParserSafetyInventory(unittest.TestCase):
             return match.group(1)
         if line.rstrip().endswith(";"):
             return None
-        match = cls.C_DEF.match(line)
-        return match.group(1) if match is not None else None
+        header = cls.c_function_header(line)
+        return header[0] if header is not None else None
 
     @classmethod
-    def _c_function_has_body(cls, lines: list[str], line_index: int, match: re.Match) -> bool:
+    def _c_function_has_body(cls, lines: list[str], line_index: int, body_start: int) -> bool:
         """Distinguish a C function definition from a possibly multiline prototype."""
         header = "\n".join(lines[line_index:])
-        depth = 1  # C_DEF includes the function's opening parenthesis.
-        for offset, char in enumerate(header[match.end():], match.end()):
+        depth = 1  # body_start is just past the function's opening parenthesis.
+        for offset, char in enumerate(header[body_start:], body_start):
             if char == "(":
                 depth += 1
             elif char == ")":
@@ -485,10 +506,10 @@ class TestParserSafetyInventory(unittest.TestCase):
             return found
 
         for index, line in enumerate(lines):
-            function = cls.C_DEF.match(line)
+            function = cls.c_function_header(line)
             if function is not None:
-                if cls._c_function_has_body(lines, index, function):
-                    add(function.group(1), index + 1)
+                if cls._c_function_has_body(lines, index, function[1]):
+                    add(function[0], index + 1)
                 continue
             name = cls.definition_line(line)
             if name is not None:
@@ -608,6 +629,22 @@ class TestParserSafetyInventory(unittest.TestCase):
                 any(field.startswith(prefix) for field in scanned), f"no anchor scanned in {prefix}"
             )
         self.assertGreater(checked, 300, "inventory lost most of its anchors")
+
+    def test_c_function_header_is_linear_and_keeps_definition_shapes(self) -> None:
+        header = self.c_function_header
+        self.assertEqual(header("static int foo(void) {"), ("foo", 15))
+        self.assertEqual(header("static const struct nk_x *bar(int a)")[0], "bar")
+        self.assertEqual(header("unsigned int baz (int a)")[0], "baz")
+        self.assertEqual(header("extern bool nk_iso_reader_open(NkIso *iso,")[0],
+                         "nk_iso_reader_open")
+        self.assertIsNone(header("    call_inside_body(x);"))
+        self.assertIsNone(header("x = compute(1);"))
+        self.assertIsNone(header("int *(y);"))
+        # Hostile shapes that made the former nested-quantifier regex backtrack
+        # exponentially (CodeQL py/redos) finish at once.
+        for hostile in ("struct " + "0signed struct " * 5000 + "!",
+                        "struct 0" + " struct 0" * 5000 + "!"):
+            self.assertIsNone(header(hostile))
 
     def test_every_inventory_row_has_live_sources_tests_and_campaign_status(self) -> None:
         inventory = self.inventory
