@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f9ebf47890205caf336dcf0ddb01585821ec6af8138f01fa53740a747e158a6d"
+      "sha256": "a156b86cf4b162df982bd61e236d0e6617d230fbe7d2caddea1b0a848326d987"
     },
     {
       "path": "AGENTS.md",
@@ -641,7 +641,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef7cfa65d0d6f67bab5290f183eacfee886e6faec55fd58e99151b40fc35328b"
+      "sha256": "7a1e2f2e2e018f5113f73126df0464f1fc708bf91579a7e488ebc0bb9a82455a"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -670,7 +670,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ba1aa42045b218c4960e6f3a1ae48283da6c8a75191a84817c179de6d16ab37b"
+      "sha256": "bb3795caae0972d5bac6c253398f8505db86ba44b1924558ffd2e8f95b8414e1"
     },
     {
       "path": "assets/release_manifest.json",
@@ -691,7 +691,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1911069683671922ca02e8f149253adae345627022852d12dfbdd13c73dc001d"
+      "sha256": "f2f40dd46ed80c6ab7f82dd588ad49c5cfbcd649eac0bdc6cf37f9c8143c9936"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -5891,7 +5891,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50c68fd8b39d822d44c55bdd9f90288fbbb995e8d574267ee1ef44dd08daa891"
+      "sha256": "dfae881322a6c38003bbc10fe898df82dab212b960fb2fdba97b35d1a94104d9"
     },
     {
       "path": "tools/ghidra_crosscheck.py",
@@ -6905,7 +6905,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "41183179b0981e5e57132181a9a653c368bac8b7396f1390409600e0bb1a1c65"
+      "sha256": "4552ce66861aa53281986849b8fa76821f6fa50be7e67f637e3a1d281cf45445"
     },
     {
       "path": "tools/run_perf_benchmarks.py",
@@ -8696,7 +8696,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65a0333479abbfaf6a816737c85f49216b357f4d816b213ed85038997b118449"
+      "sha256": "24fd26046546be45650785690d53864639f2c307c1cf089a9d8e504132429228"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -8720,7 +8720,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9fd31887cd86880f548ea70582d20e9404b344829c9eace4b6520b69f389ec71"
+      "sha256": "056681c7da3989d0dfc74684897c035b0e7790c006b94f1075c2a7010c05ee70"
     },
     {
       "path": "tools/test_sched_invariants.py",
@@ -9471,23 +9471,17 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "53090fb87a16bff2e24387e5fec081775f478c72",
-    "candidate_tree": "7bc3ef176346f89486461932bcd6e494468192ee",
+    "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
+    "candidate_tree": "ebb70bf71ba335c39d1bdd41f89a63a6b1419956",
     "refreshed_paths": [
-      ".github/workflows/ci.yml",
-      "Makefile",
-      "assets/bringup_report.schema.json",
-      "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
-      "fixtures/display_smoke/generate.py",
-      "src/rt/gui.c",
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c",
-      "src/rt/recomp.h",
-      "tools/boot_gate.py",
-      "tools/gate_stub.c",
-      "tools/nk_cli.py",
-      "tools/test_boot_gate.py",
-      "tools/test_production_smoke.py"
+      ".pre-commit-config.yaml",
+      "assets/prereq_manifest.json",
+      "assets/pypi_tool_metadata_2026-09-25.json",
+      "assets/third_party_components.json",
+      "tools/generate_sbom.py",
+      "tools/requirements-lock.txt",
+      "tools/test_sbom.py",
+      "tools/test_sbom_fail_closed.py"
     ]
   }
 }
