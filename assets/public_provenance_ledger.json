@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3363c999eccb3dca87fb26a6e94429517cefb754afc52430de92b5262aa09444"
+      "sha256": "3b657b32074caa4e3527bb1aa538d188daa8da5abf136161af70e8e152d5be9d"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aff8cdff02c05b7af512d86da9237bdfd3c62426766d60331dd8403f9651c37f"
+      "sha256": "8789f38005b984fbd0a753ddeb1e166869159b7c8e6b05d824388220677e4c77"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7503a9c028fa8aa16803056d9aaa50640fec5f217d7d422fd1e3e6cd5d761968"
+      "sha256": "7fd06e5ada5479c14579e6d76f89bf49b9f7a6aaa983523f32bef69bd815b055"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1162,7 +1162,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "99008a74645f0024f56ff41f3c02e5bf3296c7ecbcc684552e3f177a9ac56087"
+      "sha256": "4e41da6074d2fde89db5f9e0a11ba5bf22a7f9cdb8350180f500e900deacdaeb"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1294,7 +1294,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "16fcb74d84c710d9c9f9d614fcf4b9a80e0b53a47707113701a3aa599edcf76d"
+      "sha256": "b1d018078a14fec35a6deb768a31b2a46f61aec5fb7f49d88a43a4405957560c"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -1339,7 +1339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "020e80e400ac24325559bf3656f51446f82d6cd7eb26dbdd61bf1bf12b52af60"
+      "sha256": "8cc73e8bd28550f2c27ae8b2f246967b9ff6f932aa1042e379138b2210a65cc5"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -5501,7 +5501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "503d4ab4229b090ac4bd9e72f5c5ec09c70f64a5aa812cf7df58ac2eee5c5c8c"
+      "sha256": "bf4fb660ba277571f6a8f84a6c4752e4790d5b590f38fd8c2f50544a589c3d7f"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5514,7 +5514,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5c105e11df11bff86c65e52b114b856be64d9f5720a9a88424d7a70d14bced5f"
+      "sha256": "0cd4712cc486884f8822c16677b74d22936dee45af8c71a8ace0bd4fc67f2d3c"
     },
     {
       "path": "tools/analyze.py",
@@ -5623,7 +5623,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0f449b92d16c3807ee7cb1ab40feae2ca1741975a653dbd324e0ea93e90cf93f"
+      "sha256": "1b1eb5dfd22844d54f51b8dc9ca6ec2249b48e4128f81ac595e1a672f0aa5587"
     },
     {
       "path": "tools/ci_required.py",
@@ -6580,7 +6580,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff9077d57da539083a4466784053941532617bc976b5fe8f4f4a68ebd6ef7d30"
+      "sha256": "0708a244bf3a2bf047f8adfa0571de106385e7936e56089b433dc330e181e3c3"
     },
     {
       "path": "tools/prxload.py",
@@ -7097,7 +7097,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "00d5746bec632e4382af4cc7c5d41f700332e7f6156cbe07c84ecbae9259bc85"
+      "sha256": "a1ad5b631993b8ad07f983671ae5b37622e531dd21f398805427a6e608b499f0"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7590,7 +7590,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca070dba93b4cb5da24991cc153f31ababbcb5e79ed37468b25e3e8c172f366c"
+      "sha256": "c8765f722be7f317c79e50d896f20085bca325267d3c81e073dc271fd905efb1"
     },
     {
       "path": "tools/test_ge_capture.py",
@@ -7927,7 +7927,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c099d227d92505270613b81ec30089446e816cd55d53161eebb03111a711a19b"
+      "sha256": "cb53e133fb6d62aae0cbcd89258338348e503d0b1ae884fa65d1a24caa9a9735"
     },
     {
       "path": "tools/test_manager_safety.ps1",
@@ -8323,7 +8323,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "004ef3ef8f1ccd21e94e1a14ab36165a74dd7b86f973a38685ec23581f6e6141"
+      "sha256": "e4bb1f0bf596257b20e9713c65d73e9df0452c2292295886b21c6ac9193fa60e"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -8563,7 +8563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da376b8f987ba75c05535d2a42a75ce317f635e6e5c8deba96641a65014f8c67"
+      "sha256": "9b949fbc627957c2427b05490ab986c9952f6507e812a1771e65fd36b5795ba6"
     },
     {
       "path": "tools/test_public_export.py",
@@ -9297,7 +9297,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f1c68d740e80626649cc3bf92b7336811d4dd0833a5f1e440756ddfe0b28e9d8"
+      "sha256": "4d994bf680519fe73ed46720382460b1448f27db3f921c7a16930dd065171b60"
     },
     {
       "path": "tools/validate_assets.py",
@@ -9468,20 +9468,5 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
-    "candidate_tree": "ebb70bf71ba335c39d1bdd41f89a63a6b1419956",
-    "refreshed_paths": [
-      ".pre-commit-config.yaml",
-      "assets/prereq_manifest.json",
-      "assets/pypi_tool_metadata_2026-09-25.json",
-      "assets/third_party_components.json",
-      "tools/generate_sbom.py",
-      "tools/requirements-lock.txt",
-      "tools/test_sbom.py",
-      "tools/test_sbom_fail_closed.py"
-    ]
-  }
+  ]
 }
