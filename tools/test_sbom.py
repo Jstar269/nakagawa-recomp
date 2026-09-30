@@ -262,7 +262,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             [source["url"] for source in metadata["sources"]],
             [
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
-                "https://pypi.org/pypi/ruff/0.16.8/json",
+                "https://pypi.org/pypi/ruff/0.16.9/json",
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/bashlex/0.18/json",
             ],
@@ -303,7 +303,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("malformed SHA-256 hash", str(ctx.exception))
 
     def test_old_sequential_ruff_hash_fails_as_unmatched(self):
-        text = f"ruff==0.16.8 --hash=sha256:{self.OLD_RUFF_HASH}\n"
+        text = f"ruff==0.16.9 --hash=sha256:{self.OLD_RUFF_HASH}\n"
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             self._parse(text)
         self.assertIn("matches no trusted artifact", str(ctx.exception))
