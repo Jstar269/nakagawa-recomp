@@ -1276,7 +1276,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "235ef530991422ccb3e81e2156d075256233bdecab796b03979ae80746641977"
+      "sha256": "15e92b6e7f871141973c50068bea81fd511bdf6b833e11be67df433bef0615ff"
     },
     {
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "09b7c1f07596813897749f300a09ce1b22dba3f21a65a32e6bafc2bd332c17cc"
+      "sha256": "5e21da55f25b40ee281e51d91d98c030ef4d6f384a8bbd4794ed7a02a18d62c7"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4563,7 +4563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d5f400f6991bcb803bf9158520cf934a18c2b88f092047a50de7a54e04364dfa"
+      "sha256": "0c803db60625d2e19b12f59b640f397098780101c929cf8eb6f82ef8beef9280"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4856,7 +4856,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8c6e2d7411cc20e197528b3d9213263e230d00dcf927853904f68118ed219f2d"
+      "sha256": "df1b1f723afa45af7f931a2e820a20a6075e58ed376db8da2ba88932cc7d0d38"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4882,7 +4882,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0657bbb5adc9f79c39d0e4026410ac74226c7016ec76b2136127e8e4f08ae055"
+      "sha256": "06db002ff4270b3652ab75d6b2afabedbfbf71f0ed5dc9cfdaf28610908dbd61"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -6035,7 +6035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2402a280b8a8fbae06e40fc18e8296059b3e280ac1402507b5e1337514fa6ebf"
+      "sha256": "fa26f46847b0c0d02e0141f02d87a3216dcc5865e8a8966d1b4cb168f3a10401"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -9471,17 +9471,15 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
-    "candidate_tree": "ebb70bf71ba335c39d1bdd41f89a63a6b1419956",
+    "trusted_tree": "8b9f193e0493278383ee94bf9587bc97aa41372c",
+    "candidate_tree": "606366c117f7e447c74f7f5b1e8ab7909f7b6f3e",
     "refreshed_paths": [
-      ".pre-commit-config.yaml",
-      "assets/prereq_manifest.json",
-      "assets/pypi_tool_metadata_2026-09-25.json",
-      "assets/third_party_components.json",
-      "tools/generate_sbom.py",
-      "tools/requirements-lock.txt",
-      "tools/test_sbom.py",
-      "tools/test_sbom_fail_closed.py"
+      "docs/PSP_INTR_WAITS_CENSUS.md",
+      "src/rt/hle.c",
+      "src/rt/hle_thread_selftest.c",
+      "src/rt/recomp.h",
+      "src/rt/sched.c",
+      "tools/import_audit_baseline.json"
     ]
   }
 }
