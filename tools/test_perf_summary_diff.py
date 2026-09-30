@@ -129,6 +129,41 @@ class PerfSummaryDiffTests(unittest.TestCase):
         self.assertEqual([item["metric"] for item in ranking],
                          ["vulkan.wait_ns", "vulkan.readback_ns", "storage.vfs_read_ns"])
 
+    def test_rejects_nonfinite_tolerance(self):
+        before = summary()
+        after = copy.deepcopy(before)
+        after["guest"]["aot_ns"] += 1
+        for tolerance in (float("inf"), float("nan")):
+            with self.subTest(tolerance=tolerance):
+                with self.assertRaisesRegex(perf_summary_diff.PerfSummaryError, "finite"):
+                    perf_summary_diff.diff_summaries(before, after, tolerance)
+
+    def test_rejects_nonfinite_metric(self):
+        for metric, value in (("guest.aot_ns", float("nan")),
+                              ("vulkan.wait_ns", float("inf"))):
+            with self.subTest(metric=metric, value=value), tempfile.TemporaryDirectory() as temp:
+                candidate = summary()
+                group, field = metric.split(".")
+                candidate[group][field] = value
+                path = Path(temp) / "summary.json"
+                path.write_text(json.dumps(candidate), encoding="utf-8")
+                with self.assertRaisesRegex(perf_summary_diff.PerfSummaryError, "finite"):
+                    perf_summary_diff.load_summary(path)
+
+    def test_zero_tolerance_preserves_adjacent_large_integer_differences(self):
+        before = summary()
+        after = copy.deepcopy(before)
+        before["guest"]["aot_ns"] = 1 << 53
+        after["guest"]["aot_ns"] = (1 << 53) + 1
+        before["transitions"]["aot_to_interpreter_count"] = 1 << 53
+        after["transitions"]["aot_to_interpreter_count"] = (1 << 53) + 1
+
+        result = perf_summary_diff.diff_summaries(before, after)
+
+        changed_paths = {change["path"] for change in result["changes"]}
+        self.assertIn("$.guest.aot_ns", changed_paths)
+        self.assertIn("$.transitions.aot_to_interpreter_count", changed_paths)
+
     def test_runtime_transition_summary_and_disabled_path(self):
         compiler = shutil.which("gcc")
         if compiler is None:
