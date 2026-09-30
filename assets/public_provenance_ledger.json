@@ -5514,7 +5514,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5c105e11df11bff86c65e52b114b856be64d9f5720a9a88424d7a70d14bced5f"
+      "sha256": "5d70df5878d4e48d6be0b65923485d6c15d0a3351fc75a14b1934b10ca3a8e78"
     },
     {
       "path": "tools/analyze.py",
@@ -7590,7 +7590,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca070dba93b4cb5da24991cc153f31ababbcb5e79ed37468b25e3e8c172f366c"
+      "sha256": "7e25d58942ad28c0ea6f50e1d0df0029f4aadcf070108d60d6daf473c454f79d"
     },
     {
       "path": "tools/test_ge_capture.py",
@@ -9297,7 +9297,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f1c68d740e80626649cc3bf92b7336811d4dd0833a5f1e440756ddfe0b28e9d8"
+      "sha256": "971a47191d88db5060fc4839b13f86758e4baae2a6df45488ed47acee54ef7d0"
     },
     {
       "path": "tools/validate_assets.py",
@@ -9471,13 +9471,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "6d80938d77e0c3f29c1fe9e5847204009e30a059",
-    "candidate_tree": "e77bedc0194acdbaf228307aa177c8623b2055d5",
+    "trusted_tree": "c39f062e2e09c358607a8d023b8ba43aabca956e",
+    "candidate_tree": "7fe561b17e373db9a15b5d21de93ae2fa86cdec8",
     "refreshed_paths": [
-      "docs/PROVENANCE_MERGE_GATE.md",
-      "docs/PUBLICATION_READINESS.md",
-      "tools/provenance_attest_verify.py",
-      "tools/test_provenance_attest_verify.py"
+      "tools/TRACE_FORMAT.md",
+      "tools/test_gate_exit_resolution.py",
+      "tools/tracediff.py"
     ]
   }
 }
