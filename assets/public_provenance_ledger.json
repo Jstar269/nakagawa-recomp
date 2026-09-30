@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f6e166593d539c6986605bcfdf0959ff94b5659deaee26df689f0ff39d220603"
+      "sha256": "109c3105a4147974007adfa41bbbdc8affbb9c513ebb5fc5af272aa01f0f2347"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8107,7 +8107,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1ed8baebc0de97a26b03ec4083323cb5be5edfdddee15cd3032d70ee4b8b682c"
+      "sha256": "0284044f67a0acaef6eb6bdf42a1ebebeaf8685d1a95983565625db2a1552bd9"
     },
     {
       "path": "tools/test_nk_core.py",
@@ -9471,14 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
-    "candidate_tree": "da2e68dd2e1bf33a36dc84e5c60da3dd951d40fe",
+    "trusted_tree": "9a2d310fdf967bbbef2be131d01659e2da951720",
+    "candidate_tree": "2f28f152a58c164f7c21d2cd17be02da27aba153",
     "refreshed_paths": [
-      "docs/CI.md",
-      "docs/ENHANCEMENT_CONTRACT.md",
-      "tools/flight_diff.py",
-      "tools/test_flight_build_identity.py",
-      "tools/test_flight_diff.py"
+      "tools/nk_cli.py",
+      "tools/test_nk_cli_progress.py"
     ]
   }
 }
