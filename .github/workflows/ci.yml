@@ -712,8 +712,9 @@ jobs:
       # smokes prove compute and the dispatch seam but never reach the display
       # source, so a scheduler change that stops delivering vblanks to a guest
       # whose only wait is a vblank wait was invisible to every hosted gate. Runs
-      # headless (--sched): the assertion is the guest-visible framebuffer word,
-      # so no display is required on the runner.
+      # headless (--sched), then through the normal --sched --gui route with
+      # SR_VIDEO=offscreen: the assertions are the guest-visible framebuffer
+      # word and accepted offscreen-present ordering, so no display is required.
       - name: Build and run display presentation smoke
         if: matrix.part == 'main'
         shell: msys2 {0}
