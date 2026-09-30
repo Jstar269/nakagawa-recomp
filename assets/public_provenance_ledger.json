@@ -282,7 +282,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a212c53002a8b5daeb4fe150a757fc7dfdc9add784a46698bc12447e012cb9f0"
+      "sha256": "5da1130b9012aa6a65c4111974e182d97f0e94c1be28357d43236070421c6b99"
     },
     {
       "path": "LICENSE",
@@ -9471,11 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "b42e9ab790bb700833b653ca83e8fcc584e88c76",
-    "candidate_tree": "754e0a11169b117da4df2db2349ec56d7a26160c",
+    "trusted_tree": "9180e74bd1e09063622415b9ae3239390ed22906",
+    "candidate_tree": "8ec0a165272ab6dc817ecacdaa6d3ba75410b3ed",
     "refreshed_paths": [
-      "tools/nk_cli.py",
-      "tools/test_nk_cli_progress.py"
+      "ISSUES.md"
     ]
   }
 }
