@@ -30,12 +30,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_registry_meta as meta  # noqa: E402
+import publication_policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 HLE_C = ROOT / "src" / "rt" / "hle.c"
@@ -654,9 +655,16 @@ def dump_json(obj: dict, path: Path) -> None:
 
 CHAIN_SCHEMA = 1
 
+#: The closed vocabulary of `tools/psp_oracle/manifest.json`'s per-test
+#: `hardware_evidence`.  `status` states whether the probe source exists;
+#: only this field states what a hardware run established, and only `MEASURED`
+#: — with a resolvable committed citation — may grant HARDWARE_MEASURED.
+HARDWARE_EVIDENCE_VALUES = frozenset({"NOT_RUN", "CAPTURED", "MEASURED"})
+
 INTR_CONFORMANCE_H = ROOT / "src" / "rt" / "intr_conformance.h"
 SELFTEST_C = ROOT / "src" / "rt" / "hle_thread_selftest.c"
 PSP_ORACLE_MANIFEST = ROOT / "tools" / "psp_oracle" / "manifest.json"
+PUBLIC_SOURCE_PROFILE = ROOT / "assets" / "public_source_profile.json"
 
 SELFTEST_MACRO = "SR_HLE_THREAD_SELFTEST"
 
@@ -812,12 +820,122 @@ def selftest_dispatched_nids(selftest_text: str) -> set[int]:
     return nids
 
 
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
+
+
+def _heading_slug(heading: str) -> str:
+    """GitHub-style anchor slug for one Markdown ATX heading."""
+    return re.sub(r"\s+", "-", re.sub(r"[^\w\s-]", "", heading.strip().lower())).strip("-")
+
+
+def _cited_section(ref: str, test_id: str) -> str:
+    """The text of the ``path#heading-slug`` section an evidence_ref cites.
+
+    Fails closed on everything a citation could lean on without being checked:
+    a malformed reference, a path the canonical publication policy does not
+    classify as publishable (an excluded or unclassified record is not public
+    evidence), a missing file, or a heading the file does not contain.
+    """
+    path_text, _, slug = ref.partition("#")
+    pure = PurePosixPath(path_text)
+    if not path_text or not slug or pure.is_absolute() or ".." in pure.parts:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref {ref!r} must be a repo-relative "
+            "'path#heading-slug' reference"
+        )
+    resolution = publication_policy.load_policy(PUBLIC_SOURCE_PROFILE).resolve(path_text)
+    if resolution.disposition != publication_policy.INCLUDED:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref cites {path_text!r}, which the publication "
+            f"policy resolves as {resolution.disposition} ({resolution.rule}); hardware "
+            "evidence must cite committed, publication-eligible documentation"
+        )
+    section: str | None = None
+    body: list[str] = []
+    try:
+        lines = (ROOT / pure).read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref cites {path_text!r}, which is not readable "
+            f"in this tree ({error.strerror})"
+        ) from error
+    for line in lines:
+        heading = _HEADING_RE.match(line)
+        if heading:
+            if section == slug:
+                return "\n".join(body)
+            section, body = _heading_slug(heading.group(1)), []
+            continue
+        if section == slug:
+            body.append(line)
+    raise ManifestError(
+        f"test {test_id!r} evidence_ref {ref!r} names no heading in {path_text!r}"
+    )
+
+
+def measured_evidence_section(test: dict) -> str:
+    """Check one `MEASURED` oracle row's citation and return the cited text.
+
+    A MEASURED row must name the cases the citation covers in `evidence_cases`,
+    every one of them must be one of the row's own `case_ids`/`apis`, and the
+    cited section must contain each of them verbatim.  A row that cannot show
+    that its evidence exercised exactly what it claims is not measured.
+    """
+    test_id = test.get("id", "?")
+    ref = test.get("evidence_ref")
+    cases = test.get("evidence_cases")
+    if not isinstance(ref, str) or not ref:
+        raise ManifestError(
+            f"test {test_id!r} claims hardware_evidence MEASURED with no evidence_ref"
+        )
+    if (
+        not isinstance(cases, list)
+        or not cases
+        or not all(isinstance(case, str) and case for case in cases)
+    ):
+        raise ManifestError(
+            f"test {test_id!r} claims hardware_evidence MEASURED with no evidence_cases"
+        )
+    declared = set(test.get("case_ids", [])) | set(test.get("apis", []))
+    undeclared = sorted({case for case in cases if case not in declared})
+    if undeclared:
+        raise ManifestError(
+            f"test {test_id!r} evidence_cases {undeclared} are neither its case_ids nor its apis"
+        )
+    section = _cited_section(ref, test_id)
+    unnamed = sorted({case for case in cases if case not in section})
+    if unnamed:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref {ref!r} does not name {unnamed}; a MEASURED "
+            "row must cite evidence of the exact cases it claims"
+        )
+    return section
+
+
 def oracle_exercised_apis(manifest: dict) -> dict[str, list[str]]:
-    """API name -> ids of implemented source-owned PSP probes that call it."""
+    """API name -> ids of measured source-owned PSP probes that call it.
+
+    The strongest evidence tier is granted from the oracle manifest's explicit
+    `hardware_evidence` field alone.  `status: implemented` is hand-maintained
+    probe-source prose and never grants evidence; `MEASURED` additionally has to
+    cite committed, publication-eligible documentation that names every case the
+    row claims (see `measured_evidence_section`).
+    """
     out: dict[str, list[str]] = {}
     for test in manifest.get("tests", []):
-        if test.get("status") != "implemented":
+        test_id = test.get("id", "?")
+        hardware_evidence = test.get("hardware_evidence", "NOT_RUN")
+        if (
+            not isinstance(hardware_evidence, str)
+            or hardware_evidence not in HARDWARE_EVIDENCE_VALUES
+        ):
+            raise ManifestError(
+                f"test {test_id!r} has unknown hardware_evidence "
+                f"{hardware_evidence!r}; expected one of {sorted(HARDWARE_EVIDENCE_VALUES)}"
+            )
+        if hardware_evidence != "MEASURED":
             continue
+        measured_evidence_section(test)
         for api in test.get("apis", []):
             out.setdefault(api, []).append(test.get("id", "?"))
     return out
@@ -1300,13 +1418,17 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     try:
         manifest = build_manifest()
+        chain = (
+            build_evidence_chain(manifest, args.imports, args.triage_top)
+            if args.evidence_chain is not None
+            else None
+        )
     except ManifestError as e:
         print(f"hle_manifest: {e}", file=sys.stderr)
         return 1
     dump_json(manifest, args.out)
     print(f"hle_manifest: {len(manifest['registrations'])} registrations -> {args.out}")
-    if args.evidence_chain is not None:
-        chain = build_evidence_chain(manifest, args.imports, args.triage_top)
+    if chain is not None:
         dump_json(chain, args.evidence_chain)
         tiers = ", ".join(f"{k}={v}" for k, v in chain["summary"]["by_tier"].items())
         print(f"hle_manifest: evidence chain -> {args.evidence_chain} ({tiers})")
