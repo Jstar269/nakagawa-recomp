@@ -22,15 +22,15 @@ Live join of every exact `sce*` / `__sce*` API named in
 ## Summary
 
 - total exact APIs: **72**
-- missing: **21**
+- missing: **16**
 - registered (fake success): **0**
-- implemented: **51**
+- implemented: **56**
 - controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #339: 21
-- #341: 42
+- #339: 16
+- #341: 47
 
 ## Census
 
@@ -43,9 +43,9 @@ Open-owner counts:
 | `sceCtrlReadBufferPositive` | implemented | #341 | dedicated | unreviewed | `h_CtrlReadBuffer` | `0x1f803938` |
 | `sceDisplayIsVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayIsVblank` | `0x4d4e10ec` |
 | `sceDisplayWaitVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblank` | `0x36cdfade` |
-| `sceDisplayWaitVblankCB` | missing | #339 | missing | - | - | - |
+| `sceDisplayWaitVblankCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankCB` | `0x8eb9ec49` |
 | `sceDisplayWaitVblankStart` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStart` | `0x984c27e7` |
-| `sceDisplayWaitVblankStartCB` | missing | #339 | missing | - | - | - |
+| `sceDisplayWaitVblankStartCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStartCB` | `0x46f186c3` |
 | `sceDisplayWaitVblankStartMulti` | missing | #339 | missing | - | - | - |
 | `sceDisplayWaitVblankStartMultiCB` | missing | #339 | missing | - | - | - |
 | `sceGeDrawSync` | implemented | #341 | dedicated | unreviewed | `h_GeDrawSync` | `0xb287bd61` |
@@ -66,8 +66,8 @@ Open-owner counts:
 | `sceKernelCpuSuspendIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuSuspendIntr` | `0x092968f4` |
 | `sceKernelCreateMbx` | implemented | - | dedicated | partial | `h_CreateMbx` | `0x8125221d` |
 | `sceKernelCreateTlspl` | missing | #339 | missing | - | - | - |
-| `sceKernelDelaySysClockThread` | missing | #339 | missing | - | - | - |
-| `sceKernelDelaySysClockThreadCB` | missing | #339 | missing | - | - | - |
+| `sceKernelDelaySysClockThread` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThread` | `0xbd123d9e` |
+| `sceKernelDelaySysClockThreadCB` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThreadCB` | `0x1181e963` |
 | `sceKernelDelayThread` | implemented | #341 | dedicated | unreviewed | `h_DelayThread` | `0xceadeb47` |
 | `sceKernelDelayThreadCB` | implemented | #341 | dedicated | unreviewed | `h_DelayThreadCB` | `0x68da9e36` |
 | `sceKernelDeleteMbx` | implemented | - | dedicated | partial | `h_DeleteMbx` | `0x86255ada` |
@@ -96,7 +96,7 @@ Open-owner counts:
 | `sceKernelStartModule` | implemented | #341 | dedicated | unreviewed | `h_StartModule` | `0x50f0c1ec` |
 | `sceKernelStopModule` | implemented | #341 | dedicated | unreviewed | `h_StopModule_Trace` | `0xd1ff982a` |
 | `sceKernelSuspendDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_SuspendDispatchThread` | `0x3ad58b8c` |
-| `sceKernelTerminateThread` | missing | #339 | missing | - | - | - |
+| `sceKernelTerminateThread` | implemented | #341 | dedicated | unreviewed | `h_TerminateThread` | `0x616403ba` |
 | `sceKernelTryAllocateFpl` | implemented | #341 | dedicated | unreviewed | `h_TryAllocateFpl` | `0x623ae665` |
 | `sceKernelVolatileMemLock` | implemented | #341 | dedicated | unreviewed | `h_VolatileMemLock` | `0x3e0271d3` |
 | `sceKernelWaitEventFlag` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlag` | `0x402fcf22` |

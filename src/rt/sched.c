@@ -995,6 +995,31 @@ int sched_wait_vblank(void) {
     return 0;
 }
 
+/* Callback-aware display waits return only after the vblank condition was met.
+ * A queued callback can ready the thread before the display source does, so the
+ * CB path compares the delivered-edge counter and re-enters the same wait until
+ * the next start edge is observed. WaitVblank keeps its measured in-window fast
+ * return, but services a callback already pending for the caller first. */
+int sched_wait_vblank_cb(int wait_start) {
+    extern int sr_thread_has_pending_callbacks(uint32_t thread_uid);
+    extern int sr_thread_dispatch_callbacks(void);
+    if (s_cur < 0 || s_cur >= s_ntcb) return 0;
+
+    uint32_t uid = s_tcb[s_cur].uid;
+    uint64_t target_vblank = s_vbl_count + 1u;
+    for (;;) {
+        if (sr_thread_has_pending_callbacks(uid))
+            sr_thread_dispatch_callbacks();
+        if (s_vbl_count >= target_vblank) return 0;
+
+        sched_set_current_cb_wait(1);
+        int returned_in_vblank = wait_start ? 0 : sched_wait_vblank();
+        if (wait_start) sched_wait_vblank_start();
+        sched_set_current_cb_wait(0);
+        if (returned_in_vblank) return 1;
+    }
+}
+
 /* ---- virtual time ------------------------------------------------------------------------
  * The scheduler keeps a microsecond clock (s_vtime_us) that all timed waits compare against.
  * With vblank pacing ON (default) it tracks SDL's monotonic clock, so sceKernelDelayThread and
@@ -2558,16 +2583,19 @@ void sched_preempt(void) {
 #endif
 }
 
-void sched_delay_current(uint32_t usec) {
+void sched_delay_current(uint64_t usec) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
     uint64_t duration = usec ? usec : 1u;
     vtime_refresh();
     uint64_t wake = scheduler_deadline_after(duration);
     if (getenv("SR_DELAYLOG"))
-        fprintf(stderr, "DELAY uid=0x%x entry=0x%08x usec=%u (%.1fs) wake=%llu\n", t->uid, t->entry, usec, usec / 1e6, (unsigned long long)wake);
+        fprintf(stderr, "DELAY uid=0x%x entry=0x%08x usec=%llu (%.1fs) wake=%llu\n",
+                t->uid, t->entry, (unsigned long long)usec,
+                (double)usec / 1e6, (unsigned long long)wake);
     if (usec > 2000000u && getenv("SR_DELAYLOG"))   /* > 2s: catch a bogus huge delay */
-        fprintf(stderr, "BIG DELAY uid=0x%x entry=0x%08x usec=%u (%.1fs)\n", t->uid, t->entry, usec, usec / 1e6);
+        fprintf(stderr, "BIG DELAY uid=0x%x entry=0x%08x usec=%llu (%.1fs)\n",
+                t->uid, t->entry, (unsigned long long)usec, (double)usec / 1e6);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, 0u);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, 0u, 0u);
@@ -2660,6 +2688,9 @@ static void sched_wake_thread_joiners(uint32_t uid, uint32_t result) {
 #endif
         waiter->wait_obj = 0;
         waiter->wake = 0;
+        waiter->wait_kind = 0;
+        waiter->pending_wait_kind = 0;
+        waiter->wake_result_valid = 0;
         waiter->is_cb_wait = 0;
     }
 }
@@ -3157,7 +3188,11 @@ uint32_t sched_terminate_thread(uint32_t uid) {
     t->state = TH_DORMANT;
     t->exit_status = (int32_t)SCE_KERNEL_ERROR_THREAD_TERMINATED;
     t->sleeping = 0; t->wait_obj = 0; t->wake = 0;
-    t->join_waiting = 0; t->join_result_valid = 0;
+    t->wait_kind = 0; t->pending_wait_kind = 0;
+    t->wake_result = 0; t->wake_result_valid = 0;
+    t->wakeups = 0; t->is_cb_wait = 0;
+    t->join_waiting = 0; t->join_target = 0; t->join_result = 0;
+    t->join_result_valid = 0;
     sched_wake_thread_joiners(uid, SCE_KERNEL_ERROR_THREAD_TERMINATED);
     sched_wake(uid);
     return 0;

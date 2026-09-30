@@ -169,6 +169,12 @@
     "name": "memset",
     "status": "complete"
   },
+  "0x1181e963": {
+    "classification": "dedicated",
+    "handler": "h_DelaySysClockThreadCB",
+    "name": "sceKernelDelaySysClockThreadCB",
+    "status": "unreviewed"
+  },
   "0x132f1eca": {
     "classification": "dedicated",
     "handler": "h_AtracReinit",
@@ -768,6 +774,12 @@
     "name": "sceUmdCheckMedium",
     "status": "unreviewed"
   },
+  "0x46f186c3": {
+    "classification": "dedicated",
+    "handler": "h_DisplayWaitVblankStartCB",
+    "name": "sceDisplayWaitVblankStartCB",
+    "status": "unreviewed"
+  },
   "0x46f61f8b": {
     "classification": "dedicated",
     "handler": "h_PsmfGetVideo",
@@ -994,6 +1006,12 @@
     "classification": "dedicated",
     "handler": "h_MpegQueryStreamSize",
     "name": "sceMpegQueryStreamSize",
+    "status": "unreviewed"
+  },
+  "0x616403ba": {
+    "classification": "dedicated",
+    "handler": "h_TerminateThread",
+    "name": "sceKernelTerminateThread",
     "status": "unreviewed"
   },
   "0x617f3fe6": {
@@ -1441,6 +1459,12 @@
     "handler": "h_MpegGetPcmAu",
     "name": "sceMpegGetPcmAu",
     "status": "controlled_unsupported"
+  },
+  "0x8eb9ec49": {
+    "classification": "dedicated",
+    "handler": "h_DisplayWaitVblankCB",
+    "name": "sceDisplayWaitVblankCB",
+    "status": "unreviewed"
   },
   "0x8ef08fce": {
     "classification": "dedicated",
@@ -1903,6 +1927,12 @@
     "classification": "dedicated",
     "handler": "h_SasGetGrain",
     "name": "__sceSasGetGrain",
+    "status": "unreviewed"
+  },
+  "0xbd123d9e": {
+    "classification": "dedicated",
+    "handler": "h_DelaySysClockThread",
+    "name": "sceKernelDelaySysClockThread",
     "status": "unreviewed"
   },
   "0xbea46419": {
