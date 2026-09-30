@@ -1210,7 +1210,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13b5c3781631f32674bb648cfe27390f71d2f02e18b37a6a5bb6bad2fcec5513"
+      "sha256": "5a9f6f8cf9b1c386b5212a5f815585ce0dffa0f04fd62ac1e40ab2d6949fff4a"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -6302,7 +6302,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "63225288457f1360d5b9585a1921fdc05602d261af6d9247f5f1269d9ae796d7"
+      "sha256": "2c064b31903db7fd312a32a46fbdca40d8f438ac209e217d9bdcdfb549efe7f0"
     },
     {
       "path": "tools/nk_core/package_cache.py",
@@ -8119,7 +8119,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf7cb80a0967cfe2dbf4e842813149910d86e523b6e66cb1c064455661530cd4"
+      "sha256": "c7d9d876f6aa34acb78d25a9abe5d3ea42b1105434b9f70ec272b8cc4aa91353"
     },
     {
       "path": "tools/test_package_cache.py",
@@ -9472,7 +9472,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
-    "candidate_tree": "29e9ca5f3cd02243ea775306ca611cb009ee30a6",
+    "candidate_tree": "7cd837b593953a1fb9705a0e9ff43596ff742ada",
     "refreshed_paths": [
       "docs/PARSER_SAFETY_INVENTORY.json",
       "tools/nk_cli.py",

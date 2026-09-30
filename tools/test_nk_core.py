@@ -1701,7 +1701,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "byte.*limit"):
             lib.save()
         self.assertEqual(path.read_bytes(), before)
-        self.assertFalse(path.with_name(path.name + ".tmp").exists())
+        self.assertEqual([item.name for item in self.temp_dir.iterdir()], [path.name])
         self.assertEqual(GameLibrary.load(path).count(), 1)
 
     def test_library_target_with_tmp_suffix_is_preserved(self) -> None:
@@ -1959,6 +1959,40 @@ class BoundedLibraryJsonTests(unittest.TestCase):
                 path = self._write("nonfinite.json", text)
                 with self.assertRaisesRegex(ValueError, "library JSON.*finite"):
                     GameLibrary.load(path)
+
+    def test_overlapping_library_saves_use_independent_temporary_files(self) -> None:
+        path = self.temp_dir / "library.json"
+        first = GameLibrary(storage_file=path)
+        second = GameLibrary(storage_file=path)
+        first.add_or_update_game(LibraryGameRecord("TEST00001", "First", "first.iso"))
+        second.add_or_update_game(LibraryGameRecord("TEST00002", "Second", "second.iso"))
+        real_load = GameLibrary.load
+        interleaved = False
+
+        def validate_with_another_writer(temporary):
+            nonlocal interleaved
+            if not interleaved:
+                interleaved = True
+                # The second production save completes between the first one's
+                # temporary write and validation; no threads or timing guesses.
+                second.save()
+            return real_load(temporary)
+
+        with patch.object(GameLibrary, "load", side_effect=validate_with_another_writer):
+            first.save()
+        loaded = GameLibrary.load(path)
+        self.assertEqual([game.disc_id for game in loaded.list_games()], ["TEST00001"])
+        self.assertEqual(sorted(item.name for item in self.temp_dir.iterdir()), ["library.json"])
+
+    def test_library_save_preserves_another_writers_temporary_file(self) -> None:
+        path = self.temp_dir / "library.json"
+        other_temporary = self.temp_dir / "library.json.tmp"
+        other_temporary.write_bytes(b"another writer's checkpoint")
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord("TEST00001", "Synthetic", "synthetic.iso"))
+        lib.save()
+        self.assertEqual(other_temporary.read_bytes(), b"another writer's checkpoint")
+        self.assertEqual(GameLibrary.load(path).count(), 1)
 
 
 if __name__ == "__main__":

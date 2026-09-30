@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
+import tempfile
 import time
 from typing import Any, Dict, List, Optional
 
@@ -202,7 +203,7 @@ class GameLibrary:
             )
 
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_file = out_file.with_name(out_file.name + ".tmp")
+        tmp_file: Optional[Path] = None
 
         payload = {
             "schema_version": LIBRARY_SCHEMA_VERSION,
@@ -211,7 +212,13 @@ class GameLibrary:
         }
 
         try:
-            with open(tmp_file, "w", encoding="utf-8") as f:
+            # Each writer owns its temporary file. Overlapping saves must not
+            # overwrite or unlink another writer's in-flight output.
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=out_file.parent,
+                prefix=f".{out_file.name}.", suffix=".tmp", delete=False,
+            ) as f:
+                tmp_file = Path(f.name)
                 json.dump(payload, f, indent=2, ensure_ascii=False)
             # Validate with the exact reader before replacing a working library.
             # Oversized settings or invalid in-memory records must never install
@@ -219,7 +226,8 @@ class GameLibrary:
             GameLibrary.load(tmp_file)
             tmp_file.replace(out_file)
         finally:
-            tmp_file.unlink(missing_ok=True)
+            if tmp_file is not None:
+                tmp_file.unlink(missing_ok=True)
 
     @classmethod
     def load(cls, file_path: Path | str) -> "GameLibrary":
