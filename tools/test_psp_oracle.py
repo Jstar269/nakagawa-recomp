@@ -446,9 +446,12 @@ class PspOracleDeviceIdentityTests(unittest.TestCase):
             "PROBE_BUILD_COMMIT could not be determined",
             missing.stdout + missing.stderr,
         )
+        # git status never lists an empty directory, so the scratch directory
+        # needs a file for the checkout to read as dirty.
         with tempfile.TemporaryDirectory(
             prefix="probe-build-dirty-", dir=makefile_path
-        ):
+        ) as scratch:
+            (Path(scratch) / "untracked.txt").write_text("dirty\n", encoding="utf-8")
             completed = subprocess.run(
                 [make, "-C", str(makefile_path)],
                 capture_output=True,
