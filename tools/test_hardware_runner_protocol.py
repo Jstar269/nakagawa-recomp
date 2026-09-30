@@ -24,8 +24,8 @@ Fail-closed invariants under test, in one sentence each:
 * stale, mismatched-identity, or partial evidence must be rejected, not averaged in;
 * recovery is a bounded ladder whose exhaustion is an explicit
   PHYSICAL_INTERVENTION_REQUIRED stop, never an infinite retry loop;
-* raw device values (including the recorded PSP-3000-series vs raw-model-3
-  contradiction) are preserved verbatim next to interpreted labels.
+* raw device values and operator-declared labels are preserved separately from
+  versioned interpretations and computed agreement.
 """
 
 from __future__ import annotations
@@ -65,6 +65,7 @@ from psp_oracle.parse_golden import (
     MBX_DELETE_WAIT_SPEC,
 )
 from psp_oracle.protocol import ProtocolError as PspProtocolError
+from psp_oracle.protocol import model_identity_fields
 
 MAGIC = b"NR"
 VERSION = 2
@@ -227,6 +228,7 @@ class SimulatedPsplinkTransport:
         stdout_record_cases: set[str] | None = None,
         stdout_result_overrides: dict[str, str] | None = None,
         host0_log_contents: dict[str, str] | None = None,
+        model_profile_raw_value: str = "0x3",
         write_host0_logs: bool = True,
         stale_host0_mtime: bool = False,
     ):
@@ -242,6 +244,7 @@ class SimulatedPsplinkTransport:
         self.stdout_record_cases = stdout_record_cases or set()
         self.stdout_result_overrides = stdout_result_overrides or {}
         self.host0_log_contents = host0_log_contents or {}
+        self.model_profile_raw_value = model_profile_raw_value
         self.write_host0_logs = write_host0_logs
         self.stale_host0_mtime = stale_host0_mtime
         self.post_case_ver_failed = False
@@ -345,8 +348,8 @@ class SimulatedPsplinkTransport:
             elif case_id == "model-profile":
                 result_record = (
                     "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SYSTEM-001 "
-                    "case_id=model-profile status=PASS result=0x3 "
-                    "out0=0x3 out1=0x06060110 out2=0xde\n"
+                    f"case_id=model-profile status=PASS result={self.model_profile_raw_value} "
+                    f"out0={self.model_profile_raw_value} out1=0x06060110 out2=0xde\n"
                 )
             else:
                 result_record = (
@@ -616,12 +619,9 @@ class Orchestrator:
     def _envelope(self, case_id, iteration, raw_result, fields) -> dict:
         return {
             "CONSOLE_ID": "sim-unit-001",
-            "PHYSICAL_MODEL_LABEL": self.meta.get("label", "unset"),
-            "SOFTWARE_MODEL_RAW_VALUE": self.meta.get("raw_model", "unset"),
-            "MODEL_CONTRADICTION": "RECORDED"
-            if self.meta.get("label", "").startswith("psp-3000")
-            and self.meta.get("raw_model") == "3"
-            else "NONE",
+            **model_identity_fields(
+                self.meta.get("label"), self.meta.get("raw_model")
+            ),
             "SOURCE_COMMIT": SOURCE_COMMIT,
             "BINARY_SHA256": RUNNER_SHA,
             "RUNNER_SHA256": RUNNER_SHA,
@@ -678,15 +678,17 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertIn("status=PASS", env["RAW_RESULT"])
         self.assertEqual(env["QUALIFICATION_STATUS"], "QUALIFIED")
 
-    # -- 14. model contradiction is preserved, never silently corrected -
-    def test_14_model_contradiction_recorded_not_corrected(self):
+    # -- 14. raw model and physical label remain separately auditable -----
+    def test_14_model_identity_uses_the_versioned_pspsdk_rule(self):
         orch, _, _ = self.build()
         orch.qualify()
         orch.run_case("meta_probe")
         env = orch.envelopes[-1]
         self.assertEqual(env["SOFTWARE_MODEL_RAW_VALUE"], "3")
         self.assertEqual(env["PHYSICAL_MODEL_LABEL"], "psp-3000-series")
-        self.assertEqual(env["MODEL_CONTRADICTION"], "RECORDED")
+        self.assertEqual(env["INTERPRETED_MODEL_FAMILY"], "PSP-3000")
+        self.assertEqual(env["MODEL_INTERPRETATION_RULE"], "PSPSDK_PMODEL_ORDINAL_V1")
+        self.assertEqual(env["MODEL_IDENTITY_AGREEMENT"], "AGREES")
 
     # -- 12/13. identity binding fails closed --------------------------
     def test_12_wrong_binary_sha_aborts_before_cases(self):
@@ -828,17 +830,51 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             ["transport-write", "model-profile"],
         )
         for envelope in report["envelopes"]:
-            self.assertEqual(envelope["CONSOLE_MODEL"], "PSP-3000-04g")
+            self.assertEqual(envelope["PHYSICAL_MODEL_LABEL"], "PSP-3000-04g")
             self.assertEqual(envelope["FW"], "6.6.1")
-            self.assertEqual(envelope["SOFTWARE_MODEL_RAW_VALUE"], "3")
+            self.assertEqual(envelope["INTERPRETED_MODEL_FAMILY"], "PSP-3000")
+            self.assertEqual(envelope["MODEL_INTERPRETATION_RULE"], "PSPSDK_PMODEL_ORDINAL_V1")
+            self.assertEqual(envelope["MODEL_IDENTITY_AGREEMENT"], "AGREES")
             self.assertTrue(envelope["ACCEPTANCE_ELIGIBLE"])
             self.assertNotIn("SERIAL", " ".join(envelope).upper())
+        self.assertEqual(report["envelopes"][0]["SOFTWARE_MODEL_RAW_VALUE"], "3")
+        self.assertEqual(report["envelopes"][1]["SOFTWARE_MODEL_RAW_VALUE"], "0x3")
         commands = [command for command, _timeout in transport.commands]
         self.assertEqual(commands.count("modstun 0x04280001"), 2)
         self.assertEqual(commands.count("modinfo 0x04280001"), 2)
         self.assertEqual(
             [timeout for command, timeout in transport.commands if command.startswith("ldstart")],
             [1.25, 1.25],
+        )
+
+    def test_campaign_model_profile_mismatch_is_refused_without_rewriting_raw_value(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(
+            prefix="runner-model-identity-mismatch-", dir=fixture_dir
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "model-profile"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+            transport = SimulatedPsplinkTransport(model_profile_raw_value="0x4")
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-series",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(envelope["SOFTWARE_MODEL_RAW_VALUE"], "0x4")
+        self.assertEqual(envelope["INTERPRETED_MODEL_FAMILY"], "PSP-N1000")
+        self.assertEqual(envelope["MODEL_IDENTITY_AGREEMENT"], "DISAGREES")
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertIn(
+            "device model-profile out0=0x4 does not match",
+            " | ".join(envelope["ACCEPTANCE_BLOCKERS"]),
         )
 
     def test_campaign_waits_for_complete_fpu_host0_stream_before_unload(self):
