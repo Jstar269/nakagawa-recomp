@@ -641,7 +641,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef7cfa65d0d6f67bab5290f183eacfee886e6faec55fd58e99151b40fc35328b"
+      "sha256": "95185ec1a3f3b190e328a750470e699467f9df602693a2a9c009c03190ca945c"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -9471,10 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "14878772ffc510df6942ad7a3d6664ff2a6cb809",
-    "candidate_tree": "21c1fc68d16fc77cb1c6ae308a3fdfd462ececf3",
+    "trusted_tree": "53090fb87a16bff2e24387e5fec081775f478c72",
+    "candidate_tree": "19eeae21892cc010cc2f707cd1ac98a705cc05a5",
     "refreshed_paths": [
-      ".github/workflows/dependency-review.yml"
+      "assets/prereq_manifest.json"
     ]
   }
 }
