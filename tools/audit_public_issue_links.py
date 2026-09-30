@@ -49,14 +49,21 @@ CURRENT_FACING_DOCS = {
     "docs/PUBLICATION_READINESS.md",
     "docs/PUBLIC_SOURCE_PROFILE.md",
     "docs/DCO_POLICY.md",
-    "docs/KEY_HISTORY_SCRUB.md",
-    "docs/PGD_AMCTRL_REVIEW_PACKET.md",
-    "docs/PGF_LICENSE_REVIEW_PACKET.md",
-    "docs/PGD_KEYS.md",
     "font/README.md",
     "src/rt/gpu_sdl3vk/README.md",
     "tools/README.md",
 }
+
+# These documents are intentionally excluded by the public source profile. Keep them
+# separate from actual current-facing docs while preserving their shorthand audit coverage.
+PRIVATE_EXCLUDED_DOCS = {
+    "docs/KEY_HISTORY_SCRUB.md",
+    "docs/PGD_AMCTRL_REVIEW_PACKET.md",
+    "docs/PGD_KEYS.md",
+    "docs/PGF_LICENSE_REVIEW_PACKET.md",
+}
+
+SHORTHAND_AUDIT_DOCS = CURRENT_FACING_DOCS | PRIVATE_EXCLUDED_DOCS
 
 HISTORICAL_EVIDENCE_DOCS = {
     "docs/STATUS_HISTORY.md",
@@ -191,7 +198,7 @@ def audit_markdown_files(
         except ValueError:
             rel = doc_path.name
 
-        is_current_doc = rel in CURRENT_FACING_DOCS
+        is_current_doc = rel in SHORTHAND_AUDIT_DOCS
         is_historical_doc = rel in HISTORICAL_EVIDENCE_DOCS
         in_tracker_section = False
         in_at_a_glance = False
