@@ -71,14 +71,26 @@ Memory Stick root is not followed.
 ```bash
 cmake -S . -B build/cmake-linux -DBUILD_PLAYER=ON -DCMAKE_C_COMPILER=gcc
 cmake --build build/cmake-linux -j4
-(cd build/cmake-linux && ctest --output-on-failure)   # 9/9 pass
+ctest --test-dir build/cmake-linux --output-on-failure
 ```
 
-The player binary builds and starts:
+The player binary builds, and its CLI help works without opening a display:
 
 ```bash
 SDL_VIDEODRIVER=offscreen ./build/cmake-linux/nakagawa_player --help
 # Usage: nakagawa_player [--iso=<path>] [--stage|--stage-only] ...
+```
+
+The bounded headless staging smoke uses the source-owned TEST00007 showcase ISO. It needs
+PSPDEV because the showcase target first compiles its synthetic guest:
+
+```bash
+NK_SHOWCASE_BUILD_ROOT=/tmp/nakagawa-showcase-build \
+NK_SHOWCASE_DEMO_ROOT=/tmp/nakagawa-showcase-demo make CC=gcc showcase-linux
+XDG_DATA_HOME=/tmp/nakagawa-player-smoke-data timeout 60s \
+  build/cmake-linux/nakagawa_player \
+  --iso=/tmp/nakagawa-showcase-build/showcase-scene-v1/TEST00007.iso --stage-only
+# Expect: STAGING_RESULT status=PASS
 ```
 
 ### Makefile
@@ -114,9 +126,9 @@ python tools/lint_docs.py
 
 | Gate | Status | Issue |
 | --- | --- | --- |
-| Consumer ISO compatibility | The automated Linux runtime gate builds and boots only the source-owned TEST00007/TEST00008 showcase fixtures. Compatibility across consumer ISOs and title-specific semantics remains in the works. | #306 |
-| `hle-thread-selftest` and `hle-title-selftest` | These production-HLE harnesses still use Win32 test setup and are not built on Linux. The Linux showcase exercises the real runtime but does not replace those broader HLE suites. | #306 |
-| Interactive SDL3/Vulkan presentation | The showcase smoke uses dummy video/audio drivers and checks headless output. Interactive desktop presentation and a broader Linux device/display matrix remain in progress. | #306 |
+| Consumer ISO compatibility | The automated Linux CMake/player and runtime gates use only the source-owned TEST00007/TEST00008 showcase fixtures. Compatibility across consumer ISOs and title-specific semantics remains in the works. | #306 |
+| `hle-thread-selftest` and `hle-title-selftest` | These production-HLE harnesses still use Win32 test setup and are not built on Linux. The Linux showcase exercises the real runtime but does not replace those broader HLE suites, which remain in the works. | #306 |
+| Interactive SDL3/Vulkan presentation | The showcase smoke uses dummy video/audio drivers and checks headless output. Interactive desktop presentation and a broader Linux device/display matrix remain in the works. | #306 |
 | Python suites that call `git` | `tools/test_lint_docs.py`, `tools/test_publication_policy_gate.py`, and `tools/publish_audit.py` use `git` on the checkout. They work in an ordinary Linux clone; they fail in a Windows checkout opened from WSL, because its worktree paths are Windows paths. Never set `GIT_DIR` to work around it. | #306 |
 | Full `python -m unittest discover -s tools` | Takes several minutes; CI splits it into shards. Run the focused suites above while developing. | #306 |
 
@@ -125,7 +137,7 @@ python tools/lint_docs.py
 - [`SETUP.md`](SETUP.md) — Windows development baseline.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan and the
   host-neutral object gate.
-- [`CI.md`](CI.md) — hosted CI routes (the Linux native test job uses
-  `make CC=gcc native-core-tests` and `make CC=gcc showcase-linux`).
+- [`CI.md`](CI.md) — hosted CI routes (the Linux native job builds the CMake player,
+  runs CTest and the showcase headless gates, and runs `make CC=gcc native-core-tests`).
 
 <!-- issue-links: #306 -->

@@ -48,6 +48,14 @@ class CiRequiredTests(unittest.TestCase):
                 results = _results(**{"python-tools": outcome})
                 self.assertFalse(required_gate_passes(results, {"python-tools": True}, allow_substantive=True))
 
+    def test_applicable_native_player_gate_failure_or_skip_fails(self) -> None:
+        for outcome in ("failure", "cancelled", "skipped"):
+            with self.subTest(outcome=outcome):
+                results = _results(**{"native-tools": outcome})
+                self.assertFalse(
+                    required_gate_passes(results, {"native-tools": True}, allow_substantive=True)
+                )
+
     def test_classifier_and_hygiene_failures_cannot_be_hidden(self) -> None:
         for name in ("classify", "hygiene"):
             with self.subTest(name=name):
