@@ -357,7 +357,14 @@ int main(void) {
         self.assertIn(f'"arg0":{0x12345678}', result.stdout)
 
     def test_flight_diff_localizes_first_media_change_in_mixed_recorder_bundles(self):
-        """A source-owned media milestone diverges before the later symptom."""
+        """A source-owned media milestone diverges before the later symptom.
+
+        The limit-4 capture slides both rings, so that pair is INCOMPARABLE
+        under the #320 comparability contract: identical retained windows
+        cannot vouch for the dropped events. The same programs re-captured
+        under a limit that retains every event are comparable, and the CLI
+        still names the media milestone as the first divergence.
+        """
         harness = r'''#include "flight_recorder.h"
 
 #ifdef SR_TEST_INJECT_MEDIA
@@ -387,6 +394,7 @@ int main(void) {
             source = temp_path / "flight_media_recorder_fixture.c"
             source.write_text(harness, encoding="utf-8")
             bundles: dict[str, Path] = {}
+            executables: dict[str, Path] = {}
             for name, extra_defines in (
                 ("baseline", []),
                 ("injected", ["-DSR_TEST_INJECT_MEDIA"]),
@@ -434,6 +442,7 @@ int main(void) {
                     check=False,
                 )
                 self.assertEqual(run_result.returncode, 0, run_result.stderr)
+                executables[name] = executable
                 bundles[name] = bundle_path
 
             baseline = flight_diff.load_bundle(bundles["baseline"])
@@ -451,7 +460,42 @@ int main(void) {
             self.assertEqual(baseline["recorder"]["dropped"], 1)
             self.assertEqual(baseline["events"][2]["arg1"], 0x1111)
             self.assertEqual(injected["events"][2]["arg1"], 0x2222)
-            divergence = flight_diff.diff_bundles(baseline, injected, "sequence")
+            # Both limit-4 runs slid their ring: sequence 1 is gone on both
+            # sides. Even though the retained windows agree, the comparator
+            # must refuse the pair (#320): the dropped events could differ.
+            with self.assertRaises(flight_diff.BundleIncomparable):
+                flight_diff.diff_bundles(baseline, injected, "sequence")
+
+            # Re-capture the same executables under a limit that retains every
+            # event: no drops on either side, so the pair is comparable and
+            # the media milestone is still the first reported divergence.
+            bundles_full: dict[str, Path] = {}
+            for name in ("baseline", "injected"):
+                bundle_path = temp_path / f"{name}-full.json"
+                env = dict(os.environ)
+                env.pop("SR_WATCH", None)
+                env["SR_FLIGHT"] = "hle,sched,prx,media;8"
+                env["SR_FLIGHT_OUTPUT"] = str(bundle_path)
+                run_result = subprocess.run(
+                    [str(executables[name])],
+                    cwd=temp_path,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(run_result.returncode, 0, run_result.stderr)
+                bundles_full[name] = bundle_path
+
+            baseline_full = flight_diff.load_bundle(bundles_full["baseline"])
+            injected_full = flight_diff.load_bundle(bundles_full["injected"])
+            self.assertEqual(baseline_full["recorder"]["dropped"], 0)
+            self.assertEqual(injected_full["recorder"]["dropped"], 0)
+            self.assertEqual(
+                [event["sequence"] for event in baseline_full["events"]],
+                [1, 2, 3, 4, 5],
+            )
+            divergence = flight_diff.diff_bundles(baseline_full, injected_full, "sequence")
             self.assertIsNotNone(divergence)
             self.assertEqual(divergence[0], "sequence 4")
             self.assertEqual(divergence[1]["arg1"], 0x1111)
@@ -460,8 +504,8 @@ int main(void) {
                 [
                     sys.executable,
                     str(ROOT / "tools" / "flight_diff.py"),
-                    str(bundles["baseline"]),
-                    str(bundles["injected"]),
+                    str(bundles_full["baseline"]),
+                    str(bundles_full["injected"]),
                 ],
                 capture_output=True,
                 text=True,
