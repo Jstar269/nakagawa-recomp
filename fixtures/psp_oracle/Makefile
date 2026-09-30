@@ -136,6 +136,8 @@ else ifeq ($(CASE),model-profile)
 CASE_ID = 54
 else ifeq ($(CASE),dma-size-matrix-cell)
 CASE_ID = 55
+else ifeq ($(CASE),mbx-delete-wait)
+CASE_ID = 56
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif

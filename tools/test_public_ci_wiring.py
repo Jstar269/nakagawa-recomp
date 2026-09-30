@@ -37,7 +37,7 @@ class PublicCiWiringTests(unittest.TestCase):
         lock = json.loads((ROOT / "assets" / "upstream" / "pspdev.lock.json").read_text())
         evidence = json.loads((ROOT / "assets" / "upstream" / "pspdev.evidence.json").read_text())
         self.assertIn("Build pinned SDL3 for headless Linux runtime", ci)
-        self.assertIn("d9d5536704d585616d4db3c8ba3c4ff6fc2757e1", ci)
+        self.assertIn("fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", ci)
         self.assertIn("libvulkan-dev", ci)
         self.assertIn("SDL_UNIX_CONSOLE_BUILD=ON", ci)
         self.assertIn("pspdev.lock.json", ci)
@@ -49,6 +49,31 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", ci)
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("showcase-linux", docs)
+
+    def test_sdl3_pin_is_consistent_across_ci_cmake_and_docs(self) -> None:
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        version = re.search(r"^\s*SDL3_VERSION=(\d+\.\d+\.\d+)$", ci, re.MULTILINE)
+        commit = re.search(r"^\s*SDL3_COMMIT=([0-9a-f]{40})$", ci, re.MULTILINE)
+        self.assertIsNotNone(version, "ci.yml must name the pinned SDL3 version")
+        self.assertIsNotNone(commit, "ci.yml must pin SDL3 to a full commit id")
+        pinned = version.group(1)
+        self.assertIn('test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"', ci)
+
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        url = re.search(
+            r"releases/download/release-(\d+\.\d+\.\d+)/SDL3-(\d+\.\d+\.\d+)\.tar\.gz", cmake)
+        self.assertIsNotNone(url, "CMakeLists.txt must bootstrap an official SDL3 release")
+        self.assertEqual({url.group(1), url.group(2)}, {pinned})
+        self.assertRegex(cmake, r"URL_HASH SHA256=[0-9a-f]{64}\b")
+        self.assertIn(f"pinned official release SDL3 {pinned}", cmake)
+
+        for doc in ("CI.md", "SETUP.md", "LINUX_DEVELOPMENT.md"):
+            text = (ROOT / "docs" / doc).read_text(encoding="utf-8")
+            with self.subTest(doc=doc):
+                named = set(re.findall(r"SDL3 (\d+\.\d+\.\d+)|pinned (\d+\.\d+\.\d+)", text))
+                versions = {v for pair in named for v in pair if v}
+                self.assertTrue(versions, f"docs/{doc} names no SDL3 version")
+                self.assertEqual(versions, {pinned})
 
     def test_windows_vfpu_ci_uses_pregenerated_public_mode(self) -> None:
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")

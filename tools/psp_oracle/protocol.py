@@ -29,7 +29,25 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # valid, so the parser accepts them; they must never be promoted into acceptance
 # evidence.  ``provenance_issues`` is the programmatic form of that boundary.
 _ALL_ZERO_RE = re.compile(r"^0+$")
-UNMEASURED_TOKENS = frozenset({"unknown", "unset", "placeholder", "none", "n/a", "na", "tbd"})
+# Tokens are compared after ``_placeholder_key`` folds case and drops separators,
+# so "n/a", "Not-Measured" and "un measured" all match.  A label with no letter or
+# digit ("?", "-") names nothing and is a placeholder too.
+UNMEASURED_TOKENS = frozenset({
+    "unknown", "unset", "placeholder", "none", "na", "tbd", "tbc", "unmeasured",
+    "notmeasured", "unverified", "unavailable", "unspecified", "missing", "null", "nil",
+    "empty", "todo", "fixme", "dummy", "fake",
+})
+_PLACEHOLDER_SEPARATORS_RE = re.compile(r"[\s._/-]+")
+
+
+def _placeholder_key(value: str) -> str:
+    return _PLACEHOLDER_SEPARATORS_RE.sub("", value.strip().lower())
+
+
+def is_unmeasured(value: str) -> bool:
+    """Return True when a provenance label is a placeholder, not a measurement."""
+    key = _placeholder_key(value)
+    return not any(ch.isalnum() for ch in key) or key in UNMEASURED_TOKENS
 EXPECTED_SOURCE = {"psp": "psp", "nakagawa": "nakagawa"}
 DMAC_SIZE_MATRIX_SIZES = (0xBFFF, 0xC000, 0xC001, 0xD000, 0xF000, 0xFFFF, 0x10000, 0x100000)
 DMAC_SIZE_MATRIX_TRIALS = 3
@@ -159,7 +177,7 @@ def provenance_issues(metadata: dict[str, str]) -> tuple[str, ...]:
         value = metadata.get(field)
         if value is None:
             problems.append(f"{field} is absent")
-        elif value.strip().lower() in UNMEASURED_TOKENS:
+        elif is_unmeasured(value):
             problems.append(f"{field} is the fixture placeholder {value!r}")
     digest = metadata.get("binary_sha256")
     if digest is None:

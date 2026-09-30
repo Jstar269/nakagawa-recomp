@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Fail-closed tests for the PSP-IO-001, PSP-AUDIO-001 and PSP-CACHE-001 parsers.
+"""Fail-closed tests for source-owned PSP oracle stream parsers.
 
 Every mutation family here is generated from the parser's own ``StreamSpec``,
 so the number of cases moves with the source rather than with a comment.  The
-three probes share one strict-sequence engine, so each family is asserted
-against all three specs instead of being written out once per probe.
+parsers share one strict-sequence engine, so each sequence mutation family is
+asserted against every spec instead of being written out once per probe.
 """
 
 from __future__ import annotations
@@ -21,9 +21,12 @@ from psp_oracle.parse_golden import (
     AUDIO_SPEC,
     CACHE_SPEC,
     IO_SPEC,
+    MBX_DELETE_WAIT_EXPECTED_FIELDS,
+    MBX_DELETE_WAIT_SPEC,
     parse_audio_query_output,
     parse_cache_alias_output,
     parse_io_matrix_output,
+    parse_mbx_delete_wait_output,
 )
 from psp_oracle.protocol import ProtocolError, StreamSpec
 
@@ -38,6 +41,7 @@ PROBES = (
     (IO_SPEC, parse_io_matrix_output),
     (AUDIO_SPEC, parse_audio_query_output),
     (CACHE_SPEC, parse_cache_alias_output),
+    (MBX_DELETE_WAIT_SPEC, parse_mbx_delete_wait_output),
 )
 
 
@@ -49,6 +53,15 @@ def line(spec: StreamSpec, case_id: str, status: str = "PASS", *, out0: int | No
         return (
             f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={case_id} "
             f"status={status} result=0x00000000 out0=0x{value:08x}\n"
+        )
+    if spec == MBX_DELETE_WAIT_SPEC:
+        count = 26 if case_id == "mbx-delete-wait" else 8
+        outputs = " ".join(
+            f"out{i}=0x{i + 1:08x}" for i in range(count)
+        )
+        return (
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={case_id} "
+            f"status={status} result=0x00000000 {outputs}\n"
         )
     return (
         f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={case_id} "
@@ -112,6 +125,25 @@ class TestSpecsMatchProbeSource(unittest.TestCase):
                 "cache-inval-contrast",
                 "cache-wball",
             ),
+        )
+
+    def test_mbx_delete_wait_contract(self) -> None:
+        self.assertEqual(MBX_DELETE_WAIT_SPEC.test_id, "PSP-KERNEL-001")
+        self.assertEqual(
+            MBX_DELETE_WAIT_SPEC.semantic_cases,
+            ("mbx-delete-wait", "mbx-timeout-control"),
+        )
+        self.assertEqual(MBX_DELETE_WAIT_SPEC.terminal_case, "mbx-done")
+        self.assertEqual(MBX_DELETE_WAIT_SPEC.terminal_count, 2)
+        self.assertEqual(MBX_DELETE_WAIT_SPEC.record_count, 3)
+        self.assertEqual(
+            len(MBX_DELETE_WAIT_EXPECTED_FIELDS["mbx-delete-wait"]), 27
+        )
+        self.assertEqual(
+            len(MBX_DELETE_WAIT_EXPECTED_FIELDS["mbx-timeout-control"]), 9
+        )
+        self.assertEqual(
+            MBX_DELETE_WAIT_EXPECTED_FIELDS["mbx-done"], {"result", "out0"}
         )
 
     def test_terminal_is_never_counted_as_semantic(self) -> None:
@@ -397,6 +429,58 @@ class TestProvenanceIsReportedNeverUpgraded(unittest.TestCase):
             with self.subTest(spec.test_id):
                 report = parse(stream(spec, spec.ordered_cases, meta=measured))
                 self.assertEqual(report.sequence.provenance, ())
+
+
+class TestMbxExactFieldSets(unittest.TestCase):
+    def test_missing_and_extra_fields_are_rejected(self) -> None:
+        text = golden(MBX_DELETE_WAIT_SPEC)
+        mutations = (
+            ("mbx-delete-wait", " result=0x00000000 ", " ", "primary result missing"),
+            ("mbx-delete-wait", "out25=0x0000001a", "", "primary last field missing"),
+            ("mbx-timeout-control", "out7=0x00000008", "", "control last field missing"),
+            (
+                "mbx-delete-wait",
+                "out25=0x0000001a",
+                "out25=0x0000001a out26=0x0000001b",
+                "primary extra field",
+            ),
+            (
+                "mbx-timeout-control",
+                "out7=0x00000008",
+                "out7=0x00000008 out8=0x00000009",
+                "control extra field",
+            ),
+            (
+                "mbx-done",
+                "case_id=mbx-done status=PASS result=0x00000000 out0=0x00000002",
+                "case_id=mbx-done status=PASS result=0x00000000 "
+                "out0=0x00000002 out1=0x00000003",
+                "terminal extra field",
+            ),
+        )
+        for case_id, old, new, label in mutations:
+            with self.subTest(label=label):
+                lines = text.splitlines(keepends=True)
+                row_index = next(
+                    i for i, row in enumerate(lines) if f"case_id={case_id} " in row
+                )
+                self.assertIn(old, lines[row_index])
+                lines[row_index] = lines[row_index].replace(old, new, 1)
+                mutated = "".join(lines)
+                for strict in (True, False):
+                    with self.assertRaises(ProtocolError) as ctx:
+                        parse_mbx_delete_wait_output(
+                            mutated, require_complete=strict
+                        )
+                    self.assertIn(case_id, str(ctx.exception))
+
+    def test_raw_api_values_are_not_parser_expectations(self) -> None:
+        text = golden(MBX_DELETE_WAIT_SPEC)
+        text = text.replace("result=0x00000000", "result=0xdeadbeef", 1)
+        text = text.replace("out8=0x00000009", "out8=0x800201b5", 1)
+        report = parse_mbx_delete_wait_output(text)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.all_passed)
 
 
 if __name__ == "__main__":

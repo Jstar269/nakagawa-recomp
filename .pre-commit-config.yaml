@@ -44,7 +44,7 @@ repos:
         args: [--maxkb=25600]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 2eeb5678de71a00c0902cbda7105d328432f72cb # v0.16.8
+    rev: a56c0b927e6465d37cae3e97d35d4d18ab2b96cd # v0.16.9
     hooks:
       - id: ruff-check
         files: ^(tools|fixtures)/.*\.py$
@@ -53,7 +53,7 @@ repos:
   # The project-owned native config keeps default detection enabled and limits
   # the synthetic history-audit exception to its exact value and path.
   - repo: https://github.com/betterleaks/betterleaks
-    rev: ed69eef5c9d16d1b39f136846b7bbe5fb8471ef5 # v1.7.4
+    rev: 81aff7a638638aae3a659845d089043e1d8fe9ac # v1.9.0
     hooks:
       - id: betterleaks
         stages: [pre-commit, pre-push]
