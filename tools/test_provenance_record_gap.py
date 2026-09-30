@@ -171,7 +171,75 @@ class TestAgreementWithTheGate(unittest.TestCase):
 
 
 class TestOutput(unittest.TestCase):
-    def test_check_mode_fails_closed_while_gaps_exist(self) -> None:
+    def _check(self, **patches: object) -> tuple[int, str]:
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest import mock
+
+        with mock.patch.multiple(gap, **patches):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+                rc = gap.main(["--repo", str(ROOT), "--check"])
+        return rc, stderr.getvalue()
+
+    def test_check_mode_passes_on_the_repository_with_the_reviewed_baseline(self) -> None:
+        rc, err = self._check(KNOWN_DISPOSITION_GAPS=dict(gap.KNOWN_DISPOSITION_GAPS))
+        self.assertEqual(rc, 0, err)
+
+    def test_check_mode_passes_when_no_gap_exists(self) -> None:
+        rc, _ = self._check(disposition_gaps=lambda *, repo: [], KNOWN_DISPOSITION_GAPS={})
+        self.assertEqual(rc, 0)
+
+    def test_a_trusted_record_does_not_hide_a_missing_disposition(self) -> None:
+        """A covered upstream-derived path with no disposition still fails the gate.
+
+        FAILING_BEFORE: the gate only looked at paths without an exact trusted
+        record, and every tracked path has one, so it could never fail.
+        """
+        victim = "src/core/nk_psp_aes.c"
+        self.assertIn(victim, gap.exact_paths_from_public_ledger(LEDGER))
+        self.assertIn(victim, gap.KNOWN_DISPOSITION_GAPS)
+        baseline = {path: entry for path, entry in gap.KNOWN_DISPOSITION_GAPS.items()
+                    if path != victim}
+        rc, err = self._check(KNOWN_DISPOSITION_GAPS=baseline)
+        self.assertEqual(rc, 1)
+        self.assertIn(victim, err)
+        self.assertIn("status=missing", err)
+
+    def test_every_baseline_entry_is_a_live_gap(self) -> None:
+        live = {str(item["path"]) for item in gap.disposition_gaps(repo=ROOT)}
+        self.assertEqual(set(gap.KNOWN_DISPOSITION_GAPS), live)
+        gap.validate_baseline(gap.KNOWN_DISPOSITION_GAPS)
+
+    def test_a_mapped_path_is_not_a_disposition_gap(self) -> None:
+        live = {str(item["path"]) for item in gap.disposition_gaps(repo=ROOT)}
+        self.assertIsNotNone(gap.independence_metadata("src/rt/hle.c"))
+        self.assertNotIn("src/rt/hle.c", live)
+
+    def test_check_mode_fails_closed_on_stale_baseline_entry(self) -> None:
+        """A baseline entry whose gap is resolved must be removed (stale entries fail)."""
+        stale_path = "src/rt/resolved_gap.c"
+        rc, err = self._check(
+            disposition_gaps=lambda *, repo: [],
+            KNOWN_DISPOSITION_GAPS={stale_path: {"issue": "#355", "reason": "resolved since"}},
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn(stale_path, err)
+        self.assertIn("stale", err)
+
+    def test_baseline_validation_enforces_owner_and_reason(self) -> None:
+        """Every baseline entry must carry an issue owner (#N) and a non-empty reason."""
+        gap.validate_baseline({"src/a.c": {"issue": "#355", "reason": "unresolved"}})
+        for bad in (
+            {"src/a.c": {"reason": "missing owner"}},
+            {"src/a.c": {"issue": "ISSUES.md", "reason": "not a live issue"}},
+            {"src/a.c": {"issue": "#355", "reason": ""}},
+            {"src/a.c": "not-a-dict"},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                gap.validate_baseline(bad)  # type: ignore[arg-type]
+
+    def test_check_records_mode_fails_when_any_unrecorded_gap_remains(self) -> None:
         from unittest import mock
 
         covered = gap.exact_paths_from_public_ledger(LEDGER)
@@ -183,13 +251,9 @@ class TestOutput(unittest.TestCase):
         )
         with mock.patch.object(gap, "exact_paths_from_public_ledger",
                                return_value=covered - {victim}):
-            self.assertEqual(gap.main(["--repo", str(ROOT), "--check"]), 1)
-
-    def test_check_mode_passes_when_no_gap_exists(self) -> None:
-        from unittest import mock
-
+            self.assertEqual(gap.main(["--repo", str(ROOT), "--check-records"]), 1)
         with mock.patch.object(gap, "record_gaps", return_value=[]):
-            self.assertEqual(gap.main(["--repo", str(ROOT), "--check"]), 0)
+            self.assertEqual(gap.main(["--repo", str(ROOT), "--check-records"]), 0)
 
     def test_the_inventory_mode_is_not_a_gate(self) -> None:
         self.assertEqual(gap.main(["--repo", str(ROOT)]), 0)

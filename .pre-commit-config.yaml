@@ -107,3 +107,10 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit, pre-push]
+      - id: provenance-record-gap-check
+        name: upstream-derived production path disposition gap check
+        entry: python tools/provenance_record_gap.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]

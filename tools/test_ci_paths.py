@@ -76,6 +76,23 @@ class CiPathClassificationTests(unittest.TestCase):
         self.assertEqual(result["security_publication"], "true")
         self.assertEqual(result["run_python"], "true")
 
+    def test_provenance_and_independence_campaign_route_security_publication(self) -> None:
+        for path in (
+            "docs/INDEPENDENCE_CAMPAIGN.md",
+            "docs/provenance/INDEPENDENCE_MODEL.md",
+            "docs/provenance/MODIFIED_FILE_NOTICES.json",
+            "tools/provenance_record_gap.py",
+            "tools/test_provenance_record_gap.py",
+        ):
+            with self.subTest(path=path):
+                result = classify([path])
+                self.assertEqual(result["security_publication"], "true")
+                self.assertEqual(result["run_python"], "true")
+                if path.startswith("docs/"):
+                    self.assertEqual(result["docs_only"], "true")
+                    self.assertEqual(result["run_native"], "false")
+                    self.assertEqual(result["run_windows"], "false")
+
     def test_native_changes_run_python_native_and_windows(self) -> None:
         result = classify(["src/rt/sched.c"])
         self.assertEqual(result["run_python"], "true")
