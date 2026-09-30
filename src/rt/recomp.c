@@ -1641,6 +1641,21 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
     if (sr_perf_enabled) sr_perf_aot_end();
 }
 
+static int dispatch_after_aot(
+    CpuState *s,
+    const SrGuestInterpCallBoundary *call_boundary) {
+    if (s->flow_kind == SR_FLOW_EXCEPTION || s->flow_kind == SR_FLOW_ERET) {
+        uint32_t flow_target = s->flow_target;
+        sr_cpu_clear_flow(s);
+        return dispatch_try_with_boundary(s, flow_target, call_boundary);
+    }
+    /* Fatal and currently unhandled flow kinds must not become a successful AOT
+     * handoff. Leave the metadata intact for the fail-closed caller boundary. */
+    if (s->flow_kind != SR_FLOW_NONE)
+        return SR_GUEST_INTERP_FLOW_FATAL;
+    return SR_GUEST_INTERP_AOT_HANDOFF;
+}
+
 static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
@@ -1772,7 +1787,7 @@ static int dispatch_try_with_boundary(
             RecompFn aliased = sr_lookup(alias_target);
             if (aliased) {
                 dispatch_call_aot(aliased, s, alias_target, call_boundary != NULL);
-                return SR_GUEST_INTERP_AOT_HANDOFF;
+                return dispatch_after_aot(s, call_boundary);
             }
         }
     }
@@ -1901,11 +1916,6 @@ static int dispatch_try_with_boundary(
         if (s_displog) {
             fprintf(stderr, "  <- returned from fn %p for 0x%08x, s->r[29]=0x%08x sr_timeslice=%d\n", (void*)fn, target, s->r[29], atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
         }
-        if (s->flow_kind == SR_FLOW_EXCEPTION || s->flow_kind == SR_FLOW_ERET) {
-            uint32_t flow_target = s->flow_target;
-            sr_cpu_clear_flow(s);
-            return dispatch_try_with_boundary(s, flow_target, call_boundary);
-        }
     } else {
         {
             static int miss_dump_registered = 0;
@@ -1940,7 +1950,7 @@ static int dispatch_try_with_boundary(
         sr_perf_interp_set_reason(SR_PERF_INTERP_DISPATCH_MISS);
         return dispatch_run_interp(s, target, call_boundary);
     }
-    return SR_GUEST_INTERP_AOT_HANDOFF;
+    return dispatch_after_aot(s, call_boundary);
 }
 
 static int dispatch_try(CpuState *s, uint32_t target) {
