@@ -107,6 +107,15 @@ class TestThirdPartyComponentInventory(unittest.TestCase):
                     record = self.data["native"]["dlls"][dll_name.lower()]
                     self.assertEqual(record["disposition"], "copied_into_package")
 
+    def test_every_copy_route_names_a_tracked_script(self) -> None:
+        """A relocated or deleted copy script must not leave a stale route behind."""
+        for route in self.data["native"]["copy_routes"]:
+            with self.subTest(route=route["id"]):
+                self.assertTrue(
+                    (ROOT / route["file"]).is_file(),
+                    f"copy route {route['id']} names a missing file: {route['file']}",
+                )
+
     def test_host_resolved_dlls_are_not_also_copied_into_a_package(self) -> None:
         """A host-resolved loader is recorded for attribution, never staged for redistribution."""
         staged = package_notices.packaged_dll_names()

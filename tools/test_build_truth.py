@@ -1882,8 +1882,38 @@ class MachinePortabilityTests(unittest.TestCase):
             "the public source profile still publishes the repository root path",
         )
 
-        audit_text = (ROOT / "tools" / "publish_audit.py").read_text(encoding="utf-8")
-        self.assertIn('"tools/copy_build_assets.ps1": 1,', audit_text)
+        import publish_audit
+
+        self.assertIn("tools/copy_build_assets.ps1",
+                      publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY)
+        self.assertNotIn("copy_build_assets.ps1",
+                         publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY)
+
+
+    def test_powershell_debt_inventory_is_enforced_per_script(self) -> None:
+        """Each script keeps its own SilentlyContinue ceiling; the total is their sum."""
+        import tempfile
+
+        import publish_audit
+
+        inventory = publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY
+        self.assertEqual(sum(inventory.values()),
+                         publish_audit.DEBT_BUDGETS["powershell_silently_continue"])
+        self.assertEqual(
+            [f for f in publish_audit._debt_budget_findings() if "SilentlyContinue" in f.detail],
+            [],
+        )
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "tools").mkdir()
+            (root / "tools" / "copy_build_assets.ps1").write_text(
+                "$ErrorActionPreference = 'SilentlyContinue'\n" * 4, encoding="utf-8")
+            (root / "unlisted.ps1").write_text(
+                "Get-Item x -ErrorAction SilentlyContinue\n", encoding="utf-8")
+            findings = publish_audit._debt_budget_findings(
+                root, ["tools/copy_build_assets.ps1", "unlisted.ps1"])
+        flagged = {f.path for f in findings if "SilentlyContinue" in f.detail}
+        self.assertEqual(flagged, {"tools/copy_build_assets.ps1", "unlisted.ps1"})
 
     def test_no_tracked_file_names_the_root_level_copy_build_assets_path(self) -> None:
         """A relocation is complete only when nothing still names the old path.
