@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91301427e37eee89d73ec3183c47afc0a49d085cd0bc72fd2e67d22fa78f5eba"
+      "sha256": "2c601c06f8282784dad8cdef2e09c3d98c0ff735c99ec605ee602d4122fce510"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aff8cdff02c05b7af512d86da9237bdfd3c62426766d60331dd8403f9651c37f"
+      "sha256": "8789f38005b984fbd0a753ddeb1e166869159b7c8e6b05d824388220677e4c77"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7503a9c028fa8aa16803056d9aaa50640fec5f217d7d422fd1e3e6cd5d761968"
+      "sha256": "2b4753122c2041d19280bdae4f9e999e0c97255bfd9f263770ec614d30f797a8"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1162,7 +1162,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "99008a74645f0024f56ff41f3c02e5bf3296c7ecbcc684552e3f177a9ac56087"
+      "sha256": "4e41da6074d2fde89db5f9e0a11ba5bf22a7f9cdb8350180f500e900deacdaeb"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1339,7 +1339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "020e80e400ac24325559bf3656f51446f82d6cd7eb26dbdd61bf1bf12b52af60"
+      "sha256": "8cc73e8bd28550f2c27ae8b2f246967b9ff6f932aa1042e379138b2210a65cc5"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -8563,7 +8563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da376b8f987ba75c05535d2a42a75ce317f635e6e5c8deba96641a65014f8c67"
+      "sha256": "5d8c04cd4bf1cee23060a0c62f822f051f1c3e9a6d7d1d215c0219b0d932d642"
     },
     {
       "path": "tools/test_public_export.py",
@@ -9471,13 +9471,15 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "6d80938d77e0c3f29c1fe9e5847204009e30a059",
-    "candidate_tree": "e77bedc0194acdbaf228307aa177c8623b2055d5",
+    "trusted_tree": "c39f062e2e09c358607a8d023b8ba43aabca956e",
+    "candidate_tree": "6e99d15d12881fcafcabaa0671f895d6b9469021",
     "refreshed_paths": [
-      "docs/PROVENANCE_MERGE_GATE.md",
-      "docs/PUBLICATION_READINESS.md",
-      "tools/provenance_attest_verify.py",
-      "tools/test_provenance_attest_verify.py"
+      ".github/workflows/ci.yml",
+      "CMakeLists.txt",
+      "docs/CI.md",
+      "docs/LINUX_DEVELOPMENT.md",
+      "docs/SETUP.md",
+      "tools/test_public_ci_wiring.py"
     ]
   }
 }
