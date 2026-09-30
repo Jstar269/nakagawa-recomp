@@ -28,6 +28,7 @@
 #include "iso_reader.h"
 #include "nk_font.h"
 #include "nk_platform.h"
+#include "../../src/rt/gpu_sdl3vk/sdl3vk.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -66,6 +67,11 @@ static void nk_ps_set_env(const char *key, const char *value) {
     else unsetenv(key);
     free(pair);
 #endif
+}
+
+static void count_gui_foreground_request(void *context) {
+    int *count = (int *)context;
+    ++*count;
 }
 
 /* Copy an environment value out before any mutation invalidates getenv's pointer. */
@@ -1897,6 +1903,32 @@ int main(int argc, char **argv) {
         assert(player_app_should_attempt_window_handoff(true, true, true, true) == false);
         /* A later launch gets a fresh attempt once the loop clears the latch. */
         assert(player_app_should_attempt_window_handoff(true, true, false, true) == true);
+
+        /* The child requests foreground once only after the launcher handoff
+           marker exists and a visible, non-headless window is available. */
+        {
+            bool request_issued = false;
+            int request_count = 0;
+
+            assert(!sr_gui_request_launcher_foreground_once(
+                NULL, true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", false, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", true, true, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!request_issued && request_count == 0);
+            assert(sr_gui_request_launcher_foreground_once(
+                "boot-events", true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(request_issued && request_count == 1);
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(request_count == 1);
+        }
 
         assert(player_app_boot_event_is_window_ready(
             "BOOT_EVENT phase=window_ready backend=sdl"));

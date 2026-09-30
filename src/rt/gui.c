@@ -20,14 +20,15 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
-#ifdef SR_SDL3VK
 #include "gpu_sdl3vk/sdl3vk.h"
+#ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
 #include <SDL3/SDL_timer.h>
+#include <SDL3/SDL_video.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -38,12 +39,19 @@
 #define PSP_H 272
 
 static int      s_on = 0;
+#ifdef SR_SDL3VK
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
+#endif
+#if defined(SR_SDL3VK) || defined(_WIN32)
+static bool     s_foreground_request_issued;
+#endif
 #ifdef _WIN32
 static HWND     s_hwnd;
 static BITMAPINFO s_bmi;
 #endif
+#if defined(SR_SDL3VK) || defined(_WIN32)
 static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for the presenters */
+#endif
 static uint32_t s_buttons = 0;
 static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
 static int      s_pad_present = 0;         /* a controller is currently connected */
@@ -117,6 +125,50 @@ static void sync_sdl_input(void) {
 }
 #endif
 
+#if defined(SR_SDL3VK) || defined(_WIN32)
+static bool sr_gui_is_headless_presenter(void) {
+    const char *headless = getenv("SR_HEADLESS");
+    if (headless && headless[0] && strcmp(headless, "0") != 0) return true;
+
+    const char *driver = SDL_GetCurrentVideoDriver();
+    return driver && (strcmp(driver, "dummy") == 0 ||
+                      strcmp(driver, "offscreen") == 0);
+}
+
+#ifdef SR_SDL3VK
+static void sr_gui_raise_sdl_window(void *context) {
+    (void)context;
+    (void)sdl3vk_raise_window();
+}
+#endif
+
+#ifdef _WIN32
+static void sr_gui_raise_gdi_window(void *context) {
+    HWND window = (HWND)context;
+    if (!window) return;
+    BringWindowToTop(window);
+    if (!SetForegroundWindow(window)) {
+        fprintf(stderr, "gui_init: Win32 refused foreground activation for the game window\n");
+    }
+}
+#endif
+
+static void sr_gui_request_launcher_foreground(
+    bool window_visible,
+    void *context,
+    SrGuiForegroundRequestFn raise_window,
+    const char *backend
+) {
+    if (sr_gui_request_launcher_foreground_once(
+            getenv("SR_BOOT_EVENT_FILE"), window_visible,
+            sr_gui_is_headless_presenter(), &s_foreground_request_issued,
+            context, raise_window)) {
+        sr_gui_boot_event("BOOT_EVENT phase=window_foreground_requested backend=%s",
+                          backend);
+    }
+}
+#endif
+
 /* PSP button bits (sceCtrl), named in src/core/nk_input_profile.h: SELECT 0x1, START 0x8,
  * UP 0x10, RIGHT 0x20, DOWN 0x40, LEFT 0x80, LTRIG 0x100, RTRIG 0x200, TRIANGLE 0x1000,
  * CIRCLE 0x2000, CROSS 0x4000, SQUARE 0x8000. One table, shared with the scripted-input
@@ -147,6 +199,9 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 #endif /* _WIN32: the keyboard fallback and the window class are Win32-only */
 
 void gui_init(const char *title) {
+#if !defined(SR_SDL3VK) && !defined(_WIN32)
+    (void)title;
+#endif
 #ifdef SR_SDL3VK
     /* SDL3+Vulkan presenter (src/rt/gpu_sdl3vk, Phase 0): default in this build;
      * SR_VIDEO=gdi falls back to the classic Win32/GDI window below. */
@@ -174,6 +229,9 @@ void gui_init(const char *title) {
                             fprintf(stderr, "gui_init: GPU GE init failed; software GE active\n");
                     }
                 }
+                sr_gui_request_launcher_foreground(true, NULL,
+                                                   sr_gui_raise_sdl_window,
+                                                   "vulkan");
                 sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=vulkan");
                 return;
             }
@@ -206,6 +264,9 @@ void gui_init(const char *title) {
     s_bmi.bmiHeader.biCompression = BI_RGB;
     s_last_ns = SDL_GetTicksNS();
     s_on = 1;
+    sr_gui_request_launcher_foreground(
+        s_hwnd && IsWindowVisible(s_hwnd), s_hwnd,
+        sr_gui_raise_gdi_window, "gdi");
     sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=gdi");
 #else /* !_WIN32: no GDI presenter on this host */
     /* No Win32/GDI window exists here, so there is no fallback to take. The
@@ -236,6 +297,7 @@ void gui_consume_button_pulses(void) {
 /* Present a framebuffer at guest address fbaddr. fmt: 0=5650, 1=5551, 2=4444, 3=8888.
  * stride is in pixels (PSP buffer width, typically 512). */
 /* Convert the guest framebuffer to the BGRA words both presenters consume. */
+#if defined(SR_SDL3VK) || defined(_WIN32)
 static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     for (int y = 0; y < PSP_H; y++) {
         for (int x = 0; x < PSP_W; x++) {
@@ -292,6 +354,7 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
         }
     }
 }
+#endif
 
 void gui_pump(void) {
     if (!s_on) return;
@@ -314,6 +377,10 @@ void gui_pump(void) {
 }
 
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
+#if !defined(_WIN32) && !defined(SR_SDL3VK)
+    (void)fbaddr;
+    (void)fmt;
+#endif
     if (!s_on) return;
     if (stride == 0) stride = 512;
 

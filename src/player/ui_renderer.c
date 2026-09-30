@@ -1204,13 +1204,12 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
         draw_badge(ren, 460.0f, 20.0f, pid_str, COLOR_LIME);
     }
 
-    /* Controller badge: full label on wide windows, compact state dot
-     * below that, hidden on the narrowest layouts. */
+    /* Leave the Settings header's Build Tools/Settings action group clear. */
     if (w >= 1000.0f) {
         if (app->settings.controller_connected) {
-            draw_badge(ren, w - 320.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_LIME);
+            draw_badge(ren, w - 480.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_LIME);
         } else {
-            draw_badge(ren, w - 320.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
+            draw_badge(ren, w - 480.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
         }
     } else if (w >= 760.0f) {
         if (app->settings.controller_connected) {
