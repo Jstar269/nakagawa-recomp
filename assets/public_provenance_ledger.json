@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b657b32074caa4e3527bb1aa538d188daa8da5abf136161af70e8e152d5be9d"
+      "sha256": "07766f154911cec4fc23056a8ce83db15ff563441f3ae3407bef3e08eb761fb7"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2c8188c68b9c371f26535fffe45eb5059320b26352eaf116dfd8f6350a0ea150"
+      "sha256": "0c9f77113e4bce02ea0d5ada081e7a6cb0b1da6f0ff0c539c09588567d978417"
     },
     {
       "path": "NOTICE.md",
@@ -658,7 +658,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "cf7d10448e4b6cea9e34dfb8e71eb05e14425b5cc7f20288fa6462d431a1582a"
+      "sha256": "d2e6c16facb6d62421e6d3319a279daed000bf63b19714431e6fb57961606faa"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -5501,7 +5501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf4fb660ba277571f6a8f84a6c4752e4790d5b590f38fd8c2f50544a589c3d7f"
+      "sha256": "759df70787bd6465849dcd72948de17b9f4d54d22659b20a3a27bcbcbeca599d"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5611,7 +5611,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6c07d66ea84d92c34632d7277a2c69e1803a37481e32120a9ae866d63c982ce"
+      "sha256": "4567d53ffd53c0ef1c9842ed21599490b0327c64a2ddd95d385887858442af1a"
     },
     {
       "path": "tools/ci_paths.py",
@@ -5648,7 +5648,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "25bc844e3775d092a00627ab9d83b2763f4f6c3d51f5c139f1dd68b04484f85f"
+      "sha256": "42c75aa253040b09d72a1143c7a638e7dcf59d6beffc70612bd1117ee0737446"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -6507,7 +6507,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "69dbe72c2673ca605390acc99fca1b066313cb6d43f96de63b51e72caf5e5c52"
+      "sha256": "d58f87dd627c19c50e0322116cbbda1c3e4de843678da3ac1351313049d718ae"
     },
     {
       "path": "tools/ppmdiff.py",
@@ -8987,6 +8987,18 @@
       "sha256": "7b5d22be16258aa80a0c49c176ce7b205ad2dede96de6c5b4e50149ab2d98b42"
     },
     {
+      "path": "tools/test_tree_lint.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tree-lint-reference-ratchet-368",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c84c5f6be2ffb06353ecccd5374f0164c33595656b637da940cb5e54b65fc12c"
+    },
+    {
       "path": "tools/test_validate_assets.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9300,6 +9312,30 @@
       "sha256": "f1c68d740e80626649cc3bf92b7336811d4dd0833a5f1e440756ddfe0b28e9d8"
     },
     {
+      "path": "tools/tree_lint.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tree-lint-reference-ratchet-368",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "5fd658feec60d1ac0e277cbd59ffdf44090b77d1c4fa6ad9f306b186c5c1c504"
+    },
+    {
+      "path": "tools/tree_lint_allow.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tree-lint-reference-ratchet-368",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "d63fc8ddb1d4cff14090a6b7907f46810709f836b9c33372f07c1fbc63c77413"
+    },
+    {
       "path": "tools/validate_assets.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9468,16 +9504,5 @@
       },
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
-  ],
-  "refresh": {
-    "workflow": "refresh-reviewed",
-    "trusted_tree": "5d688f3037434f5eef366ffbc989c907e7716611",
-    "candidate_tree": "c363f2c9c2c3209d4431cea8f4b66adfbb5638b4",
-    "refreshed_paths": [
-      "tools/README.md",
-      "tools/ci_paths.py",
-      "tools/test_ci_paths.py",
-      "tools/test_lint_docs.py"
-    ]
-  }
+  ]
 }
