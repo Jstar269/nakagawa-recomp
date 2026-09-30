@@ -607,6 +607,17 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
         self.assertIn("hle_devctl_refusal_first(device, command)", source)
         self.assertIn("HLE: compatibility exception: %s (NID 0x%08x)", source)
         self.assertIn("atexit(hle_unsupported_summary)", source)
+        # A stream the demuxer refuses is a product boundary, not a debug line: the named
+        # reason and its tracking issue must survive any refactor of the emitting helper.
+        self.assertIn(
+            'PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s ',
+            source,
+        )
+        self.assertIn(
+            "at source offset %llu; no further access unit is decoded and the player keeps ",
+            source,
+        )
+        self.assertIn("its current status; in the works (#288)", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):
