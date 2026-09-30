@@ -103,7 +103,8 @@
       "required": ["status", "frame_submissions"],
       "properties": {
         "status": { "enum": ["NOT_RUN", "FRAME_SUBMITTED", "NO_FRAME_SUBMISSIONS"] },
-        "frame_submissions": { "type": "integer", "minimum": 0 }
+        "frame_submissions": { "type": "integer", "minimum": 0 },
+        "backend": { "enum": ["unknown", "offscreen", "vulkan", "gdi", "none"] }
       }
     },
     "process_exit_code": { "type": ["integer", "null"] },

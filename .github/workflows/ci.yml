@@ -87,7 +87,7 @@ jobs:
           cache-dependency-path: .pre-commit-config.yaml
 
       - name: Install pre-commit
-        run: python -m pip install --disable-pip-version-check pre-commit==4.6.0
+        run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
 
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
@@ -175,7 +175,7 @@ jobs:
           node-version: "24.21.0"
 
       - name: Lint repository Markdown
-        run: npx --yes markdownlint-cli2@0.23.1
+        run: npx --yes markdownlint-cli2@0.23.3
 
   python_tools:
     name: Python tooling gates
@@ -542,7 +542,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up MSYS2 UCRT64
-        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: UCRT64
           # Keep the toolchain dependency install explicit.  Do not cache
@@ -714,8 +714,9 @@ jobs:
       # smokes prove compute and the dispatch seam but never reach the display
       # source, so a scheduler change that stops delivering vblanks to a guest
       # whose only wait is a vblank wait was invisible to every hosted gate. Runs
-      # headless (--sched): the assertion is the guest-visible framebuffer word,
-      # so no display is required on the runner.
+      # headless (--sched), then through the normal --sched --gui route with
+      # SR_VIDEO=offscreen: the assertions are the guest-visible framebuffer
+      # word and accepted offscreen-present ordering, so no display is required.
       - name: Build and run display presentation smoke
         if: matrix.part == 'main'
         shell: msys2 {0}
