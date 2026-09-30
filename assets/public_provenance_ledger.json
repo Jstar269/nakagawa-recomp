@@ -9471,12 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
-    "candidate_tree": "f62ca193efe4165db9ffec15ab084ba0051d59ad",
+    "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
+    "candidate_tree": "c1faad52392fa2dc036c2e568f008ef5763d82e3",
     "refreshed_paths": [
       "docs/PARSER_SAFETY_INVENTORY.json",
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c",
       "tools/nk_cli.py",
       "tools/nk_core/library.py",
       "tools/nk_core/package_cache.py",
