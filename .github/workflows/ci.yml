@@ -256,7 +256,7 @@ jobs:
       - name: Build pinned SDL3 for headless Linux runtime
         # Build the pinned SDL release directly so CI uses the documented version.
         run: |
-          SDL3_COMMIT=d9d5536704d585616d4db3c8ba3c4ff6fc2757e1
+          SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c
           git init "$RUNNER_TEMP/SDL"
           git -C "$RUNNER_TEMP/SDL" remote add origin https://github.com/libsdl-org/SDL.git
           git -C "$RUNNER_TEMP/SDL" fetch --depth 1 origin "$SDL3_COMMIT"
