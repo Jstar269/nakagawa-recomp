@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "68010840231fcb07346ee4751d4c861cbaff40da0d68b23a670da282cfecefe2"
+      "sha256": "c56c8be2771513862168047588559a67e5a083ab1816a8c756c7b455e0289ef3"
     },
     {
       "path": "NOTICE.md",
@@ -1042,7 +1042,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e75fb608c00def0962a2db21d470fbf42f9574250294a721dd3cc8ca8351e85f"
+      "sha256": "74f0011c3230d86d7c55a47ef39405000a2d431c1509e60e9f9e2ba3c94aac88"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1585,7 +1585,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "46446288859e0aeb403d45d12ff8cce49e99580106dd0e8bed1cb7f623a30169"
+      "sha256": "0ee2bf66a0853098ba994b4cce7c5dc6b9c4b1e64fb8ee52e7ce89a1a8b3f4b6"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -4843,7 +4843,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "000326a72644e36ead5b3d7af87dda012d27f6ddae3d3decb057b2adda5293da"
+      "sha256": "b4b52c33ad6b591acd7cd09b28bd305a5388125a23228c6b306de87aaae65dd4"
     },
     {
       "path": "src/rt/recomp.h",
@@ -4856,7 +4856,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "74cf538bc419a8ab0e70226121fde188f7b102fb578108752ca8091393ddafc1"
+      "sha256": "6dc0b5fd92f8163ff3cb99a0a3f99138a91fe27f1ba359938ceff97169fef1c6"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5527,7 +5527,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "24dce15375aed0e3bd3fb8ab69e85a4ea3af6b6c5c822aadaca8eb4a0eec4916"
+      "sha256": "8c15011c1d3c7d6ccff3b4a3d8eb554cdf81f423762e5bf238412e9cfbb65394"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5648,7 +5648,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "25bc844e3775d092a00627ab9d83b2763f4f6c3d51f5c139f1dd68b04484f85f"
+      "sha256": "04db9bc2124d650b71d0581aa3eae76d52fa4edeb5bc62f511c063e8252229a9"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7001,7 +7001,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e0814bcbdc171cb0dfd62b8d623e5df20859e26b914e7426641cec57c569305"
+      "sha256": "f33b1c0f55bf2fe947b595315684bbabe152c68c03ab8884d98985b4a6c74e93"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -7386,7 +7386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65ddf39a57f366e65abc5953247d8e3f22ef8190e2ad5c0f89d5fe3c2ca3394c"
+      "sha256": "bbeed1b99461c64d5252e7eb93bc942ab01e20dbb37fbe3ccfbe14dd9845085e"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -9471,14 +9471,18 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "22f665a47307168f0ba3645bf1c5656ce7663ac5",
-    "candidate_tree": "c47e14de8bdc6f8dc30d10f83e684c481ab77538",
+    "trusted_tree": "d3530dc20198e81417d4248c64ef073d4b0a94fe",
+    "candidate_tree": "4d76832e485351e7c4ff96e49b4cf072fd918b2f",
     "refreshed_paths": [
       "Makefile",
-      "src/rt/cpu_lle_selftest.c",
-      "src/rt/dispatch_isolation_selftest.c",
+      "docs/ARCHITECTURE.md",
+      "fixtures/cosim/cosim_selftest.c",
       "src/rt/recomp.c",
-      "tools/test_cpu_lle.py"
+      "src/rt/recomp.h",
+      "tools/analyze.py",
+      "tools/codegen.py",
+      "tools/test_analyzer_span_scope.py",
+      "tools/test_dispatch_call_boundary.py"
     ]
   }
 }
