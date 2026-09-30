@@ -1069,7 +1069,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7c3e707c76ab69b3b7052e2a198c6ad14d176e0d453e069f72a75c4de265956f"
+      "sha256": "ca133c189478a5599c47b485e95d94619e214d8cd0ece182702b5da7c9366c7a"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1117,7 +1117,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5615347ef12b8e2fbc314426b0191faab466e5b01a9a65a6f4472042566744d1"
+      "sha256": "85e42c821a4942f8b79a5cbefd8448b2e75965b0d597737fdac5a2b65a978ad3"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -2194,7 +2194,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "111ea76d0354f8b730bf054afa9f0667642d71a2c981df953b50df2caae8d8bd"
+      "sha256": "6a1212210255b687f75661824083a754b956165fb83b0df9cf96d1a33ee7f8a6"
     },
     {
       "path": "font/README.md",
@@ -5100,7 +5100,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9022d6e9adb9b46a9c74f3689c77e27e34522685743be80af762121c631bcfa7"
+      "sha256": "f73e92b8e5f172fa4aa8568e8ed96631cbe8a3e1c622cc427185c364af6d4b49"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -9044,7 +9044,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "97ae03556062b5777ebbf7cabaff2cb0f8a42c99ff45e6c9f01396df56dc1826"
+      "sha256": "2f6822234f64fbd74fe1f33a52fe57ec44c52ad959cc8f8979a67f9fec9e777b"
     },
     {
       "path": "tools/test_vfpu_interp_guards.py",
@@ -9471,15 +9471,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "8b9f193e0493278383ee94bf9587bc97aa41372c",
-    "candidate_tree": "e17bdaded2190da59a00751e51455e06d33be5d3",
+    "trusted_tree": "5d688f3037434f5eef366ffbc989c907e7716611",
+    "candidate_tree": "41ddfe288d00934f511074e96adfd0766234bfdc",
     "refreshed_paths": [
-      ".github/workflows/ci.yml",
-      "CMakeLists.txt",
-      "docs/CI.md",
-      "docs/LINUX_DEVELOPMENT.md",
-      "docs/SETUP.md",
-      "tools/test_public_ci_wiring.py"
+      "docs/COMPATIBILITY.md",
+      "docs/HARDWARE_ORACLE.md",
+      "fixtures/vfpu_oracle/vfpu_probe.c",
+      "src/rt/vfpu_interp_selftest.c",
+      "tools/test_vfpu_domain_boundary.py"
     ]
   }
 }
