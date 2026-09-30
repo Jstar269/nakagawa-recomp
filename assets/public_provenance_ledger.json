@@ -1255,7 +1255,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e93393f440d4aed0c2dd77a5778d1d8ed694e94b3f1b8a874268a5565bb5054f"
+      "sha256": "4c3f6568c0e6ded5d477e11bc3eefd49f4d806a3da4a3e200ac0850c8215382b"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -1294,7 +1294,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "afea1ff3f3233ef4751297adfcf88c8fcc660a63858bd839347d398cad6e8ff8"
+      "sha256": "16fcb74d84c710d9c9f9d614fcf4b9a80e0b53a47707113701a3aa599edcf76d"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -6544,7 +6544,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "080d5f83595a0972607afa856059be13976b8672e7801a73a8540358d891d13b"
+      "sha256": "15ba4610e1eac21e057e512970d1a12fc08beca7dae717eadb5141605ac25d23"
     },
     {
       "path": "tools/provenance_ledger.py",
@@ -8323,7 +8323,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b54b7822c881a83c7e9e862b6b525a62b9143388ea718ddd333ec47cedd86236"
+      "sha256": "004ef3ef8f1ccd21e94e1a14ab36165a74dd7b86f973a38685ec23581f6e6141"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -9471,11 +9471,13 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "0b72895bd3e2187403ca8f09c21e5ec85dcb775f",
-    "candidate_tree": "deea79cec7db3c4b5eacddb5f91cd566999ae421",
+    "trusted_tree": "6d80938d77e0c3f29c1fe9e5847204009e30a059",
+    "candidate_tree": "e77bedc0194acdbaf228307aa177c8623b2055d5",
     "refreshed_paths": [
-      "tools/audit_public_issue_links.py",
-      "tools/test_audit_public_issue_links.py"
+      "docs/PROVENANCE_MERGE_GATE.md",
+      "docs/PUBLICATION_READINESS.md",
+      "tools/provenance_attest_verify.py",
+      "tools/test_provenance_attest_verify.py"
     ]
   }
 }
