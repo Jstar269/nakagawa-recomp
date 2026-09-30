@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -61,12 +62,14 @@ def _fail(path: str, message: str) -> None:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    return not isinstance(value, float) or math.isfinite(value)
 
 
 def _require_number(value: Any, path: str) -> None:
     if not _is_number(value) or value < 0:
-        _fail(path, "expected a non-negative number")
+        _fail(path, "expected a finite non-negative number")
 
 
 def _require_integer(value: Any, path: str) -> None:
@@ -160,6 +163,8 @@ def _value_at(summary: dict[str, Any], path: str) -> Any:
 def _close(before: Any, after: Any, tolerance: float) -> bool:
     if not (_is_number(before) and _is_number(after)):
         return before == after
+    if tolerance == 0.0:
+        return before == after
     delta = abs(float(after) - float(before))
     return delta <= tolerance * max(1.0, abs(float(before)))
 
@@ -227,8 +232,8 @@ def _ranking(summary: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def diff_summaries(before: dict[str, Any], after: dict[str, Any], tolerance: float = 0.0) -> dict[str, Any]:
-    if tolerance < 0.0:
-        raise PerfSummaryError("tolerance must be non-negative")
+    if not _is_number(tolerance) or tolerance < 0.0:
+        raise PerfSummaryError("tolerance must be finite and non-negative")
     validate_summary(before)
     validate_summary(after)
     changes: list[dict[str, Any]] = []
