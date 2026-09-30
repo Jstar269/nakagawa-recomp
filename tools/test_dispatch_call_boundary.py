@@ -125,6 +125,15 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
         self.assertEqual(run_rc, 0, run_output)
         self.assertIn("dispatch-isolation-selftest: OK", run_output)
 
+    def test_late_import_cache_mutation_survives_registry_retirement(self):
+        anchor = "                target = resolved;  /* use resolved target for logging below */"
+        self.assert_killed(
+            "late-import-persistent-alias",
+            recomp_old=anchor,
+            recomp_new="                sr_register(target, fn);\n" + anchor,
+            diagnostic="retired late import executed a stale body or changed guest state",
+        )
+
     def test_M1_untyped_interpreter_dispatch_reexecutes_native_continuation(self):
         self.assert_killed(
             "M1-untyped-dispatch",

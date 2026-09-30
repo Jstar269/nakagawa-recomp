@@ -15,6 +15,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from tools.audit_public_issue_links import (
+    CURRENT_FACING_DOCS,
+    PRIVATE_EXCLUDED_DOCS,
+    SHORTHAND_AUDIT_DOCS,
     audit_markdown_files,
     fetch_public_issues_map,
     get_tracked_markdown_files,
@@ -29,6 +32,25 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_private_exclusions_are_distinct_without_changing_audit_coverage(self) -> None:
+        excluded = {
+            "docs/KEY_HISTORY_SCRUB.md",
+            "docs/PGD_AMCTRL_REVIEW_PACKET.md",
+            "docs/PGD_KEYS.md",
+            "docs/PGF_LICENSE_REVIEW_PACKET.md",
+        }
+        self.assertEqual(PRIVATE_EXCLUDED_DOCS, excluded)
+        self.assertTrue(PRIVATE_EXCLUDED_DOCS.isdisjoint(CURRENT_FACING_DOCS))
+        self.assertEqual(SHORTHAND_AUDIT_DOCS, CURRENT_FACING_DOCS | excluded)
+
+        doc = self.repo_path / "docs" / "KEY_HISTORY_SCRUB.md"
+        doc.parent.mkdir()
+        doc.write_text("See unresolved issue #999\n", encoding="utf-8")
+        findings = audit_markdown_files(self.repo_path, {})
+        self.assertEqual(len(findings), 1)
+        self.assertFalse(findings[0][4])
+        self.assertIn("DEAD / UNRESOLVED SHORTHAND", findings[0][3])
 
     def test_live_issue_and_pr_pass(self) -> None:
         doc = self.repo_path / "README.md"

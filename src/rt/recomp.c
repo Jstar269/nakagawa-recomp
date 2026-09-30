@@ -1613,8 +1613,8 @@ static int dispatch_try_with_boundary(
      * A miss that survives the reloc/kseg fixups above is usually a call into a
      * runtime-loaded module (dynamic import stub, e.g. launcher pc 0x0000efec) whose
      * export table was populated after static codegen. Ask the late-import registry:
-     *   - a rebased guest export address: patch the dispatch table so every future
-     *     lookup of this target hits directly, then continue on the normal hit path;
+     *   - a rebased guest export address: resolve the current body for this call,
+     *     then continue on the normal hit path;
      *   - SR_HLE_LATE_BUILTIN: the id is a built-in HLE handler — trap into sr_syscall
      *     with the standard HLE return convention (v0 = result, pc = ra);
      *   - 0: unresolved — fall through to the existing miss handling unchanged. */
@@ -1639,14 +1639,13 @@ static int dispatch_try_with_boundary(
                 fn = sr_lookup(resolved);
             }
             if (fn) {
-                /* Patch the runtime table: alias the missed target to the resolved
-                 * body so subsequent dispatches skip the registry walk entirely. */
-                sr_register(target, fn);
-                static int late_patch_n = 0;
-                if (late_patch_n < 20) {
-                    fprintf(stderr, "LATE_IMPORT_PATCH: target=0x%08x -> 0x%08x (table patched)\n",
+                /* The registry owns this binding's lifetime. A persistent table
+                 * alias would bypass unload and same-address reload (#593). */
+                static int late_resolve_n = 0;
+                if (late_resolve_n < 20) {
+                    fprintf(stderr, "LATE_IMPORT_RESOLVE: target=0x%08x -> 0x%08x\n",
                             target, resolved);
-                    late_patch_n++;
+                    late_resolve_n++;
                 }
                 target = resolved;  /* use resolved target for logging below */
             } else {

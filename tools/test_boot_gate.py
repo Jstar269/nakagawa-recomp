@@ -53,6 +53,24 @@ class BootGateTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["frameEvidence"], "content-validated")
 
+    def test_offscreen_presenter_uses_window_ready_as_generic_presenter_milestone(self) -> None:
+        lines = [
+            event("image_loaded"),
+            event("runtime_registered"),
+            event("window_ready", backend="offscreen"),
+            event("guest_start"),
+            event("display_flip"),
+            event("first_frame", source="cpu", nonzero_pixels=1),
+        ]
+        result = self.parse(lines)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["sequenceOk"])
+        self.assertTrue(result["reached"]["window_ready"])
+        window_ready = next(
+            event for event in result["events"] if event.get("phase") == "window_ready"
+        )
+        self.assertEqual(window_ready.get("backend"), "offscreen")
+
     def test_out_of_order_phases_fail_even_when_all_are_present(self) -> None:
         phases = ["image_loaded", "runtime_registered", "guest_start", "window_ready", "display_flip"]
         result = self.parse([event(phase) for phase in phases] + [event("first_frame", nonzero_pixels=1)])
