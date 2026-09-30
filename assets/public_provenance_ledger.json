@@ -1135,7 +1135,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e52ca7ae541fa46f42c886fe2108edbc017a6663bd4b539fa9b0483676809bcd"
+      "sha256": "2b54696936bbca78b1adb05c14cfd9b639c2308a34171ebee1879780470deddb"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -5975,7 +5975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0fb6dbeba49a87fa988412cb9b42ba4784611f72f5b8a53ccceef4ab780532c4"
+      "sha256": "ad2aff64db260bddf5502e1b940b94990f7f87da61cd8aec910e301e5ab78658"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -5987,7 +5987,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a8ac437e88025efa6c0fdcb7d85fb32ae2a6036bc1f02d35c6155cd9bc28218"
+      "sha256": "1c31910cd8d9e1beba3d021f8c75f04934685ec47760aeb01e1f80171523ec20"
     },
     {
       "path": "tools/host_stubs.py",
@@ -6035,7 +6035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2402a280b8a8fbae06e40fc18e8296059b3e280ac1402507b5e1337514fa6ebf"
+      "sha256": "246d5c6abbf1d1571d00fb61cb7ee69fc83c2730ffe1afe310748c41b9ffd6c0"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -7735,7 +7735,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "507ed8d5a420c6df8b87724fe742357b926bffce7dc67b77b46fc7158dfcfe36"
+      "sha256": "ec53d1624799a5dc4e27bf4cd10ca8c0559d42e795379da288229d1a48bd7f44"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -9471,23 +9471,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "53090fb87a16bff2e24387e5fec081775f478c72",
-    "candidate_tree": "7bc3ef176346f89486461932bcd6e494468192ee",
+    "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
+    "candidate_tree": "fbf20a71cb20e5abc29c24ebb3adbda07b134cd1",
     "refreshed_paths": [
-      ".github/workflows/ci.yml",
-      "Makefile",
-      "assets/bringup_report.schema.json",
-      "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
-      "fixtures/display_smoke/generate.py",
-      "src/rt/gui.c",
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c",
-      "src/rt/recomp.h",
-      "tools/boot_gate.py",
-      "tools/gate_stub.c",
-      "tools/nk_cli.py",
-      "tools/test_boot_gate.py",
-      "tools/test_production_smoke.py"
+      "docs/HLE_AND_WORKAROUND_INVENTORY.md",
+      "tools/hle_manifest.py",
+      "tools/hle_registry_meta.py",
+      "tools/import_audit_baseline.json",
+      "tools/test_hle_manifest.py"
     ]
   }
 }
