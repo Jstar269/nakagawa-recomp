@@ -19,6 +19,7 @@ Streams:
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import random
@@ -344,19 +345,26 @@ class TestParserSafetyInventory(unittest.TestCase):
     # The path must be repo-relative (it carries a directory separator): a bare
     # filename in prose ("manifest.json", "package.json") names a product
     # document, not a file in this tree, and is not an anchor.
+    # Legacy numeric suffixes remain visible to the scanner so the checker can
+    # reject them explicitly rather than silently skipping them.
     ANCHOR = re.compile(
         r"(?=[A-Za-z0-9_./\\-]*/)"
         r"[A-Za-z0-9_./\\-]+\.(?:c|h|py|json|yml|yaml|md)"
-        r"(?::(?:\d+(?:@[A-Za-z_][A-Za-z0-9_]*| [A-Za-z_][A-Za-z0-9_]*)?"
-        r"|[A-Za-z_][A-Za-z0-9_./]*))?"
+        r"(?::(?:\d+(?:@[A-Za-z_][A-Za-z0-9_]*| [A-Za-z_][A-Za-z0-9_]*(?:[./][A-Za-z_][A-Za-z0-9_]*)*)?"
+        r"|[A-Za-z_][A-Za-z0-9_]*(?:[./][A-Za-z_][A-Za-z0-9_]*)*))?"
     )
+    SYMBOL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
     C_DEF = re.compile(
         r"^(?:static\s+|inline\s+|extern\s+)*(?:const\s+)?"
         r"(?:unsigned\s+|signed\s+|struct\s+\w+\s*\*?\s*)*"
         r"[A-Za-z_][A-Za-z0-9_]*\s+\**([A-Za-z_][A-Za-z0-9_]*)\s*\("
     )
+    C_DEFINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+    C_STATIC_CONST = re.compile(
+        r"^\s*static\s+const\b.*?\b([A-Za-z_][A-Za-z0-9_]*)\s*"
+        r"(?:\[[^\]]*\])?\s*(?:=|;)"
+    )
     PY_DEF = re.compile(r"^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
-    SYMBOL_RADIUS = 6
 
     # A route-coverage claim ("no test executes it", "never reaches the reader")
     # has to say which kind of test is missing. A seeded-mutation, sanitizer or
@@ -405,33 +413,87 @@ class TestParserSafetyInventory(unittest.TestCase):
     def definition_line(cls, line: str) -> str | None:
         """Return the name a line *defines*, or None when it defines nothing.
 
-        A C prototype (a line that ends in ``;``) is a declaration, not a
-        definition, so it never satisfies an anchor. This is the only place the
-        "is this a definition" question is answered, so the grammar in the
-        inventory cannot drift away from what the checker actually proves.
+        C function prototypes are declarations. Macros, static const objects,
+        and module-level Python assignments are named definitions too.
         """
         match = cls.PY_DEF.match(line)
         if match is not None:
             return match.group(2)
+        match = cls.C_DEFINE.match(line)
+        if match is not None:
+            return match.group(1)
+        match = cls.C_STATIC_CONST.match(line)
+        if match is not None:
+            return match.group(1)
         if line.rstrip().endswith(";"):
             return None
         match = cls.C_DEF.match(line)
         return match.group(1) if match is not None else None
 
     @classmethod
-    def definition_near(cls, lines: list[str], number: int, symbol: str) -> bool:
-        """True when *symbol* is *defined* within ``SYMBOL_RADIUS`` of *number*.
+    def _c_function_has_body(cls, lines: list[str], line_index: int, match: re.Match) -> bool:
+        """Distinguish a C function definition from a possibly multiline prototype."""
+        header = "\n".join(lines[line_index:])
+        depth = 1  # C_DEF includes the function's opening parenthesis.
+        for offset, char in enumerate(header[match.end():], match.end()):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    delimiter = re.search(r"[;{}]", header[offset + 1:])
+                    return delimiter is not None and delimiter.group(0) == "{"
+        return False
 
-        A mention is not a definition: the grammar promises a definition site, so
-        a call, a comment, or a prototype on the same lines does not satisfy it.
-        """
-        low = max(1, number - cls.SYMBOL_RADIUS)
-        high = min(len(lines), number + cls.SYMBOL_RADIUS)
-        pattern = re.compile(r"\b" + re.escape(symbol) + r"\b")
-        return any(
-            pattern.search(line) and cls.definition_line(line) == symbol
-            for line in lines[low - 1:high]
-        )
+    @classmethod
+    def definition_map(cls, rel: str) -> dict[str, list[int]]:
+        """Map each supported symbol spelling to its definition lines."""
+        lines = cls.source_lines(rel)
+        found: dict[str, list[int]] = {}
+
+        def add(name: str, line: int) -> None:
+            found.setdefault(name, []).append(line)
+
+        if rel.endswith(".py"):
+            tree = ast.parse("\n".join(lines), filename=rel)
+
+            def assigned_names(target: ast.expr) -> list[str]:
+                if isinstance(target, ast.Name):
+                    return [target.id]
+                if isinstance(target, (ast.Tuple, ast.List)):
+                    return [name for item in target.elts for name in assigned_names(item)]
+                return []
+
+            def visit_scope(body: list[ast.stmt], prefix: str = "", module: bool = False) -> None:
+                for node in body:
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if module:
+                            add(node.name, node.lineno)
+                        elif prefix:
+                            add(f"{prefix}.{node.name}", node.lineno)
+                    elif isinstance(node, ast.ClassDef):
+                        qualified = f"{prefix}.{node.name}" if prefix else node.name
+                        add(qualified, node.lineno)
+                        visit_scope(node.body, qualified)
+                    elif module and isinstance(node, (ast.Assign, ast.AnnAssign)):
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        for target in targets:
+                            for name in assigned_names(target):
+                                add(name, node.lineno)
+
+            visit_scope(tree.body, module=True)
+            return found
+
+        for index, line in enumerate(lines):
+            function = cls.C_DEF.match(line)
+            if function is not None:
+                if cls._c_function_has_body(lines, index, function):
+                    add(function.group(1), index + 1)
+                continue
+            name = cls.definition_line(line)
+            if name is not None:
+                add(name, index + 1)
+        return found
 
     @classmethod
     def enclosing_function(cls, rel: str) -> dict[int, str]:
@@ -483,7 +545,7 @@ class TestParserSafetyInventory(unittest.TestCase):
         """Yield ``(field, anchor)`` for every anchor in any string under *node*.
 
         The whole surface is walked, not a hand-picked list of fields, so a new
-        narrative field cannot carry an unchecked ``symbol:line`` claim.
+        narrative field cannot carry an unchecked symbol reference.
         """
         for text_field, text in cls.iter_strings(node, field):
             for match in cls.ANCHOR.finditer(text):
@@ -498,48 +560,27 @@ class TestParserSafetyInventory(unittest.TestCase):
     def check_anchor(self, ref: str, where: str) -> None:
         """Verify one inventory anchor against current source.
 
-        ``path`` must exist; ``path:symbol`` must occur in the file;
-        ``path:line symbol`` must have the symbol *defined* within a few lines of
-        that line; ``path:line@function`` must have that line inside that
-        function. A bare ``path:line`` cannot be verified and is rejected, which
-        is what keeps a stale line number from surviving review as if it were
-        evidence.
+        A symbol anchor must name exactly one definition in its file. Line-number
+        forms are rejected so an insertion above a definition cannot rot the
+        inventory without changing what it names.
         """
         rel, _, suffix = ref.partition(":")
         self.assertTrue((ROOT / rel).is_file(), f"{where}: missing file {rel}")
         if not suffix:
             return
-        lines = self.source_lines(rel)
-
-        if "@" in suffix:
-            number_text, _, function = suffix.partition("@")
-            number = int(number_text)
-            self.assertTrue(1 <= number <= len(lines), f"{where}: {rel}:{number} out of range")
-            self.assertEqual(
-                self.enclosing_function(rel).get(number),
-                function,
-                f"{where}: {rel}:{number} is not inside {function}()",
-            )
-            return
-
-        head, _, symbol = suffix.partition(" ")
-        if head.isdigit():
-            number = int(head)
-            self.assertTrue(1 <= number <= len(lines), f"{where}: {rel}:{number} out of range")
-            self.assertTrue(symbol, f"{where}: {ref} names a line but no symbol")
-            self.assertTrue(
-                self.definition_near(lines, number, symbol),
-                f"{where}: {symbol} is not defined near {rel}:{number}",
-            )
-            return
-
-        self.assertTrue(head[0].isalpha() or head[0] == "_", f"{where}: unusable anchor {ref}")
-        for name in head.split("/"):
-            pattern = re.compile(r"\b" + re.escape(name) + r"\b")
-            self.assertTrue(
-                any(pattern.search(line) for line in lines),
-                f"{where}: {name} does not occur in {rel}",
-            )
+        self.assertFalse(
+            suffix[0].isdigit(),
+            f"{where}: line-number anchor {ref} is forbidden; use path:symbol",
+        )
+        self.assertIsNotNone(
+            self.SYMBOL.fullmatch(suffix), f"{where}: invalid symbol anchor {ref}"
+        )
+        definitions = self.definition_map(rel).get(suffix, [])
+        self.assertEqual(
+            len(definitions),
+            1,
+            f"{where}: {ref} must resolve to exactly one definition, found {len(definitions)}",
+        )
 
     def assert_inventory_anchors(self, inventory: dict) -> None:
         checked = 0
@@ -570,7 +611,7 @@ class TestParserSafetyInventory(unittest.TestCase):
 
     def test_every_inventory_row_has_live_sources_tests_and_campaign_status(self) -> None:
         inventory = self.inventory
-        self.assertEqual(inventory["schema_version"], 3)
+        self.assertEqual(inventory["schema_version"], 4)
         self.assertEqual(inventory["issue"], 319)
         self.assertEqual(
             set(inventory["status_definition"]), set(inventory["status_values"])
@@ -644,25 +685,49 @@ class TestParserSafetyInventory(unittest.TestCase):
         """An anchor is evidence only while it still points at the code it names.
 
         Every string in every surface and in the document preamble is walked, not
-        a fixed list of fields: a ``symbol:line`` claim in a runner sentence, a
+        a fixed list of fields: a symbol claim in a runner sentence, a
         resource gap, or a campaign note is evidence too, and a scan that skipped
         those fields would let them rot unnoticed.
         """
         self.assert_inventory_anchors(self.inventory)
 
-    def test_deliberately_stale_inventory_anchor_is_rejected(self) -> None:
-        """A stale source location fails when added to an in-memory inventory copy."""
+    def assert_inventory_copy_anchor_fails(self, ref: str, message: str) -> None:
+        """Check a deliberately broken anchor planted only in a copied inventory."""
         inventory = copy.deepcopy(self.inventory)
-        cache_row = next(
-            row for row in inventory["surfaces"]
-            if row["id"] == "private-package-cache-json"
-        )
-        cache_row["entry"] += "; tools/nk_core/package_cache.py:282 _read_json"
+        row = inventory["surfaces"][0]
+        row["entry"] += f"; {ref}"
+        self.assertIn(ref, [anchor for _, anchor in self.scan_anchors(row)])
+        with self.assertRaisesRegex(AssertionError, message):
+            self.check_anchor(ref, "synthetic.inventory-copy")
 
-        stale_anchor = "tools/nk_core/package_cache.py:282 _read_json"
-        self.assertIn(stale_anchor, cache_row["entry"])
-        with self.assertRaisesRegex(AssertionError, "is not defined near"):
-            self.check_anchor(stale_anchor, "synthetic.stale-entry")
+    def test_nonexistent_symbol_in_inventory_copy_is_rejected(self) -> None:
+        self.assert_inventory_copy_anchor_fails(
+            "src/core/nk_iso.c:parser_symbol_that_does_not_exist",
+            "exactly one definition, found 0",
+        )
+
+    def test_prototype_only_symbol_in_inventory_copy_is_rejected(self) -> None:
+        self.assert_inventory_copy_anchor_fails(
+            "src/core/nk_json.h:nk_json_validate_utf8",
+            "exactly one definition, found 0",
+        )
+
+    def test_line_number_anchor_in_inventory_copy_is_rejected(self) -> None:
+        self.assert_inventory_copy_anchor_fails(
+            "src/core/nk_iso.c:114 nk_iso_reader_open", "line-number anchor.*forbidden"
+        )
+
+    def test_renamed_real_function_anchor_in_inventory_copy_is_rejected(self) -> None:
+        """Renaming a real symbol in the copied inventory loses its definition."""
+        inventory = copy.deepcopy(self.inventory)
+        iso_row = next(row for row in inventory["surfaces"] if row["id"] == "iso9660-pvd-directory-c")
+        old = "src/core/nk_iso.c:nk_iso_reader_open"
+        renamed = "src/core/nk_iso.c:nk_iso_reader_open_renamed"
+        self.assertIn(old, iso_row["entry"])
+        iso_row["entry"] = iso_row["entry"].replace(old, renamed, 1)
+        self.assertIn(renamed, [anchor for _, anchor in self.scan_anchors(iso_row)])
+        with self.assertRaisesRegex(AssertionError, "exactly one definition, found 0"):
+            self.check_anchor(renamed, "synthetic.renamed-function")
 
     def test_anchor_scan_reaches_fields_the_original_four_field_walk_skipped(self) -> None:
         """The walk covers every field, including the ones it used to skip.
@@ -674,23 +739,23 @@ class TestParserSafetyInventory(unittest.TestCase):
         """
         planted = {
             "id": "synthetic-scan-coverage",
-            "entry": "tools/parse_fuzz_probe_missing.c:1 probe",
+            "entry": "tools/parse_fuzz_probe_missing.c:probe_missing",
             "harness": "nothing to see",
-            "arithmetic": {"safe": "SAFE", "evidence": ["tools/parse_fuzz_probe_missing.c:1 probe"]},
+            "arithmetic": {"safe": "SAFE", "evidence": ["tools/parse_fuzz_probe_missing.c:probe_missing"]},
             "campaigns": {
                 "deterministic_regression": {
                     "status": "IN_CI",
                     "tests": [],
-                    "runner": "reached only through tools/parse_fuzz_probe_missing.c:1 probe",
+                    "runner": "reached only through tools/parse_fuzz_probe_missing.c:probe_missing",
                 },
                 "seeded_mutations": {
                     "status": "NOT_AVAILABLE",
                     "tests": [],
-                    "campaign": "no campaign for tools/parse_fuzz_probe_missing.c:1 probe",
+                    "campaign": "no campaign for tools/parse_fuzz_probe_missing.c:probe_missing",
                 },
             },
-            "resource_gaps": ["uncovered: tools/parse_fuzz_probe_missing.c:1 probe"],
-            "max_input": "nothing; see tools/parse_fuzz_probe_missing.c:1 probe",
+            "resource_gaps": ["uncovered: tools/parse_fuzz_probe_missing.c:probe_missing"],
+            "max_input": "nothing; see tools/parse_fuzz_probe_missing.c:probe_missing",
         }
         scanned = dict(self.scan_anchors(planted, "surface"))
         for field in (
@@ -704,44 +769,71 @@ class TestParserSafetyInventory(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.check_anchor(scanned[field], f"synthetic.{field}")
 
-    def test_line_anchor_requires_a_definition_not_merely_a_nearby_mention(self) -> None:
-        """The grammar says "defined", so a call or a comment must not satisfy it."""
-        lines = [
-            "static void parse_row(int row) {",
-            "    /* the old comment used to name reader_state here */",
-            "    assert(reader_state(row) == 0);",
-            "    total += 1;",
-            "}",
-            "",
-            "int other(int row) {",
-            "    return row;",
-            "}",
-            "",
-            "int reader_state(int row) {",
-            "    return row;",
-            "}",
-        ]
-        self.assertTrue(self.definition_near(lines, 11, "reader_state"))
-        self.assertFalse(self.definition_near(lines, 1, "reader_state"))
-        self.assertFalse(self.definition_near(lines, 2, "reader_state"))
-        self.assertFalse(self.definition_near(lines, 3, "reader_state"))
-        self.assertFalse(self.definition_near(lines, 4, "reader_state"))
-        # A prototype is a declaration, not a definition.
-        self.assertIsNone(self.definition_line("int reader_state(int row);"))
-        self.assertFalse(
-            self.definition_near(["int reader_state(int row);", "void use(void) {"], 1, "reader_state")
-        )
-        self.assertEqual(self.definition_line("static void row_helper(void) {"), "row_helper")
+    def test_definition_map_accepts_explicit_symbol_definitions(self) -> None:
+        """Macros, static const objects and Python constants/methods are anchors."""
+        c_path = "src/core/nk_json.c"
+        py_path = "tools/test_parse_fuzz.py"
+        saved = {rel: self.source_cache.get(rel) for rel in (c_path, py_path)}
+        try:
+            self.source_cache[c_path] = [
+                "#define JSON_NODE_LIMIT 64",
+                "static const size_t JSON_DEFAULT_LIMIT = 32;",
+                "int prototype_only(int value);",
+                "int implemented(int value) { return value; }",
+            ]
+            c_definitions = self.definition_map(c_path)
+            self.assertEqual(c_definitions["JSON_NODE_LIMIT"], [1])
+            self.assertEqual(c_definitions["JSON_DEFAULT_LIMIT"], [2])
+            self.assertNotIn("prototype_only", c_definitions)
+            self.assertEqual(c_definitions["implemented"], [4])
 
-    def test_arithmetic_status_change_is_versioned_and_documented(self) -> None:
-        """``arithmetic.safe`` stopped being a boolean, so the version moved with it."""
+            self.source_cache[py_path] = [
+                "JSON_NODE_LIMIT = 64",
+                "class JsonReader:",
+                "    def parse(self):",
+                "        return JSON_NODE_LIMIT",
+            ]
+            py_definitions = self.definition_map(py_path)
+            self.assertEqual(py_definitions["JSON_NODE_LIMIT"], [1])
+            self.assertEqual(py_definitions["JsonReader.parse"], [3])
+        finally:
+            for rel, lines in saved.items():
+                if lines is None:
+                    self.source_cache.pop(rel, None)
+                else:
+                    self.source_cache[rel] = lines
+
+    def test_ambiguous_duplicate_definition_in_inventory_copy_is_rejected(self) -> None:
+        rel = "src/core/nk_json.c"
+        previous = self.source_cache.get(rel)
+        self.source_cache[rel] = [
+            "int duplicated_parser(void) { return 0; }",
+            "int duplicated_parser(void) { return 1; }",
+        ]
+        try:
+            self.assert_inventory_copy_anchor_fails(
+                f"{rel}:duplicated_parser", "exactly one definition, found 2"
+            )
+        finally:
+            if previous is None:
+                self.source_cache.pop(rel, None)
+            else:
+                self.source_cache[rel] = previous
+
+    def test_schema_changes_are_versioned_and_documented(self) -> None:
+        """Arithmetic status and source-anchor grammar changes have schema notes."""
         inventory = self.inventory
         notes = {note["version"]: note["change"] for note in inventory["schema_notes"]}
         self.assertIn(2, notes)
         self.assertIn(3, notes)
+        self.assertIn(4, notes)
         self.assertIn("boolean", notes[2])
         self.assertIn("boolean", notes[3])
         self.assertIn("arithmetic_status_values", notes[3])
+        self.assertIn("exactly one definition", notes[4])
+        self.assertIn("Numeric line anchors were removed", notes[4])
+        self.assertIn("exactly one definition", inventory["anchor_grammar"]["path:symbol"])
+        self.assertIn("rejected", inventory["anchor_grammar"]["line-number anchors"])
         for surface in inventory["surfaces"]:
             with self.subTest(surface=surface["id"]):
                 self.assertNotIsInstance(surface["arithmetic"]["safe"], bool)
@@ -893,7 +985,7 @@ class TestParserSafetyInventory(unittest.TestCase):
         max_input = self.row("nk-font-cache-manifest")["max_input"]
         self.assertNotIn("bounded by", max_input)
         self.assertIn("not byte-capped", max_input)
-        self.assertIn("src/core/nk_font.c:299@nk_font_check_cache", max_input)
+        self.assertIn("src/core/nk_font.c:nk_font_check_cache", max_input)
 
     def test_player_settings_row_matches_the_native_selftest_cases(self) -> None:
         """The settings selftest writes a corrupt document and a wrong schema.
