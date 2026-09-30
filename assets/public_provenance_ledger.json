@@ -162,7 +162,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aa0c7f62b3425fe9c34c44205b4b8ac58e1d5c042fa5b73c89f9500a7957bbd6"
+      "sha256": "ca98497da14aeca58ace372c57e54fdb69c4a7fe141a64bb54d9554b944d6f79"
     },
     {
       "path": ".github/workflows/osv-scanner.yml",
@@ -9471,11 +9471,10 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "b6add89a5ba03648316fc1ec6815117726772193",
-    "candidate_tree": "96b3b040d1bb55ebe52bc181497b072142567f8f",
+    "trusted_tree": "14878772ffc510df6942ad7a3d6664ff2a6cb809",
+    "candidate_tree": "21c1fc68d16fc77cb1c6ae308a3fdfd462ececf3",
     "refreshed_paths": [
-      ".github/workflows/ci.yml",
-      "CONTRIBUTING.md"
+      ".github/workflows/dependency-review.yml"
     ]
   }
 }
