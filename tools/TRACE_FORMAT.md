@@ -41,6 +41,10 @@ both files must carry one:
 
 The diff tool only compares the step lines, ignoring this header.
 
+`verify_gates.py` keeps v1 traces available to the existing codegen and microtest
+comparisons. Because v1 has no evidence-tier field, the verifier reports a v1 trace as
+`CORROBORATIVE_ONLY`; it never satisfies the hardware gate.
+
 ## Strict hardware trace v2
 
 The default `tracediff.py <trace-a> <trace-b>` invocation keeps the v1
@@ -72,12 +76,18 @@ whether or not its metadata conflicts with the first header.  Other comments
 that carry no trace identity are ignored, as they are by the v1 comparator.
 
 All identity fields other than `source_tier` must match exactly between the
-two inputs.  This permits a PSP capture to be compared with a source-owned
-`LOCAL_COSIM` trace while keeping the evidence tier visible.  A PPSSPP trace
-can still be used with the v1 comparator for corroboration, but it cannot
-satisfy the strict PSP hardware route.  A strict match therefore proves only
-that the two complete, identically identified streams agree; it does not by
-itself create physical PSP evidence.
+two inputs. This permits a PSP capture to be compared with a source-owned
+`LOCAL_COSIM` trace while keeping the evidence tier visible. `verify_gates.py`
+reports the validated v2 tier from the strict loader. A
+`PPSSPP_CORROBORATIVE` trace is reported as `CORROBORATIVE_ONLY` and cannot
+satisfy the hardware gate. That gate reports `HARDWARE_MEASURED` only after a
+`PSP_HARDWARE` + `LOCAL_COSIM` pair passes `strict_hardware_diff`; missing pair
+inputs are `NOT_RUN`. The PSP-side v2 trace producer is in the works under
+issue #312 and is not provided by this verifier change.
+
+A strict match proves that the two complete, identically identified streams
+agree. The gate's evidence-tier result comes from the `source_tier` metadata;
+the comparator does not create or attest to the trace's provenance.
 
 Strict v2 records use the same per-step fields as v1 and additionally reject
 malformed PCs, opcodes, register names, memory-write names, values, duplicate

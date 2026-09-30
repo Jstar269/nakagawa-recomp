@@ -2,6 +2,8 @@
 
 import unittest
 from unittest.mock import MagicMock, patch
+from contextlib import redirect_stdout
+import io
 import os
 import pathlib
 import subprocess
@@ -12,6 +14,7 @@ import tempfile
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import codegen_gate
 import microtest_gate
+import verify_gates
 
 class TestGateExitResolution(unittest.TestCase):
     def test_shared_exit_discovery(self):
@@ -481,6 +484,104 @@ class TestStrictTraceContract(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertIn("usage: tracediff.py --strict-hardware", result.stderr)
                 self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+
+class TestVerifyGateEvidence(unittest.TestCase):
+    """Source-owned traces exercise verify_gates evidence-tier reporting."""
+
+    SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = pathlib.Path(self._tmp.name)
+
+    def trace(self, name, source_tier="PSP_HARDWARE", version=2):
+        path = self.dir / name
+        record = "0 pc=0x08900100 op=0x00000000 r1=0x00000001"
+        if version == 1:
+            header = (
+                "# psp-recomp trace v1 target=synthetic oracle=ppsspp "
+                "start_pc=0x08900100 steps=1"
+            )
+        else:
+            header = (
+                f"# psp-recomp trace v2 source_tier={source_tier} "
+                "fixture_id=issue312 cell_id=case_0001 "
+                f"binary_sha256={'a' * 64} source_commit={self.SOURCE_COMMIT} "
+                "model=PSP-3000 firmware=6.61 start_pc=0x08900100 steps=1 complete=1"
+            )
+        path.write_text(f"{header}\n{record}\n", encoding="utf-8")
+        return str(path)
+
+    def capture_tier(self, label, path):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            tier = verify_gates.report_trace_tier(label, path)
+        return tier, output.getvalue()
+
+    def capture_main(self, oracle):
+        output = io.StringIO()
+        argv = [
+            "verify_gates.py",
+            "--cc", "gcc",
+            "--elf", "synthetic.elf",
+            "--run-elf", "unused-runner",
+            "--workdir", str(self.dir / "verify-work"),
+            "--codegen-oracle", oracle,
+        ]
+        with redirect_stdout(output), patch.object(sys, "argv", argv):
+            with patch("verify_gates.subprocess.run", return_value=MagicMock(returncode=0)) as runner:
+                result = verify_gates.main()
+        return result, output.getvalue(), runner.call_args
+
+    def capture_hardware_gate(self, psp_trace="", cosim_trace=""):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = verify_gates.run_hardware_trace_gate(psp_trace, cosim_trace)
+        return result, output.getvalue()
+
+    def test_codegen_oracle_reports_header_tier_instead_of_collapsing_sources(self):
+        psp = self.trace("psp.trace", source_tier="PSP_HARDWARE")
+        ppsspp = self.trace("ppsspp.trace", source_tier="PPSSPP_CORROBORATIVE")
+        _, psp_output, _ = self.capture_main(psp)
+        _, ppsspp_output, _ = self.capture_main(ppsspp)
+
+        self.assertIn("source_tier=PSP_HARDWARE", psp_output)
+        self.assertIn("CORROBORATIVE_ONLY: CODEGEN_ORACLE", ppsspp_output)
+        self.assertIn("source_tier=PPSSPP_CORROBORATIVE", ppsspp_output)
+
+    def test_v1_trace_is_reported_as_corroborative_only(self):
+        legacy = self.trace("legacy.trace", version=1)
+        result, output, call_args = self.capture_main(legacy)
+        self.assertEqual(result, 1, output)
+        self.assertIsNotNone(call_args)
+        self.assertIn("CORROBORATIVE_ONLY: CODEGEN_ORACLE", output)
+        self.assertIn("legacy v1 trace", output)
+
+    def test_missing_hardware_pair_is_not_run(self):
+        result, output = self.capture_hardware_gate()
+        self.assertEqual(result, 1, output)
+        self.assertIn("NOT_RUN", output)
+        self.assertNotIn("PASS", output)
+        self.assertNotIn("HARDWARE_MEASURED", output)
+
+    def test_ppsspp_tier_cannot_satisfy_hardware_gate(self):
+        psp = self.trace("psp.trace", source_tier="PSP_HARDWARE")
+        ppsspp = self.trace("ppsspp.trace", source_tier="PPSSPP_CORROBORATIVE")
+        result, output = self.capture_hardware_gate(psp, ppsspp)
+        self.assertEqual(result, 1, output)
+        self.assertIn("CORROBORATIVE_ONLY", output)
+        self.assertNotIn("HARDWARE_MEASURED", output)
+
+    def test_valid_hardware_and_local_cosim_pair_reports_measured(self):
+        psp = self.trace("psp.trace", source_tier="PSP_HARDWARE")
+        cosim = self.trace("cosim.trace", source_tier="LOCAL_COSIM")
+        result, output = self.capture_hardware_gate(psp, cosim)
+        self.assertEqual(result, 0, output)
+        self.assertIn("source_tier=PSP_HARDWARE", output)
+        self.assertIn("source_tier=LOCAL_COSIM", output)
+        self.assertIn("HARDWARE_MEASURED", output)
 
 
 if __name__ == "__main__":
