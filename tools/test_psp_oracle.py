@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -436,12 +437,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 55)
+        self.assertEqual(len(routes), 56)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 56)))
+        self.assertEqual(set(ids), set(range(1, 57)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -703,6 +704,259 @@ class PspDmacProbeTests(unittest.TestCase):
             set(dmac["outcome_contract"]),
             {"result", "skip", "hang", "reset", "inconclusive"},
         )
+
+    def test_manifest_routes_mailbox_measurement_to_339_and_341(self) -> None:
+        manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        kernel = next(
+            entry for entry in manifest["tests"] if entry["id"] == "PSP-KERNEL-001"
+        )
+        self.assertIn("mbx-delete-wait", kernel["diagnostic_case_ids"])
+        self.assertIn("mbx-timeout-control", kernel["diagnostic_case_ids"])
+        self.assertIn(339, kernel["issues"])
+        self.assertIn(341, kernel["issues"])
+        for api in (
+            "sceKernelCreateMbx",
+            "sceKernelDeleteMbx",
+            "sceKernelReceiveMbx",
+            "sceKernelReferMbxStatus",
+            "sceKernelReferThreadStatus",
+            "sceKernelWaitThreadEnd",
+        ):
+            self.assertIn(api, kernel["apis"])
+
+
+class PspMailboxCleanupTests(unittest.TestCase):
+    def test_probe_cleans_one_mailbox_and_joins_or_terminates_receiver(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is unavailable for the synthetic mailbox cleanup harness")
+
+        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        start = probe.rindex(
+            "#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MBX_DELETE_WAIT"
+        )
+        end = probe.index("#endif", start) + len("#endif")
+        mailbox_probe = probe[start:end]
+        harness = r'''#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#define PSP_ORACLE_CASE_MBX_DELETE_WAIT 56
+#define PSP_ORACLE_CASE PSP_ORACLE_CASE_MBX_DELETE_WAIT
+#define PSP_THREAD_WAITING 4u
+#define THREAD_ATTR_USER 0
+
+typedef uint32_t SceSize;
+typedef uint32_t SceUInt;
+typedef int32_t SceUID;
+typedef int (*ThreadEntry)(SceSize, void *);
+typedef struct {
+    int size;
+    uint32_t status;
+    uint32_t waitType;
+    SceUID waitId;
+} SceKernelThreadInfo;
+typedef struct {
+    int size;
+    uint32_t numWaitThreads;
+} SceKernelMbxInfo;
+
+SceUID sceKernelCreateMbx(const char *, int, void *);
+SceUID sceKernelCreateThread(const char *, ThreadEntry, int, int, int, void *);
+int sceKernelStartThread(SceUID, SceSize, void *);
+int sceKernelReferThreadStatus(SceUID, SceKernelThreadInfo *);
+int sceKernelDeleteMbx(SceUID);
+int sceKernelWaitThreadEnd(SceUID, SceUInt *);
+int sceKernelDeleteThread(SceUID);
+int sceKernelTerminateDeleteThread(SceUID);
+int sceKernelReferMbxStatus(SceUID, SceKernelMbxInfo *);
+int sceKernelReceiveMbx(SceUID, void **, SceUInt *);
+uint32_t sceKernelGetSystemTimeLow(void);
+void emit_record_extended(int, const char *, const char *, const char *,
+                          uint32_t, const uint32_t *, size_t);
+
+/* MAILBOX PROBE SNIPPET */
+
+static int live_mailboxes;
+static int live_threads;
+static int mailbox_active[32];
+static int mailbox_delete_calls[32];
+static int mailbox_creates;
+static int thread_status_queries;
+static int clock_queries;
+static int timeout_join;
+static int terminate_delete_calls;
+
+static void reset_state(int should_timeout_join) {
+    memset(mailbox_active, 0, sizeof(mailbox_active));
+    memset(mailbox_delete_calls, 0, sizeof(mailbox_delete_calls));
+    live_mailboxes = 0;
+    live_threads = 0;
+    mailbox_creates = 0;
+    thread_status_queries = 0;
+    clock_queries = 0;
+    timeout_join = should_timeout_join;
+    terminate_delete_calls = 0;
+}
+
+SceUID sceKernelCreateMbx(const char *name, int attr, void *options) {
+    (void)name;
+    (void)attr;
+    (void)options;
+    const SceUID uid = mailbox_creates++ == 0 ? 10 : 20;
+    mailbox_active[uid] = 1;
+    live_mailboxes++;
+    return uid;
+}
+
+SceUID sceKernelCreateThread(const char *name, ThreadEntry entry, int priority,
+                             int stack_size, int attr, void *options) {
+    (void)name;
+    (void)entry;
+    (void)priority;
+    (void)stack_size;
+    (void)attr;
+    (void)options;
+    live_threads++;
+    return 30;
+}
+
+int sceKernelStartThread(SceUID thread, SceSize args, void *argp) {
+    (void)thread;
+    (void)args;
+    (void)argp;
+    s_mbx_receive_entry_us = 100;
+    return 0;
+}
+
+int sceKernelReferThreadStatus(SceUID thread, SceKernelThreadInfo *status) {
+    (void)thread;
+    if (thread_status_queries++ == 0) {
+        status->status = PSP_THREAD_WAITING;
+        status->waitType = 5;
+        status->waitId = 10;
+    }
+    return 0;
+}
+
+int sceKernelDeleteMbx(SceUID uid) {
+    mailbox_delete_calls[uid]++;
+    if (!mailbox_active[uid]) {
+        return -1;
+    }
+    mailbox_active[uid] = 0;
+    live_mailboxes--;
+    return 0;
+}
+
+int sceKernelWaitThreadEnd(SceUID thread, SceUInt *timeout) {
+    (void)thread;
+    *timeout = 0;
+    if (timeout_join) {
+        return -1;
+    }
+    s_mbx_receive_rc = (int)0x800201b5u;
+    s_mbx_receive_message = &s_mbx_message_sentinel;
+    s_mbx_receive_remaining_us = 0;
+    s_mbx_receive_return_us = 250;
+    s_mbx_receive_completion_count = 1;
+    return 0;
+}
+
+int sceKernelDeleteThread(SceUID thread) {
+    (void)thread;
+    live_threads--;
+    return 0;
+}
+
+int sceKernelTerminateDeleteThread(SceUID thread) {
+    (void)thread;
+    terminate_delete_calls++;
+    live_threads--;
+    return 0;
+}
+
+int sceKernelReferMbxStatus(SceUID uid, SceKernelMbxInfo *status) {
+    (void)uid;
+    status->numWaitThreads = 0;
+    return 0;
+}
+
+int sceKernelReceiveMbx(SceUID uid, void **message, SceUInt *timeout) {
+    (void)uid;
+    (void)message;
+    *timeout = 0;
+    return -1;
+}
+
+uint32_t sceKernelGetSystemTimeLow(void) {
+    static const uint32_t values[] = {200, 300, 50300};
+    const size_t index = (size_t)clock_queries++;
+    return values[index < sizeof(values) / sizeof(values[0]) ? index : 2];
+}
+
+void emit_record_extended(int emulated, const char *test_id, const char *case_id,
+                          const char *status, uint32_t result,
+                          const uint32_t *out, size_t count) {
+    (void)emulated;
+    (void)test_id;
+    (void)case_id;
+    (void)status;
+    (void)result;
+    (void)out;
+    (void)count;
+}
+
+int main(void) {
+    reset_state(0);
+    if (!run_mbx_delete_wait(0)) {
+        return 1;
+    }
+    if (mailbox_delete_calls[10] != 1) {
+        return 2; /* redundant delete after the primary mailbox was removed */
+    }
+    if (mailbox_delete_calls[20] != 1 || live_mailboxes != 0 || live_threads != 0) {
+        return 3;
+    }
+
+    reset_state(1);
+    if (run_mbx_delete_wait(0)) {
+        return 4;
+    }
+    if (mailbox_delete_calls[10] != 1) {
+        return 5;
+    }
+    if (mailbox_delete_calls[20] != 1 || terminate_delete_calls != 1 ||
+        live_mailboxes != 0 || live_threads != 0) {
+        return 6;
+    }
+    return 0;
+}
+'''.replace("/* MAILBOX PROBE SNIPPET */", mailbox_probe)
+
+        fixture = root / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="mbx-cleanup-host-", dir=fixture) as scratch:
+            source_path = Path(scratch) / "mbx_cleanup_host.c"
+            binary_path = Path(scratch) / "mbx_cleanup_host.exe"
+            source_path.write_text(harness, encoding="utf-8")
+            build = subprocess.run(
+                [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", str(source_path), "-o", str(binary_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr)
+            executed = subprocess.run(
+                [str(binary_path)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
 
 
 class PspMutexProbeTests(unittest.TestCase):
