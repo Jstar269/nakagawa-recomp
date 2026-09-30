@@ -134,10 +134,11 @@ static void add_pes_ex(Buf *b, uint8_t sid, int pts_dts, uint32_t hdr_len,
         need = 0;
     } else {
         if (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH) {
-            uint8_t p[5]; put_pts(p, pts, 0x21); raw(b, p, 5); written += 5u;
+            uint8_t p[5]; put_pts(p, pts, pts_dts == PES_TS_BOTH ? 0x31u : 0x21u);
+            raw(b, p, 5); written += 5u;
         }
         if (pts_dts == PES_TS_BOTH) {
-            uint8_t p[5]; put_pts(p, dts, 0x31); raw(b, p, 5); written += 5u;
+            uint8_t p[5]; put_pts(p, dts, 0x11u); raw(b, p, 5); written += 5u;
         }
     }
     if (hdr_len > written) bytes(b, 0xffu, hdr_len - written);
@@ -185,13 +186,14 @@ static void check_pes_wellformed(const uint8_t *s, uint32_t at, int pts_dts, uin
     int has_pts = fields_present && (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH);
     int has_dts = fields_present && pts_dts == PES_TS_BOTH;
     if (has_pts) {
-        CHECK((s[9] & 0xf0u) == 0x20u, "PTS field carries the '0010' prefix");
+        CHECK((s[9] & 0xf0u) == (has_dts ? 0x30u : 0x20u),
+              "PTS field carries the prefix for the PTS/DTS combination");
         CHECK((s[9] & 1u) != 0u && (s[11] & 1u) != 0u && (s[13] & 1u) != 0u,
               "PTS field carries all three marker bits");
         CHECK(read_pts(s + 9) == pts, "the PTS field encodes the value the builder declared");
     }
     if (has_dts) {
-        CHECK((s[14] & 0xf0u) == 0x30u, "DTS field carries the '0011' prefix");
+        CHECK((s[14] & 0xf0u) == 0x10u, "DTS field carries the '0001' prefix");
         CHECK((s[14] & 1u) != 0u && (s[16] & 1u) != 0u && (s[18] & 1u) != 0u,
               "DTS field carries all three marker bits");
         CHECK(read_pts(s + 14) == dts, "the DTS field encodes the value the builder declared");
@@ -904,6 +906,30 @@ static const uint8_t corpus_video_pts_dts[] = {
 };
 
 /* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 PTS_DTS_flags=00; 8 header_data_length; 9-11 optional bytes; 12-18 payload. */
+/* ISO/IEC 13818-1:2018 2.4.3.6 Table 2-21: PTS_DTS_flags=10
+ * requires prefix 0010. These independent literal bytes deliberately carry 0011. */
+static const uint8_t corpus_video_pts_bad_prefix[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+    0x31, 0x00, 0x05, 0xBF, 0x21,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* Table 2-21 requires PTS prefix 0011 when PTS_DTS_flags=11. */
+static const uint8_t corpus_video_pts_dts_bad_pts_prefix[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x14, 0x80, 0xC0, 0x0A,
+    0x21, 0x00, 0x05, 0xBF, 0x21,
+    0x11, 0x00, 0x05, 0xEE, 0x0D,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* Table 2-21 requires DTS prefix 0001 when PTS_DTS_flags=11. */
+static const uint8_t corpus_video_pts_dts_bad_dts_prefix[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x14, 0x80, 0xC0, 0x0A,
+    0x31, 0x00, 0x05, 0xBF, 0x21,
+    0x21, 0x00, 0x05, 0xEE, 0x0D,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
 static const uint8_t corpus_video_no_pts_optional[] = {
     0x00, 0x00, 0x01, 0xE0, 0x00, 0x0D, 0x80, 0x00, 0x03,
     0xDE, 0xAD, 0xBE,
@@ -1352,6 +1378,26 @@ static void test_conformance_corpus(void) {
           .pts_prefix = 0x30, .dts_prefix = 0x10, .pts_markers = 0x07, .dts_markers = 0x07,
           .pts = 90000, .dts = 96006, .has_pts = 1, .has_dts = 1,
           .data_at = 19, .data_size = 7, .stream_id = 0xE0, .read_limit = CORPUS_NO_POS },
+        { .name = "PTS-only rejects paired-timestamp prefix", .data = corpus_video_pts_bad_prefix, .size = sizeof(corpus_video_pts_bad_prefix),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .pes_at = 0, .pes_length = 0x000F, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0x80, .pes_header_length = 5,
+          .pts_at = 9, .dts_at = CORPUS_NO_POS, .pts_prefix = 0x30, .pts_markers = 0x07,
+          .pts = 90000, .fail_at = 0, .read_limit = sizeof(corpus_video_pts_bad_prefix) },
+        { .name = "PTS and DTS reject PTS-only prefix", .data = corpus_video_pts_dts_bad_pts_prefix, .size = sizeof(corpus_video_pts_dts_bad_pts_prefix),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .pes_at = 0, .pes_length = 0x0014, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0xC0, .pes_header_length = 10,
+          .pts_at = 9, .dts_at = 14, .pts_prefix = 0x20, .dts_prefix = 0x10,
+          .pts_markers = 0x07, .dts_markers = 0x07, .pts = 90000, .dts = 96006,
+          .fail_at = 0, .read_limit = sizeof(corpus_video_pts_dts_bad_pts_prefix) },
+        { .name = "PTS and DTS reject DTS prefix", .data = corpus_video_pts_dts_bad_dts_prefix, .size = sizeof(corpus_video_pts_dts_bad_dts_prefix),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .pes_at = 0, .pes_length = 0x0014, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0xC0, .pes_header_length = 10,
+          .pts_at = 9, .dts_at = 14, .pts_prefix = 0x30, .dts_prefix = 0x20,
+          .pts_markers = 0x07, .dts_markers = 0x07, .pts = 90000, .dts = 96006,
+          .fail_at = 0, .read_limit = sizeof(corpus_video_pts_dts_bad_dts_prefix) },
         { .name = "no PTS with optional header", .data = corpus_video_no_pts_optional, .size = sizeof(corpus_video_no_pts_optional),
           .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .pes = 1, .video_pes = 1,
           .pes_at = 0, .pes_length = 0x000D, .pes_sid = 0xE0, .pes_flags1 = 0x80,
