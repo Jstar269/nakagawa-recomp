@@ -12,6 +12,9 @@
  * (a top-level window + a 32-bit DIB the PSP framebuffer is converted into each frame), input
  * falls back to a keyboard-only GetAsyncKeyState mapping; controllers on that debug path are not
  * supported (no XInput/DirectInput dependency).
+ * SR_VIDEO=offscreen is an explicit host-memory sink for headless bring-up: it converts validated
+ * guest frames without initializing SDL video, creating a window, or claiming a presentable
+ * Vulkan surface, and it provides no live input device.
  *
  * The SDL3/Vulkan presenter is host-neutral and is the only presenter on a host without
  * Win32/GDI: everything GDI-shaped (the window class, the DIB, GetAsyncKeyState, the message
@@ -45,13 +48,13 @@ static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/g
 #if defined(SR_SDL3VK) || defined(_WIN32)
 static bool     s_foreground_request_issued;
 #endif
+static int      s_offscreen = 0;        /* explicit host-memory presenter for headless bring-up */
+static uint64_t s_offscreen_frames;
 #ifdef _WIN32
 static HWND     s_hwnd;
 static BITMAPINFO s_bmi;
 #endif
-#if defined(SR_SDL3VK) || defined(_WIN32)
 static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for the presenters */
-#endif
 static uint32_t s_buttons = 0;
 static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
 static int      s_pad_present = 0;         /* a controller is currently connected */
@@ -199,9 +202,29 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 #endif /* _WIN32: the keyboard fallback and the window class are Win32-only */
 
 void gui_init(const char *title) {
-#if !defined(SR_SDL3VK) && !defined(_WIN32)
     (void)title;
-#endif
+    const char *video = getenv("SR_VIDEO");
+    if (video && strcmp(video, "offscreen") == 0) {
+        /* The offscreen presenter is an explicit host-memory sink. It does not
+         * initialize SDL video, create a window, or claim Vulkan presentation;
+         * gui_present accepts a frame only after conversion has written this
+         * allocated sink. Interactive routes keep their existing selection. */
+        s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
+        if (!s_px) {
+            fprintf(stderr, "gui_init: offscreen presenter allocation failed\n");
+            sr_gui_boot_event("BOOT_EVENT phase=window_unavailable backend=offscreen");
+            return;
+        }
+        s_offscreen = 1;
+        s_offscreen_frames = 0;
+        s_last_ns = SDL_GetTicksNS();
+        s_on = 1;
+        /* window_ready is the established boot-gate name for the host-presenter
+         * initialization milestone. The backend field makes the no-window case
+         * explicit; this event does not claim that an OS window exists. */
+        sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=offscreen");
+        return;
+    }
 #ifdef SR_SDL3VK
     /* SDL3+Vulkan presenter (src/rt/gpu_sdl3vk, Phase 0): default in this build;
      * SR_VIDEO=gdi falls back to the classic Win32/GDI window below. */
@@ -297,7 +320,6 @@ void gui_consume_button_pulses(void) {
 /* Present a framebuffer at guest address fbaddr. fmt: 0=5650, 1=5551, 2=4444, 3=8888.
  * stride is in pixels (PSP buffer width, typically 512). */
 /* Convert the guest framebuffer to the BGRA words both presenters consume. */
-#if defined(SR_SDL3VK) || defined(_WIN32)
 static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     for (int y = 0; y < PSP_H; y++) {
         for (int x = 0; x < PSP_W; x++) {
@@ -354,10 +376,10 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
         }
     }
 }
-#endif
 
 void gui_pump(void) {
     if (!s_on) return;
+    if (s_offscreen) return;
 #ifdef SR_SDL3VK
     if (s_sdl3) {
         int alive = sdl3vk_poll();
@@ -376,12 +398,8 @@ void gui_pump(void) {
 #endif
 }
 
-void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
-#if !defined(_WIN32) && !defined(SR_SDL3VK)
-    (void)fbaddr;
-    (void)fmt;
-#endif
-    if (!s_on) return;
+int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
+    if (!s_on) return 0;
     if (stride == 0) stride = 512;
 
     if (!present_slot_due()) {
@@ -393,14 +411,30 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (s_sdl3) sdl3vk_capture_cancel();
 #endif
         gui_pump();
-        return;
+        return 0;
     }
 
+    if (s_offscreen) {
+        /* display_present_active validates the complete guest span before this
+         * call. Conversion is the sink operation: the accepted frame is now
+         * resident in the allocated host buffer, with no window or Vulkan WSI
+         * dependency. */
+        convert_fb(fbaddr, fmt, stride);
+        s_offscreen_frames++;
+        if (getenv("SR_PRESENT_TRACE")) {
+            sr_gui_boot_event("BOOT_EVENT phase=frame_present backend=offscreen frame=%llu",
+                    (unsigned long long)s_offscreen_frames);
+        }
+        return 1;
+    }
+
+    int accepted = 1;
 #ifdef SR_SDL3VK
     if (s_sdl3) {
         /* 1. GPU VRAM image fast path: any frame the GPU rasterizer produced is presented
          *    directly from its Vulkan image. Returns 1 on success (skip GDI), -1 when the
          *    address isn't GPU-resident (CPU movie frames etc.) — fall through to BGRA. */
+        accepted = 0;
         int res = gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
         if (res == 0) { _Exit(0); }
@@ -416,6 +450,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 s_first_gpu_frame = 0;
                 sr_gui_boot_event("BOOT_EVENT phase=first_frame source=gpu presented=1");
             }
+            accepted = 1;
             goto pace;
         }
 
@@ -424,6 +459,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         int present_result = sdl3vk_present_rgba(s_px);
         sync_sdl_input();
         if (present_result == 0) { _Exit(0); }
+        accepted = present_result == 1;
         goto pace;
     }
 #endif
@@ -437,15 +473,22 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_pad_present = 0;
 
     convert_fb(fbaddr, fmt, stride);
+    if (!s_hwnd) return 0;
     HDC dc = GetDC(s_hwnd);
-    RECT cr; GetClientRect(s_hwnd, &cr);
-    StretchDIBits(dc, 0, 0, cr.right, cr.bottom, 0, 0, PSP_W, PSP_H,
-                  s_px, &s_bmi, DIB_RGB_COLORS, SRCCOPY);
+    if (!dc) return 0;
+    RECT cr;
+    if (!GetClientRect(s_hwnd, &cr)) {
+        ReleaseDC(s_hwnd, dc);
+        return 0;
+    }
+    int scanlines = StretchDIBits(dc, 0, 0, cr.right, cr.bottom, 0, 0, PSP_W, PSP_H,
+                                  s_px, &s_bmi, DIB_RGB_COLORS, SRCCOPY);
     ReleaseDC(s_hwnd, dc);
+    if (scanlines <= 0) return 0;
 #else
     /* No GDI presenter on this host and the SDL3 presenter is not active: gui_init
      * reported that, so there is nothing to present and nothing to claim. */
-    return;
+    return 0;
 #endif
 
 #ifdef SR_SDL3VK
@@ -456,11 +499,12 @@ pace:
      * frames miss their vblank and costs a whole extra period (30/20 fps quantization). */
     {
         extern int sched_vbl_paced(void);
-        if (sched_vbl_paced()) { s_last_ns = SDL_GetTicksNS(); return; }
+        if (sched_vbl_paced()) { s_last_ns = SDL_GetTicksNS(); return accepted; }
     }
     uint64_t now_ns = SDL_GetTicksNS();
     const uint64_t period_ns = 1000000000u / 60u;
     if (now_ns - s_last_ns < period_ns)
         SDL_DelayPrecise(period_ns - (now_ns - s_last_ns));
     s_last_ns = SDL_GetTicksNS();
+    return accepted;
 }

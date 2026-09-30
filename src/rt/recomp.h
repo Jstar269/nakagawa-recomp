@@ -658,9 +658,9 @@ uint32_t ge_framebuffer(void);
  * which is indistinguishable from a stored GE_NOP word. */
 uint32_t ge_get_cmd(uint32_t cmd);
 
-/* Interactive window front-end (src/rt/gui.c, Win32). gui_init opens the window; gui_present is
- * called from sceDisplaySetFrameBuf to show a frame, pump messages, and sample the keyboard;
- * gui_buttons returns the live PSP pad state; gui_on reports whether the window is active. */
+/* Host presenter front-end (src/rt/gui.c). gui_init selects the interactive window or the
+ * explicit offscreen sink; gui_present is called from sceDisplaySetFrameBuf to accept a frame,
+ * pump messages, and sample live input on interactive routes. */
 #define SR_APP_TITLE "Nakagawa Recomp"   /* canonical window caption; see also gpu_sdl3vk/sdl3vk.c */
 /* Shared one-shot gate used by the visible GDI and SDL/Vulkan presenters.
  * The boot-event file is the launcher's handoff marker; headless presenters
@@ -688,7 +688,8 @@ uint32_t gui_buttons(void);
 void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sample */
 void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128=centre) */
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
-void     gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
+/* Returns 1 only when the selected presenter accepted the validated frame. */
+int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
 
 typedef uint32_t (*HleFn)(CpuState *s);
 void     sr_hle_register(uint32_t nid, const char *name, HleFn fn);

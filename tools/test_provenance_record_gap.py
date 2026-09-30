@@ -94,6 +94,41 @@ class TestInventoryShape(unittest.TestCase):
         reported = {item["path"] for item in gap.record_gaps(covered=covered - {victim})}
         self.assertIn(victim, reported)
 
+    def test_upstream_production_gap_requires_campaign_disposition(self) -> None:
+        """A derived production gap without a roadmap owner fails closed."""
+        covered = gap.exact_paths_from_public_ledger(LEDGER)
+        victim = "src/core/nk_psp_aes.c"
+        self.assertIn(victim, covered)
+        item = next(
+            item for item in gap.record_gaps(covered=covered - {victim})
+            if item["path"] == victim
+        )
+        self.assertEqual(item["deterministic_class"], "upstream_derived")
+        self.assertEqual(item["independence"]["status"], "missing")
+        self.assertIn("owner or disposition", item["independence"]["reason"])
+
+    def test_upstream_production_gap_accepts_explicit_campaign_disposition(self) -> None:
+        """A group named in the campaign carries its owner and disposition."""
+        covered = gap.exact_paths_from_public_ledger(LEDGER)
+        victim = "src/rt/sched.c"
+        self.assertIn(victim, covered)
+        item = next(
+            item for item in gap.record_gaps(covered=covered - {victim})
+            if item["path"] == victim
+        )
+        self.assertEqual(item["independence"], {
+            "status": "mapped",
+            "owner": "G1",
+            "disposition": "clean-room-rewrite",
+            "source": gap.INDEPENDENCE_PLAN_PATH,
+        })
+
+    def test_bounded_campaign_disposition_is_explicit(self) -> None:
+        metadata = gap.independence_metadata("src/rt/ge.c")
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata["owner"], "G10")
+        self.assertEqual(metadata["disposition"], "bounded-exclusion")
+
 
 class TestAgreementWithTheGate(unittest.TestCase):
     """The decisive property: the inventory predicts the gate exactly."""
