@@ -21,7 +21,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d75871c6852072d69015d9239d50088bbb04a2a7ebbb311bdc240f0823bd94cc"
+      "sha256": "98019bc91206fc5e6fce7e7113c4791a16713d090a6ba722c2e00d6b00e12900"
     },
     {
       "path": ".clang-format",
@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab32664df7f0ea9b1b6c97d2bd13aabfe7f8b06f9449c6189e86fca9ab4434f2"
+      "sha256": "f9ebf47890205caf336dcf0ddb01585821ec6af8138f01fa53740a747e158a6d"
     },
     {
       "path": "AGENTS.md",
@@ -9471,13 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "c39f062e2e09c358607a8d023b8ba43aabca956e",
-    "candidate_tree": "0e73b570e0a1dfac866ea98d91072db3493dcff0",
+    "trusted_tree": "822fb80605d8e4e726984973a32c163651b25ee5",
+    "candidate_tree": "ef9475e2b4d5588b221dd8aeeb5111ef885aee22",
     "refreshed_paths": [
-      "src/core/nk_input_profile.c",
-      "tests/native/test_fuzz_parsers.c",
-      "tests/native/test_input_profile.c",
-      "tests/native/test_input_settings.c"
+      ".betterleaks.toml",
+      ".pre-commit-config.yaml"
     ]
   }
 }
