@@ -16,8 +16,6 @@ linked live issue, and read counts from the generator cited beside each area.
 
 - Public-source safeguards: exact-tree, provenance, history, security, and
   export gates remain required for proposed changes and release candidates.
-- Purge force-pushed commits: [issue #166](https://github.com/Jstar269/nakagawa-recomp/issues/166).
-  Unreachable commits after a history rewrite require GitHub-side garbage collection.
 - Unified PSP clocks, waits, and interrupt delivery remain source-owned
   runtime work.
 - Direct XB archive/VFS tooling is documented in
@@ -40,6 +38,9 @@ linked live issue, and read counts from the generator cited beside each area.
 Each entry states what the closure established and its limits. Current state
 remains on the linked live issue.
 
+- History-cleanup tracker: [issue #166](https://github.com/Jstar269/nakagawa-recomp/issues/166)
+  is closed. Its request concerned GitHub-side collection of unreachable commits;
+  tracker closure alone does not establish that those objects were collected.
 - PSP DMA copy semantics: [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) is closed; see the live issue.
 - Post-save prize-ceremony progression: [issue #63](https://github.com/Jstar269/nakagawa-recomp/issues/63) is closed; see the live issue.
 - Audio stuttering during qualified gameplay: [issue #67](https://github.com/Jstar269/nakagawa-recomp/issues/67) is closed; see the live issue.

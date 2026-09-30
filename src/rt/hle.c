@@ -304,6 +304,25 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid) {
     return result;
 }
 
+/* Unlink every registered export whose target lies in [lo, hi). This is the export
+ * authority a loaded image owns, so unloading that image retires exactly its own
+ * exports: an importer can no longer resolve a NID to an address in a range the
+ * kernel has just released. Entries outside the range belong to other resident
+ * images and are left untouched. Sorted order by NID is preserved, so the lookup
+ * above keeps its binary search. */
+static void sr_hle_unregister_late_imports_in_range(uint32_t lo, uint32_t hi) {
+    if (hi <= lo) return;
+    hle_lock();
+    unsigned kept = 0;
+    for (unsigned i = 0; i < s_late_import_n; i++) {
+        uint32_t t = s_late_imports[i].target;
+        if (t >= lo && t < hi) continue;
+        s_late_imports[kept++] = s_late_imports[i];
+    }
+    s_late_import_n = kept;
+    hle_unlock();
+}
+
 static void sr_hle_register_entry(uint32_t nid, const char *name, HleFn fn,
                                   uint32_t unsupported_error) {
     /* Duplicate NID guard. The 3 dead duplicate registrations found in this file's static
@@ -2188,9 +2207,11 @@ typedef struct {
     char path[256];
     uint32_t module_start;
     uint32_t module_stop;
+    uint32_t image_base;
     int started;
     int stopped;
     int unloaded;
+    int in_use;
     int libfont_compat_poke_pending;
 } LoadedModule;
 
@@ -2199,15 +2220,53 @@ static int s_nloaded_modules = 0;
 
 static LoadedModule *find_loaded_module(uint32_t uid) {
     for (int i = 0; i < s_nloaded_modules; i++) {
-        if (s_loaded_modules[i].uid == uid) {
+        if (s_loaded_modules[i].in_use && s_loaded_modules[i].uid == uid) {
             return &s_loaded_modules[i];
         }
     }
     return NULL;
 }
 
+/* Claim a module record, reusing a slot a previous unload released before growing the
+ * table. Returns NULL only when all slots hold live modules. */
+static LoadedModule *alloc_loaded_module_slot(void) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        if (!s_loaded_modules[i].in_use) {
+            /* A released record still holds the dead module's uid, path and entry
+             * addresses. Clear it and claim it here, so the caller cannot install a
+             * module that find_loaded_module() and retire_loaded_module() both refuse
+             * to see because in_use was never set. */
+            LoadedModule *reused = &s_loaded_modules[i];
+            memset(reused, 0, sizeof(*reused));
+            reused->in_use = 1;
+            return reused;
+        }
+    }
+    if (s_nloaded_modules >= (int)(sizeof(s_loaded_modules) / sizeof(s_loaded_modules[0])))
+        return NULL;
+    LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
+    memset(mod, 0, sizeof(*mod));
+    mod->in_use = 1;
+    return mod;
+}
+
+/* Reclaim the record of a module that has been unloaded. The uid stops resolving, so a
+ * later start/stop/unload of it fails closed on SCE_ERROR_MODULE_BAD_ID exactly as the
+ * kernel rejects an id it no longer knows, and the fixed table does not fill up with
+ * the tombstones of modules that are long gone (#280). */
+static void retire_loaded_module(LoadedModule *mod) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        if (&s_loaded_modules[i] != mod || !mod->in_use) continue;
+        for (int j = i + 1; j < s_nloaded_modules; j++) s_loaded_modules[j - 1] = s_loaded_modules[j];
+        s_nloaded_modules--;
+        memset(&s_loaded_modules[s_nloaded_modules], 0, sizeof(s_loaded_modules[0]));
+        return;
+    }
+}
+
 static uint32_t s_last_prx_entry = 0;
 static uint32_t s_last_prx_stop = 0;
+static uint32_t s_last_prx_base = 0;
 
 static unsigned register_prx_exports(const char *host_path, uint32_t base) {
     FILE *f = fopen(host_path, "rb");
@@ -2389,8 +2448,11 @@ int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n) {
 /* Resident images: LoadModuleByID repopulates every manifest module, and a second load must
  * not overwrite a running module's live data. `started` is set once the module's real
  * module_start has run; only then are its exports linked to importers (see
- * started_module_export). */
-typedef struct { uint32_t base, end; int started; } PrxImage;
+ * started_module_export). `alloc_uid` is the exact user-partition reservation the image
+ * owns, retained so unload can release precisely that range and nothing else (#280).
+ * A released slot is compacted out of the table, so repeated load/unload cycles cannot
+ * exhaust the fixed image table. */
+typedef struct { uint32_t base, end; uint32_t alloc_uid; int started; } PrxImage;
 static PrxImage s_prx_images[16];
 static unsigned s_prx_image_count;
 static atomic_int s_prx_started_count;
@@ -2415,9 +2477,38 @@ static void mark_module_started(uint32_t entry) {
     }
 }
 
+/* Retire one image: drop the export authority the kernel would unlink at unload, clear the
+ * per-image started flag, release exactly the reservation this image owns, and reclaim the
+ * table slot. Only the image's own [base,end) range and its own allocation are touched, so
+ * a sibling module loaded elsewhere keeps its exports and its reservation. */
+static void unload_prx_image(uint32_t base) {
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (s_prx_images[i].base != base) continue;
+        PrxImage img = s_prx_images[i];
+        if (img.started) {
+            img.started = 0;
+            atomic_fetch_sub_explicit(&s_prx_started_count, 1, memory_order_release);
+        }
+        sr_hle_unregister_late_imports_in_range(img.base, img.end);
+        if (img.alloc_uid != 0u && img.alloc_uid != 0xFFFFFFFFu) free_block(img.alloc_uid);
+        for (unsigned j = i + 1; j < s_prx_image_count; j++) s_prx_images[j - 1] = s_prx_images[j];
+        s_prx_image_count--;
+        memset(&s_prx_images[s_prx_image_count], 0, sizeof(s_prx_images[0]));
+        return;
+    }
+}
+
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
-    for (unsigned i = 0; i < s_prx_image_count; i++)
-        if (s_prx_images[i].base == base) return 1;
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (s_prx_images[i].base != base) continue;
+        /* The image is already resident and is not re-staged over a running module's
+         * live data, but this load still depends on it. Report the base so the new
+         * record references that image; recording image_base == 0 would leave it
+         * holding module_start/module_stop addresses into a range the image owner
+         * frees on its own unload, and unload would never know to keep it alive. */
+        s_last_prx_base = base;
+        return 1;
+    }
     if (s_prx_image_count >= sizeof(s_prx_images) / sizeof(s_prx_images[0])) return 0;
 
     SrPrxImage img;
@@ -2435,23 +2526,28 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
     }
     uint32_t size = (img.end > base && img.end - base > s_prx_stage_len) ? img.end - base
                                                                          : s_prx_stage_len;
+    uint32_t alloc_uid = 0xFFFFFFFFu;
     int ok = 0;
     if (size == 0 || img.start != base) {
         fprintf(stderr, "PRX image: %s: unexpected span [0x%08x,0x%08x) for base 0x%08x\n",
                 host_path, img.start, img.end, base);
-    } else if (sr_alloc_block_at(base, size, name) == 0xFFFFFFFFu) {
+    } else if ((alloc_uid = sr_alloc_block_at(base, size, name)) == 0xFFFFFFFFu) {
         fprintf(stderr,
                 "GUEST_MODULE_LOAD_ADDRESS_COLLISION: %s: declared range "
                 "[0x%08x,0x%08x) is not free in the user partition; "
                 "refusing to relocate (#308)\n",
                 host_path, base, base + size);
     } else if (!sr_guest_span_writable(base, size)) {
+        /* The reservation is already taken, so hand it straight back rather than
+         * leaking a partition range this image will never occupy. */
+        free_block(alloc_uid);
         fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not writable guest memory\n",
                 host_path, base, base + size);
     } else {
         memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
-        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, 0};
+        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, alloc_uid, 0};
+        s_last_prx_base = base;
         fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
                 img.modname, base, base + size, img.nexp, img.nimp);
         ok = 1;
@@ -2466,6 +2562,7 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
 static int populate_guest_module(const char *file, uint32_t base, int required) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
+    s_last_prx_base = 0;
     char image_path[1024];
     int written = snprintf(image_path, sizeof(image_path), "%s/%s", guest_module_root(), file);
     if (written <= 0 || (size_t)written >= sizeof(image_path)) {
@@ -2497,6 +2594,7 @@ static int populate_known_module(const char *guest_path) {
     int required = 0;
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
+    s_last_prx_base = 0;
     if (!sr_title_config_guest_module(guest_path, &file, &base, &required)) return 0;
     return populate_guest_module(file, base, required) ? 1 : -1;
 }
@@ -3355,6 +3453,20 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
     return 0;
 }
 
+/* True when a live module record other than `mod` still depends on the same PRX image.
+ * Two handles can name one base: a second load of an already-resident base reuses that
+ * image instead of staging a second copy, and both records then hold entry addresses
+ * into it. Retiring the image while either record is alive would free the range out
+ * from under the other handle's module_start/module_stop. */
+static int another_record_references_image(const LoadedModule *mod) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        const LoadedModule *other = &s_loaded_modules[i];
+        if (other == mod || !other->in_use || other->unloaded) continue;
+        if (other->image_base == mod->image_base) return 1;
+    }
+    return 0;
+}
+
 static uint32_t h_UnloadModule_Trace(CpuState *s) {
     if (!real_module_start_enabled()) {
         uint32_t uid = sched_current_uid();
@@ -3371,10 +3483,19 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     if (!mod || mod->unloaded) {
         return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
     }
+    /* Unload requires the stop the lifecycle contract establishes: a module that is
+     * still running keeps its image and its exports, exactly as today (unmeasured). */
     if (mod->started && !mod->stopped) {
         return SCE_ERROR_MODULE_ALREADY_LOADED; /* unmeasured */
     }
-    mod->unloaded = 1;
+    /* The kernel unlinks a module's exports and releases its memory here, and this is
+     * the only point at which a stopped module's export authority is retired. Stop
+     * deliberately leaves the image resident: a stopped module is still loaded and can
+     * be started again, so retiring its exports at stop would be an invented semantic. */
+    if (mod->image_base && !another_record_references_image(mod)) {
+        unload_prx_image(mod->image_base);
+    }
+    retire_loaded_module(mod);
     return 0;
 }
 
@@ -7824,12 +7945,13 @@ static uint32_t h_LoadModule(CpuState *s) {
             poke_pending = 1;
         }
     }
-    if (s_nloaded_modules < 16) {
-        LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (mod) {
         mod->uid = uid;
         snprintf(mod->path, sizeof(mod->path), "%s", path);
         mod->module_start = s_last_prx_entry;
         mod->module_stop = s_last_prx_stop;
+        mod->image_base = s_last_prx_base;
         mod->started = 0;
         mod->stopped = 0;
         mod->unloaded = 0;
@@ -7955,13 +8077,14 @@ uint32_t sr_hle_test_stop_module(CpuState *s) { return h_StopModule_Trace(s); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
 
 uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop) {
-    if (s_nloaded_modules >= 16) return 0;
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (!mod) return 0;
     uint32_t uid = sr_alloc_uid();
-    LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
     mod->uid = uid;
     snprintf(mod->path, sizeof(mod->path), "%s", path ? path : "test_module.prx");
     mod->module_start = module_start;
     mod->module_stop = module_stop;
+    mod->image_base = 0;
     mod->started = 0;
     mod->stopped = 0;
     mod->unloaded = 0;
@@ -7972,6 +8095,50 @@ uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, ui
 void sr_hle_test_module_reset(void) {
     s_nloaded_modules = 0;
     memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
+    s_prx_image_count = 0;
+    memset(s_prx_images, 0, sizeof(s_prx_images));
+    atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
+}
+
+/* Read-only views of the lifecycle state a regression needs to observe: the export
+ * address a started module currently authorises for a NID, and how many module and
+ * image records are live. Used to prove an unload retired exactly its own state. */
+uint32_t sr_hle_test_started_export(uint32_t nid) { return started_module_export(nid); }
+unsigned sr_hle_test_image_count(void) { return s_prx_image_count; }
+unsigned sr_hle_test_module_count(void) { return (unsigned)s_nloaded_modules; }
+int sr_hle_test_started_image_count(void) {
+    return atomic_load_explicit(&s_prx_started_count, memory_order_acquire);
+}
+
+/* Load a synthetic PRX through the production image loader and bind it to a fresh
+ * module record, performing exactly the ownership work h_LoadModule does for a
+ * manifest-declared module: the real relocation/staging load, the real fixed-address
+ * user-partition reservation, the real export registration, and the same
+ * record->image_base link that lets unload retire this image. Only the manifest lookup
+ * and the module's entry addresses are supplied by the caller. */
+uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
+                                    uint32_t patch_nid, uint32_t patch_off) {
+    s_last_prx_entry = 0;
+    s_last_prx_stop = 0;
+    s_last_prx_base = 0;
+    if (!load_prx_image(host_path, base, "lifecycle")) return 0;
+    (void)register_prx_exports(host_path, base);
+    /* The fixture leaves its module-info export span empty (the two production readers
+     * of that span disagree on its base, so no single value satisfies both), so the
+     * dynamic export under test is published through the same late-import registry
+     * register_prx_exports() writes into, at the guest address the caller names. */
+    sr_hle_register_late_import(patch_nid, base + patch_off);
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (!mod) return 0;
+    uint32_t uid = sr_alloc_uid();
+    memset(mod, 0, sizeof(*mod));
+    mod->in_use = 1;
+    mod->uid = uid;
+    snprintf(mod->path, sizeof(mod->path), "%s", host_path);
+    mod->module_start = base + 0x70;   /* module_start address the fixture declares */
+    mod->module_stop = base + 0x78;    /* module_stop address the fixture declares */
+    mod->image_base = s_last_prx_base;
+    return uid;
 }
 #endif
 
