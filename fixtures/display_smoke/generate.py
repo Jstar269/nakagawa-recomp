@@ -48,6 +48,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -101,6 +102,15 @@ STRIDE = 512
 PIXEL_FORMAT = 3  # PSP_DISPLAY_PIXEL_FORMAT_8888
 PIXELS = STRIDE * 272
 DEFAULT_FRAMES = 240
+
+_HOST_PRESENT_SUBMITTED_RE = re.compile(
+    r"^HOST_PRESENT_SUBMITTED f=\d+ buf=0x[0-9a-fA-F]{8} "
+    r"fmt=[0-3] stride=\d+$"
+)
+_OFFSCREEN_FRAME_PRESENT_RE = re.compile(
+    r"^BOOT_EVENT phase=frame_present backend=offscreen frame=\d+"
+    r"(?: t_ns=\d+)?$"
+)
 
 R_MIPS_NONE = 0
 R_MIPS_32 = 2
@@ -553,7 +563,41 @@ def verify(build_dir: Path) -> int:
     return 0
 
 
-def run(build_dir: Path, gui: bool = False) -> int:
+def offscreen_present_evidence_failure(combined: str) -> str | None:
+    """Require native offscreen acceptance markers to follow accepted sink writes."""
+    lines = combined.splitlines()
+    frame_indices = []
+    for index, line in enumerate(lines):
+        if not line.startswith("BOOT_EVENT phase=frame_present backend=offscreen "):
+            continue
+        if not _OFFSCREEN_FRAME_PRESENT_RE.fullmatch(line):
+            return f"malformed offscreen frame_present marker at line {index + 1}"
+        frame_indices.append(index)
+    submission_indices = []
+    for index, line in enumerate(lines):
+        if not line.startswith("HOST_PRESENT_SUBMITTED "):
+            continue
+        if not _HOST_PRESENT_SUBMITTED_RE.fullmatch(line):
+            return f"malformed HOST_PRESENT_SUBMITTED marker at line {index + 1}"
+        submission_indices.append(index)
+    if not frame_indices:
+        return "omits: BOOT_EVENT phase=frame_present backend=offscreen"
+    if not submission_indices:
+        return "omits: HOST_PRESENT_SUBMITTED"
+    if len(frame_indices) != len(submission_indices):
+        return (
+            "offscreen frame/submit count differs: "
+            f"frames={len(frame_indices)} submissions={len(submission_indices)}"
+        )
+    if any(
+        frame >= submission
+        for frame, submission in zip(frame_indices, submission_indices, strict=True)
+    ):
+        return "HOST_PRESENT_SUBMITTED does not follow frame_present"
+    return None
+
+
+def run(build_dir: Path, gui: bool = False, offscreen: bool = False) -> int:
     # The runtime is spawned with cwd=ROOT, so a relative build_dir would make the
     # CHILD resolve the executable/image paths against ROOT rather than the
     # caller's cwd. Resolve once so every path handed to subprocess is absolute.
@@ -566,6 +610,8 @@ def run(build_dir: Path, gui: bool = False) -> int:
     if not executable.exists():
         executable = (build_dir / ARTIFACT_STEM).resolve()
     image_path = (build_dir / f"{ARTIFACT_STEM}_image.bin").resolve()
+    if offscreen and not gui:
+        raise ValueError("--offscreen requires --gui")
     command = [
         str(executable),
         "--image",
@@ -574,14 +620,31 @@ def run(build_dir: Path, gui: bool = False) -> int:
         f"0x{ENTRY:08x}",
         "none",
         "none",
-        "--gui" if gui else "--sched",
+        *(("--sched", "--gui") if offscreen else ("--gui",) if gui else ("--sched",)),
         f"--expect-u32=0x{FRAMEBUFFER:08x}:0x{expected:08x}",
     ]
+    env = os.environ.copy()
+    if offscreen:
+        # This is an explicit no-window route. Override ambient selectors so a
+        # developer's interactive presenter or SDL selector settings cannot
+        # change the evidence. Pin both modern and legacy SDL spellings because
+        # the no-window contract must survive a future shared initialization seam.
+        env.update({
+            "SDL_VIDEO_DRIVER": "dummy",
+            "SDL_VIDEODRIVER": "dummy",
+            "SDL_AUDIO_DRIVER": "dummy",
+            "SDL_AUDIODRIVER": "dummy",
+            "SR_VIDEO": "offscreen",
+            "SR_PRESENT_TRACE": "1",
+        })
     completed = subprocess.run(
-        command, cwd=ROOT, env=os.environ.copy(), capture_output=True, text=True
+        command, cwd=ROOT, env=env, capture_output=True, text=True
     )
-    write_if_changed(build_dir / f"{ARTIFACT_STEM}.stdout.log", completed.stdout.encode("utf-8"))
-    write_if_changed(build_dir / f"{ARTIFACT_STEM}.stderr.log", completed.stderr.encode("utf-8"))
+    mode = "gui-offscreen" if offscreen else "gui" if gui else "headless"
+    # Each route keeps its own logs so a later route cannot erase an earlier one's evidence.
+    log_stem = ARTIFACT_STEM if mode == "headless" else f"{ARTIFACT_STEM}.{mode}"
+    write_if_changed(build_dir / f"{log_stem}.stdout.log", completed.stdout.encode("utf-8"))
+    write_if_changed(build_dir / f"{log_stem}.stderr.log", completed.stderr.encode("utf-8"))
     combined = completed.stdout + completed.stderr
     if completed.returncode != 0:
         sys.stderr.write(combined)
@@ -599,8 +662,11 @@ def run(build_dir: Path, gui: bool = False) -> int:
     if failure := evidence_failure(combined, markers, forbidden):
         sys.stderr.write(combined)
         raise RuntimeError(f"runtime evidence {failure}")
+    if offscreen and (failure := offscreen_present_evidence_failure(combined)):
+        sys.stderr.write(combined)
+        raise RuntimeError(f"offscreen presenter evidence {failure}")
     print(
-        f"DISPLAY_SMOKE_RUN status=PASS mode={'gui' if gui else 'headless'} "
+        f"DISPLAY_SMOKE_RUN status=PASS mode={mode} "
         f"frames={frames} framebuffer=0x{FRAMEBUFFER:08x} value=0x{expected:08x}"
     )
     return 0
@@ -692,9 +758,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--build-dir", type=Path, required=True)
     run_parser.add_argument("--gui", action="store_true")
+    run_parser.add_argument(
+        "--offscreen", action="store_true",
+        help="run --sched --gui with the explicit no-window host presenter",
+    )
     player_parser = subparsers.add_parser("run-player")
     player_parser.add_argument("--build-dir", type=Path, required=True)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.command == "run" and args.offscreen and not args.gui:
+        run_parser.error("--offscreen requires --gui")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -705,7 +778,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify":
             return verify(args.build_dir)
         if args.command == "run":
-            return run(args.build_dir, gui=args.gui)
+            return run(args.build_dir, gui=args.gui, offscreen=args.offscreen)
         if args.command == "run-player":
             return run_player(args.build_dir)
         raise AssertionError(f"unhandled command {args.command}")

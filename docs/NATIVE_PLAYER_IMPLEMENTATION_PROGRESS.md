@@ -132,8 +132,18 @@ What this establishes, exactly:
   delivery, `sceDisplaySetFrameBuf`, the display latch and `gui_present` all work
   together on a guest built from committed source, with no external toolchain,
   no retail disc and no private input;
-- `display-smoke-run` asserts the guest-visible framebuffer word headlessly, so
-  the presentation path is gated in CI without a display.
+- `display-smoke-run` first asserts the guest-visible framebuffer word with the
+  headless `--sched` route, then runs the normal `--sched --gui` scheduler route
+  with `SR_VIDEO=offscreen`. The second run uses the explicit host-memory sink,
+  checks that `frame_present` precedes `HOST_PRESENT_SUBMITTED`, and never creates
+  a window. The gate pins all four modern and legacy SDL video/audio selector
+  names to `dummy`, and sets the offscreen selector itself, so inherited
+  interactive selectors cannot change the evidence. Sanitized bring-up reports
+  retain the accepted presenter's backend identity; this route reports
+  `backend=offscreen`.
+  This proves host-sink acceptance for the source-owned fixture; it does not
+  prove visible pixels, live input, audio playback, private-title compatibility,
+  or hardware/PSP acceptance.
 
 The native-player path is exercised separately by
 `mingw32-make display-smoke-player`. It runs the player with

@@ -56,6 +56,22 @@ def live_metadata_requested() -> bool:
     }
 
 
+def _parse_retrieved_utc(value: object, label: str) -> date:
+    if not isinstance(value, str):
+        raise LockfileParseError(f"trusted Python metadata {label} has invalid retrieved_utc")
+    try:
+        parsed_date = date.fromisoformat(value)
+    except ValueError as exc:
+        raise LockfileParseError(
+            f"trusted Python metadata {label} has invalid retrieved_utc {value!r}"
+        ) from exc
+    if parsed_date.isoformat() != value:
+        raise LockfileParseError(
+            f"trusted Python metadata {label} retrieved_utc must use YYYY-MM-DD"
+        )
+    return parsed_date
+
+
 def _parse_pypi_release_index(document: object, source_label: str) -> PythonArtifactMetadata:
     if not isinstance(document, dict):
         raise LockfileParseError(f"trusted Python metadata {source_label} must be a JSON object")
@@ -70,21 +86,7 @@ def _parse_pypi_release_index(document: object, source_label: str) -> PythonArti
             f"trusted Python metadata {source_label} has unsupported schema_version "
             f"{document['schema_version']!r}"
         )
-    retrieved_utc = document["retrieved_utc"]
-    if not isinstance(retrieved_utc, str):
-        raise LockfileParseError(
-            f"trusted Python metadata {source_label} has invalid retrieved_utc"
-        )
-    try:
-        parsed_date = date.fromisoformat(retrieved_utc)
-    except ValueError as exc:
-        raise LockfileParseError(
-            f"trusted Python metadata {source_label} has invalid retrieved_utc {retrieved_utc!r}"
-        ) from exc
-    if parsed_date.isoformat() != retrieved_utc:
-        raise LockfileParseError(
-            f"trusted Python metadata {source_label} retrieved_utc must use YYYY-MM-DD"
-        )
+    snapshot_date = _parse_retrieved_utc(document["retrieved_utc"], source_label)
     sources = document["sources"]
     if not isinstance(sources, list) or not sources:
         raise LockfileParseError(
@@ -94,9 +96,18 @@ def _parse_pypi_release_index(document: object, source_label: str) -> PythonArti
     result: PythonArtifactMetadata = {}
     for source_index, source in enumerate(sources, start=1):
         label = f"{source_label} source {source_index}"
-        if not isinstance(source, dict) or set(source) != {"url", "name", "version", "artifacts"}:
+        # A source added after the document's snapshot records its own retrieval date, so the
+        # evidence never claims bytes were fetched before they were published.
+        required = {"url", "name", "version", "artifacts"}
+        if not isinstance(source, dict) or not required <= set(source) <= required | {"retrieved_utc"}:
             raise LockfileParseError(
-                f"trusted Python metadata {label} must contain exactly url, name, version, and artifacts"
+                f"trusted Python metadata {label} must contain exactly url, name, version, and "
+                "artifacts, plus an optional retrieved_utc"
+            )
+        if "retrieved_utc" in source and \
+                _parse_retrieved_utc(source["retrieved_utc"], label) < snapshot_date:
+            raise LockfileParseError(
+                f"trusted Python metadata {label} retrieved_utc predates the document snapshot"
             )
         name = source["name"]
         version = source["version"]

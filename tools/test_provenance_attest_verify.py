@@ -184,6 +184,9 @@ class Repository:
     def branch(self, name: str, start: str) -> None:
         self._git("checkout", "--quiet", "-B", name, start)
 
+    def head(self) -> str:
+        return self._git("rev-parse", "HEAD")
+
 
 class GateCase(unittest.TestCase):
     """Base fixture: a clean base commit that the verifier accepts."""
@@ -2532,11 +2535,12 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             trusted_ledger=self.trusted_ledger,
             workdir=self.outside / "local-generation",
         )
-        self.assertEqual(local.generated_ledger["refresh"]["workflow"], "refresh-reviewed")
-        self.assertEqual(local.generated_ledger["refresh"]["trusted_tree"],
-                         verifier._rev_tree(self.repo.root, self.base))
-        self.assertEqual(local.generated_ledger["refresh"]["candidate_tree"], candidate_tree)
-        self.assertEqual(local.generated_ledger["refresh"]["refreshed_paths"], ["docs/notes.md"])
+        # A refresh commits a per-path ledger, never the single-slot ``refresh``
+        # audit block.  Carrying it made every landing rewrite the same lines
+        # and left a block that can no longer reconcile against a later base;
+        # the base here still has one, and the committed result must not.
+        self.assertNotIn("refresh", local.generated_ledger)
+        self.assertNotIn(b'"refresh"', local.generated_ledger_bytes)
         self.assertNotIn("candidate_tree", local.generated_export)
         self.repo.write(verifier.LEDGER_PATH, local.generated_ledger_bytes)
         self.repo.write(verifier.EXPORT_PATH, local.generated_export_bytes)
@@ -2545,7 +2549,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         hosted = self.run_ephemeral(refreshed_head, authority_baseline=True)
         hosted_ledger = Path(hosted["generated_outputs"]["ledger_path"]).read_bytes()
         hosted_export = Path(hosted["generated_outputs"]["export_path"]).read_bytes()
-        self.assertEqual(json.loads(hosted_ledger)["refresh"], local.generated_ledger["refresh"])
+        self.assertNotIn("refresh", json.loads(hosted_ledger))
         self.assertEqual(local.generated_ledger_bytes, hosted_ledger)
         self.assertEqual(local.generated_export_bytes, hosted_export)
         self.assertEqual(hosted["verdict"], "pass", hosted["findings"])
@@ -3085,6 +3089,112 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.assertIn(
             "TRUSTED_SCOPE_VIOLATION",
             {finding["code"] for finding in verdict["findings"]},
+        )
+
+
+class IndependentRefreshMergeTests(EphemeralGenerationTests):
+    """Two reviewed refreshes of different paths must land without a resync.
+
+    A refresh used to write a single-slot ``refresh`` audit block into the
+    committed ledger, holding the trusted base tree, the candidate tree and the
+    refreshed path list.  Every landing rewrote those same lines, so two
+    independent refreshes conflicted, and a block written against one base can
+    never reconcile against a later one -- so landing one reviewed change made
+    every other open change's committed controls disagree with the trusted
+    generation and forced a full control resync on it.
+
+    The committed controls are per-path again, so an unrelated landing is a
+    clean merge whose controls already equal a fresh generation of the merged
+    tree: no resync, no second regeneration, no private authority.
+    """
+
+    #: Two documentation paths far apart in the ledger's sort order, so a
+    #: passing merge cannot be an accident of adjacent lines, and neither needs
+    #: implementation-grade authority to be edited.
+    PATH_A = "docs/notes.md"
+    PATH_B = "README.md"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.back_legacy_path()
+        # Put the base into the same committed control form a real main branch
+        # carries, so the two branches below only differ in the paths they edit.
+        self.repo.before_commit = None
+        controls = provenance_refresh.generate_controls(
+            repo=self.repo.root,
+            base_rev=self.base,
+            candidate_tree=verifier._rev_tree(self.repo.root, self.base),
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / "base-controls",
+        )
+        self.repo.write(verifier.LEDGER_PATH, controls.generated_ledger_bytes)
+        self.repo.write(verifier.EXPORT_PATH, controls.generated_export_bytes)
+        self.base = self.repo.commit("base in committed control form")
+
+    def _reviewed_branch(self, name: str, path: str, raw: bytes) -> str:
+        """One reviewed change: edit a path, then regenerate its controls."""
+        self.repo.branch(name, self.base)
+        self.repo.write(path, raw)
+        self.repo.commit(f"edit {path}")
+        controls = provenance_refresh.generate_controls(
+            repo=self.repo.root,
+            base_rev=self.base,
+            candidate_tree=verifier._rev_tree(self.repo.root, self.repo.head()),
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / f"controls-{name}",
+        )
+        self.repo.write(verifier.LEDGER_PATH, controls.generated_ledger_bytes)
+        self.repo.write(verifier.EXPORT_PATH, controls.generated_export_bytes)
+        return self.repo.commit(f"provenance: refresh controls for {path}")
+
+    def test_two_independent_refreshes_merge_and_the_merged_controls_still_verify(self) -> None:
+        landed = self._reviewed_branch("change-a", self.PATH_A, b"# fixture notes, edited by A\n")
+        self._reviewed_branch("change-b", self.PATH_B, b"# fixture\n\nedited by B\n")
+
+        merge = run_git(
+            ["merge", "--no-edit", "change-a"],
+            cwd=self.repo.root, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(
+            merge.returncode, 0,
+            "two independent refreshes must merge without a control conflict:\n"
+            f"{merge.stdout}\n{merge.stderr}",
+        )
+        for path in (verifier.LEDGER_PATH, verifier.EXPORT_PATH):
+            self.assertNotIn(b"<<<<<<<", (self.repo.root / path).read_bytes())
+
+        # ``landed`` is what main becomes, so it is the base the hosted gate
+        # will name.  Verifying against it is the whole point: the merge needs
+        # no regeneration, because what the branch already carries is the
+        # trusted generation of the merged tree against the moved base.
+        head = self.repo.head()
+        verdict = self.run_ephemeral(head, base=landed, authority_baseline=True)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        self.assertEqual(verdict["fatal_count"], 0, verdict["findings"])
+        self.assertEqual(
+            (self.repo.root / verifier.LEDGER_PATH).read_bytes(),
+            Path(verdict["generated_outputs"]["ledger_path"]).read_bytes(),
+        )
+        self.assertEqual(
+            (self.repo.root / verifier.EXPORT_PATH).read_bytes(),
+            Path(verdict["generated_outputs"]["export_path"]).read_bytes(),
+        )
+
+    def test_a_refresh_commits_no_single_slot_audit_block(self) -> None:
+        self._reviewed_branch("change-a", self.PATH_A, b"# fixture notes, edited by A\n")
+
+        committed = json.loads(
+            (self.repo.root / verifier.LEDGER_PATH).read_text(encoding="utf-8")
+        )
+        self.assertNotIn("refresh", committed)
+        # The per-path entries still carry the exact content the trusted
+        # generation produced; only the tree-wide audit slot is gone.
+        entry = next(
+            item for item in committed["entries"] if item["path"] == self.PATH_A
+        )
+        self.assertEqual(
+            entry["sha256"],
+            hashlib.sha256(b"# fixture notes, edited by A\n").hexdigest(),
         )
 
 

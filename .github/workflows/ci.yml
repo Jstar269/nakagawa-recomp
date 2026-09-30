@@ -256,7 +256,8 @@ jobs:
       - name: Build pinned SDL3 for headless Linux runtime
         # Build the pinned SDL release directly so CI uses the documented version.
         run: |
-          SDL3_COMMIT=d9d5536704d585616d4db3c8ba3c4ff6fc2757e1
+          SDL3_VERSION=3.4.16
+          SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c
           git init "$RUNNER_TEMP/SDL"
           git -C "$RUNNER_TEMP/SDL" remote add origin https://github.com/libsdl-org/SDL.git
           git -C "$RUNNER_TEMP/SDL" fetch --depth 1 origin "$SDL3_COMMIT"
@@ -268,7 +269,8 @@ jobs:
           cmake --build "$RUNNER_TEMP/SDL/build" --parallel 2
           sudo cmake --install "$RUNNER_TEMP/SDL/build"
           sudo ldconfig
-          pkg-config --modversion sdl3
+          # A mistyped but valid commit must fail here, not leave the docs claiming the pin.
+          test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"
 
       - name: Install PSPDEV from the checked-in lock
         run: |
@@ -712,8 +714,9 @@ jobs:
       # smokes prove compute and the dispatch seam but never reach the display
       # source, so a scheduler change that stops delivering vblanks to a guest
       # whose only wait is a vblank wait was invisible to every hosted gate. Runs
-      # headless (--sched): the assertion is the guest-visible framebuffer word,
-      # so no display is required on the runner.
+      # headless (--sched), then through the normal --sched --gui route with
+      # SR_VIDEO=offscreen: the assertions are the guest-visible framebuffer
+      # word and accepted offscreen-present ordering, so no display is required.
       - name: Build and run display presentation smoke
         if: matrix.part == 'main'
         shell: msys2 {0}
