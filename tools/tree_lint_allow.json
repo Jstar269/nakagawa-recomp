@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "description": "Tracked files that tools/tree_lint.py reports but that are live anyway: consumed by a name, a glob or a directory convention rather than by a path written in another tracked file, or left ambiguous only because a basename or stem several tracked files share cannot say which of them is named. Each entry is a path or a '*' pattern plus the one-line reason a reviewer can check. An allowlisted file is still printed by the report; the allowlist records a decision, it does not hide a file.",
+  "entries": [
+    {
+      "path": ".github/CODEOWNERS",
+      "reason": "GitHub resolves review ownership by this exact filename; no tracked file is allowed to name it."
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/*.yml",
+      "reason": "GitHub populates its issue-template chooser from this directory by convention, so neither the directory nor the filenames are written anywhere in the tree."
+    },
+    {
+      "path": ".github/instructions/c-generated.instructions.md",
+      "reason": "GitHub Copilot auto-loads this file by path for build/**/*.c; its zero-reference count is the expected consequence of that convention."
+    },
+    {
+      "path": ".github/workflows/osv-scanner.yml",
+      "reason": "GitHub Actions runs a workflow by filename; this one is additionally absent from docs/CI.md, which is a documentation gap rather than a dead file."
+    },
+    {
+      "path": "Makefile",
+      "reason": "The build entry point. It is invoked as `make` from outside the tree, and its basename is shared with every fixture Makefile, so no tracked file can name this one."
+    },
+    {
+      "path": "README.md",
+      "reason": "The repository front page, reached by the forge and by convention; its basename is shared with the fixture READMEs."
+    },
+    {
+      "path": "LICENSE",
+      "reason": "The repository's own GPL record, read by git and the forge by convention; its basename is shared with the vendored third_party licence copies."
+    },
+    {
+      "path": "tools/test_*.py",
+      "reason": "Consumed by the unittest discovery glob `-p \"test_*.py\"` in the Makefile, the hosted workflow and CONTRIBUTING.md, which is what makes a test module live. No test module names another."
+    },
+    {
+      "path": "tools/*/__init__.py",
+      "reason": "Python package marker: the package is imported by name (`from tools.nk_core import ...`), so the marker file itself is never written anywhere."
+    },
+    {
+      "path": "fixtures/*/README.md",
+      "reason": "Each fixture's own documentation. The build or the runbook names the fixture directory, and a bare README.md token cannot say which fixture it means."
+    },
+    {
+      "path": "fixtures/psp_oracle/Makefile",
+      "reason": "Built by the `make -C fixtures/psp_oracle` command documented in fixtures/psp_oracle/README.md; make finds the Makefile by directory convention."
+    },
+    {
+      "path": "fixtures/psp_oracle/mutex_imports.S",
+      "reason": "Assembled by fixtures/psp_oracle/Makefile; its basename is shared with the fixtures/psp_phaseb copy of the same hand-written import shim."
+    },
+    {
+      "path": "fixtures/psp_threading_oracle/Makefile",
+      "reason": "Built by the `make -C fixtures/psp_threading_oracle` commands documented in fixtures/psp_threading_oracle/README.md; make finds the Makefile by directory convention."
+    },
+    {
+      "path": "fixtures/nakagawa_minimal_v4/Makefile",
+      "reason": "Builds the minimal PSP lifecycle fixture whose directory src/rt/hle_thread_selftest.c names as the source of the payload it exercises. make finds the Makefile by directory convention, and the bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+    },
+    {
+      "path": "fixtures/nakagawa_minimal_v4/main.c",
+      "reason": "The guest entry point of that fixture, linked as main.o through the PSPSDK build.mak its own Makefile includes. The bare stem `main` is what the hosted workflows write for the default branch and is the stem of all six tracked main.c files, so it cannot say which one it names."
+    },
+    {
+      "path": "fixtures/psp_phaseb/Makefile",
+      "reason": "Read as a contract by tools/test_psp_oracle.py, which requires its psp-fixup-imports guard to stay, and built by the make -C invocation that guard describes. The bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+    },
+    {
+      "path": "fixtures/psp_phaseb/mutex_imports.S",
+      "reason": "Assembled into mutex_imports.o by fixtures/psp_phaseb/Makefile; its basename is shared with the fixtures/psp_oracle copy of the same hand-written import shim, so that token cannot say which one it names."
+    },
+    {
+      "path": "fixtures/psp_runner/Makefile",
+      "reason": "Builds the resident PSPSDK runner that section 9 of docs/HARDWARE_ORACLE.md requires to stay tracked and excluded from the native build. make finds the Makefile by directory convention, and the bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+    },
+    {
+      "path": "fixtures/pspdev_phase5/Makefile",
+      "reason": "Builds the PSPDEV phase-5 guest whose sources tools/test_title_pspdev_phase5.py places in this directory for the manifest assets/titles/pspdev-phase5.json. make finds the Makefile by directory convention, and the bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+    },
+    {
+      "path": "fixtures/pspdev_phase5/main.c",
+      "reason": "The guest entry point of that fixture, linked as main.o through the PSPSDK build.mak its own Makefile includes. The bare stem `main` is what the hosted workflows write for the default branch and is the stem of all six tracked main.c files, so it cannot say which one it names."
+    },
+    {
+      "path": "fixtures/vfpu_nan_payload/Makefile",
+      "reason": "Read as a contract by tools/test_vfpu_nan_payload.py, which spells this exact path and checks the probe build it describes. The bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+    },
+    {
+      "path": "fixtures/vfpu_oracle/Makefile",
+      "reason": "Builds the VFPU transcendental probe whose case header fixtures/vfpu_oracle/vfpu_oracle_cases.h the root Makefile compiles into src/rt/vfpu_oracle_host.c. The bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+    }
+  ]
+}

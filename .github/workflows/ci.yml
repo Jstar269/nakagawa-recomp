@@ -92,6 +92,9 @@ jobs:
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
 
+      - name: Enforce tracked-tree reference ratchet
+        run: python tools/tree_lint.py --check
+
       - name: Scan the current tracked tree with Betterleaks
         shell: bash
         run: |

@@ -768,6 +768,7 @@ PUBLIC_TARGETS := \
 	fuzz-parsers \
 	readiness \
 	provenance-refresh \
+	tree-lint \
 	all \
 	pipeline \
 	compile \
@@ -873,6 +874,7 @@ HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
 HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
 HELP_DESCRIPTION_readiness := run the strict pre-PR gate with external authority
 HELP_DESCRIPTION_provenance-refresh := refresh controls through hosted generation and stage them
+HELP_DESCRIPTION_tree-lint := report tracked files that no other tracked file names (reporting only)
 HELP_DESCRIPTION_all := generate and compile the current title runtime
 HELP_DESCRIPTION_pipeline := generate image, imports, and recomputed source artifacts
 HELP_DESCRIPTION_compile := compile and link the generated runtime
@@ -1101,6 +1103,16 @@ contrib-check:
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
+
+# Which tracked files does nothing in the tree name?  The report is the point:
+# a candidate for removal is a judgement call about a boundary, a provenance
+# record or a legal file, and it belongs to a human reviewing a diff rather than
+# to a build that happens to be running.  So this target reports and exits 0.
+# CI runs `python tools/tree_lint.py --check` in the always-on hygiene job.
+# This target stays reporting-only so local inspection can show findings without
+# failing solely because it found candidates.
+tree-lint:
+	$(PYTHON) tools/tree_lint.py
 
 # -----------------------------------------------------------------------------
 # Public Verification Entry Points (Issue #188 Finding 3 O-05)
