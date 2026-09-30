@@ -358,11 +358,13 @@ DISPLAY_SMOKE_DEMO_FRAMES := 1800
 
 # The AOT-gap mode of the same fixture: identical guest addresses, but the
 # helper is omitted from native emission (--omit-aot) so region A reaches it
-# through the ordinary production dispatch() seam.
+# through the ordinary production dispatch() seam. The address must match
+# HELPER in fixtures/production_smoke/generate.py (it moved to 0x08804068 when
+# the sceImpose language round trip extended region A).
 PRODUCTION_SMOKE_GAP_DIR       := build/production-smoke-gap
 PRODUCTION_SMOKE_GAP_FIXTURE   := $(PRODUCTION_SMOKE_GAP_DIR)/fixture
 PRODUCTION_SMOKE_GAP_MAP       := $(PRODUCTION_SMOKE_GAP_DIR)/production_smoke_gap.map
-PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804028
+PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804068
 
 # Caller-supplied extra codegen arguments (build-time codegen choices such as
 # the smoke's --omit-aot). Empty by default; carried into the codegen profile
