@@ -12,6 +12,7 @@ as a test failure rather than accepted as a kill.
 from __future__ import annotations
 
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,111 @@ RECOMP = ROOT / "src" / "rt" / "recomp.c"
 GUEST_INTERP = ROOT / "src" / "rt" / "guest_interp.c"
 PERF = ROOT / "src" / "rt" / "perf.c"
 TITLE_CONFIG_TOOL = ROOT / "tools" / "title_runtime_config.py"
+CODEGEN_TOOL = ROOT / "tools" / "codegen.py"
+
+
+def _write_minimal_elf(path: Path, words: tuple[int, ...]) -> None:
+    """Write a source-owned ELF32 fixture with one executable load span."""
+    base = 0x1000
+    payload_off = 52 + 32
+    filesz = len(words) * 4
+    blob = bytearray(payload_off + filesz)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, base, 52, 0, 0, 52, 32, 1, 0, 0, 0,
+    )
+    struct.pack_into(
+        "<8I", blob, 52,
+        1, payload_off, base, base, filesz, filesz, 5, 4,
+    )
+    for index, word in enumerate(words):
+        struct.pack_into("<I", blob, payload_off + index * 4, word & 0xFFFFFFFF)
+    path.write_bytes(blob)
+
+
+def _build_and_run_stack_census(
+    words: tuple[int, ...], expected_status: str, *,
+    codegen_args: tuple[str, ...] = (), expected_final_sp: int = 0x2000,
+    post_call_probe: str = "",
+) -> tuple[int, str, int, str]:
+    """Generate and execute a real codegen entry wrapper against recomp.c."""
+    assert CC is not None
+    with tempfile.TemporaryDirectory(prefix="stack_census_pipeline_") as tmp:
+        work = Path(tmp)
+        elf = work / "fixture.elf"
+        _write_minimal_elf(elf, words)
+        generated = work / "census.c"
+        codegen = subprocess.run(
+            [
+                sys.executable, str(CODEGEN_TOOL), str(elf), str(generated),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000",
+                "--stack-census", *codegen_args,
+            ],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if codegen.returncode != 0:
+            return codegen.returncode, codegen.stderr + codegen.stdout, 1, ""
+
+        config = subprocess.run(
+            [sys.executable, str(TITLE_CONFIG_TOOL), "--output", str(work / "sr_title_config.h")],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if config.returncode != 0:
+            return config.returncode, config.stderr + config.stdout, 1, ""
+
+        harness = work / "stack_census_harness.c"
+        harness.write_text(
+            "#define main embedded_dispatch_isolation_main\n"
+            "#include \"dispatch_isolation_selftest.c\"\n"
+            "#undef main\n"
+            "extern void sr_register_all(void);\n"
+            "int main(void) {\n"
+            "    CpuState s = {0};\n"
+            "    s.r[29] = 0x2000u;\n"
+            "    s.cop0[SR_CP0_EPC] = 0x00001000u;\n"
+            "    sr_register_all();\n"
+            "    if (sr_stack_census_status() != SR_STACK_CENSUS_NOT_OBSERVED) return 2;\n"
+            "    RecompFn fn = sr_lookup(0x00001000u);\n"
+            "    if (!fn) return 3;\n"
+            "    fn(&s);\n"
+            f"{post_call_probe}"
+            "    sr_register_all();\n"
+            "    SrStackCensusStatus status = sr_stack_census_status();\n"
+            "    sr_stack_census_report();\n"
+            f"    if (s.r[29] != 0x{expected_final_sp:08x}u) return 4;\n"
+            "    if (status != EXPECTED_STACK_CENSUS_STATUS) return 5;\n"
+            "    return 0;\n"
+            "}\n".replace(
+                "EXPECTED_STACK_CENSUS_STATUS", "SR_STACK_CENSUS_EXPECTED_STATUS"
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        # The harness status is selected per test case through a compile-time define.
+        exe = work / "stack_census_harness.exe"
+        compile_result = subprocess.run(
+            [
+                CC, "-std=c11", "-O0", "-fno-strict-aliasing",
+                "-Wall", "-Wextra", "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
+                "-DSR_STACK_CENSUS_ENABLED",
+                f"-DSR_STACK_CENSUS_EXPECTED_STATUS={expected_status}",
+                "-I", str(work), "-I", str(ROOT / "src" / "rt"),
+                str(harness), str(generated), str(work / "census_0.c"),
+                str(GUEST_INTERP), str(PERF),
+                str(ROOT / "src" / "rt" / "cpu_lle.c"),
+                str(ROOT / "src" / "rt" / "domain_mode.c"),
+                str(ROOT / "src" / "rt" / "stale_code.c"),
+                str(ROOT / "src" / "rt" / "title_config.c"),
+                str(ROOT / "src" / "rt" / "vfpu_tables.c"),
+                "-lm", "-o", str(exe),
+            ],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if compile_result.returncode != 0:
+            return compile_result.returncode, compile_result.stderr + compile_result.stdout, 1, ""
+        run_result = subprocess.run([str(exe)], cwd=ROOT, capture_output=True, text=True)
+        return 0, compile_result.stderr + compile_result.stdout, run_result.returncode, run_result.stderr + run_result.stdout
 
 
 def _build_and_run(mutated_recomp: str | None = None,
@@ -125,6 +231,15 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
         self.assertEqual(run_rc, 0, run_output)
         self.assertIn("dispatch-isolation-selftest: OK", run_output)
 
+    def test_late_import_cache_mutation_survives_registry_retirement(self):
+        anchor = "                target = resolved;  /* use resolved target for logging below */"
+        self.assert_killed(
+            "late-import-persistent-alias",
+            recomp_old=anchor,
+            recomp_new="                sr_register(target, fn);\n" + anchor,
+            diagnostic="retired late import executed a stale body or changed guest state",
+        )
+
     def test_M1_untyped_interpreter_dispatch_reexecutes_native_continuation(self):
         self.assert_killed(
             "M1-untyped-dispatch",
@@ -200,6 +315,72 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
                 "            pc = transfer.taken ? transfer.target : pc + 8u;"
             ),
             diagnostic="return delay slot did not execute exactly once",
+        )
+
+
+@unittest.skipUnless(CC, "gcc is required for the generated stack-census proof")
+class StackCensusPipelineTests(unittest.TestCase):
+    """Generated callable wrappers must measure real CpuState stack values."""
+
+    def test_generated_balanced_leaf_reports_complete(self):
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x03E00008, 0x00000000),
+            "SR_STACK_CENSUS_COMPLETE",
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn("STACK_CENSUS status=COMPLETE entries=1 returns=1", run_output)
+
+    def test_generated_stack_leak_reports_failure(self):
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x27BDFFF0, 0x03E00008, 0x00000000),
+            "SR_STACK_CENSUS_FAILED",
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn("STACK_CENSUS status=FAILED", run_output)
+        self.assertIn("mismatches=1", run_output)
+
+    def test_generated_fallthrough_stack_leak_reports_failure(self):
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x27BDFFF0, 0x00000000),
+            "SR_STACK_CENSUS_FAILED",
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn("STACK_CENSUS status=FAILED", run_output)
+        self.assertIn("mismatches=1", run_output)
+
+    def test_generated_eret_preserves_guest_sp_and_reports_partial(self):
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x27BDFFE0, 0x42000018),
+            "SR_STACK_CENSUS_PARTIAL",
+            codegen_args=("--lle-cpu",),
+            expected_final_sp=0x1FE0,
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn("STACK_CENSUS status=PARTIAL entries=1 returns=1 excluded=1", run_output)
+
+    def test_unexpected_entry_is_counted_once_per_invocation(self):
+        # One unexpected invocation (enter + exit, as the generated wrapper does)
+        # must read as unexpected=1, not one count per census hook.
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x03E00008, 0x00000000),
+            "SR_STACK_CENSUS_PARTIAL",
+            post_call_probe=(
+                "    sr_stack_census_enter(0x00009990u);\n"
+                "    sr_stack_census_exit(0x00009990u, 0x2000u, 0x2000u, 0u);\n"
+                "    SrStackCensusSummary probe;\n"
+                "    sr_stack_census_snapshot(&probe);\n"
+                "    if (probe.unexpected != 1u) return 6;\n"
+            ),
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn(
+            "STACK_CENSUS status=PARTIAL entries=2 returns=2 excluded=0 unexpected=1",
+            run_output,
         )
 
 

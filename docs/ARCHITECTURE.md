@@ -62,12 +62,16 @@ switched to the new adapter wholesale in this wave.
 
 ### ProgramImage v1 and CFG ownership observation v1
 
-**Scope: offline and test-only.** Neither `ProgramImage` nor `CanonicalCfgState` is
-reachable from the production pipeline. Nothing in `tools/codegen.py`,
-`tools/imports.py`, the `Makefile`, or `nk_manager.ps1` imports or constructs
-either type; their only consumers are `tools/prxload.py`, `tools/analyze.py`, and
-their unit tests. That is a checkable property, not an intention, and it is the
-reason this wave makes no production-wiring claim.
+`ProgramImage` and `CanonicalCfgState` remain observation types, not replacements
+for the production analyzer. The legacy `analyze()` path now exposes the
+canonical CFG report through opt-in `analyze.py --cfg-report/--cfg-gate` and
+`codegen.py --cfg-report/--cfg-gate`; ordinary codegen output and analysis are
+unchanged when those flags are absent, and `--cfg-report` alone reports gate-mode
+analysis without changing emitted code. `--cfg-gate` checks the primary image and
+each supplied extra ELF before code emission. This wiring consumes the legacy
+analyzer result. `--cfg-gate` rejects overlapping executable spans and prevents
+direct-jump adjacency from seeding a callable. It does not claim equivalence
+for, or route production through, `ProgramImage` or `CanonicalCfgState`.
 
 **Precondition for any later production wiring.** Before either type may replace a
 production path, it must first be shown *equivalent* to the path it replaces on
@@ -95,8 +99,22 @@ conflicts, jump-table candidates, data spans, padding, unowned executable words,
 spans, and explicitly unmapped entry candidates. `verify_canonical_cfg_report()` checks coverage and
 structural consistency; `cfg_compatibility_findings()` reports differences from a legacy
 entry set without silently selecting a winner. `canonical_cfg_json()` is stable for
-fixtures and build-cache comparisons. Neither report is an optimizing IR or a production
-HST switch.
+fixtures and build-cache comparisons. The CFG gate rejects an owned in-range edge whose
+target has no owner, plus ownership conflicts and unmapped entries. Non-padding words
+outside known control-flow remain listed as unowned; this records uncertainty and does
+not prove that no dynamic entry exists. Dynamic-entry ownership remains in the works
+(issue #291); the gate keeps such words visible as unowned instead of assuming the image
+is complete. File adjacency after an unconditional transfer
+does not make a word a callable. The opt-in `codegen.py --stack-census` flag
+also requires the CFG gate and wraps generated callable entries to compare guest
+`$sp` at entry and host return. Continuation entries share their callable's census;
+flow exits are reported as excluded and keep the result `PARTIAL`, while an
+ordinary unexplained stack delta reports `FAILED`. An unobserved workload reports
+`NOT_OBSERVED`. These diagnostics are source-owned runtime evidence and make no
+physical PSP correctness claim. The cosimulation harness classifies its source-owned
+`spleak` cell as a positive control and passes only when that cell is the sole observed
+mismatch, with its declared 32-byte delta; every other entry must balance. Neither
+report is an optimizing IR or a production HST switch.
 
 `assets/titles/synthetic.json` and `synthetic-title2.json` carry the source-owned
 `psp-core-v1` / `profile-zero-v1` contract. Their shared PSPDEV fixture points to
