@@ -96,6 +96,16 @@ int sr_psmf_producer_pop(SrPsmfProducer *producer, SrPsmfAuKind kind,
                          SrPsmfAu *out);
 void sr_psmf_au_release(SrPsmfAu *au);
 int sr_psmf_producer_eof(const SrPsmfProducer *producer);
+
+/* Terminal rejection queries.  A failed stream never resumes, so failed() stays true
+ * until sr_psmf_producer_reset().  fail_reason() names the element the parser refused
+ * (a compile-time literal owned by the producer, NULL while the stream is accepted, and
+ * NULL for a NULL producer): it exists so a consumer can report *why* a stream stopped
+ * instead of leaving the freeze unexplained.  The offset of the refused element is
+ * stats().fail_offset. */
+int sr_psmf_producer_failed(const SrPsmfProducer *producer);
+const char *sr_psmf_producer_fail_reason(const SrPsmfProducer *producer);
+
 void sr_psmf_producer_stats(const SrPsmfProducer *producer,
                             SrPsmfProducerStats *out);
 
