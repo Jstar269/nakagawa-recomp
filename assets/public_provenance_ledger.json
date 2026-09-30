@@ -2392,7 +2392,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4c180ed053aff3e503d023b4ae10abcb772f44f1099b97deebb3656ad42f6fd2"
+      "sha256": "f515a401b4f1e17de917dc97bc8866185178ba0ae9202378c981d291d5f5614b"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -2404,7 +2404,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "193a4df4cbb1545ec9f9d4e5bf61263ccd43518d84088bea82877a4df1948eb4"
+      "sha256": "c39366954270ff1d84bba54cd45be4ddfa37ee232752319a4299eca6b1563176"
     },
     {
       "path": "src/core/nk_library.c",
@@ -2416,7 +2416,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c65d9596c731dda191313dc535e7de2bf437ee2677dd2e527c724d4deab8129a"
+      "sha256": "ea4cffc382fbf925cedf97f558142958244a2104f12dc0660c447cfef09df5e9"
     },
     {
       "path": "src/core/nk_library.h",
@@ -2750,7 +2750,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "096a984d8ffff5110bd116704376935cb4dec7c661de91ec01b93a64bf5bf955"
+      "sha256": "4343c5d8747e8b22219584b76ed4ea1d01fe8dbc2e5cfb5e7b999b3639eeb9d4"
     },
     {
       "path": "src/core/nk_xb.c",
@@ -4065,7 +4065,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2f5ff7b5e5aa913c11350c1db67fb7308e75cd5d013e4f70a90179c3ed09fd16"
+      "sha256": "05458d03cc27e7a2747a9a9062e1f0320b98972b849772bc543e30ba970d9916"
     },
     {
       "path": "src/rt/evf.h",
@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ee65209dd0ae0baeabd4a1f0ae986af3f9640a4721313414a0ebd6e2edaa107"
+      "sha256": "03cbbdd97aa4241e79a1ec1e7aba4bad0cb984875d5bbe1881c0ba7ea22cf160"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6290,7 +6290,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5c1493c068adbbbb62130f9bd6b7dcc059bedd4734f9b2367dcdd178ea660b17"
+      "sha256": "1780d1ea1cd58fc59a9d5025b7cacf1f9c5ee938d6b7daec3f1df2ab6239be55"
     },
     {
       "path": "tools/nk_core/library.py",
@@ -6326,7 +6326,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e4c1d74d44343139d6722028349cb984a23a893cfb1663ff27810c9dcd9b4a0"
+      "sha256": "12af4d3b274a8f2496b4f49c103e9565ca7dbc055e97430c98fb9636d08a9de5"
     },
     {
       "path": "tools/nk_core/prereq_fetcher.py",
@@ -8035,7 +8035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "904774175ed29ce451446bc7bc1f526f5acb2e72a6294cba05dfc9c2200667eb"
+      "sha256": "e5b71f56061892c324da0cdfaa24dbb484739b20d094181fb86f65af9efa516b"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
@@ -8119,7 +8119,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c7d9d876f6aa34acb78d25a9abe5d3ea42b1105434b9f70ec272b8cc4aa91353"
+      "sha256": "d69202fa1339efe0e67e64291d6bf7a640ed1bba80891d1731a4ebaaf1126a97"
     },
     {
       "path": "tools/test_package_cache.py",
@@ -8275,7 +8275,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a6da980493adbfe143ee100ec23d2c40b6eae56dfca3d1de21efaba3d88d27cf"
+      "sha256": "f917437ee33fc0f1b74fef6039720829cd1c9f78a67e2ec83669aba0190efb17"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
@@ -8756,7 +8756,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "43ccbaaa8e3077c560150dcfabeab1d561de8c4992348f504abc714404634265"
+      "sha256": "e5d03f8954667158da0e9a98f1984a694c6a948d96fbb5e7830ef481ce8850d7"
     },
     {
       "path": "tools/test_shader_embed.py",
@@ -9471,23 +9471,21 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "53090fb87a16bff2e24387e5fec081775f478c72",
-    "candidate_tree": "7bc3ef176346f89486461932bcd6e494468192ee",
+    "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
+    "candidate_tree": "26bd5d7bd9459d3bd332570312102e4d2a3ae213",
     "refreshed_paths": [
-      ".github/workflows/ci.yml",
-      "Makefile",
-      "assets/bringup_report.schema.json",
-      "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
-      "fixtures/display_smoke/generate.py",
-      "src/rt/gui.c",
-      "src/rt/hle.c",
-      "src/rt/hle_thread_selftest.c",
-      "src/rt/recomp.h",
-      "tools/boot_gate.py",
-      "tools/gate_stub.c",
+      "src/core/nk_launch.c",
+      "src/core/nk_launch.h",
+      "src/core/nk_library.c",
+      "src/core/nk_types.h",
+      "src/rt/driver.c",
       "tools/nk_cli.py",
-      "tools/test_boot_gate.py",
-      "tools/test_production_smoke.py"
+      "tools/nk_core/launcher.py",
+      "tools/nk_core/prep_engine.py",
+      "tools/test_native_driver_hardening.py",
+      "tools/test_nk_core.py",
+      "tools/test_production_smoke.py",
+      "tools/test_second_title_ingest.py"
     ]
   }
 }
