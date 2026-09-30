@@ -1603,7 +1603,11 @@ def _new_bringup_report() -> dict:
         "unsupported_imports": [],
         "runtime_imports": [],
         "runtime_output_kind": "NOT_RUN",
-        "presentation": {"status": "NOT_RUN", "frame_submissions": 0},
+        "presentation": {
+            "status": "NOT_RUN",
+            "frame_submissions": 0,
+            "backend": "unknown",
+        },
         "process_exit_code": None,
         "counts": {
             "functions": None,
@@ -1709,9 +1713,15 @@ def _bringup_human_summary(report: dict) -> str:
     )
     if report["failure_class"] == "NONE":
         submissions = report["presentation"]["frame_submissions"]
+        backend = report["presentation"].get("backend", "unknown")
+        presenter = (
+            f"{backend} presenter accepted"
+            if backend != "unknown"
+            else "GUI presenter received"
+        )
         return (
             f"{cfw_prefix}Bring-up reached {report['reached_stage']}; launch "
-            f"{report['exit_classification'].lower()}; GUI presenter received "
+            f"{report['exit_classification'].lower()}; {presenter} "
             f"{submissions} frame submission(s). Visual contents are not verified."
         )
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
@@ -1894,8 +1904,6 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
                     line.strip())
            for line in output.splitlines()):
         return "DISPATCH_MISS"
-    if "no available video device" in folded or "video driver" in folded:
-        return "VIDEO_UNAVAILABLE"
     if "unsupported instruction" in folded or "aot-gap" in folded:
         return "UNSUPPORTED_INSTRUCTION"
     if any(re.match(r"^sr_unimplemented: function 0x[0-9a-f]{8}: ", line.strip())
@@ -1925,6 +1933,10 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
         return "DRIVER_ARGUMENT_FAILURE"
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
+    # SDL's generic dummy-driver diagnostic can accompany a more useful PSP
+    # boundary. Keep it as a fallback so it cannot mask named runtime failures.
+    if "no available video device" in folded or "video driver" in folded:
+        return "VIDEO_UNAVAILABLE"
     return "EMPTY" if not output.strip() else "OTHER"
 
 
@@ -1932,18 +1944,71 @@ _HOST_PRESENT_SUBMITTED = re.compile(
     r"^HOST_PRESENT_SUBMITTED f=\d+ buf=0x[0-9a-fA-F]{8} "
     r"fmt=[0-3] stride=\d+$"
 )
+_OFFSCREEN_FRAME_PRESENT = re.compile(
+    r"^BOOT_EVENT phase=frame_present backend=offscreen frame=\d+"
+    r"(?: t_ns=\d+)?$"
+)
+_WINDOW_READY_BACKEND = re.compile(
+    r"^BOOT_EVENT phase=window_ready backend=([A-Za-z0-9_-]+)"
+    r"(?: t_ns=\d+)?$"
+)
+_PRESENTER_BACKENDS = frozenset({"offscreen", "vulkan", "gdi", "none"})
+_ACCEPTING_PRESENTER_BACKENDS = frozenset({"offscreen"})
 
 
-def _set_bringup_presentation(report: dict, output: str) -> None:
-    """Count validated calls from the runtime into its GUI presenter."""
-    submissions = sum(
-        1 for line in output.splitlines()
-        if _HOST_PRESENT_SUBMITTED.fullmatch(line.strip())
+def _set_bringup_presentation(report: dict, output: str) -> bool:
+    """Record presenter identity and accept only ordered, validated evidence."""
+    lines = [line.strip() for line in output.splitlines()]
+    submission_indices: list[int] = []
+    malformed_submission = False
+    for index, line in enumerate(lines):
+        if not line.startswith("HOST_PRESENT_SUBMITTED "):
+            continue
+        if _HOST_PRESENT_SUBMITTED.fullmatch(line):
+            submission_indices.append(index)
+        else:
+            malformed_submission = True
+
+    frame_indices: list[int] = []
+    malformed_frame = False
+    for index, line in enumerate(lines):
+        if not line.startswith("BOOT_EVENT phase=frame_present backend=offscreen "):
+            continue
+        if _OFFSCREEN_FRAME_PRESENT.fullmatch(line):
+            frame_indices.append(index)
+        else:
+            malformed_frame = True
+
+    backends = {
+        match.group(1)
+        for line in lines
+        if (match := _WINDOW_READY_BACKEND.fullmatch(line))
+    }
+    backend_candidate = next(iter(backends), None)
+    backend = (
+        backend_candidate
+        if len(backends) == 1 and backend_candidate in _PRESENTER_BACKENDS
+        else "unknown"
+    )
+    # cmd_bringup pins SR_VIDEO=offscreen, so a different recognized backend is
+    # still a truthful identity but cannot satisfy this route's host-sink proof.
+    evidence_ok = (
+        backend in _ACCEPTING_PRESENTER_BACKENDS
+        and not malformed_submission
+        and not malformed_frame
+        and bool(frame_indices)
+        and len(frame_indices) == len(submission_indices)
+        and all(
+            frame < submission
+            for frame, submission in zip(frame_indices, submission_indices, strict=True)
+        )
     )
     report["presentation"] = {
-        "status": "FRAME_SUBMITTED" if submissions else "NO_FRAME_SUBMISSIONS",
-        "frame_submissions": submissions,
+        "status": "FRAME_SUBMITTED" if evidence_ok else "NO_FRAME_SUBMISSIONS",
+        "frame_submissions": len(submission_indices) if evidence_ok else 0,
+        "backend": backend,
     }
+    return evidence_ok
 
 
 def _flight_has_hle_import(path: Path | None) -> bool | None:
@@ -2428,6 +2493,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "SDL_VIDEODRIVER": "dummy",
             "SDL_AUDIO_DRIVER": "dummy",
             "SDL_AUDIODRIVER": "dummy",
+            # Bring-up still uses the production --gui scheduler route so the
+            # display latch and presenter boundary execute. Select the explicit
+            # host-memory sink instead of asking that route to create a window
+            # or a Vulkan-presentable surface. Interactive launches do not use
+            # this policy.
+            "SR_VIDEO": "offscreen",
             "PSP_ISO": str(iso_path),
             "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
             "SR_BOOT_PATH": boot_path,
@@ -2468,7 +2539,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
-            _set_bringup_presentation(report, launch_output)
+            presentation_evidence_ok = _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
             report["runtime_output_kind"] = _runtime_output_kind(
                 launch_output, report["runtime_imports"]
@@ -2502,7 +2573,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                             int((time.perf_counter() - started) * 1000),
                         )
                     else:
-                        if report["presentation"]["frame_submissions"] == 0:
+                        if not presentation_evidence_ok:
                             _fail_bringup(
                                 report, "launch", "NO_FRAME_SUBMISSIONS", [297, 308],
                                 int((time.perf_counter() - started) * 1000),
@@ -2512,10 +2583,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                                                int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
-                if "no available video device" in folded or "video driver" in folded:
-                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
-                    report["exit_classification"] = "HEADLESS_UNAVAILABLE"
-                elif (report["runtime_imports"] or "unknown nid" in folded
+                if (report["runtime_imports"] or "unknown nid" in folded
                       or "unimplemented import" in folded):
                     failure, issues = "UNSUPPORTED_IMPORT", [308]
                 elif (report["runtime_output_kind"] == "UNSUPPORTED_INSTRUCTION"
@@ -2535,6 +2603,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     failure, issues = "NATIVE_RUNTIME_CRASH", [297]
                 elif report["runtime_output_kind"] == "DISPATCH_MISS":
                     failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
+                elif report["runtime_output_kind"] == "VIDEO_UNAVAILABLE":
+                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
+                    report["exit_classification"] = "HEADLESS_UNAVAILABLE"
                 else:
                     failure, issues = "LAUNCH_FAILED", [297]
                 _fail_bringup(report, "launch", failure, issues,
