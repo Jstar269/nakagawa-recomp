@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91301427e37eee89d73ec3183c47afc0a49d085cd0bc72fd2e67d22fa78f5eba"
+      "sha256": "cbfeb7309f68dd7ba832fa9860e8f18867bba4998b6ddd8d4b46d6ba4c9abcd5"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -264,7 +264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "47a13a9afee7552e4ce8a8886f3ab8b540eb7ac5f421714345418be76b8f3673"
+      "sha256": "08aaa0011943b59ff6311107db230d760f6b0b6d9b18a19d59b481edaa6fffa9"
     },
     {
       "path": "CREDITS.md",
@@ -9471,11 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "d3530dc20198e81417d4248c64ef073d4b0a94fe",
-    "candidate_tree": "a6d4d846fd5174c91457fd0e810365b970922dcd",
+    "trusted_tree": "b42e9ab790bb700833b653ca83e8fcc584e88c76",
+    "candidate_tree": "4538844bdeadb8b4722e0e9ecdf29111754f9a16",
     "refreshed_paths": [
-      "tools/perf_summary_diff.py",
-      "tools/test_perf_summary_diff.py"
+      ".github/workflows/ci.yml",
+      "CONTRIBUTING.md"
     ]
   }
 }
