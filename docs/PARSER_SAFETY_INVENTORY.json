@@ -534,8 +534,8 @@
     {
       "boundary": "Private package/cache manifest and title-input-identity JSON",
       "entry": "tools/nk_core/package_cache.py:_read_json; validate_completion_manifest; validate_package_cache; read_local_title_input_identity; tools/nk_cli.py:_load_entry_manifest",
-      "max_input": "Cache/identity JSON is read fully without a byte cap; public title manifest loading separately defaults to 262144 bytes.",
-      "tables_nesting": "Duplicate keys are rejected; no explicit _read_json depth or collection-count cap.",
+      "max_input": "tools/nk_core/package_cache.py:MAX_CACHE_JSON_BYTES = 1048576 bytes per externally supplied JSON artifact (package.json, build-report.json, completion-manifest.json, title-input-identity.json). The ceiling is enforced by a bounded read of at most MAX+1 bytes through one open handle (fstat and reads share the descriptor; the extra byte catches growth), never a whole-file read. Valid data at the exact limit is accepted.",
+      "tables_nesting": "Duplicate keys are rejected by name at any depth. Pre-parse structural scan before json.loads: MAX_CACHE_JSON_DEPTH = 32 nesting levels, MAX_CACHE_JSON_MEMBERS = 16384 object members, MAX_CACHE_JSON_ITEMS = 16384 comma separators (the legacy MAX_CACHE_JSON_ITEMS name), MAX_CACHE_JSON_NODES = 65536 structural nodes, so hostile nesting or bulk fails at a named ceiling before recursing inside the standard parser. Post-parse per-record object validation precedes field access.",
       "arithmetic": {
         "safe": true,
         "evidence": [
@@ -543,11 +543,11 @@
           "tools/nk_cli.py:180"
         ]
       },
-      "allocation_time": "JSON memory/time is proportional to full file size; artifact digests stream in 1 MiB blocks.",
-      "failure_atomicity": "Validation is read-only; package promotion stages and rejects invalid copies. This does not bound parser resources.",
+      "allocation_time": "JSON memory/time is bounded by the byte and structural ceilings. Decimal integers have a local 4300-digit ceiling checked before conversion, independent of Python's optional process-wide guard; a stricter host guard yields a named BoundedJsonError. NaN, Infinity and floats that overflow to infinity are rejected; supported floats must be finite. RecursionError inside json.loads is contained to the named BoundedJsonError. Artifact digests stream in 1 MiB blocks. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
+      "failure_atomicity": "Validation is read-only; package promotion stages and rejects invalid copies. Malformed or hostile input raises the named BoundedJsonError (or the entry point's named failure embedding it) -- never AttributeError, TypeError, RecursionError, or UnicodeDecodeError. Nothing is truncated silently. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
       "harness": "tools/test_package_cache.py; tools/test_nk_core.py; no mutation harness",
-      "gap": "No byte/depth/count cap or seeded mutation/sanitizer campaign for _read_json.",
-      "status": "GAP",
+      "gap": "Resource ceilings, deterministic hostile-input corpus, and named controlled errors are now executable behavior on production entry points. No seeded-mutation loop or sanitizer target for this Python parser route.",
+      "status": "PARTIAL",
       "id": "private-package-cache-json",
       "source_paths": [
         "tools/nk_core/package_cache.py",
@@ -555,14 +555,16 @@
       ],
       "test_paths": [
         "tools/test_package_cache.py",
-        "tools/test_nk_core.py"
+        "tools/test_nk_core.py",
+        "tools/test_parse_fuzz.py"
       ],
       "malformed_input_coverage": [
-        "Contract corruption, duplicate keys, invalid cache identity/artifact path, digest mismatch and incomplete package cases; no mutation loop."
+        "Contract corruption, duplicate keys, invalid cache identity/artifact path, digest mismatch and incomplete package cases.",
+        "Bounded-input regression: exactly-at-limit valid JSON accepted; one-byte-over limit rejected; excessive nesting (100k levels) and member/node counts rejected with named errors; duplicate keys rejected; malformed UTF-8 rejected; wrong top-level type rejected; growth during read cannot bypass the ceiling.",
+        "Numeric regression: NaN/Infinity and float overflow reject on the production reader; oversized integers reject before conversion with bounded named diagnoses; integers at the local digit ceiling and ordinary signed integer/float values retain their types.",
+        "Bounded-diagnostics regression: no rejection message on any of these routes echoes attacker-supplied bulk data; an oversized key, unknown field name, non-integer schema_version, or repeated disc_id is quoted only as a short prefix and an oversized unknown-field list only as a fixed-size sample, while the rejection itself stays a named controlled error. The structural node count is a true lower bound for every scalar and trailing-string document."
       ],
-      "resource_gaps": [
-        "_read_json reads full files with no byte/depth/member-count cap; no seeded mutation or sanitizer target."
-      ],
+      "resource_gaps": [],
       "campaigns": {
         "deterministic_regression": {
           "status": "IN_CI",
@@ -1343,23 +1345,27 @@
       "test_paths": [
         "tools/test_nk_core.py"
       ],
-      "max_input": "No byte, JSON-depth, or game-count cap was located in GameLibrary.load.",
-      "tables_nesting": "Standard-library json.load with no post-parse nesting or array-count ceiling.",
+      "max_input": "GameLibrary.load and nk_cli library routes enforce 1048576 bytes and a 4096-record upper bound. The shared reader uses a bounded MAX+1 read on one descriptor and rejects growth. The byte and structural limits apply independently of record count; GameLibrary.save validates the temporary output with GameLibrary.load before replacing an existing library.",
+      "tables_nesting": "Both routes reject duplicate keys and apply the 32-level pre-parse depth ceiling and shared library budgets: 57347 object members, 61443 comma separators, and 118792 structural nodes. Unknown root/record fields, per-record object types, and non-negative integer counts are checked by GameLibrary.load only. nk_cli checks the integer schema version, games list and record count; its bring-up records have a different field schema.",
       "arithmetic": {
-        "safe": "NOT_ASSESSED",
+        "safe": true,
         "evidence": [
-          "tools/nk_core/library.py:GameLibrary.load"
+          "tools/nk_core/library.py:LibraryGameRecord.from_dict",
+          "tools/nk_core/package_cache.py:read_bounded_json"
         ]
       },
-      "allocation_time": "Reads the full file into memory; per-record validation scales with the games list.",
-      "failure_atomicity": "A new temporary GameLibrary is returned only after all records validate; malformed input raises before the caller receives it.",
+      "allocation_time": "Read memory is bounded by the byte ceiling; decoded structure is bounded by the structural ceilings and the record limit; RecursionError inside json.loads is contained to the named controlled ValueError. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
+      "failure_atomicity": "GameLibrary.load returns a new library only after every record validates. Each GameLibrary.save owns a unique temporary file in the destination directory, validates it with the same reader before atomic replacement and cleans up only that file on failure. Overlapping saves cannot overwrite/unlink one another's temporary files; the last completed replacement wins, without merging concurrent record edits. nk_cli checks the post-update record count, serialized UTF-8 byte count and structural budgets before atomic replacement; rejection preserves the previous library. The existing save formats are retained. nk_cli has its separate bring-up record schema; compatibility with GameLibrary records is not established. Rejection messages bound untrusted echoed text. No silent truncation occurs.",
       "malformed_input_coverage": [
-        "valid library save/load round trip",
-        "no dedicated hostile malformed-input mutation cases located"
+        "GameLibrary save/load round trips preserve all fields, including 1200 fully populated records. A byte-limit failure during save preserves the previous library and removes temporary output.",
+        "Deterministically interleaved production saves complete with separate temporary files and leave no owned temporary output; saving preserves another writer's existing library.json.tmp checkpoint.",
+        "nk_cli reads and updates a 4096-record library. Appending beyond the record limit or writing beyond the byte limit rejects without replacing existing bytes. The writer rejects boolean schema versions.",
+        "The shared numeric parser rejects nonfinite library timestamps and integers above 4300 digits with controlled errors; no NaN or infinity enters loaded records.",
+        "Shared bounded-reader coverage on GameLibrary.load and nk_cli._load_library_entry: exact byte limit accepted, one byte over rejected, excessive nesting rejected, duplicate JSON keys rejected, malformed UTF-8 rejected and wrong top-level type rejected. Each route checks its games-list type and record count.",
+        "GameLibrary.load-specific coverage: null/scalar/list records, invalid field types, unknown root/record fields, repeated disc IDs, missing games and unsupported schema versions reject with controlled errors. These record-field rejection claims do not apply to nk_cli bring-up records.",
+        "Bounded-diagnostics coverage limits echoed attacker text; structural counters cover bare scalars and trailing strings. The aggregate comma-separator diagnosis includes object separators and does not claim to count array elements exclusively."
       ],
-      "resource_gaps": [
-        "No byte/depth/count cap, seeded mutation campaign, or sanitizer coverage."
-      ],
+      "resource_gaps": [],
       "campaigns": {
         "deterministic_regression": {
           "status": "IN_CI",
@@ -1383,7 +1389,8 @@
         "overflow_oob_mutation_kill": "NOT_RUN"
       },
       "harness": "tools/test_nk_core.py:test_game_library_persistence",
-      "status": "GAP"
+      "status": "PARTIAL",
+      "gap": "PARTIAL: seeded-mutation and sanitizer campaigns remain absent. GameLibrary and nk_cli bring-up record schemas are not reconciled; this slice does not establish their interchangeability."
     },
     {
       "boundary": "ATRAC3+ frame decoder",
