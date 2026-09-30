@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -267,20 +268,282 @@ def read_local_title_input_identity(user_data_root: Path | str, disc_id: str) ->
     try:
         return validate_title_input_identity(_read_json(path))
     except (OSError, ValueError, PackageCacheError):
-        return None
+        return None  # malformed or hostile identity input is simply absent
+
+
+# Explicit resource ceilings for externally supplied JSON artifacts on the
+# package/cache route (#319). The byte ceiling is enforced with a bounded read
+# through one open handle -- never a whole-file read -- so a hostile or corrupt
+# file cannot be ingested wholesale before it is rejected. The depth/count scan
+# runs on the raw text before json.loads, so pathological nesting cannot first
+# explode inside the standard parser. The limits exceed any legitimate package,
+# cache, completion, or identity document by orders of magnitude.
+MAX_CACHE_JSON_BYTES = 1024 * 1024
+MAX_CACHE_JSON_DEPTH = 32
+MAX_CACHE_JSON_MEMBERS = 16384
+MAX_CACHE_JSON_ITEMS = 16384
+MAX_CACHE_JSON_NODES = 65536
+# Keep decimal conversion bounded even when Python's process-wide guard is
+# disabled. This matches the usual 4,300-digit Python integer ceiling.
+MAX_CACHE_JSON_INTEGER_DIGITS = 4300
+
+
+class BoundedJsonError(ValueError):
+    """Named, controlled failure while reading a bounded external JSON artifact."""
+
+
+# Diagnostics are attacker-reachable: every key and scalar in an externally
+# supplied artifact is attacker-chosen text, and a rejection message is usually
+# the one thing that gets logged or echoed back to a user. Bounding the artifact
+# therefore does not by itself bound the message it produces, so untrusted
+# values are quoted only as a short prefix and untrusted name lists only as a
+# short sample. Rejection itself is unchanged; only the echoed detail is.
+MAX_JSON_ECHO_CHARS = 64
+MAX_JSON_ECHO_FIELDS = 8
+
+
+def bounded_echo(value: Any, *, max_chars: int = MAX_JSON_ECHO_CHARS) -> str:
+    """Render one untrusted value for a message without echoing bulk data.
+
+    Strings are truncated before any quoting, so a multi-hundred-kilobyte key
+    cannot inflate an exception message (or the log record that captures it)
+    past ``max_chars``. Non-strings are rendered with ``repr`` and truncated
+    afterwards; that transient repr is bounded by the artifact ceiling already
+    accepted by the reader, so it is not a new amplification path.
+    """
+    if type(value) is str:
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars] + "...[truncated]"
+    text = repr(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...[truncated]"
+
+
+def bounded_echo_fields(names: Any, *, max_chars: int = MAX_JSON_ECHO_CHARS) -> str:
+    """Render a set of untrusted field names as a short, fixed-size sample."""
+    ordered = sorted(names)
+    shown = ", ".join(bounded_echo(name, max_chars=max_chars) for name in ordered[:MAX_JSON_ECHO_FIELDS])
+    if len(ordered) > MAX_JSON_ECHO_FIELDS:
+        shown += f", ... (+{len(ordered) - MAX_JSON_ECHO_FIELDS} more)"
+    return shown
+
+
+def _bounded_json_bytes(path: Path, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` (+1) bytes of ``path`` through one handle.
+
+    ``fstat`` and the reads share the descriptor, so a replacement or growth
+    race cannot substitute a different file behind the size gate. The extra
+    byte detects a file that grew while it was being read; nothing is ever
+    truncated silently.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    try:
+        size = os.fstat(fd).st_size
+        if size > max_bytes:
+            raise BoundedJsonError(
+                f"{path} is {size} bytes, over the {max_bytes}-byte JSON artifact limit"
+            )
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if len(data) > max_bytes:
+        raise BoundedJsonError(
+            f"{path} grew past the {max_bytes}-byte JSON artifact limit"
+        )
+    return data
+
+
+def _bounded_json_scan(
+    text: str,
+    *,
+    max_depth: int,
+    max_members: int,
+    max_items: int,
+    max_nodes: int,
+) -> None:
+    """Count containers, members, comma separators, and scalars in raw JSON text.
+
+    Runs before json.loads so hostile nesting or bulk fails at the named
+    ceiling instead of first recursing inside the standard parser. Strings and
+    escapes are skipped with a state machine; counts are conservative upper
+    bounds, so a document that passes can never exceed the ceilings after
+    parsing either. The node count is re-checked after the loop because the
+    in-string branch continues before the per-character test, which would
+    otherwise let a document whose final node is a string closer finish one
+    node past the ceiling.
+    """
+    depth = 0
+    members = 0
+    separators = 0
+    nodes = 0
+    in_string = False
+    escaped = False
+    # Tracks whether the previous character can continue a number, so a number
+    # is counted once at its leading character. A boolean rather than a
+    # sentinel character: "" is a substring of every string, so a ""-seeded
+    # "not previously numeric" test would silently never fire for a document
+    # that starts with a digit.
+    prev_numeric = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+                nodes += 1
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+            nodes += 1
+            if depth > max_depth:
+                raise BoundedJsonError(
+                    f"JSON nesting exceeds {max_depth} levels"
+                )
+        elif char in "}]":
+            depth -= 1
+        elif char == ":":
+            members += 1
+        elif char == ",":
+            separators += 1
+        elif char in "-0123456789":
+            if not prev_numeric:
+                nodes += 1
+        elif char in "tfn":
+            nodes += 1
+        if nodes > max_nodes:
+            raise BoundedJsonError(
+                f"JSON document exceeds {max_nodes} structural nodes"
+            )
+        prev_numeric = char in "-0123456789.eE"
+    if nodes > max_nodes:
+        raise BoundedJsonError(
+            f"JSON document exceeds {max_nodes} structural nodes"
+        )
+    if members > max_members:
+        raise BoundedJsonError(
+            f"JSON document exceeds {max_members} object members"
+        )
+    if separators > max_items:
+        raise BoundedJsonError(
+            f"JSON document exceeds {max_items} comma separators"
+        )
+
+
+def _json_integer(text: str) -> int:
+    if len(text.removeprefix("-")) > MAX_CACHE_JSON_INTEGER_DIGITS:
+        raise BoundedJsonError(
+            f"JSON integer exceeds {MAX_CACHE_JSON_INTEGER_DIGITS} digits"
+        )
+    try:
+        return int(text)
+    except ValueError as exc:
+        # A stricter host-wide digit guard may reject before the local ceiling.
+        raise BoundedJsonError("JSON integer exceeds the host integer digit limit") from exc
+
+
+def _json_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise BoundedJsonError("JSON number must be finite and representable as a float")
+    return value
+
+
+def _json_nonfinite(_text: str) -> None:
+    raise BoundedJsonError("JSON number must be finite; NaN and Infinity are unsupported")
+
+
+def bounded_json_loads(
+    text: str,
+    *,
+    max_depth: int = MAX_CACHE_JSON_DEPTH,
+    max_members: int = MAX_CACHE_JSON_MEMBERS,
+    max_items: int = MAX_CACHE_JSON_ITEMS,
+    max_nodes: int = MAX_CACHE_JSON_NODES,
+) -> Any:
+    """Parse JSON text under the cache-artifact ceilings with named errors."""
+    _bounded_json_scan(
+        text,
+        max_depth=max_depth,
+        max_members=max_members,
+        max_items=max_items,
+        max_nodes=max_nodes,
+    )
+    try:
+        return json.loads(
+            text, object_pairs_hook=_no_duplicate_pairs, parse_int=_json_integer,
+            parse_float=_json_float, parse_constant=_json_nonfinite,
+        )
+    except BoundedJsonError:
+        raise
+    except UnicodeDecodeError as exc:  # defensive: callers decode bytes first
+        raise BoundedJsonError(f"JSON artifact is not valid UTF-8: {exc}") from exc
+    except RecursionError as exc:
+        raise BoundedJsonError(
+            "JSON artifact nesting exceeded the parser recursion budget"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise BoundedJsonError(f"JSON artifact is not valid JSON: {exc}") from exc
+
+
+def read_bounded_json(
+    path: Path,
+    *,
+    max_bytes: int = MAX_CACHE_JSON_BYTES,
+    max_depth: int = MAX_CACHE_JSON_DEPTH,
+    max_members: int = MAX_CACHE_JSON_MEMBERS,
+    max_items: int = MAX_CACHE_JSON_ITEMS,
+    max_nodes: int = MAX_CACHE_JSON_NODES,
+) -> Any:
+    """Read one externally supplied JSON artifact under explicit ceilings.
+
+    Byte ceiling first (bounded read through one handle), deterministic UTF-8
+    decode, pre-parse depth/count scan, duplicate-key and nonfinite-number
+    rejection, bounded decimal integer conversion, and
+    RecursionError containment. Every malformed outcome raises the named
+    ``BoundedJsonError`` rather than a parser-implementation exception.
+    """
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    data = _bounded_json_bytes(path, max_bytes)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BoundedJsonError(f"{path} is not valid UTF-8: {exc}") from exc
+    return bounded_json_loads(
+        text,
+        max_depth=max_depth,
+        max_members=max_members,
+        max_items=max_items,
+        max_nodes=max_nodes,
+    )
 
 
 def _no_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError(f"duplicate JSON field: {key}")
+            raise BoundedJsonError(f"duplicate JSON field: {bounded_echo(key)}")
         result[key] = value
     return result
 
 
 def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_pairs)
+    return read_bounded_json(path)
 
 
 _ARTIFACT_COMPONENT_RE = re.compile(r"[A-Za-z0-9._+-]+")
@@ -780,7 +1043,7 @@ def write_completion_manifest(
         try:
             package = _read_json(package_dir / "package.json")
         except (OSError, ValueError) as exc:
-            raise PackageCacheError("package input identity is unavailable") from exc
+            raise PackageCacheError(f"package input identity is unavailable: {exc}") from exc
         title_input_identity = package.get("title_input_identity") if isinstance(package, dict) else None
     identity = validate_title_input_identity(dict(title_input_identity)) if title_input_identity is not None else None
     document: dict[str, Any] = {
@@ -813,7 +1076,7 @@ def validate_completion_manifest(
     try:
         document = _read_json(path)
     except (OSError, ValueError) as exc:
-        return False, f"completion manifest is unreadable: {exc}", None
+        return False, f"completion manifest is unreadable: {exc}", None  # includes BoundedJsonError
     if not isinstance(document, dict):
         return False, "completion manifest must be a JSON object", None
     allowed = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts", "backends", "limits"}
@@ -883,7 +1146,7 @@ def package_cache_key(package_dir: Path) -> Mapping[str, Any] | None:
     try:
         document = _read_json(package_dir / "package.json")
     except (OSError, ValueError):
-        return None
+        return None  # unreadable or hostile package metadata carries no cache key
     return _key_from_document(document)
 
 
@@ -897,6 +1160,7 @@ def validate_package_cache(
         package = _read_json(package_dir / "package.json")
         report = _read_json(package_dir / "build-report.json")
     except (OSError, ValueError) as exc:
+        # BoundedJsonError names byte/depth/count/duplicate-key/UTF-8 failures.
         return False, f"package metadata is unreadable: {exc}"
     if not isinstance(package, dict) or not isinstance(report, dict):
         return False, "package metadata must contain JSON objects"

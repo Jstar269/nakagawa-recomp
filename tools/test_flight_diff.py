@@ -21,11 +21,17 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit",
-                terminal_sequence=None, version=1):
+                terminal_sequence=None, terminal_kind=0, terminal_arg0=0, version=1,
+                triggers=None):
     if recorded is None:
         recorded = len(events) + dropped
     if terminal_sequence is None:
         terminal_sequence = events[-1]["sequence"] if events else 0
+    if triggers is None:
+        # validate_bundle pins fired to the terminal reason: a trigger-fired
+        # bundle terminates at its trigger, an untriggered one at exit.
+        triggers = {"first_fatal": True, "first_unsupported_nid": True,
+                    "fired": 1 if terminal_reason != "exit" else 0}
     if version >= 3:
         build = {
             "compiler": "gcc",
@@ -49,24 +55,21 @@ def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit",
             "limit": 4,
             "recorded": recorded,
             "dropped": dropped,
-            "triggers": {
-                "first_fatal": True,
-                "first_unsupported_nid": True,
-                "fired": 0,
-            },
+            "triggers": triggers,
         },
         "terminal": {
             "reason": terminal_reason,
             "sequence": terminal_sequence,
-            "kind": 0,
-            "arg0": 0,
+            "kind": terminal_kind,
+            "arg0": terminal_arg0,
         },
         "events": events,
     }
 
 
-def event(sequence, event_class, kind=1, arg0=0, arg1=0, arg2=0, arg3=0, version=1):
-    return {
+def event(sequence, event_class, kind=1, arg0=0, arg1=0, arg2=0, arg3=0, version=1,
+          arguments=None, return_value=None):
+    record = {
         "schema_version": version,
         "sequence": sequence,
         "class": event_class,
@@ -76,6 +79,281 @@ def event(sequence, event_class, kind=1, arg0=0, arg1=0, arg2=0, arg3=0, version
         "arg2": arg2,
         "arg3": arg3,
     }
+    if arguments is not None:
+        record["arguments"] = list(arguments)
+        record["return_value"] = return_value
+    return record
+
+
+class ComparabilityContractTests(unittest.TestCase):
+    """The #320 comparator contract: MATCH only for comparable, agreeing pairs.
+
+    Every bundle below is individually schema-valid; the point is that validity
+    alone must not decide MATCH. The three-way outcome model is MATCH /
+    DIVERGENCE / INCOMPARABLE plus the pre-existing error path for malformed
+    bundles, and the CLI maps them to exit codes 0 / 1 / 3 / 2.
+    """
+
+    def _comparable_pair(self):
+        baseline = make_bundle(
+            [event(1, "sched", arg0=1, version=3),
+             event(2, "hle", arg0=2, version=3, arguments=[7, 0, 0, 0], return_value=None),
+             event(3, "prx", arg0=3, version=3)],
+            version=3,
+        )
+        return baseline, copy.deepcopy(baseline)
+
+    def test_identical_fully_retained_bundles_match(self):
+        baseline, candidate = self._comparable_pair()
+        self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, "sequence"))
+
+    def test_differing_build_identities_still_compare(self):
+        baseline, candidate = self._comparable_pair()
+        candidate["build"]["build_id"] = "fedcba9876543210fedcba9876543210fedcba98"
+        candidate["build"]["source_date_epoch"] = 1000000000
+        candidate["build"]["compiler"] = "clang"
+        self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, "sequence"))
+
+    def test_differing_recorder_limit_with_no_drops_still_compares(self):
+        baseline, candidate = self._comparable_pair()
+        candidate["recorder"]["limit"] = 4096
+        self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, "sequence"))
+
+    def test_cli_reports_both_identities_on_match(self):
+        baseline, candidate = self._comparable_pair()
+        candidate["build"]["build_id"] = "fedcba9876543210fedcba9876543210fedcba98"
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MATCH:", result.stdout)
+        self.assertIn("identity baseline:", result.stdout)
+        self.assertIn("identity candidate:", result.stdout)
+        self.assertIn("fedcba98", result.stdout)
+
+    def test_dropped_history_never_matches(self):
+        baseline, candidate = self._comparable_pair()
+        for bundle in (baseline, candidate):
+            # Same retained events, same dropped count, same limit: the windows
+            # are aligned but each side's dropped events came from a different
+            # execution. Sequences 3..5 retained of 5 recorded, limit 3.
+            bundle["recorder"]["dropped"] = 2
+            bundle["recorder"]["recorded"] = 5
+            bundle["recorder"]["limit"] = 3
+            for item in bundle["events"]:
+                item["sequence"] += 2
+            bundle["terminal"]["sequence"] = 5
+        for align in ("sequence", "class"):
+            with self.subTest(align=align):
+                with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+                    flight_diff.diff_bundles(baseline, candidate, align)
+                self.assertTrue(
+                    any("dropped" in reason for reason in caught.exception.reasons)
+                )
+
+    def test_dropped_history_violating_coverage_arithmetic_is_malformed(self):
+        # The truncation invariant pins dropped to recorded - min(recorded,
+        # limit); a bundle claiming a different dropped count does not describe
+        # a ring-buffer capture at all, so it is an error, not INCOMPARABLE.
+        # recorded 5 at limit 4 would permit dropped 1, so claim 2.
+        baseline, candidate = self._comparable_pair()
+        candidate["recorder"]["recorded"] = 5
+        candidate["recorder"]["dropped"] = 2
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "dropped must equal"):
+            flight_diff.diff_bundles(baseline, candidate, "sequence")
+
+    def test_incompatible_enabled_class_coverage_never_matches(self):
+        baseline, candidate = self._comparable_pair()
+        # The narrower candidate stays individually valid: sched-only classes
+        # and two retained sched events with contiguous sequences.
+        candidate["recorder"]["enabled_classes"] = ["sched"]
+        candidate["events"] = [event(1, "sched", arg0=1, version=3),
+                               event(2, "sched", arg0=2, version=3)]
+        candidate["recorder"]["recorded"] = 2
+        candidate["terminal"]["sequence"] = 2
+        for align in ("sequence", "class"):
+            with self.subTest(align=align):
+                with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+                    flight_diff.diff_bundles(baseline, candidate, align)
+                self.assertTrue(
+                    any("classes" in reason for reason in caught.exception.reasons)
+                )
+
+    def test_incompatible_trigger_policy_never_matches(self):
+        baseline, candidate = self._comparable_pair()
+        baseline["recorder"]["triggers"]["first_unsupported_nid"] = False
+        candidate["recorder"]["triggers"]["first_fatal"] = False
+        with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+            flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertTrue(any("trigger" in reason for reason in caught.exception.reasons))
+
+    def test_triggered_bundles_with_identical_policy_stay_comparable(self):
+        # A fired trigger is an outcome field, not part of the armed policy, so
+        # it never blocks a comparison. A *differing* fired value is in fact
+        # unreachable through the public API: validate_bundle pins fired to
+        # "reason != exit", so any pair that differs in fired also differs in
+        # terminal reason and diverges there instead (see the terminal-reason
+        # test below). What is reachable -- and asserted here -- is a triggered
+        # pair that shares the armed policy and diverges only in terminal kind.
+        baseline = make_bundle(
+            [event(1, "fatal", arg0=1, version=3)],
+            terminal_reason="fatal",
+            terminal_sequence=1,
+            version=3,
+        )
+        candidate = copy.deepcopy(baseline)
+        candidate["terminal"] = {
+            "reason": "fatal", "sequence": 1, "kind": 11, "arg0": 7,
+        }
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "terminal kind")
+
+    def test_same_events_different_terminal_semantics_diverge(self):
+        baseline, candidate = self._comparable_pair()
+        # Both terminals must be individually valid: a fatal outcome pairs with
+        # a fired trigger, an exit outcome with an unfired one.
+        candidate["terminal"] = {"reason": "fatal", "sequence": 3, "kind": 11, "arg0": 5}
+        candidate["recorder"]["triggers"]["fired"] = 1
+        for align in ("sequence", "class"):
+            with self.subTest(align=align):
+                divergence = flight_diff.diff_bundles(baseline, candidate, align)
+                self.assertIsNotNone(divergence)
+                self.assertEqual(divergence[0], "terminal reason")
+                self.assertEqual(divergence[1]["reason"], "exit")
+                self.assertEqual(divergence[2]["reason"], "fatal")
+
+    def test_terminal_kind_and_arg0_divergences_are_named(self):
+        baseline, candidate = self._comparable_pair()
+        candidate["terminal"]["kind"] = 13
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertEqual(divergence[0], "terminal kind")
+        baseline2, candidate2 = self._comparable_pair()
+        candidate2["terminal"]["arg0"] = 9
+        divergence = flight_diff.diff_bundles(baseline2, candidate2, "sequence")
+        self.assertEqual(divergence[0], "terminal arg0")
+
+    def test_unfinished_running_capture_is_a_terminal_divergence(self):
+        # A running terminal is only schema-valid beside a fired trigger (the
+        # validator's own pairing): a mid-run snapshot dump whose run went on.
+        baseline, candidate = self._comparable_pair()
+        for bundle in (baseline, candidate):
+            bundle["recorder"]["triggers"]["fired"] = 1
+        baseline["terminal"] = {"reason": "running", "sequence": 0, "kind": 0, "arg0": 0}
+        candidate["terminal"] = {"reason": "fatal", "sequence": 3, "kind": 11, "arg0": 5}
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "terminal reason")
+        self.assertEqual(divergence[1]["reason"], "running")
+        self.assertEqual(divergence[2]["reason"], "fatal")
+
+    def test_same_events_same_running_terminal_can_match(self):
+        baseline, candidate = self._comparable_pair()
+        for bundle in (baseline, candidate):
+            bundle["recorder"]["triggers"]["fired"] = 1
+            bundle["terminal"] = {"reason": "running", "sequence": 0, "kind": 0, "arg0": 0}
+        self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, "sequence"))
+
+    def test_schema_version_mismatch_is_incomparable(self):
+        baseline, candidate = self._comparable_pair()
+        candidate = make_bundle(
+            [event(1, "sched", arg0=1, version=2),
+             event(2, "hle", arg0=2, version=2, arguments=[7, 0, 0, 0],
+                   return_value=None),
+             event(3, "prx", arg0=3, version=2)],
+            version=2,
+        )
+        with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+            flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertTrue(any("schema versions" in reason for reason in caught.exception.reasons))
+
+    def test_runtime_block_mismatch_is_flagged_by_comparability(self):
+        # The schema pins both runtime fields, so two schema-valid bundles can
+        # never disagree here; the check is defense-in-depth for validators
+        # that do not see the schema, and is asserted on the raw reasoning
+        # function with minimal hand-built record shapes.
+        left = {"schema_version": 3,
+                "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
+                "recorder": {"enabled_classes": ["sched"], "dropped": 0,
+                             "triggers": {"first_fatal": True,
+                                          "first_unsupported_nid": True,
+                                          "fired": 0}},
+                "terminal": {"reason": "exit"}}
+        right = {**left, "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 3}}
+        reasons = flight_diff._comparability_reasons(left, right)
+        self.assertTrue(any("runtime" in reason for reason in reasons))
+
+    def test_incomparability_reasons_are_cumulative(self):
+        baseline, candidate = self._comparable_pair()
+        candidate["recorder"]["enabled_classes"] = ["sched", "hle", "prx"]
+        # baseline: one event slid out of a limit-3 ring, recorded 4, kept 2..4.
+        baseline["recorder"]["limit"] = 3
+        baseline["recorder"]["dropped"] = 1
+        baseline["recorder"]["recorded"] = 4
+        for item in baseline["events"]:
+            item["sequence"] += 1
+        baseline["terminal"]["sequence"] = 4
+        with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+            flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertGreaterEqual(len(caught.exception.reasons), 2)
+
+    def test_first_event_divergence_is_still_reported_first(self):
+        baseline, candidate = self._comparable_pair()
+        candidate["events"][2]["arg0"] = 0x99
+        candidate["terminal"]["kind"] = 13  # would also diverge; events win
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "sequence 3")
+        self.assertEqual(divergence[1]["arg0"], 3)
+        self.assertEqual(divergence[2]["arg0"], 0x99)
+
+    def test_cli_distinguishes_incomparable_from_error_and_divergence(self):
+        baseline, candidate = self._comparable_pair()
+        # The incomparable candidate stays individually valid: only its enabled
+        # classes differ, and its retained events all belong to them.
+        candidate["recorder"]["enabled_classes"] = ["sched"]
+        candidate["events"] = [event(1, "sched", arg0=1, version=3),
+                               event(2, "sched", arg0=2, version=3),
+                               event(3, "sched", arg0=3, version=3)]
+        divergent = copy.deepcopy(baseline)
+        divergent["events"][0]["arg0"] = 0x55
+        malformed = copy.deepcopy(baseline)
+        malformed["recorder"]["recorded"] = 99  # breaks retained+dropped
+        incomparable = self._run_cli(baseline, candidate)
+        divergence = self._run_cli(baseline, divergent)
+        error = self._run_cli(baseline, malformed)
+        self.assertEqual(incomparable.returncode, 3, incomparable.stdout)
+        self.assertIn("INCOMPARABLE:", incomparable.stdout)
+        self.assertIn("enabled event classes differ", incomparable.stdout)
+        self.assertEqual(divergence.returncode, 1, divergence.stdout)
+        self.assertIn("DIVERGENCE: sequence 1", divergence.stdout)
+        self.assertEqual(error.returncode, 2, error.stderr)
+        self.assertIn("error:", error.stderr)
+
+    def test_cli_scopes_a_match_to_the_enabled_classes(self):
+        # The MATCH line and the printed class list are what keep the verdict
+        # readable as "these captured events and outcomes agree", not "the two
+        # builds are equivalent".
+        baseline, candidate = self._comparable_pair()
+        for bundle in (baseline, candidate):
+            bundle["recorder"]["enabled_classes"] = ["sched", "hle", "prx"]
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MATCH:", result.stdout)
+        self.assertIn("enabled classes: sched, hle, prx", result.stdout)
+        self.assertIn("agrees on these enabled classes and the terminal outcome",
+                      result.stdout)
+
+    def _run_cli(self, left, right) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            left_path = temp_path / "left.json"
+            right_path = temp_path / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
+                 str(left_path), str(right_path)],
+                capture_output=True, text=True, check=False,
+            )
 
 
 class FlightBundleTests(unittest.TestCase):
