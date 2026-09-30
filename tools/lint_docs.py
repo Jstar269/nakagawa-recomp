@@ -15,7 +15,10 @@ Detects deterministic classes of staleness that should not require network acces
 - links to repository commits unavailable in public history;
 - frozen hand-written HLE census numbers that must come from the generator;
 - title-manifest README drift from the actual public manifest inventory;
-- a missing non-CURRENT status marker on the dated toolchain baseline.
+- a missing non-CURRENT status marker on the dated toolchain baseline;
+- a capability-disposition row with no valid status, a PASS/PARTIAL row that
+  names no repository test path that exists, or an UNBUILT/DROPPED row that
+  names no tracking issue.
 
 Live GitHub object existence/state is intentionally handled by ``audit_public_issue_links.py``.
 """
@@ -157,6 +160,37 @@ DOCS_README = "docs/README.md"
 
 TITLES_DIR = "assets/titles"
 TITLES_README = "assets/titles/README.md"
+
+# --- capability disposition table ---------------------------------------------------
+#
+# The native player is the product's only UI, so every capability the retired
+# localhost dashboard used to provide must carry an explicit disposition: what it
+# is now, which surface owns it, and either a repository test path that exists or
+# the tracking issue for what is not built. A row that cannot name its evidence is
+# the failure mode this table exists to prevent -- an unnamed boundary reads as a
+# working feature.
+#
+# FAIL CLOSED. An absent, duplicated or inverted marker pair is an error rather
+# than an empty section, and so is a section with no data rows: an empty inventory
+# would silently agree with "nothing is broken" while consumers read the silence as
+# a verdict. The same reasoning makes the status vocabulary closed -- `IN_PROGRESS`,
+# `NOT_SUPPORTED` and `PASS (something)` are the older vocabularies this replaces,
+# and accepting them would let a row escape both the evidence and the issue rules.
+CAPABILITY_MATRIX_DOC = "docs/NATIVE_UI_REGRESSION_MATRIX.md"
+CAPABILITY_TABLE_BEGIN = "<!-- capability-disposition:begin -->"
+CAPABILITY_TABLE_END = "<!-- capability-disposition:end -->"
+CAPABILITY_STATUSES = ("PASS", "PARTIAL", "UNBUILT", "DROPPED")
+CAPABILITY_COLUMN_COUNT = 5
+CAPABILITY_HEADER_CELLS = ("ID", "CAPABILITY", "STATUS", "SURFACE", "OWNING EVIDENCE")
+
+# A backticked token containing at least one slash is a repository-relative path.
+# A bare `mingw32-make target`, a `SR_HUD`-style switch or a `<angle>` placeholder
+# contains none, so documenting a command or an env var never satisfies the rule.
+CAPABILITY_PATH_TOKEN_PAT = re.compile(r"`([A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)+)`")
+
+# An issue or pull request number, either as a bare `#522` or inside a repository
+# URL. Both are cited in practice, so both are accepted.
+CAPABILITY_ISSUE_REF_PAT = re.compile(r"(?:issues|pull)/(\d+)\b|#(\d+)\b")
 
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)\)")
 EXTERNAL_LINK_PREFIXES = ("http://", "https://", "mailto:", "tel:", "data:")
@@ -409,6 +443,140 @@ def lint_toolchain_baseline_marker(repo_root: pathlib.Path = ROOT) -> list[str]:
     return errors
 
 
+def _marked_capability_section(
+    doc_text: str, doc_label: str
+) -> tuple[list[str], int, list[str]]:
+    """Return the disposition section's lines, its 1-based first line, and errors."""
+    errors: list[str] = []
+    lines = doc_text.splitlines()
+    begins = [i for i, line in enumerate(lines) if line.strip() == CAPABILITY_TABLE_BEGIN]
+    ends = [i for i, line in enumerate(lines) if line.strip() == CAPABILITY_TABLE_END]
+    if len(begins) != 1 or len(ends) != 1:
+        errors.append(
+            f"{doc_label}: the capability disposition table must be delimited by exactly one "
+            f"'{CAPABILITY_TABLE_BEGIN}' / '{CAPABILITY_TABLE_END}' pair"
+        )
+        return [], 0, errors
+    if ends[0] <= begins[0]:
+        errors.append(
+            f"{doc_label}: the capability disposition table end marker appears before its begin marker"
+        )
+        return [], 0, errors
+    return lines[begins[0] + 1:ends[0]], begins[0] + 2, errors
+
+
+def _capability_row_cells(line: str) -> list[str] | None:
+    """Split a Markdown table row into cells, or return None if it is not one.
+
+    A delimiter row (`| :--- |`) carries no capability, so it is reported as None
+    rather than as a row whose status happens to be empty.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return None
+    cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", stripped)[1:-1]]
+    if not cells or all(re.fullmatch(r"[\s:\-]+", cell) for cell in cells):
+        return None
+    return cells
+
+
+def _existing_capability_paths(evidence: str, repo_root: pathlib.Path) -> list[str]:
+    """Return the backticked paths in an evidence cell that exist in this repository."""
+    root_resolved = repo_root.resolve()
+    found: list[str] = []
+    for raw in CAPABILITY_PATH_TOKEN_PAT.findall(evidence):
+        resolved = (repo_root / raw).resolve()
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError:
+            continue
+        if resolved.exists():
+            found.append(raw)
+    return found
+
+
+def lint_capability_disposition_table(repo_root: pathlib.Path = ROOT) -> list[str]:
+    """Every capability-disposition row must declare a valid status and real evidence."""
+    errors: list[str] = []
+    doc = repo_root / CAPABILITY_MATRIX_DOC
+    if not doc.is_file():
+        return [
+            f"{CAPABILITY_MATRIX_DOC}: is missing; the per-capability disposition of the "
+            "retired web UI and diagnostic capabilities cannot be verified"
+        ]
+
+    section, first_line, section_errors = _marked_capability_section(
+        doc.read_text(encoding="utf-8"), CAPABILITY_MATRIX_DOC
+    )
+    errors.extend(section_errors)
+    if section_errors:
+        return errors
+
+    in_fence = False
+    rows = 0
+    header_seen = False
+    for offset, line in enumerate(section):
+        lineno = first_line + offset
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        cells = _capability_row_cells(line)
+        if cells is None:
+            continue
+        if not header_seen:
+            # Requiring the header, rather than skipping the first row whatever it is,
+            # keeps the table self-describing: a rename cannot silently retire the
+            # contract, and no data row can hide itself in the header position.
+            header_seen = True
+            if tuple(cell.upper() for cell in cells) != CAPABILITY_HEADER_CELLS:
+                errors.append(
+                    f"{CAPABILITY_MATRIX_DOC}:{lineno}: the capability disposition table must "
+                    f"begin with the column header row {' | '.join(CAPABILITY_HEADER_CELLS)}"
+                )
+            continue
+        rows += 1
+        identifier = cells[0].strip().strip("`") or "<unnamed>"
+        if len(cells) != CAPABILITY_COLUMN_COUNT:
+            errors.append(
+                f"{CAPABILITY_MATRIX_DOC}:{lineno}: disposition row {identifier} has "
+                f"{len(cells)} columns, not {CAPABILITY_COLUMN_COUNT}"
+            )
+            continue
+        status = cells[2].strip().strip("*_").strip()
+        if status not in CAPABILITY_STATUSES:
+            errors.append(
+                f"{CAPABILITY_MATRIX_DOC}:{lineno}: disposition row {identifier} has status "
+                f"'{cells[2]}'; use exactly one of {', '.join(CAPABILITY_STATUSES)}"
+            )
+            continue
+        evidence = cells[4]
+        if status in ("PASS", "PARTIAL"):
+            if not CAPABILITY_PATH_TOKEN_PAT.search(evidence):
+                errors.append(
+                    f"{CAPABILITY_MATRIX_DOC}:{lineno}: {status} row {identifier} names no "
+                    "backticked repository test path"
+                )
+            elif not _existing_capability_paths(evidence, repo_root):
+                errors.append(
+                    f"{CAPABILITY_MATRIX_DOC}:{lineno}: {status} row {identifier} names no "
+                    "repository path that exists"
+                )
+        elif not CAPABILITY_ISSUE_REF_PAT.search(evidence):
+            errors.append(
+                f"{CAPABILITY_MATRIX_DOC}:{lineno}: {status} row {identifier} names no tracking "
+                "issue; an unimplemented or dropped capability must carry its issue number"
+            )
+
+    if rows == 0:
+        errors.append(
+            f"{CAPABILITY_MATRIX_DOC}: the capability disposition table declares no rows; "
+            "an empty table would silently agree that nothing is missing"
+        )
+    return errors
+
+
 def lint_docs_index_completeness(repo_root: pathlib.Path = ROOT) -> list[str]:
     """Every tracked markdown document under docs/ must be indexed in docs/README.md."""
     errors: list[str] = []
@@ -465,6 +633,7 @@ def run_all_doc_lints(repo_root: pathlib.Path = ROOT) -> list[str]:
         errors.extend(lint_doc_truth(md_file, repo_root, hst_tracked))
     errors.extend(lint_titles_readme(repo_root))
     errors.extend(lint_toolchain_baseline_marker(repo_root))
+    errors.extend(lint_capability_disposition_table(repo_root))
     errors.extend(lint_docs_index_completeness(repo_root))
     return errors
 
