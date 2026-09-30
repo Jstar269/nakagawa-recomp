@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b657b32074caa4e3527bb1aa538d188daa8da5abf136161af70e8e152d5be9d"
+      "sha256": "79f6ec798254f2e871fc2b8b029b16f4dd54554c4e1168066cf806f87844d047"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8789f38005b984fbd0a753ddeb1e166869159b7c8e6b05d824388220677e4c77"
+      "sha256": "9eab410ce25bec8fd214c8e3d3fcae846cf06f09451c03b45f53572e19cca038"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7fd06e5ada5479c14579e6d76f89bf49b9f7a6aaa983523f32bef69bd815b055"
+      "sha256": "4e57790713e7fc95c228ac59679204884227e9e4853fdf560dc6a0e827f5a91e"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1162,7 +1162,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4e41da6074d2fde89db5f9e0a11ba5bf22a7f9cdb8350180f500e900deacdaeb"
+      "sha256": "2daa312406dfd8f231d176a51eef29f61cadf6025944941981f55f3a8e00cb41"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -7097,7 +7097,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a1ad5b631993b8ad07f983671ae5b37622e531dd21f398805427a6e608b499f0"
+      "sha256": "db3f59c9fa67a4657033562f6378955c113d4755cf5d68f30bb0b58b3e20a582"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7109,7 +7109,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17120feac344e1918fa3f107a222c7e9cb9e8f8fe431666cd8425cfbaff72ca7"
+      "sha256": "ecc943fbac170228e22ac19955f32239ac1164a2c6fb2a5f5ffd0e6243ead2fb"
     },
     {
       "path": "tools/test_codegen_continuations.py",
@@ -8563,7 +8563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b949fbc627957c2427b05490ab986c9952f6507e812a1771e65fd36b5795ba6"
+      "sha256": "e93f2000306e7719df254e7edbfb25ac9e9e36599ec02f1ed164e625ef126891"
     },
     {
       "path": "tools/test_public_export.py",
