@@ -86,7 +86,10 @@ comparator reports the first step and PC plus the differing opcode or the
 register/memory write context.
 
 Every contract violation is a named `REJECTED: <path>:<line>: <reason>` line
-with exit status 2.  Decimal metadata (`steps` and a record's step index) is
+with exit status 2.  A violation that belongs to the whole stream rather than
+one line (an unreadable file, text that is not valid UTF-8, or a stream with
+no v2 header) is reported as `REJECTED: <path>: <reason>` without the line
+component.  Decimal metadata (`steps` and a record's step index) is
 length-bounded before conversion, so an oversized, signed, negative, or
 otherwise unusable value is refused by name instead of raising an interpreter
 conversion error, and a stream that is not valid UTF-8 text is refused by name

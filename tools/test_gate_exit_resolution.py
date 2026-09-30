@@ -383,6 +383,39 @@ class TestStrictTraceContract(unittest.TestCase):
         self.assertIn("m32[0x09ffff00]=0x00000002", output)
         self.assertIn("m32[0x09ffff00]=0x00000003", output)
 
+    def test_first_divergence_reports_pc_and_opcode_differences(self):
+        hardware = self.trace("hardware.trace")
+        for name, changed, expected in (
+            ("pc.trace",
+             "1 pc=0x0890010c op=0x25080001 r8=0x00000002 m32[0x09ffff00]=0x00000002",
+             "pc 0x08900104 vs 0x0890010c"),
+            ("op.trace",
+             "1 pc=0x08900104 op=0x25080002 r8=0x00000002 m32[0x09ffff00]=0x00000002",
+             "op 0x25080001 vs 0x25080002"),
+        ):
+            with self.subTest(field=name):
+                other = self.trace(name, record_lines=[
+                    "0 pc=0x08900100 op=0x24080001 r8=0x00000001",
+                    changed,
+                    "2 pc=0x08900108 op=0x0000000c r2=0x00000000",
+                ], source="LOCAL_COSIM")
+                rc, output = self.run_tool(hardware, other)
+                self.assertEqual(rc, 1, output)
+                self.assertIn("DIVERGENCE at step 1, pc 0x08900104", output)
+                self.assertIn(expected, output)
+                self.assertNotIn("writes differ", output)
+
+    def test_stream_level_rejections_omit_the_line_component(self):
+        valid = self.trace("valid.trace")
+        no_header = self.write_lines("no-header.trace", [""])
+        not_utf8 = self.dir / "not-utf8.trace"
+        not_utf8.write_bytes(b"\xff\xfe\n")
+        for path in (no_header, not_utf8):
+            with self.subTest(path=path.name):
+                rc, output = self.run_tool(valid, path)
+                self.assertEqual(rc, 2, output)
+                self.assertIn(f"REJECTED: {path}: ", output)
+
     def test_duplicate_identity_header_is_rejected(self):
         header = self.header(steps="1")
         conflicting = self.header(model="PSP-2000", steps="1")

@@ -319,12 +319,13 @@ def strict_hardware_diff(path_a, path_b):
         raise HardwareTraceError(
             "PPSSPP_CORROBORATIVE traces cannot satisfy the PSP_HARDWARE comparison gate"
         )
+    # _load_hardware already proved each record's step index equals its
+    # position and both headers declare the same step count, so records are
+    # compared by position; a step-index difference cannot reach this loop.
     n = len(a)
     for i in range(n):
-        step_a, pc_a, op_a, writes_a = a[i]
-        step_b, pc_b, op_b, writes_b = b[i]
-        if step_a != step_b:
-            return (i, pc_a, f"step index {step_a} vs {step_b}")
+        _, pc_a, op_a, writes_a = a[i]
+        _, pc_b, op_b, writes_b = b[i]
         if pc_a != pc_b:
             return (i, pc_a, f"pc {pc_a} vs {pc_b}")
         if op_a != op_b:
