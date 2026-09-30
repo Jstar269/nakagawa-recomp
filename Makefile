@@ -369,6 +369,14 @@ PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804028
 # hash so changing it regenerates instead of reusing stale output.
 CODEGEN_USER_ARGS ?=
 
+# Stack census declarations and runtime support are compiled only for builds
+# whose generated code contains the opt-in instrumentation.
+STACK_CENSUS_CFLAG :=
+ifneq ($(filter --stack-census,$(CODEGEN_USER_ARGS)),)
+STACK_CENSUS_CFLAG := -DSR_STACK_CENSUS_ENABLED
+override CFLAGS += $(STACK_CENSUS_CFLAG)
+endif
+
 # SR_NAN_TRAP: build-time NaN/Inf origin diagnostic (issue #69). Off by default
 # and zero cost when off. `make NAN_TRAP=1` turns on BOTH halves at once:
 #   --nan-trap makes tools/codegen.py follow every generated FPU/VFPU result
@@ -1465,6 +1473,7 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
 RECOMP_OPT ?= -O0
 RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
 override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 TRACE ?= 0
 ifeq ($(TRACE),1)
@@ -1634,6 +1643,7 @@ cosim-selftest:
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
+		CODEGEN_USER_ARGS=--stack-census \
 		CODEGEN_TOOL=$(CODEGEN_TOOL)
 	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
 	$(MAKE) cosim-selftest-run \
@@ -1644,7 +1654,8 @@ cosim-selftest:
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC) \
 		COSIM_FP_CONVERT_PRELUDE=$(COSIM_FP_CONVERT_PRELUDE) \
-		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC)
+		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC) \
+		CODEGEN_USER_ARGS=--stack-census
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.

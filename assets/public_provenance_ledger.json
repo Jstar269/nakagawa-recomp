@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2c8188c68b9c371f26535fffe45eb5059320b26352eaf116dfd8f6350a0ea150"
+      "sha256": "8892ef7c8fd4a417ea78a069bfbe1cbd83afbd93eb111d42401202448473379e"
     },
     {
       "path": "NOTICE.md",
@@ -1042,7 +1042,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e75fb608c00def0962a2db21d470fbf42f9574250294a721dd3cc8ca8351e85f"
+      "sha256": "ff27f99845e69806302f7f793a9a5aa72e7efd9b1b7bf5788ed50ce651e18267"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1585,7 +1585,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "46446288859e0aeb403d45d12ff8cce49e99580106dd0e8bed1cb7f623a30169"
+      "sha256": "423bb0d0b940e8e5156521aadeb2251da45ff10740e4cd4720c9b69861613074"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -4843,7 +4843,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b4d423059e22fe4a7d0e2c2d929fd90318bd83a9a441de9cdfdfe3bf98663ca0"
+      "sha256": "8e31a9a8cb76639df4b2a1bd60bea50848e02799c4e415d22877adfa0e9960c1"
     },
     {
       "path": "src/rt/recomp.h",
@@ -4856,7 +4856,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8c6e2d7411cc20e197528b3d9213263e230d00dcf927853904f68118ed219f2d"
+      "sha256": "2a6f6f857d89051b3f68a814266217f31531b39ee56c485ec74b4515ca0a7984"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5527,7 +5527,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "24dce15375aed0e3bd3fb8ab69e85a4ea3af6b6c5c822aadaca8eb4a0eec4916"
+      "sha256": "2c71a40751cc863f0038bffbe0ad04c378c4fb00d2d558320f9ba6774198aa6f"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5648,7 +5648,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "25bc844e3775d092a00627ab9d83b2763f4f6c3d51f5c139f1dd68b04484f85f"
+      "sha256": "420c94d7b5a8e68ca704490006668705dbaa73caf223b9d2a4840efa228b4079"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7001,7 +7001,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e0814bcbdc171cb0dfd62b8d623e5df20859e26b914e7426641cec57c569305"
+      "sha256": "88ea9db157c59516e2e86bde7b6f0c66c4d05d94132eccb6aeba5ecf68fa6682"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -7121,7 +7121,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a05676de92e16023e2f5363ccb9fa263b0e51e474720821e3f3f4c11841a11e"
+      "sha256": "dd7140a110ffd02edb00a3f449dbaef3c43153276dea57f8b9bcaaa81efa452f"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
@@ -7386,7 +7386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "88137cd36e1505325fa7f22276d52091e1e3142a43baa53b0ba2d1b948e22c71"
+      "sha256": "3094451fec2fc8d52148919f228a1e5679f7efbe6b0a68a8138459ba3ec073b9"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
