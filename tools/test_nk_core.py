@@ -216,7 +216,8 @@ class NkCoreTests(unittest.TestCase):
         self.assertFalse(metadata.is_supported)
         self.assertIn("Unqualified revision", metadata.qualification_error)
         self.assertIn("SFO revision changed", metadata.qualification_error)
-        self.assertIn("in the works (#315)", metadata.qualification_error)
+        self.assertIn("--register-local-compatibility-record", metadata.qualification_error)
+        self.assertNotIn("#315", metadata.qualification_error)
 
     def test_iso_inspection_malformed(self) -> None:
         # File too small
