@@ -175,6 +175,7 @@ the submitted tree is internally coherent and remains within that authority.
 | Path authority | may this path be published, and as what class? | `records` in the trusted detailed ledger, plus the deterministic classifier | `TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED` |
 | Content binding | does the public ledger describe the actual candidate bytes? | candidate Git objects and regenerated ledger/export | `CONTENT_MISMATCH`, `EXPORT_FIELD_MISMATCH` |
 | Scope and policy | did the candidate hide or newly expose protected content? | trusted base policy/tree and the trusted verifier | `TRUSTED_SCOPE_VIOLATION`, `POLICY_SUBSTITUTION` |
+| Declared coverage | does every path the profile publishes still resolve to a tracked file? | candidate tree against the candidate policy's `include_paths` | `INCLUDED_PATH_UNTRACKED` |
 
 An exact implementation record authorizes a path across ordinary revisions. A
 routine edit therefore needs no second private approval: it updates the public
