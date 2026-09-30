@@ -5539,7 +5539,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "173761a3a4c90cefab40066b21c1e6446e442d51e397afb0668d569a23e77856"
+      "sha256": "5271c27949b650c3055ada28f81d03335a5894e0b3e1e7e08acf36323b2f4d7c"
     },
     {
       "path": "tools/betterleaks_canary.py",
@@ -7025,7 +7025,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dcaa95fe2b993f48d7663fcdbf71025a33b4fca35cce5c2391224b0cf4331462"
+      "sha256": "f8ad7a5f294cbb19f56ed5d5fd5a88893d083ab57d357c19a4b4e31ab2f9e7f4"
     },
     {
       "path": "tools/test_boot_gate.py",
@@ -9471,15 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "9a2d310fdf967bbbef2be131d01659e2da951720",
-    "candidate_tree": "ae314a5d57372bb6dd484323d6afb5d8d90eb44e",
+    "trusted_tree": "f1e6858ddf816a42327c37e965fcb41bbddcbc3a",
+    "candidate_tree": "955aac66d29dc9d79d2295c80e6a9cc49e81bdeb",
     "refreshed_paths": [
-      "docs/PARSER_SAFETY_INVENTORY.json",
-      "tools/nk_cli.py",
-      "tools/nk_core/library.py",
-      "tools/nk_core/package_cache.py",
-      "tools/test_nk_core.py",
-      "tools/test_package_cache.py"
+      "tools/audit_public_issue_links.py",
+      "tools/test_audit_public_issue_links.py"
     ]
   }
 }
