@@ -35,21 +35,21 @@ Install with `sudo apt update && sudo apt install`:
   project environment (for example `~/.venvs/nakagawa`), and keep `ruff`,
   `pre-commit` and the hash-locked tools in it.
 - `libvulkan-dev`, `vulkan-tools`, `glslc`, `spirv-tools` (Vulkan headers and shader tools)
-- SDL3 3.4.8. When the distribution does not package SDL3, build the pinned
-  3.4.8 source revision into `/usr/local`:
+- SDL3 3.4.16. When the distribution does not package SDL3, build the pinned
+  3.4.16 source revision into `/usr/local`:
 
 SDL3 from source (when `libsdl3-dev` is unavailable):
 
 ```bash
 git init SDL
 git -C SDL remote add origin https://github.com/libsdl-org/SDL.git
-git -C SDL fetch --depth 1 origin d9d5536704d585616d4db3c8ba3c4ff6fc2757e1
+git -C SDL fetch --depth 1 origin fa2c02bb6e21974a89ea9824bc53c9932abe5f9c
 git -C SDL checkout --detach FETCH_HEAD
 cmake -S SDL -B SDL/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_VULKAN=ON -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build SDL/build
 sudo cmake --install SDL/build
 sudo ldconfig
-pkg-config --modversion sdl3   # should print 3.4.8
+pkg-config --modversion sdl3   # should print 3.4.16
 ```
 
 Install PSPDEV v20260501 at `/usr/local/pspdev`; CI downloads its archive from
@@ -58,7 +58,7 @@ Install PSPDEV v20260501 at `/usr/local/pspdev`; CI downloads its archive from
 
 ## What works today
 
-Verified on Ubuntu 24.04 with gcc 13.3.0, SDL3 3.4.8, Vulkan 1.3.275, CMake
+Verified on Ubuntu 24.04 with gcc 13.3.0, SDL3 3.4.16, Vulkan 1.3.275, CMake
 3.28, Ninja, glslc, and Python 3.14.6.
 
 Linux `ms0:` file opens, reads, writes, renames, directory creation, and removal
