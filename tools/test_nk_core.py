@@ -13,11 +13,14 @@ import struct
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import nk_cli  # noqa: E402
+from nk_core import package_cache  # noqa: E402
 from nk_core import (
     CancellationToken,
     GameLibrary,
@@ -1593,6 +1596,403 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
         selected = os.path.normpath(parsed.get("EXE", "")).replace("\\", "/")
         self.assertIn("build/hst/", selected)
         self.assertEqual(parsed.get("AVAILABLE"), "1")
+
+class BoundedLibraryJsonTests(unittest.TestCase):
+    """#319: the externally supplied library.json must fail closed and bounded.
+
+    Every malformed case targets the production GameLibrary.load entry point
+    (or the production nk_cli library route) and expects a named controlled
+    ValueError diagnosis -- never AttributeError, TypeError, RecursionError,
+    UnicodeDecodeError, or a silent acceptance.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="test_library_bounded_"))
+        self.addCleanup(shutil.rmtree, self.temp_dir, True)
+
+    def _write(self, name: str, payload) -> Path:
+        path = self.temp_dir / name
+        if isinstance(payload, bytes):
+            path.write_bytes(payload)
+        else:
+            path.write_text(payload, encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _record(**overrides) -> str:
+        fields = {
+            '"disc_id"': '"ULES00123"',
+            '"title_name"': '"Synthetic Title"',
+            '"iso_path"': '"synthetic.iso"',
+        }
+        for key, value in overrides.items():
+            fields[f'"{key}"'] = value
+        body = ", ".join(f"{key}: {value}" for key, value in fields.items())
+        return "{" + body + "}"
+
+    def _library_text(self, games_json: str) -> str:
+        return '{"schema_version": 1, "updated_at": 1.5, "games": [' + games_json + "]}"
+
+    def test_valid_library_round_trip_preserves_all_fields(self) -> None:
+        path = self.temp_dir / "library.json"
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord(
+            disc_id="ULES00123",
+            title_name="Synthetic Title",
+            iso_path="synthetic.iso",
+            prepared_root="prepared",
+            is_prepared=True,
+            assets_staged=True,
+            extracted_asset_count=7,
+            extracted_audio_count=5,
+            extracted_visual_count=3,
+            extracted_layout_count=2,
+            disc_version="1.02",
+            last_played=1234.5,
+            play_count=9,
+            settings_override={"resolution_scale": 4},
+        ))
+        lib.save()
+        loaded = GameLibrary.load(path)
+        record = loaded.get_game("ules00123")
+        self.assertIsNotNone(record)
+        self.assertEqual(record.title_name, "Synthetic Title")
+        self.assertEqual(record.play_count, 9)
+        self.assertEqual(record.settings_override, {"resolution_scale": 4})
+        self.assertEqual(record.last_played, 1234.5)
+
+    def test_library_exactly_at_byte_limit_is_accepted(self) -> None:
+        limit = package_cache.MAX_CACHE_JSON_BYTES
+        prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "ULES00123", "settings_override": {"pad": "'
+        suffix = '"}}]}'
+        text = prefix + "A" * (limit - len(prefix) - len(suffix)) + suffix
+        self.assertEqual(len(text.encode("utf-8")), limit)
+        path = self._write("at_limit.json", text)
+        loaded = GameLibrary.load(path)
+        self.assertEqual(loaded.count(), 1)
+        self.assertIsNotNone(loaded.get_game("ules00123"))
+
+    def test_large_fully_populated_library_round_trip(self) -> None:
+        path = self.temp_dir / "large_library.json"
+        lib = GameLibrary(storage_file=path)
+        for index in range(1200):
+            lib.add_or_update_game(LibraryGameRecord(
+                disc_id=f"SYNTH{index:05d}", title_name=f"Synthetic {index}",
+                iso_path="synthetic.iso", settings_override={"scale": 2},
+            ))
+        lib.save()
+        self.assertLess(path.stat().st_size, package_cache.MAX_CACHE_JSON_BYTES)
+        loaded = GameLibrary.load(path)
+        self.assertEqual(loaded.count(), 1200)
+        self.assertEqual(loaded.get_game("SYNTH01199").to_dict(),
+                         lib.get_game("SYNTH01199").to_dict())
+
+    def test_save_rejects_unreadable_output_without_replacing_library(self) -> None:
+        path = self.temp_dir / "preserved_library.json"
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord(
+            disc_id="SYNTH00001", title_name="Synthetic", iso_path="synthetic.iso",
+        ))
+        lib.save()
+        before = path.read_bytes()
+        lib.get_game("SYNTH00001").settings_override = {
+            "padding": "x" * package_cache.MAX_CACHE_JSON_BYTES,
+        }
+        with self.assertRaisesRegex(ValueError, "byte.*limit"):
+            lib.save()
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual([item.name for item in self.temp_dir.iterdir()], [path.name])
+        self.assertEqual(GameLibrary.load(path).count(), 1)
+
+    def test_library_target_with_tmp_suffix_is_preserved(self) -> None:
+        path = self.temp_dir / "library.tmp"
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord(
+            disc_id="SYNTH00001", title_name="Synthetic", iso_path="synthetic.iso",
+        ))
+        lib.save()
+        self.assertEqual(GameLibrary.load(path).count(), 1)
+        self.assertFalse(path.with_name(path.name + ".tmp").exists())
+
+    def test_library_one_byte_over_limit_is_rejected(self) -> None:
+        limit = package_cache.MAX_CACHE_JSON_BYTES
+        prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "ULES00123", "settings_override": {"pad": "'
+        suffix = '"}}]}'
+        text = prefix + "A" * (limit + 1 - len(prefix) - len(suffix)) + suffix
+        self.assertEqual(len(text.encode("utf-8")), limit + 1)
+        path = self._write("over_limit.json", text)
+        with self.assertRaisesRegex(ValueError, "byte"):
+            GameLibrary.load(path)
+
+    def test_library_excessive_nesting_is_rejected(self) -> None:
+        depth = 100_000  # stays under the byte ceiling so the depth gate fires
+        text = (
+            '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "n": '
+            + '{"n":' * depth + "1" + "}" * depth + "}]}")
+        path = self._write("deep.json", text)
+        with self.assertRaisesRegex(ValueError, "nesting exceeds 32"):
+            GameLibrary.load(path)
+
+    def test_library_excessive_record_count_is_rejected(self) -> None:
+        from nk_core.library import MAX_LIBRARY_GAMES
+        games = ",".join("null" for _ in range(MAX_LIBRARY_GAMES + 1))
+        path = self._write("many.json", '{"schema_version": 1, "games": [' + games + "]}")
+        with self.assertRaisesRegex(ValueError, "over the 4096-record limit"):
+            GameLibrary.load(path)
+
+    def test_library_duplicate_keys_are_rejected(self) -> None:
+        path = self._write("dup.json", '{"schema_version": 1, "games": [], "games": []}')
+        with self.assertRaisesRegex(ValueError, "duplicate JSON field: games"):
+            GameLibrary.load(path)
+
+    def test_library_malformed_utf8_is_a_named_error(self) -> None:
+        path = self._write("bad_utf8.json", b'{"schema_version": 1, "games": [], "note": "\xff\xfe"}')
+        with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+            GameLibrary.load(path)
+
+    def test_library_wrong_top_level_type_is_rejected(self) -> None:
+        path = self._write("wrong_top.json", "[1, 2, 3]")
+        with self.assertRaisesRegex(ValueError, "library root must be a JSON object"):
+            GameLibrary.load(path)
+
+    def test_library_games_null_record_is_a_controlled_error(self) -> None:
+        path = self._write("null_game.json", '{"schema_version": 1, "games": [null]}')
+        with self.assertRaisesRegex(ValueError, "game record 0 is invalid"):
+            GameLibrary.load(path)
+
+    def test_library_games_scalar_and_list_records_are_controlled_errors(self) -> None:
+        for name, payload in (
+            ("scalar.json", self._library_text("123")),
+            ("list.json", self._library_text("[]")),
+            ("string.json", self._library_text('"game"')),
+        ):
+            with self.subTest(payload=payload):
+                path = self._write(name, payload)
+                with self.assertRaisesRegex(ValueError, "game record 0 is invalid"):
+                    GameLibrary.load(path)
+
+    def test_library_record_field_substitutions_are_controlled_errors(self) -> None:
+        cases = {
+            "disc_id null": self._record(**{"disc_id": "null"}),
+            "disc_id number": self._record(**{"disc_id": "123"}),
+            "disc_id list": self._record(**{"disc_id": "[]"}),
+            "title_name null": self._record(**{"title_name": "null"}),
+            "iso_path number": self._record(**{"iso_path": "12.5"}),
+            "is_prepared string": self._record(**{"is_prepared": '"yes"'}),
+            "play_count negative": self._record(**{"play_count": "-1"}),
+            "play_count boolean": self._record(**{"play_count": "true"}),
+            "play_count float": self._record(**{"play_count": "1.5"}),
+            "last_played string": self._record(**{"last_played": '"soon"'}),
+            "settings_override list": self._record(**{"settings_override": "[]"}),
+        }
+        for label, record in cases.items():
+            with self.subTest(case=label):
+                path = self._write(
+                    "record.json", '{"schema_version": 1, "games": [' + record + "]}"
+                )
+                with self.assertRaises(ValueError):
+                    GameLibrary.load(path)
+
+    def test_library_unknown_record_and_root_fields_are_rejected(self) -> None:
+        path = self._write(
+            "unknown_record.json",
+            '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "wat": 1}]}',
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported fields: wat"):
+            GameLibrary.load(path)
+        path = self._write(
+            "unknown_root.json", '{"schema_version": 1, "games": [], "extra": true}'
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported fields: extra"):
+            GameLibrary.load(path)
+
+    def test_library_duplicate_disc_id_records_are_rejected(self) -> None:
+        record = self._record()
+        path = self._write(
+            "repeat.json", '{"schema_version": 1, "games": [' + record + ", " + record + "]}"
+        )
+        with self.assertRaisesRegex(ValueError, "repeats disc_id ULES00123"):
+            GameLibrary.load(path)
+
+    def test_library_missing_games_field_and_bad_schema_are_rejected(self) -> None:
+        path = self._write("no_games.json", '{"schema_version": 1}')
+        with self.assertRaisesRegex(ValueError, "missing the games field"):
+            GameLibrary.load(path)
+        path = self._write("bad_schema.json", '{"schema_version": "1", "games": []}')
+        with self.assertRaisesRegex(ValueError, "unsupported library schema_version"):
+            GameLibrary.load(path)
+        path = self._write("newer_schema.json", '{"schema_version": 2, "games": []}')
+        with self.assertRaisesRegex(ValueError, "unsupported library schema_version"):
+            GameLibrary.load(path)
+
+    def test_library_diagnoses_reject_hostile_content_without_echoing_it(self) -> None:
+        """#319: every attacker-reachable rejection stays named AND bounded.
+
+        library.json is attacker-supplied, so each untrusted value that a
+        diagnosis would otherwise quote -- an unknown root field, an unknown
+        record field, a non-integer schema_version, a repeated disc_id -- is
+        echoed only as a short prefix. Each case still fails closed with a
+        ValueError naming the condition; only the echoed detail is bounded.
+        """
+        bulk = "A" * 400_000
+        cases = {
+            "unknown_root": (
+                '{"schema_version": 1, "updated_at": null, "games": [], "%s": 1}' % bulk,
+                "unsupported fields",
+            ),
+            "unknown_record": (
+                '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "%s": 1}]}' % bulk,
+                "unsupported fields",
+            ),
+            "schema_echo": (
+                '{"schema_version": "%s", "games": []}' % bulk,
+                "unsupported library schema_version",
+            ),
+            "duplicate_disc": (
+                '{"schema_version": 1, "games": [{"disc_id": "%s"}, {"disc_id": "%s"}]}'
+                % (bulk, bulk),
+                "repeats disc_id",
+            ),
+        }
+        for name, (text, expected) in cases.items():
+            path = self._write(name + ".json", text)
+            with self.assertRaises(ValueError) as caught:
+                GameLibrary.load(path)
+            message = str(caught.exception)
+            self.assertIn(expected, message, name)
+            self.assertNotIn(bulk, message, name)
+            # A fixed prefix, plus the resolved local path and the index.
+            self.assertLess(len(message), 512, name)
+
+        # Many unknown fields are sampled, not concatenated.
+        many = '{"schema_version": 1, "games": []' + "".join(
+            ', "f%03d": 1' % i for i in range(500)
+        ) + "}"
+        path = self._write("many_fields.json", many)
+        with self.assertRaises(ValueError) as caught:
+            GameLibrary.load(path)
+        self.assertIn("(+492 more)", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 1024)
+
+    def test_nk_cli_library_route_enforces_the_same_ceilings(self) -> None:
+        user_root = self.temp_dir / "user"
+        user_root.mkdir()
+        limit = package_cache.MAX_CACHE_JSON_BYTES
+        prefix = '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "pad": "'
+        suffix = '"}]}'
+        (user_root / "library.json").write_text(
+            prefix + "A" * (limit + 1 - len(prefix) - len(suffix)) + suffix, encoding="utf-8"
+        )
+        with self.assertRaisesRegex(nk_cli.PackageBuildError, "not valid bounded JSON"):
+            nk_cli._load_library_entry(user_root, "ULES00123")
+
+        valid = (
+            '{"schema_version": 1, "games": [{"disc_id": "ULES00123", '
+            '"title_id": "NPUG80318", "iso_path": "synthetic.iso", '
+            '"selected_executable": "BOOT.BIN", "is_experimental": false}]}'
+        )
+        (user_root / "library.json").write_text(valid, encoding="utf-8")
+        entry = nk_cli._load_library_entry(user_root, "ULES00123")
+        self.assertEqual(entry["title_id"], "NPUG80318")
+        self.assertEqual(entry["iso_path"], "synthetic.iso")
+
+    def _cli_library(self, count: int) -> Path:
+        path = self.temp_dir / "library.json"
+        games = [{"disc_id": f"TEST{i:05d}", "title_id": "synthetic",
+                  "iso_path": "synthetic.iso", "selected_executable": "BOOT.BIN",
+                  "is_experimental": False} for i in range(count)]
+        path.write_text(json.dumps({"schema_version": 1, "games": games}), encoding="utf-8")
+        return path
+
+    def test_cli_library_at_record_limit_is_readable(self) -> None:
+        self._cli_library(nk_cli.MAX_LIBRARY_GAMES)
+        disc_id = f"TEST{nk_cli.MAX_LIBRARY_GAMES - 1:05d}"
+        nk_cli._write_bringup_library(
+            self.temp_dir, Path("replacement.iso"), SimpleNamespace(disc_id=disc_id),
+            "synthetic", "BOOT.BIN", False,
+        )
+        entry = nk_cli._load_library_entry(self.temp_dir, disc_id)
+        self.assertEqual(entry["title_id"], "synthetic")
+        self.assertEqual(entry["iso_path"], "replacement.iso")
+
+    def test_cli_library_append_over_limit_preserves_existing_file(self) -> None:
+        path = self._cli_library(2)
+        before = path.read_bytes()
+        with patch.object(nk_cli, "MAX_LIBRARY_GAMES", 2):
+            with self.assertRaisesRegex(nk_cli.PackageBuildError, "record limit"):
+                nk_cli._write_bringup_library(
+                    self.temp_dir, Path("synthetic.iso"),
+                    SimpleNamespace(disc_id="TEST99999"), "synthetic", "BOOT.BIN", False,
+                )
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_cli_library_oversized_write_preserves_existing_file(self) -> None:
+        path = self._cli_library(1)
+        before = path.read_bytes()
+        with self.assertRaisesRegex(nk_cli.PackageBuildError, "byte limit"):
+            nk_cli._write_bringup_library(
+                self.temp_dir, Path("synthetic.iso"),
+                SimpleNamespace(disc_id="TEST99999"),
+                "A" * package_cache.MAX_CACHE_JSON_BYTES, "BOOT.BIN", False,
+            )
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_cli_library_writer_rejects_boolean_schema(self) -> None:
+        path = self._cli_library(1)
+        path.write_text(path.read_text().replace('"schema_version": 1', '"schema_version": true'),
+                        encoding="utf-8")
+        before = path.read_bytes()
+        with self.assertRaisesRegex(nk_cli.PackageBuildError, "unsupported schema"):
+            nk_cli._write_bringup_library(
+                self.temp_dir, Path("synthetic.iso"),
+                SimpleNamespace(disc_id="TEST99999"), "synthetic", "BOOT.BIN", False,
+            )
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_library_nonfinite_timestamps_are_controlled_errors(self) -> None:
+        for field in ("updated_at", "last_played"):
+            with self.subTest(field=field):
+                if field == "updated_at":
+                    text = '{"schema_version":1,"updated_at":NaN,"games":[]}'
+                else:
+                    text = self._library_text(self._record(last_played="1e400"))
+                path = self._write("nonfinite.json", text)
+                with self.assertRaisesRegex(ValueError, "library JSON.*finite"):
+                    GameLibrary.load(path)
+
+    def test_overlapping_library_saves_use_independent_temporary_files(self) -> None:
+        path = self.temp_dir / "library.json"
+        first = GameLibrary(storage_file=path)
+        second = GameLibrary(storage_file=path)
+        first.add_or_update_game(LibraryGameRecord("TEST00001", "First", "first.iso"))
+        second.add_or_update_game(LibraryGameRecord("TEST00002", "Second", "second.iso"))
+        real_load = GameLibrary.load
+        interleaved = False
+
+        def validate_with_another_writer(temporary):
+            nonlocal interleaved
+            if not interleaved:
+                interleaved = True
+                # The second production save completes between the first one's
+                # temporary write and validation; no threads or timing guesses.
+                second.save()
+            return real_load(temporary)
+
+        with patch.object(GameLibrary, "load", side_effect=validate_with_another_writer):
+            first.save()
+        loaded = GameLibrary.load(path)
+        self.assertEqual([game.disc_id for game in loaded.list_games()], ["TEST00001"])
+        self.assertEqual(sorted(item.name for item in self.temp_dir.iterdir()), ["library.json"])
+
+    def test_library_save_preserves_another_writers_temporary_file(self) -> None:
+        path = self.temp_dir / "library.json"
+        other_temporary = self.temp_dir / "library.json.tmp"
+        other_temporary.write_bytes(b"another writer's checkpoint")
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord("TEST00001", "Synthetic", "synthetic.iso"))
+        lib.save()
+        self.assertEqual(other_temporary.read_bytes(), b"another writer's checkpoint")
+        self.assertEqual(GameLibrary.load(path).count(), 1)
 
 
 if __name__ == "__main__":

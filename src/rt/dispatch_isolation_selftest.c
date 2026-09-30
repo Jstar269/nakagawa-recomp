@@ -189,6 +189,17 @@ static void synthetic_callee_clobbers_saved_gprs(CpuState *s) {
     s->r[30] = 0xcccc0030u;
 }
 
+static unsigned g_alias_fatal_body_calls;
+static unsigned g_alias_fatal_body_fallthroughs;
+
+static void synthetic_alias_fatal_body(CpuState *s) {
+    g_alias_fatal_body_calls++;
+    if (sr_cpu_raise_exception(s, SR_EXC_SYS, s->pc, s->pc,
+                               0u, 0u, 0u) < 0)
+        return;
+    g_alias_fatal_body_fallthroughs++;
+}
+
 static void own_synthetic_aot_word(uint32_t address) {
     MEM_W32(address, 0u);
     CHECK(sr_exec_span_register(address, address + 4u),
@@ -1109,6 +1120,31 @@ static void test_configured_aliases_redirect(void) {
         sr_register(to, synthetic_body);
         p = probe(from, PROBE_PC, PROBE_RA);
         CHECK(p.body_ran, "alias 0x%08x did not enter the body registered at 0x%08x", from, to);
+
+        /* A fatal LLE transfer raised by the aliased AOT body must not be
+         * converted to a successful handoff by the alias fast path. */
+        sr_cpu_lle_set_vectors(0x09000000u, 0x09000000u, 0x09000000u);
+        sr_register(to, synthetic_alias_fatal_body);
+        CpuState fatal_state;
+        memset(&fatal_state, 0, sizeof fatal_state);
+        fatal_state.pc = PROBE_PC;
+        fatal_state.r[31] = PROBE_RA;
+        g_alias_fatal_body_calls = 0u;
+        g_alias_fatal_body_fallthroughs = 0u;
+        int fatal_result = dispatch_call_try(&fatal_state, from, PROBE_RA);
+        CHECK(fatal_result == SR_GUEST_INTERP_FLOW_FATAL,
+              "alias 0x%08x swallowed fatal AOT flow (result=%d)",
+              from, fatal_result);
+        CHECK(g_alias_fatal_body_calls == 1u &&
+                  g_alias_fatal_body_fallthroughs == 0u,
+              "fatal aliased body did not transfer exactly once "
+              "(calls=%u fallthroughs=%u)",
+              g_alias_fatal_body_calls, g_alias_fatal_body_fallthroughs);
+        CHECK(fatal_state.flow_kind == SR_FLOW_FATAL &&
+                  fatal_state.flow_target == 0x09000000u,
+              "alias dispatch changed fatal flow (kind=%u target=0x%08x)",
+              fatal_state.flow_kind, fatal_state.flow_target);
+        sr_cpu_lle_reset_config();
 
         /* The accessor agrees with what dispatch did. */
         uint32_t resolved = 0u;
