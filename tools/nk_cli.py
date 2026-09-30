@@ -39,6 +39,14 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
+from nk_core.library import (  # noqa: E402
+    MAX_LIBRARY_GAMES,
+    MAX_LIBRARY_JSON_BYTES,
+    MAX_LIBRARY_JSON_DEPTH,
+    MAX_LIBRARY_JSON_ITEMS,
+    MAX_LIBRARY_JSON_MEMBERS,
+    MAX_LIBRARY_JSON_NODES,
+)
 from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key_file_path  # noqa: E402
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root  # noqa: E402
 from nk_core.iso_inspect import (  # noqa: E402
@@ -336,20 +344,36 @@ def _find_public_manifest(title_id: str, user_root: Path | None = None) -> tuple
     raise PackageBuildError(f"No title manifest matches library identity {title_id!r} (#308).")
 
 
+def _read_library_json(path: Path):
+    """Apply library resource ceilings while retaining the CLI record schema."""
+    return package_cache.read_bounded_json(
+        path, max_bytes=MAX_LIBRARY_JSON_BYTES, max_depth=MAX_LIBRARY_JSON_DEPTH,
+        max_members=MAX_LIBRARY_JSON_MEMBERS, max_items=MAX_LIBRARY_JSON_ITEMS,
+        max_nodes=MAX_LIBRARY_JSON_NODES,
+    )
+
+
 def _load_library_entry(user_root: Path, disc_id: str) -> dict:
     library_path = user_root / "library.json"
+    # The per-user library is externally supplied: enforce the byte/depth/count
+    # ceilings through the shared bounded-JSON helper before any field access.
     try:
-        payload = json.loads(library_path.read_text(encoding="utf-8"),
-                             object_pairs_hook=title_manifest.no_duplicate_keys)
+        payload = _read_library_json(library_path)
     except OSError as exc:
         raise PackageBuildError(f"Could not read the per-user library at {library_path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise PackageBuildError(f"The per-user library is not valid JSON: {exc}") from exc
+    except ValueError as exc:
+        raise PackageBuildError(
+            f"The per-user library is not valid bounded JSON ({library_path}): {exc}"
+        ) from exc
     if not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
         raise PackageBuildError("The per-user library has an unsupported schema_version.")
     games = payload.get("games")
     if not isinstance(games, list):
         raise PackageBuildError("The per-user library games field must be an array.")
+    if len(games) > MAX_LIBRARY_GAMES:
+        raise PackageBuildError(
+            f"The per-user library holds {len(games)} games, over the {MAX_LIBRARY_GAMES}-record limit."
+        )
     matches = [game for game in games if isinstance(game, dict) and str(game.get("disc_id", "")).upper() == disc_id]
     if len(matches) != 1:
         raise PackageBuildError(f"Library entry {disc_id} was not found uniquely.")
@@ -372,11 +396,12 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
         if not profile_path.is_file():
             raise PackageBuildError(f"Experimental profile for {disc_id} is missing; re-import the ISO before building (#297).")
         try:
+            # Bounded read (never a whole-file read) with duplicate-key and
+            # depth/count ceilings; the stat pre-check stays as a fast path.
             if profile_path.stat().st_size > 256 * 1024:
                 raise PackageBuildError(f"Experimental profile for {disc_id} exceeds the supported size limit.")
-            profile = json.loads(profile_path.read_text(encoding="utf-8"),
-                                 object_pairs_hook=title_manifest.no_duplicate_keys)
-        except (OSError, json.JSONDecodeError) as exc:
+            profile = package_cache.read_bounded_json(profile_path, max_bytes=256 * 1024)
+        except (OSError, ValueError) as exc:
             raise PackageBuildError(f"Experimental profile for {disc_id} is unreadable: {exc}") from exc
         identity = profile.get("input_identity") if isinstance(profile, dict) else None
         if not isinstance(identity, dict) or identity.get("disc_id") != disc_id:
@@ -1743,11 +1768,21 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
     library_path = user_root / "library.json"
     games = []
     if library_path.exists():
-        payload = json.loads(library_path.read_text(encoding="utf-8"),
-                             object_pairs_hook=title_manifest.no_duplicate_keys)
-        if not isinstance(payload, dict) or payload.get("schema_version") != 1 or \
+        try:
+            payload = _read_library_json(library_path)
+        except (OSError, ValueError) as exc:
+            raise PackageBuildError(
+                f"The bring-up user library at {library_path} is unreadable or exceeds a bounded-input limit: {exc}"
+            ) from exc
+        if not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or \
+                payload["schema_version"] != 1 or \
                 not isinstance(payload.get("games"), list):
             raise PackageBuildError("The bring-up user library has an unsupported schema.")
+        if len(payload["games"]) > MAX_LIBRARY_GAMES:
+            raise PackageBuildError(
+                f"The bring-up user library holds {len(payload['games'])} games, "
+                f"over the {MAX_LIBRARY_GAMES}-record limit."
+            )
         games = [game for game in payload["games"]
                  if not isinstance(game, dict) or
                  str(game.get("disc_id", "")).upper() != metadata.disc_id.upper()]
@@ -1758,8 +1793,27 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         "selected_executable": selected,
         "is_experimental": is_experimental,
     })
-    _write_private_file(library_path, json.dumps({"schema_version": 1, "games": games},
-                                                separators=(",", ":")).encode("utf-8"))
+    if len(games) > MAX_LIBRARY_GAMES:
+        raise PackageBuildError(
+            f"The bring-up user library would exceed the {MAX_LIBRARY_GAMES}-record limit."
+        )
+    text = json.dumps({"schema_version": 1, "games": games}, separators=(",", ":"))
+    data = text.encode("utf-8")
+    if len(data) > MAX_LIBRARY_JSON_BYTES:
+        raise PackageBuildError(
+            f"The bring-up user library would exceed the {MAX_LIBRARY_JSON_BYTES}-byte limit."
+        )
+    # Reject output the corresponding reader cannot accept before atomic replace.
+    # Existing records can contain nested metadata outside the CLI's own fields.
+    try:
+        package_cache.bounded_json_loads(
+            text, max_depth=MAX_LIBRARY_JSON_DEPTH,
+            max_members=MAX_LIBRARY_JSON_MEMBERS, max_items=MAX_LIBRARY_JSON_ITEMS,
+            max_nodes=MAX_LIBRARY_JSON_NODES,
+        )
+    except ValueError as exc:
+        raise PackageBuildError(f"The bring-up user library output exceeds a bounded-input limit: {exc}") from exc
+    _write_private_file(library_path, data)
 
 
 def _write_experimental_module_bindings(profile_path: Path, profile: dict,
@@ -2056,8 +2110,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             profile_path = write_experimental_profile(
                 iso_path, user_root, metadata=metadata
             )
-            profile = json.loads(profile_path.read_text(encoding="utf-8"),
-                                 object_pairs_hook=title_manifest.no_duplicate_keys)
+            profile = package_cache.read_bounded_json(profile_path, max_bytes=256 * 1024)
             manifest = title_manifest.validate_manifest(profile["manifest"])
             title_id = manifest["id"]
             is_experimental = True
