@@ -1135,8 +1135,8 @@ static void test_hostile_documents_fail_closed(void) {
     expect_refused("trailing garbage after the root", "{\"schema_version\":1} GARBAGE", 27,
                    "Trailing garbage");
     expect_refused("unterminated string", "{\"schema_version\":2,\"device\":{\"guid\":\"g",
-                   32, "Unterminated string");
-    expect_refused("truncated per_title array", "{\"schema_version\":2,\"per_title\":[", 31, NULL);
+                   39, "Unterminated string");
+    expect_refused("truncated per_title array", "{\"schema_version\":2,\"per_title\":[", 33, NULL);
     expect_refused("missing schema_version", "{\"device\":{}}", 13,
                    "missing or non-numeric schema_version");
 
