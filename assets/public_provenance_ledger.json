@@ -5975,7 +5975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea7d3dbac2e527883bd42d0eb2bc9a08af57bf2f14a30a0738ee6d1984f9c806"
+      "sha256": "8ae20d6009d7dcacf4cc1b77fda88e2afeb077cc4379265ae060f13cbd95a1c7"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -6653,7 +6653,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0620a58c2a801bb17b5d9cdef8aba7b4c4713fa03bd936332fb382b843d32b31"
+      "sha256": "b0db16f1d9f5167dd553f6878a353da46eb4930e92ae1ed0671216c066b5cc72"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -7735,7 +7735,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c0321f59add998c5d95300c41d133f041bc83fc9067f577c0562ec4b100dc2d4"
+      "sha256": "7e449767014e3c2b5ed8b8478fcdb1a5d947c910125a5f3bc1ab4eaa0e27a77c"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
