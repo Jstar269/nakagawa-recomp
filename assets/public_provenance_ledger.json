@@ -2834,7 +2834,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "461c779934d734568761fa0df6c1671768b233fdb7d82c57b889e7e381c9eee7"
+      "sha256": "f98d36646828c8a8d037b3ec956e36773e64df37a9ee0ee32d45c4204ec76db6"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2846,7 +2846,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2531c49f773a9c09c42c1b52fa9e9f2035172ec2c3b455a5b7c5bddf4eabf10f"
+      "sha256": "60a53a76b19bf72ae019a42347db3ff300145e71329125d3253c3a7df80c6072"
     },
     {
       "path": "src/player/package_builder.h",
@@ -2870,7 +2870,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "40ebabaaf027df358e069126bbdf6f521b6d1ee4bbc0248692f6880a5de57b1f"
+      "sha256": "f731a7556f3f91ed1024b2469b49007eec61e3eb2e0479e343ff9d18c5b53658"
     },
     {
       "path": "src/player/player_state.h",
@@ -2882,7 +2882,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92e27ca1726d8d0199a8149a6ee25d3abc316b9b80902e7386dd3203f7391dcb"
+      "sha256": "4f334c9df7fe5fd57e62468ffe7f54c96954d1758892f3db2d68e769413dc852"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -5328,7 +5328,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f6c079ad1ab09bfe5f2c23e8c5635aeffeb0b10aa2eeee3000669605eee7213b"
+      "sha256": "7501af8467c0ca3c9fc535a13c8c37d9fa4a6dc2d1666a9aefbfbdc76e3fc80c"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -5364,7 +5364,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5e702106b1dbf3261e0bd2199d3ca3a9a508d3cc0626af5f63289848ff8cbee9"
+      "sha256": "c0d6b29767f77f162ac6406f64ada6faf25027e53c2635ab79b3e4b76f76de8b"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -9472,7 +9472,7 @@
   "refresh": {
     "workflow": "refresh-reviewed",
     "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
-    "candidate_tree": "12a4c0c1a41eb67be1b3a9e8013185b4bbb4a2d2",
+    "candidate_tree": "fccba217622f11b3911c44a42c1d099d446acb34",
     "refreshed_paths": [
       "src/core/nk_launch.c",
       "src/core/nk_launch.h",

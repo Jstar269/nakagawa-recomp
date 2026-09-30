@@ -2139,6 +2139,7 @@ int main(int argc, char *argv[]) {
 
     bool applied_launcher_fullscreen = false;
     bool launcher_minimized_for_game = false;
+    bool launcher_handoff_attempted = false;
     Uint32 launcher_restore_flags = 0;
     if (interactive_window && app.settings.launcher_fullscreen) {
         applied_launcher_fullscreen = SDL_SetWindowFullscreen(window, true);
@@ -2575,13 +2576,23 @@ int main(int argc, char *argv[]) {
             SDL_RaiseWindow(window);
             launcher_minimized_for_game = false;
         }
+        /* A later launch gets its own handoff attempt, including after a
+           minimize that failed and left the launcher visible. */
+        if (interactive_window && !app.is_game_running) {
+            launcher_handoff_attempted = false;
+        }
         /* Interactive launches must have a boot-event path and a real
            window_ready/first_frame marker before the launcher yields focus.
-           Missing evidence keeps the launcher visible. */
-        if (interactive_window && app.is_game_running &&
-            !launcher_minimized_for_game &&
-            app.launch_session.boot_event_file_path[0] &&
-            player_app_child_window_ready(&app)) {
+           Missing evidence keeps the launcher visible. The attempt is latched
+           so a failed SDL_MinimizeWindow leaves the launcher visible without
+           recapturing and rewriting the launcher settings on every frame. */
+        if (player_app_should_attempt_window_handoff(
+                interactive_window, app.is_game_running,
+                launcher_handoff_attempted,
+                app.launch_session.boot_event_file_path[0]
+                    ? player_app_child_window_ready(&app)
+                    : false)) {
+            launcher_handoff_attempted = true;
             player_capture_window_settings(&app, window);
             player_app_save_settings(&app, NULL);
             launcher_restore_flags = SDL_GetWindowFlags(window);

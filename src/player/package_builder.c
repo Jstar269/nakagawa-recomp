@@ -1611,6 +1611,19 @@ bool package_builder_toolchain_missing(
     return true;
 }
 
+/* Every new build attempt starts from a clean run state. A session is
+ * reusable, so a previous run's clock and outcome flags must not survive into
+ * the next start: the poll clock latches on start_time_ms == 0, and a stale
+ * value would report the previous build's elapsed time. */
+static void package_builder_reset_run_state(PackageBuildSession *session) {
+    session->is_complete = false;
+    session->is_failed = false;
+    session->is_cancelled = false;
+    session->exit_code = -1;
+    session->start_time_ms = 0;
+    session->elapsed_ms = 0;
+}
+
 NkResult package_builder_start(
     PackageBuildSession *session,
     const char *python_path,
@@ -1621,6 +1634,10 @@ NkResult package_builder_start(
     if (!session || !python_path || !cli_path || !session->disc_id[0]) {
         return NK_ERROR_GENERIC;
     }
+
+    /* Reset before anything can fail, so a reused session never reports the
+     * previous build's elapsed time or outcome. */
+    package_builder_reset_run_state(session);
 
     /* Set up progress file and log file paths */
     const char *ldir = (log_dir && log_dir[0]) ? log_dir : ".";
@@ -1705,6 +1722,8 @@ NkResult package_builder_start(
     session->is_failed = false;
     session->is_cancelled = false;
     session->exit_code = -1;
+    session->start_time_ms = 0;
+    session->elapsed_ms = 0;
     session->current_stage = PACKAGE_BUILD_STAGE_PREFLIGHT;
     safe_str_copy(session->current_stage_name, sizeof(session->current_stage_name), "preflight");
     safe_str_copy(session->current_message, sizeof(session->current_message), "Starting package build...");

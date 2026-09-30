@@ -1883,6 +1883,21 @@ int main(int argc, char **argv) {
         assert(player_settings_uses_two_columns(1280, 620));
         assert(!player_settings_uses_two_columns(1280, 619));
 
+        /* The focus handoff is attempted once per launch, and only on proven
+           evidence. A failed SDL_MinimizeWindow leaves the launcher visible:
+           the contract is that the loop does not retry, because each retry
+           would recapture and rewrite the launcher settings every frame. */
+        assert(player_app_should_attempt_window_handoff(true, true, false, true));
+        assert(player_app_should_attempt_window_handoff(true, true, false, false) == false);
+        assert(player_app_should_attempt_window_handoff(true, false, false, true) == false);
+        assert(player_app_should_attempt_window_handoff(false, true, false, true) == false);
+        assert(player_app_should_attempt_window_handoff(true, true, true, true) == false);
+        assert(player_app_should_attempt_window_handoff(true, true, true, false) == false);
+        /* The same launch is not retried after a failed attempt. */
+        assert(player_app_should_attempt_window_handoff(true, true, true, true) == false);
+        /* A later launch gets a fresh attempt once the loop clears the latch. */
+        assert(player_app_should_attempt_window_handoff(true, true, false, true) == true);
+
         assert(player_app_boot_event_is_window_ready(
             "BOOT_EVENT phase=window_ready backend=sdl"));
         assert(player_app_boot_event_is_window_ready(
@@ -2470,17 +2485,23 @@ int main(int argc, char **argv) {
         /* A stale marker must not authorize a handoff when its pathname
            cannot be removed. A nonempty directory at the exact marker path
            is a portable filesystem failure seam: remove() fails in the real
-           production helper, without mocking the filesystem or player path. */
+           production helper, without mocking the filesystem or player path.
+           The pathname comes from the production formatter, so the seam lands
+           on the sequence the next launch really uses instead of assuming a
+           hardcoded sequence number. */
         char stale_marker_path[1100];
         char stale_marker_child[1200];
-#if defined(_WIN32) || defined(_WIN64)
-        unsigned long stale_process_id = (unsigned long)_getpid();
-#else
-        unsigned long stale_process_id = (unsigned long)getpid();
-#endif
-        snprintf(stale_marker_path, sizeof(stale_marker_path),
-                 "%s%cplayer-boot-%lu-%u.events", cache_dir, sep,
-                 stale_process_id, 1U);
+        char next_marker_path[1200];
+        player_app_next_boot_event_path(next_marker_path, sizeof(next_marker_path));
+        assert(next_marker_path[0] != '\0');
+        assert(strstr(next_marker_path, "player-boot-") != NULL);
+        assert(strstr(next_marker_path, ".events") != NULL);
+        assert(strchr(next_marker_path, sep) != NULL);
+        if ((size_t)snprintf(stale_marker_path, sizeof(stale_marker_path), "%s",
+                             next_marker_path) >= sizeof(stale_marker_path)) {
+            printf("[PLAYER_STATE_TEST] FAIL stale-marker pathname too long\n");
+            return 1;
+        }
         assert(nk_platform_mkdir_p(stale_marker_path));
         snprintf(stale_marker_child, sizeof(stale_marker_child), "%s%crecord",
                  stale_marker_path, sep);

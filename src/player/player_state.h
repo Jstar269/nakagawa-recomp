@@ -397,6 +397,20 @@ int player_app_visible_library_cards(const PlayerApp *app);
  * independently of SDL and the renderer cannot drift from the layout contract. */
 bool player_settings_uses_two_columns(int window_width, int window_height);
 
+/* Whether the event loop should attempt the launcher-to-game focus handoff on
+ * this frame. Pure state logic so the once-per-launch contract is tested
+ * without SDL: a failed SDL_MinimizeWindow keeps the launcher visible, and
+ * retrying it every frame would rewrite the launcher settings every frame. */
+bool player_app_should_attempt_window_handoff(bool interactive_window,
+                                              bool game_running,
+                                              bool handoff_attempted,
+                                              bool child_window_ready);
+
+/* The boot-event marker pathname the next interactive launch will use, without
+ * consuming the sequence. Pure naming so tests can build a filesystem seam at
+ * the exact path production will choose instead of assuming a sequence. */
+void player_app_next_boot_event_path(char *out, size_t out_size);
+
 /* How many keyboard/gamepad focus stops the current view offers, at least
  * one. Pure state logic (no SDL): the renderer draws its buttons in this
  * exact order, so the event loop can clamp focus_index and tests can pin

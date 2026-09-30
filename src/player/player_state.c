@@ -1096,28 +1096,55 @@ void player_app_populate_sample_games(PlayerApp *app) {
     }
 }
 
-static bool player_prepare_boot_event_file(PlayerApp *app) {
-    if (!app) return false;
+/* One formatter for the per-process boot-event marker pathname. The launch
+ * sequence is process state, so the pathname is derived from a shared helper
+ * rather than rebuilt by each caller. */
+static int player_format_boot_event_path(char *out, size_t out_size,
+                                         unsigned int sequence) {
+    if (!out || out_size == 0) return 0;
 
     char cache_dir[MAX_PATH_LEN];
     if (!nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir))) {
-        app->boot_event_file_path[0] = '\0';
-        return false;
+        out[0] = '\0';
+        return 0;
     }
 
-    static unsigned int launch_sequence;
 #if defined(_WIN32) || defined(_WIN64)
     unsigned long process_id = (unsigned long)_getpid();
 #else
     unsigned long process_id = (unsigned long)getpid();
 #endif
-    ++launch_sequence;
-    int written = snprintf(app->boot_event_file_path,
-                           sizeof(app->boot_event_file_path),
-                           "%s%cplayer-boot-%lu-%u.events", cache_dir,
-                           nk_platform_path_separator(), process_id,
-                           launch_sequence);
-    if (written <= 0 || (size_t)written >= sizeof(app->boot_event_file_path)) {
+    int written = snprintf(out, out_size, "%s%cplayer-boot-%lu-%u.events",
+                           cache_dir, nk_platform_path_separator(),
+                           process_id, sequence);
+    if (written <= 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return 0;
+    }
+    return written;
+}
+
+/* Per-process launch sequence for the boot-event marker pathname. Single
+ * shared state: the next-pathname query must predict the sequence the next
+ * launch really consumes. */
+static unsigned int player_boot_event_sequence;
+
+void player_app_next_boot_event_path(char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+
+    if (!player_format_boot_event_path(out, out_size,
+                                       player_boot_event_sequence + 1u)) {
+        out[0] = '\0';
+    }
+}
+
+static bool player_prepare_boot_event_file(PlayerApp *app) {
+    if (!app) return false;
+
+    ++player_boot_event_sequence;
+    if (!player_format_boot_event_path(app->boot_event_file_path,
+                                       sizeof(app->boot_event_file_path),
+                                       player_boot_event_sequence)) {
         app->boot_event_file_path[0] = '\0';
         return false;
     }
@@ -1135,6 +1162,18 @@ static bool player_prepare_boot_event_file(PlayerApp *app) {
         return false;
     }
     return true;
+}
+
+bool player_app_should_attempt_window_handoff(bool interactive_window,
+                                              bool game_running,
+                                              bool handoff_attempted,
+                                              bool child_window_ready) {
+    /* The handoff is attempted at most once per launch. A real
+     * SDL_MinimizeWindow failure leaves the launcher visible, which is the
+     * intended fail-closed result, but the attempt must not be retried every
+     * frame: each retry would rewrite the launcher's settings. */
+    return interactive_window && game_running && !handoff_attempted &&
+           child_window_ready;
 }
 
 bool player_app_launch_game(PlayerApp *app, int game_index) {
