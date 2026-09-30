@@ -3992,7 +3992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "60f732fe466b3c537f78ff29c5e22ae3289c900de25e1878abcf34cf8d95af86"
+      "sha256": "e01279749a3371b4cb576eced5e513a5a1e40e5270a9da8cc6b9204d6c8a879a"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -4843,7 +4843,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f7814735a5c62ebfecdbf19ed5955df66bcd32e9ed56201b1b1c3d0dd2af7545"
+      "sha256": "f18c8044433268d60eb865678b8f25abc448eb43597952efbdee75c70bf16318"
     },
     {
       "path": "src/rt/recomp.h",
@@ -7386,7 +7386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65ddf39a57f366e65abc5953247d8e3f22ef8190e2ad5c0f89d5fe3c2ca3394c"
+      "sha256": "88137cd36e1505325fa7f22276d52091e1e3142a43baa53b0ba2d1b948e22c71"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -9471,11 +9471,12 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
-    "candidate_tree": "c05948892b75fedf0ada5182f098598b07c7fc7e",
+    "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
+    "candidate_tree": "627440525af1ddbafe8990fc0be0f3d883fdb576",
     "refreshed_paths": [
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "src/rt/dispatch_isolation_selftest.c",
+      "src/rt/recomp.c",
+      "tools/test_dispatch_call_boundary.py"
     ]
   }
 }

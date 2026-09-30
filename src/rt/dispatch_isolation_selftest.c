@@ -80,7 +80,23 @@ void sched_set_current_join_target(uint32_t uid) { (void)uid; }
 void sched_clear_current_join_target(void) {}
 int sched_take_current_join_result(uint32_t uid, uint32_t *result_out) { (void)uid; (void)result_out; return 0; }
 uint32_t sr_get_ge_status(void) { return 0u; }
-uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
+/* Synthetic registry inputs for the real dispatch bridge (#593). Retirement
+ * changes the resolver answer, as the HLE lifecycle does; this harness does
+ * not claim to exercise the module-unload syscall itself. */
+#define LATE_STUB_A 0x007b0000u
+#define LATE_STUB_B 0x007b0010u
+#define LATE_EXPORT_A 0x006b0000u
+#define LATE_EXPORT_B 0x006b0010u
+static uint32_t g_late_export_a;
+static uint32_t g_late_export_b;
+static unsigned g_late_resolutions;
+uint32_t sr_hle_resolve_late_import(uint32_t target) {
+    if (target == LATE_STUB_A || target == LATE_STUB_B) {
+        g_late_resolutions++;
+        return target == LATE_STUB_A ? g_late_export_a : g_late_export_b;
+    }
+    return 0u;
+}
 uint32_t sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; return 0u; }
 void sr_yield(CpuState *s) { (void)s; }
 int sr_vfpu_interp(CpuState *s, uint32_t op) { (void)s; (void)op; return 0; }
@@ -230,6 +246,96 @@ static int generic_outcome(Probe p, uint32_t target) {
     (void)target;
     if (p.body_ran) return 0;
     return p.dispatch_result < 0 && p.v0 == 0xdeadbeefu && p.pc == p.pc_before;
+}
+
+static void late_body_a(CpuState *s) {
+    g_body_hits++;
+    s->r[2] = 0xa1u;
+    s->pc = s->r[31];
+}
+
+static void late_body_reloaded(CpuState *s) {
+    g_body_hits++;
+    s->r[2] = 0xa2u;
+    s->pc = s->r[31];
+}
+
+static void late_body_b(CpuState *s) {
+    g_body_hits++;
+    s->r[2] = 0xb1u;
+    s->pc = s->r[31];
+}
+
+static void test_late_import_retirement_is_visible_after_warm_dispatch(void) {
+    sr_exec_span_reset();
+    own_synthetic_aot_word(LATE_EXPORT_A);
+    own_synthetic_aot_word(LATE_EXPORT_B);
+    /* The caller's import stub remains executable when the exporting module
+     * retires. Without stub ownership, sr_lookup's fetch guard masks the alias
+     * defect. Unsupported source-owned stub bytes make fallback fail closed. */
+    own_synthetic_aot_word(LATE_STUB_A);
+    own_synthetic_aot_word(LATE_STUB_B);
+    MEM_W32(LATE_STUB_A, 0xffffffffu);
+    MEM_W32(LATE_STUB_B, 0xffffffffu);
+    sr_register(LATE_EXPORT_A, late_body_a);
+    sr_register(LATE_EXPORT_B, late_body_b);
+    g_late_export_a = LATE_EXPORT_A;
+    g_late_export_b = LATE_EXPORT_B;
+    g_late_resolutions = 0u;
+
+    for (unsigned call = 0; call < 2u; call++) {
+        Probe p = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+        CHECK(p.body_ran && p.v0 == 0xa1u && p.pc == PROBE_RA,
+              "live late import did not execute its current export");
+    }
+    Probe neighbor = probe(LATE_STUB_B, PROBE_PC, PROBE_RA);
+    CHECK(neighbor.body_ran && neighbor.v0 == 0xb1u,
+          "unrelated late-import module failed to warm");
+    CHECK(g_late_resolutions == 3u,
+          "warm late import bypassed the live registry");
+    CHECK(sr_lookup(LATE_STUB_A) == NULL && sr_lookup(LATE_STUB_B) == NULL,
+          "late import installed a persistent dispatch alias");
+
+    /* Retired bindings resolve to zero. Repeated attempts must reject without
+     * touching guest state, even while the old body is registered. */
+    g_late_export_a = 0u;
+    for (unsigned retired = 0; retired < 2u; retired++) {
+        Probe p = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+        CHECK(generic_outcome(p, LATE_STUB_A),
+              "retired late import executed a stale body or changed guest state");
+    }
+    neighbor = probe(LATE_STUB_B, PROBE_PC, PROBE_RA);
+    CHECK(neighbor.body_ran && neighbor.v0 == 0xb1u,
+          "retiring one late import invalidated an unrelated module");
+
+    /* Same-address reload replaces the export's body. KSEG normalization must
+     * still select it, and a later remap must follow the new registry answer. */
+    sr_register(LATE_EXPORT_A, late_body_reloaded);
+    g_late_export_a = LATE_EXPORT_A | 0x80000000u;
+    Probe reloaded = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+    CHECK(reloaded.body_ran && reloaded.v0 == 0xa2u && reloaded.pc == PROBE_RA,
+          "same-address late-import reload called the retired body");
+    g_late_export_a = LATE_EXPORT_B;
+    Probe remapped = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+    CHECK(remapped.body_ran && remapped.v0 == 0xb1u,
+          "late-import remap ignored the current registry answer");
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[31] = PROBE_RA;
+    g_late_export_a = LATE_EXPORT_A;
+    CHECK(dispatch_call_try(&s, LATE_STUB_A, PROBE_RA) == SR_GUEST_INTERP_AOT_HANDOFF
+          && s.r[2] == 0xa2u && s.pc == PROBE_RA,
+          "typed CALL did not resolve the current late export");
+    g_late_export_a = 0u;
+    s.pc = PROBE_PC;
+    CpuState before = s;
+    CHECK(dispatch_call_try(&s, LATE_STUB_A, PROBE_RA) < 0
+          && memcmp(&s, &before, sizeof s) == 0,
+          "typed CALL to a retired late import did not fail closed");
+    g_late_export_b = 0u;
+    sr_exec_span_reset();
 }
 
 static void test_historical_call_target_fails_at_named_boundary(void) {
@@ -1310,6 +1416,7 @@ int main(int argc, char **argv) {
     test_retired_bindings_are_inert();
     test_call_boundary_keeps_callee_register_writes();
     test_historical_call_target_fails_at_named_boundary();
+    test_late_import_retirement_is_visible_after_warm_dispatch();
     test_historical_target_shapes_fail_closed();
     test_diagnostic_exact_hooks_never_consume();
     test_configured_aliases_redirect();
