@@ -1148,6 +1148,44 @@ class TestPresenterContract(unittest.TestCase):
         self.assertEqual(captured["env"]["SR_VIDEO"], "offscreen")
         self.assertEqual(captured["env"]["SR_PRESENT_TRACE"], "1")
 
+    def test_display_smoke_routes_keep_separate_logs(self):
+        expected = f"0x{display_generator.final_frame_first_pixel(1):08x}"
+        combined = (
+            "BOOT_EVENT phase=init public_safe=1\n"
+            "BOOT_EVENT phase=image_loaded entry=0x08810000\n"
+            "BOOT_EVENT phase=runtime_registered entry=0x08810000\n"
+            f"DRIVER_EXPECT_U32 addr=0x04000000 got={expected} "
+            f"expected={expected} status=PASS\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED f=2 buf=0x04000000 fmt=3 stride=512\n"
+        )
+
+        def fake_run(command, **kwargs):
+            route = "offscreen" if kwargs["env"].get("SR_VIDEO") == "offscreen" else "headless"
+            return subprocess.CompletedProcess(command, 0, f"{route}\n{combined}", "")
+
+        with tempfile.TemporaryDirectory(prefix="display-smoke-logs-") as temp_dir:
+            build_dir = Path(temp_dir)
+            fixture = build_dir / "fixture"
+            fixture.mkdir()
+            (fixture / "manifest.json").write_text('{"frames": 1}\n', encoding="ascii")
+            suffix = ".exe" if os.name == "nt" else ""
+            (build_dir / f"{display_generator.ARTIFACT_STEM}{suffix}").write_bytes(b"runtime")
+            (build_dir / f"{display_generator.ARTIFACT_STEM}_image.bin").write_bytes(b"image")
+            with mock.patch.object(display_generator.subprocess, "run", side_effect=fake_run):
+                self.assertEqual(display_generator.run(build_dir), 0)
+                self.assertEqual(display_generator.run(build_dir, gui=True, offscreen=True), 0)
+            stem = display_generator.ARTIFACT_STEM
+            headless = (build_dir / f"{stem}.stdout.log").read_text(encoding="utf-8")
+            offscreen = (build_dir / f"{stem}.gui-offscreen.stdout.log").read_text(encoding="utf-8")
+        self.assertTrue(headless.startswith("headless\n"))
+        self.assertTrue(offscreen.startswith("offscreen\n"))
+
+    def test_display_smoke_offscreen_without_gui_is_a_usage_error(self):
+        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(None):
+            display_generator.parse_args(["run", "--build-dir", "x", "--offscreen"])
+        self.assertEqual(raised.exception.code, 2)
+
     def test_offscreen_present_evidence_rejects_malformed_submission_marker(self):
         combined = (
             "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"

@@ -640,8 +640,11 @@ def run(build_dir: Path, gui: bool = False, offscreen: bool = False) -> int:
     completed = subprocess.run(
         command, cwd=ROOT, env=env, capture_output=True, text=True
     )
-    write_if_changed(build_dir / f"{ARTIFACT_STEM}.stdout.log", completed.stdout.encode("utf-8"))
-    write_if_changed(build_dir / f"{ARTIFACT_STEM}.stderr.log", completed.stderr.encode("utf-8"))
+    mode = "gui-offscreen" if offscreen else "gui" if gui else "headless"
+    # Each route keeps its own logs so a later route cannot erase an earlier one's evidence.
+    log_stem = ARTIFACT_STEM if mode == "headless" else f"{ARTIFACT_STEM}.{mode}"
+    write_if_changed(build_dir / f"{log_stem}.stdout.log", completed.stdout.encode("utf-8"))
+    write_if_changed(build_dir / f"{log_stem}.stderr.log", completed.stderr.encode("utf-8"))
     combined = completed.stdout + completed.stderr
     if completed.returncode != 0:
         sys.stderr.write(combined)
@@ -662,7 +665,6 @@ def run(build_dir: Path, gui: bool = False, offscreen: bool = False) -> int:
     if offscreen and (failure := offscreen_present_evidence_failure(combined)):
         sys.stderr.write(combined)
         raise RuntimeError(f"offscreen presenter evidence {failure}")
-    mode = "gui-offscreen" if offscreen else "gui" if gui else "headless"
     print(
         f"DISPLAY_SMOKE_RUN status=PASS mode={mode} "
         f"frames={frames} framebuffer=0x{FRAMEBUFFER:08x} value=0x{expected:08x}"
@@ -762,7 +764,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     player_parser = subparsers.add_parser("run-player")
     player_parser.add_argument("--build-dir", type=Path, required=True)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.command == "run" and args.offscreen and not args.gui:
+        run_parser.error("--offscreen requires --gui")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
