@@ -1207,8 +1207,12 @@ display-smoke:
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
 
+# display-smoke-run is the aggregate source-owned gate: it runs the guest-only
+# scheduler route and then the normal --sched --gui route through the explicit
+# no-window presenter, so CI exercises host acceptance without a display.
 display-smoke-run: display-smoke
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
 
 display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
