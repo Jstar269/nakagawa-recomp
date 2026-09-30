@@ -6568,7 +6568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a621e5345e6a28aa6bac23c63830ef4de54b0b14ea8ca6d3dabcb1e9fc235b25"
+      "sha256": "da08d399efe3664e6b7be1ead2a680ceacfe7ca408172b51f3eae20c8d39b5e4"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -8371,7 +8371,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6177cd4cd03fab813292213fd59b83ed559d62f5288d4a0334ffbd684857da57"
+      "sha256": "a9e423e01f763415dcbdb2db9927511796cc92d78734152a44a590a88751e3ff"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -9471,15 +9471,11 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "9a2d310fdf967bbbef2be131d01659e2da951720",
-    "candidate_tree": "ae314a5d57372bb6dd484323d6afb5d8d90eb44e",
+    "trusted_tree": "f1e6858ddf816a42327c37e965fcb41bbddcbc3a",
+    "candidate_tree": "58e85779b58fe48e74f7112f79ba1918a621ef99",
     "refreshed_paths": [
-      "docs/PARSER_SAFETY_INVENTORY.json",
-      "tools/nk_cli.py",
-      "tools/nk_core/library.py",
-      "tools/nk_core/package_cache.py",
-      "tools/test_nk_core.py",
-      "tools/test_package_cache.py"
+      "tools/provenance_record_gap.py",
+      "tools/test_provenance_record_gap.py"
     ]
   }
 }
