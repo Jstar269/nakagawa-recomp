@@ -19,6 +19,7 @@ Streams:
 
 from __future__ import annotations
 
+import copy
 import json
 import random
 import re
@@ -540,6 +541,33 @@ class TestParserSafetyInventory(unittest.TestCase):
                 f"{where}: {name} does not occur in {rel}",
             )
 
+    def assert_inventory_anchors(self, inventory: dict) -> None:
+        checked = 0
+        scanned: set[str] = set()
+        preamble = {k: v for k, v in inventory.items() if k != "surfaces"}
+        for node, field in [(preamble, "inventory")] + [
+            (surface, "surface") for surface in inventory["surfaces"]
+        ]:
+            for text_field, anchor in self.scan_anchors(node, field):
+                with self.subTest(field=text_field, anchor=anchor):
+                    self.check_anchor(anchor, text_field)
+                checked += 1
+                scanned.add(text_field)
+        # Fields the first version of this scan skipped; a narrowing of the walk
+        # would drop them from `scanned` and fail here rather than silently.
+        for prefix in (
+            "surface.campaigns.deterministic_regression.runner",
+            "surface.campaigns.seeded_mutations.campaign",
+            "surface.resource_gaps",
+            "surface.max_input",
+            "inventory.campaign_facts",
+            "inventory.issue_acceptance_remaining",
+        ):
+            self.assertTrue(
+                any(field.startswith(prefix) for field in scanned), f"no anchor scanned in {prefix}"
+            )
+        self.assertGreater(checked, 300, "inventory lost most of its anchors")
+
     def test_every_inventory_row_has_live_sources_tests_and_campaign_status(self) -> None:
         inventory = self.inventory
         self.assertEqual(inventory["schema_version"], 3)
@@ -620,31 +648,21 @@ class TestParserSafetyInventory(unittest.TestCase):
         resource gap, or a campaign note is evidence too, and a scan that skipped
         those fields would let them rot unnoticed.
         """
-        checked = 0
-        scanned: set[str] = set()
-        preamble = {k: v for k, v in self.inventory.items() if k != "surfaces"}
-        for node, field in [(preamble, "inventory")] + [
-            (surface, "surface") for surface in self.inventory["surfaces"]
-        ]:
-            for text_field, anchor in self.scan_anchors(node, field):
-                with self.subTest(field=text_field, anchor=anchor):
-                    self.check_anchor(anchor, text_field)
-                checked += 1
-                scanned.add(text_field)
-        # Fields the first version of this scan skipped; a narrowing of the walk
-        # would drop them from `scanned` and fail here rather than silently.
-        for prefix in (
-            "surface.campaigns.deterministic_regression.runner",
-            "surface.campaigns.seeded_mutations.campaign",
-            "surface.resource_gaps",
-            "surface.max_input",
-            "inventory.campaign_facts",
-            "inventory.issue_acceptance_remaining",
-        ):
-            self.assertTrue(
-                any(field.startswith(prefix) for field in scanned), f"no anchor scanned in {prefix}"
-            )
-        self.assertGreater(checked, 300, "inventory lost most of its anchors")
+        self.assert_inventory_anchors(self.inventory)
+
+    def test_deliberately_stale_inventory_anchor_is_rejected(self) -> None:
+        """A stale source location fails when added to an in-memory inventory copy."""
+        inventory = copy.deepcopy(self.inventory)
+        cache_row = next(
+            row for row in inventory["surfaces"]
+            if row["id"] == "private-package-cache-json"
+        )
+        cache_row["entry"] += "; tools/nk_core/package_cache.py:282 _read_json"
+
+        stale_anchor = "tools/nk_core/package_cache.py:282 _read_json"
+        self.assertIn(stale_anchor, cache_row["entry"])
+        with self.assertRaisesRegex(AssertionError, "is not defined near"):
+            self.check_anchor(stale_anchor, "synthetic.stale-entry")
 
     def test_anchor_scan_reaches_fields_the_original_four_field_walk_skipped(self) -> None:
         """The walk covers every field, including the ones it used to skip.
@@ -751,14 +769,8 @@ class TestParserSafetyInventory(unittest.TestCase):
                             "a direct test is missing, so it reads as no coverage at all",
                         )
 
-    def test_rows_do_not_deny_a_call_path_a_listed_python_test_can_take(self) -> None:
-        """A "no test reaches this reader" claim is walked, not trusted.
-
-        Only a syntactic call path through the row's own source and test files is
-        proved, to ``CALL_DEPTH`` hops; that is enough to refuse a claim of
-        non-reachability, and it never claims the path is taken at run time.
-        """
-        for surface in self.inventory["surfaces"]:
+    def assert_no_unreached_claims(self, inventory: dict) -> None:
+        for surface in inventory["surfaces"]:
             py = [
                 rel
                 for rel in surface["source_paths"] + surface["test_paths"]
@@ -775,12 +787,34 @@ class TestParserSafetyInventory(unittest.TestCase):
                     if symbol not in defined:
                         continue
                     path = self.call_path(surface, edges, symbol)
-                    with self.subTest(surface=surface["id"], field=field, symbol=symbol):
-                        if path is not None:
-                            self.fail(
-                                f"{surface['id']}.{field} claims {symbol} is unreached, but "
-                                f"{' -> '.join(path)} is a call path through the listed files"
-                            )
+                    if path is not None:
+                        self.fail(
+                            f"{surface['id']}.{field} claims {symbol} is unreached, but "
+                            f"{' -> '.join(path)} is a call path through the listed files"
+                        )
+
+    def test_rows_do_not_deny_a_call_path_a_listed_python_test_can_take(self) -> None:
+        """A "no test reaches this reader" claim is walked, not trusted.
+
+        Only a syntactic call path through the row's own source and test files is
+        proved, to ``CALL_DEPTH`` hops; that is enough to refuse a claim of
+        non-reachability, and it never claims the path is taken at run time.
+        """
+        self.assert_no_unreached_claims(self.inventory)
+
+    def test_deliberately_false_never_reaches_claim_is_rejected(self) -> None:
+        """A direct parser call in a listed test defeats a false gap claim."""
+        inventory = copy.deepcopy(self.inventory)
+        archive_row = next(
+            row for row in inventory["surfaces"]
+            if row["id"] == "python-xb-archive-extractor"
+        )
+        archive_row["resource_gaps"].append(
+            "False self-test: the listed parser test never reaches XBArchiveReader.from_bytes."
+        )
+
+        with self.assertRaisesRegex(AssertionError, "claims from_bytes is unreached"):
+            self.assert_no_unreached_claims(inventory)
 
     def python_call_edges(self, rel: str) -> dict[str, set[str]]:
         """Map every function defined in a Python file to the names it calls."""
@@ -802,20 +836,26 @@ class TestParserSafetyInventory(unittest.TestCase):
         spells as a call counts even if that branch never executes, which is the
         safe direction for refusing a non-reachability claim.
         """
-        frontier: set[str] = set()
+        frontier: dict[str, list[str]] = {}
         for rel in surface["test_paths"]:
             if rel.endswith(".py"):
-                frontier.update(self.PY_CALL.findall("\n".join(self.source_lines(rel))))
-        seen: set[str] = set()
+                for name in self.PY_CALL.findall("\n".join(self.source_lines(rel))):
+                    frontier.setdefault(name, [rel, name])
+        if target in frontier:
+            return frontier[target]
+        seen = set(frontier)
         for _ in range(self.CALL_DEPTH):
-            reached: set[str] = set()
-            for name in frontier - seen:
-                seen.add(name)
+            reached: dict[str, list[str]] = {}
+            for name, path in frontier.items():
                 for rel in edges:
-                    reached.update(edges[rel].get(name, set()))
+                    for called in edges[rel].get(name, set()):
+                        reached.setdefault(called, path + [called])
             if target in reached:
-                return sorted(seen & reached) + [target]
-            frontier = reached
+                return reached[target]
+            frontier = {name: path for name, path in reached.items() if name not in seen}
+            seen.update(frontier)
+            if not frontier:
+                return None
         return None
 
     def test_every_non_header_source_path_is_named_in_its_row(self) -> None:

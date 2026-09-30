@@ -45,11 +45,12 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 - [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
   runtime and supported tooling parser boundaries, including every native and Python
   JSON consumer (title manifest, runtime package, library, cache/identity, font cache,
-  input profile, player settings and package-builder documents) plus the frame-dump
-  and tooling readers; each row carries resource limits, deterministic
+  input profile, player settings and package-builder documents) plus performance
+  summaries, frame-dump and other tooling readers; each row carries resource limits, deterministic
   regression/mutation status, sanitizer availability, and unresolved gaps (#319).
-  Every `symbol:line` anchor is re-verified against current source by
-  `tools/test_parse_fuzz.py`, so a stale line fails the suite, and a row may only
+  Every source anchor is checked against current source by `tools/test_parse_fuzz.py`,
+  so a stale line fails the suite. The checker rejects a `never reaches` claim when
+  a listed Python test has a syntactic call path to that reader, and a row may only
   call a route untested when it names the kind of test that is missing. The
   document is `schema_version` 3: `arithmetic.safe` is a string status rather
   than a boolean, and `schema_notes` records the change.

@@ -88,6 +88,26 @@ class TitleCatalogTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    def test_portability_doc_records_tracked_catalog_contract(self) -> None:
+        """Keep the tracked-artifact rationale and exact regeneration commands documented."""
+        portability_doc = (ROOT / "docs" / "PLATFORM_PORTABILITY.md").read_text(
+            encoding="utf-8"
+        )
+
+        required_doc_fragments = (
+            "src/core/generated/nk_title_catalog.h",
+            "src/core/generated/nk_title_catalog.c",
+            "intentionally tracked",
+            "Make and CMake builds consume",
+            "python tools/title_catalog_codegen.py",
+            "python tools/title_catalog_codegen.py --verify",
+            "TitleCatalogTests.test_live_catalog_verify_passes",
+            "do not include generated binaries or private title data",
+        )
+        for fragment in required_doc_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, portability_doc)
+
     def test_live_catalog_verify_passes(self) -> None:
         """Verify that current live repo catalog matches assets/titles/ exactly."""
         res = subprocess.run(

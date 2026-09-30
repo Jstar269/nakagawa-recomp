@@ -11,7 +11,7 @@
     }
   ],
   "issue": 319,
-  "scope": "Public, user-supplied runtime and supported offline-tooling parser boundaries for ISO/SFO, encrypted PSP containers, ELF/PRX, every native and Python JSON consumer (title manifest, runtime package, library, cache/identity, font cache, input profile, player settings, and package-builder documents), XB/GIM, PSMF/MPEG/H.264/ATRAC, PGF, and the supported tooling readers (title runtime config, staging manifests, sweep reports, flight-recorder bundles, the publication profile, and frame-dump PPM files). Corpora are source-owned synthetic inputs; private inputs/evidence are outside scope.",
+  "scope": "Public, user-supplied runtime and supported offline-tooling parser boundaries for ISO/SFO, encrypted PSP containers, ELF/PRX, every native and Python JSON consumer (title manifest, runtime package, library, cache/identity, font cache, input profile, player settings, and package-builder documents), XB/GIM, PSMF/MPEG/H.264/ATRAC, PGF, and the supported tooling readers (title runtime config, staging manifests, sweep reports, flight-recorder bundles, performance summaries, the publication profile, and frame-dump PPM files). Corpora are source-owned synthetic inputs; private inputs/evidence are outside scope.",
   "status_values": [
     "COVERED",
     "PARTIAL",
@@ -495,7 +495,7 @@
       },
       "allocation_time": "Each AST is byte-bounded; executable hashing and image existence checks are linear but currently have no separate byte cap.",
       "failure_atomicity": "NkRuntimePackageInfo is cleared on entry and populated only after every contract check passes.",
-      "harness": "tests/native/test_fuzz_parsers.c:1220 test_fuzz_package; tests/native/test_player_state.c",
+      "harness": "tests/native/test_fuzz_parsers.c:1317 test_fuzz_package; tests/native/test_player_state.c",
       "status": "COVERED",
       "id": "runtime-package-json-c",
       "source_paths": [
@@ -540,21 +540,21 @@
     },
     {
       "boundary": "Private package/cache manifest and title-input-identity JSON",
-      "entry": "tools/nk_core/package_cache.py:282 _read_json; tools/nk_core/package_cache.py:803 validate_completion_manifest; tools/nk_core/package_cache.py:890 validate_package_cache; tools/nk_core/package_cache.py:263 read_local_title_input_identity; tools/nk_cli.py:367 _load_entry_manifest",
-      "max_input": "Cache/identity JSON is read fully without a byte cap; public title manifest loading separately defaults to 262144 bytes.",
-      "tables_nesting": "Duplicate keys are rejected; no explicit _read_json depth or collection-count cap.",
+      "entry": "tools/nk_core/package_cache.py:545 _read_json; tools/nk_core/package_cache.py:1066 validate_completion_manifest; tools/nk_core/package_cache.py:1153 validate_package_cache; tools/nk_core/package_cache.py:264 read_local_title_input_identity; tools/nk_cli.py:391@_load_entry_manifest",
+      "max_input": "tools/nk_core/package_cache.py:MAX_CACHE_JSON_BYTES = 1048576 bytes per externally supplied JSON artifact (package.json, build-report.json, completion-manifest.json, title-input-identity.json). The ceiling is enforced by a bounded read of at most MAX+1 bytes through one open handle (fstat and reads share the descriptor; the extra byte catches growth), never a whole-file read. Valid data at the exact limit is accepted. The separate public title-manifest route in tools/nk_cli.py uses the title-manifest reader's 262144-byte default.",
+      "tables_nesting": "Duplicate keys are rejected by name at any depth. Pre-parse structural scan before json.loads: MAX_CACHE_JSON_DEPTH = 32 nesting levels, MAX_CACHE_JSON_MEMBERS = 16384 object members, MAX_CACHE_JSON_ITEMS = 16384 comma separators (the legacy MAX_CACHE_JSON_ITEMS name), MAX_CACHE_JSON_NODES = 65536 structural nodes, so hostile nesting or bulk fails at a named ceiling before recursing inside the standard parser. Post-parse per-record object validation precedes field access.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
-          "tools/nk_core/package_cache.py:283 _read_json",
-          "tools/nk_cli.py:375@_load_entry_manifest"
+          "tools/nk_core/package_cache.py:545 _read_json",
+          "tools/nk_cli.py:391@_load_entry_manifest"
         ]
       },
-      "allocation_time": "JSON memory/time is proportional to full file size; artifact digests stream in 1 MiB blocks.",
-      "failure_atomicity": "Validation is read-only; package promotion stages and rejects invalid copies. This does not bound parser resources.",
-      "harness": "tools/test_package_cache.py; tools/test_nk_core.py; no mutation harness",
-      "gap": "No byte/depth/count cap or seeded mutation/sanitizer campaign for _read_json.",
-      "status": "GAP",
+      "allocation_time": "JSON memory/time is bounded by the byte and structural ceilings. Decimal integers have a local 4300-digit ceiling checked before conversion, independent of Python's optional process-wide guard; a stricter host guard yields a named BoundedJsonError. NaN, Infinity and floats that overflow to infinity are rejected; supported floats must be finite. RecursionError inside json.loads is contained to the named BoundedJsonError. Artifact digests stream in 1 MiB blocks. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
+      "failure_atomicity": "Validation is read-only; package promotion stages and rejects invalid copies. Malformed or hostile input raises the named BoundedJsonError (or the entry point's named failure embedding it) -- never AttributeError, TypeError, RecursionError, or UnicodeDecodeError. Nothing is truncated silently. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
+      "harness": "tools/test_package_cache.py; tools/test_nk_core.py; tools/test_parse_fuzz.py validates inventory anchors and claims",
+      "gap": "Resource ceilings, deterministic hostile-input corpus, and named controlled errors are now executable behavior on production entry points. No seeded-mutation loop or sanitizer target for this Python parser route.",
+      "status": "PARTIAL",
       "id": "private-package-cache-json",
       "source_paths": [
         "tools/nk_core/package_cache.py",
@@ -562,13 +562,17 @@
       ],
       "test_paths": [
         "tools/test_package_cache.py",
-        "tools/test_nk_core.py"
+        "tools/test_nk_core.py",
+        "tools/test_parse_fuzz.py"
       ],
       "malformed_input_coverage": [
-        "Contract corruption, duplicate keys, invalid cache identity/artifact path, digest mismatch and incomplete package cases; no mutation loop."
+        "Contract corruption, duplicate keys, invalid cache identity/artifact path, digest mismatch and incomplete package cases.",
+        "Bounded-input regression: exactly-at-limit valid JSON accepted; one-byte-over limit rejected; excessive nesting (100k levels) and member/node counts rejected with named errors; duplicate keys rejected; malformed UTF-8 rejected; wrong top-level type rejected; growth during read cannot bypass the ceiling.",
+        "Numeric regression: NaN/Infinity and float overflow reject on the production reader; oversized integers reject before conversion with bounded named diagnoses; integers at the local digit ceiling and ordinary signed integer/float values retain their types.",
+        "Bounded-diagnostics regression: no rejection message on any of these routes echoes attacker-supplied bulk data; an oversized key, unknown field name, non-integer schema_version, or repeated disc_id is quoted only as a short prefix and an oversized unknown-field list only as a fixed-size sample, while the rejection itself stays a named controlled error. The structural node count is a true lower bound for every scalar and trailing-string document."
       ],
       "resource_gaps": [
-        "_read_json reads full files with no byte/depth/member-count cap; no seeded mutation or sanitizer target."
+        "No seeded-mutation or sanitizer campaign for this Python JSON route."
       ],
       "campaigns": {
         "deterministic_regression": {
@@ -667,7 +671,7 @@
       },
       "allocation_time": "One bounded file allocation and a linear cursor walk.",
       "failure_atomicity": "Malformed input returns an error and invokes backup recovery, but entries appended before a later parse error are not rolled back inside the temporary library object.",
-      "harness": "tests/native/test_fuzz_parsers.c:1403 test_fuzz_library",
+      "harness": "tests/native/test_fuzz_parsers.c:1500 test_fuzz_library",
       "status": "COVERED",
       "id": "library-json-c",
       "source_paths": [
@@ -721,7 +725,7 @@
       },
       "allocation_time": "No stream-wide allocation at open; impossible timestamp normalization bases are refused before allocation.",
       "failure_atomicity": "Invalid headers, extents, stream tables, and presentation bases free the new producer and return NULL.",
-      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_rejects_bad_containers",
+      "harness": "src/rt/psmf_producer_selftest.c:1283 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_rejects_bad_containers",
       "status": "COVERED",
       "id": "psmf-header-c",
       "source_paths": [
@@ -776,7 +780,7 @@
       },
       "allocation_time": "Per-PES payload and per-track allocations are bounded; cumulative stream duration and total packet count are not bounded.",
       "failure_atomicity": "Failure is terminal and observable through stats. Cursor and counters can advance before a selected-track allocation fails, so the producer object is not rolled back.",
-      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_conformance_corpus",
+      "harness": "src/rt/psmf_producer_selftest.c:1283 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_conformance_corpus; src/rt/psmf_producer_selftest.c:784 test_timestamp_flags; src/rt/psmf_producer_selftest.c:1341 test_conformance_corpus",
       "status": "COVERED",
       "id": "mpeg-ps-pes-c",
       "source_paths": [
@@ -786,7 +790,8 @@
         "src/rt/psmf_producer_selftest.c"
       ],
       "malformed_input_coverage": [
-        "Malformed packet prefix/length/options, PTS/DTS flags/markers, pack stuffing/end code and packet-boundary preservation."
+        "Malformed packet prefix/length/options, PTS/DTS flags/markers, pack stuffing/end code and packet-boundary preservation.",
+        "PTS/DTS prefix bytes must match PTS_DTS_flags (PTS-only 0010, paired PTS 0011, DTS 0001); invalid prefixes and marker bits fail closed."
       ],
       "resource_gaps": [
         "Track storage is bounded, but cumulative stream duration and total packet count are not."
@@ -830,7 +835,7 @@
       },
       "allocation_time": "Candidate scanning is incremental and linear in appended bytes; the no-AUD and compaction selftests pin the work bound.",
       "failure_atomicity": "Only complete bounded AUs enter the queue; queue backpressure stops parsing without dropping buffered bytes.",
-      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_no_aud_scan_work_bound",
+      "harness": "src/rt/psmf_producer_selftest.c:1283 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_no_aud_scan_work_bound",
       "status": "COVERED",
       "id": "h264-au-framing-c",
       "source_paths": [
@@ -939,7 +944,7 @@
       },
       "allocation_time": "Frame and track sizes are bounded; resync scans at most the fixed 8192-byte window per extraction attempt.",
       "failure_atomicity": "Invalid frame-size fields fail terminally; complete frames are copied into bounded AU storage before queue publication.",
-      "harness": "src/rt/psmf_producer_selftest.c:1257 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_access_unit_formation",
+      "harness": "src/rt/psmf_producer_selftest.c:1283 test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_access_unit_formation",
       "status": "COVERED",
       "id": "atrac-frame-framing-c",
       "source_paths": [
@@ -1342,30 +1347,38 @@
     {
       "boundary": "Python user library JSON",
       "id": "python-library-json",
-      "entry": "tools/nk_core/library.py:116 load; tools/nk_cli.py:339 _load_library_entry",
+      "entry": "tools/nk_core/library.py:233@load; tools/nk_cli.py:356@_load_library_entry; tools/nk_core/package_cache.py:503 read_bounded_json",
       "source_paths": [
         "tools/nk_core/library.py",
-        "tools/nk_cli.py"
+        "tools/nk_cli.py",
+        "tools/nk_core/package_cache.py"
       ],
       "test_paths": [
         "tools/test_nk_core.py"
       ],
-      "max_input": "No byte, JSON-depth, or game-count cap was located in GameLibrary.load.",
-      "tables_nesting": "Standard-library json.load with no post-parse nesting or array-count ceiling.",
+      "max_input": "GameLibrary.load and nk_cli library routes enforce 1048576 bytes and a 4096-record upper bound. The shared reader uses a bounded MAX+1 read on one descriptor and rejects growth. The byte and structural limits apply independently of record count; GameLibrary.save validates the temporary output with GameLibrary.load before replacing an existing library.",
+      "tables_nesting": "Both routes reject duplicate keys and apply the 32-level pre-parse depth ceiling and shared library budgets: 57347 object members, 61443 comma separators, and 118792 structural nodes. Unknown root/record fields, per-record object types, and non-negative integer counts are checked by GameLibrary.load only. nk_cli checks the integer schema version, games list and record count; its bring-up records have a different field schema.",
       "arithmetic": {
-        "safe": "NOT_ASSESSED",
+        "safe": "SAFE",
         "evidence": [
-          "tools/nk_core/library.py:143@load"
+          "tools/nk_core/library.py:86@from_dict",
+          "tools/nk_core/package_cache.py:503 read_bounded_json"
         ]
       },
-      "allocation_time": "Reads the full file into memory; per-record validation scales with the games list.",
-      "failure_atomicity": "A new temporary GameLibrary is returned only after all records validate; malformed input raises before the caller receives it.",
+      "allocation_time": "Read memory is bounded by the byte ceiling; decoded structure is bounded by the structural ceilings and the record limit; RecursionError inside json.loads is contained to the named controlled ValueError. Rejection messages bound the untrusted text they quote: an externally supplied key, field name, or scalar is echoed only as a short prefix, and an untrusted name list only as a fixed-size sample, so a hostile artifact cannot inflate a diagnosis (or a log that records it) by its own size.",
+      "failure_atomicity": "GameLibrary.load returns a new library only after every record validates. Each GameLibrary.save owns a unique temporary file in the destination directory, validates it with the same reader before atomic replacement and cleans up only that file on failure. Overlapping saves cannot overwrite/unlink one another's temporary files; the last completed replacement wins, without merging concurrent record edits. nk_cli checks the post-update record count, serialized UTF-8 byte count and structural budgets before atomic replacement; rejection preserves the previous library. The existing save formats are retained. nk_cli has its separate bring-up record schema; compatibility with GameLibrary records is not established. Rejection messages bound untrusted echoed text. No silent truncation occurs.",
       "malformed_input_coverage": [
-        "valid library save/load round trip",
-        "no dedicated hostile malformed-input mutation cases located"
+        "GameLibrary save/load round trips preserve all fields, including 1200 fully populated records. A byte-limit failure during save preserves the previous library and removes temporary output.",
+        "Deterministically interleaved production saves complete with separate temporary files and leave no owned temporary output; saving preserves another writer's existing library.json.tmp checkpoint.",
+        "nk_cli reads and updates a 4096-record library. Appending beyond the record limit or writing beyond the byte limit rejects without replacing existing bytes. The writer rejects boolean schema versions.",
+        "The shared numeric parser rejects nonfinite library timestamps and integers above 4300 digits with controlled errors; no NaN or infinity enters loaded records.",
+        "Shared bounded-reader coverage on GameLibrary.load and nk_cli._load_library_entry: exact byte limit accepted, one byte over rejected, excessive nesting rejected, duplicate JSON keys rejected, malformed UTF-8 rejected and wrong top-level type rejected. Each route checks its games-list type and record count.",
+        "GameLibrary.load-specific coverage: null/scalar/list records, invalid field types, unknown root/record fields, repeated disc IDs, missing games and unsupported schema versions reject with controlled errors. These record-field rejection claims do not apply to nk_cli bring-up records.",
+        "Bounded-diagnostics coverage limits echoed attacker text; structural counters cover bare scalars and trailing strings. The aggregate comma-separator diagnosis includes object separators and does not claim to count array elements exclusively."
       ],
       "resource_gaps": [
-        "No byte/depth/count cap, seeded mutation campaign, or sanitizer coverage."
+        "No seeded-mutation or sanitizer campaign for these Python library routes.",
+        "GameLibrary and nk_cli bring-up record schemas are not reconciled; their interchangeability is not established."
       ],
       "campaigns": {
         "deterministic_regression": {
@@ -1390,7 +1403,8 @@
         "overflow_oob_mutation_kill": "NOT_RUN"
       },
       "harness": "tools/test_nk_core.py:test_game_library_persistence",
-      "status": "GAP"
+      "status": "PARTIAL",
+      "gap": "PARTIAL: seeded-mutation and sanitizer campaigns remain absent. GameLibrary and nk_cli bring-up record schemas are not reconciled; this slice does not establish their interchangeability."
     },
     {
       "boundary": "ATRAC3+ frame decoder",
@@ -1458,7 +1472,8 @@
       ],
       "test_paths": [
         "tests/native/test_manifest_parser.c",
-        "tests/native/test_fuzz_parsers.c"
+        "tests/native/test_fuzz_parsers.c",
+        "tests/native/test_input_profile.c"
       ],
       "max_input": "No independent byte cap: nk_json_parse takes (src, len) and every caller supplies the bound it already established for its own file. Nesting is capped at NK_JSON_MAX_DEPTH 16.",
       "tables_nesting": "JSON depth 16. Object member and array element counts are not capped; they are bounded only by the caller's byte budget.",
@@ -1472,21 +1487,24 @@
       },
       "allocation_time": "One node per value; AST size is proportional to the caller's byte budget, so a caller that hands in a large buffer gets a proportionally large tree.",
       "failure_atomicity": "A failed parse returns NULL and frees its partial tree; callers must not publish a NULL AST. Depth rejection happens before any member of the too-deep subtree is allocated.",
-      "harness": "tests/native/test_manifest_parser.c; tests/native/test_fuzz_parsers.c:1077 test_fuzz_manifest",
-      "gap": "Depth and escape rejection are shared by every consumer, but nk_json has no standalone mutation campaign of its own; it is only reached through consumer manifests, keystores, font caches, input profiles, and player JSON.",
+      "harness": "tests/native/test_manifest_parser.c; tests/native/test_fuzz_parsers.c:1077 test_fuzz_manifest; tests/native/test_input_profile.c exercises selected invalid byte sequences through the shared parser",
+      "gap": "Depth and escape rejection are shared by every consumer, but nk_json has no standalone mutation campaign of its own; it is only reached through consumer manifests, keystores, font caches, input profiles, and player JSON. The shared validator still accepts invalid four-byte lead bytes 0xF5-0xF7.",
       "malformed_input_coverage": [
         "over-deep nesting and malformed member/array syntax via consumer manifest and keystore cases",
-        "invalid UTF-8 escapes and control characters in strings"
+        "invalid UTF-8 escapes and control characters in strings",
+        "The #600 input-profile corpus rejects selected invalid UTF-8 bytes in values and keys; it does not cover the 0xF5-0xF7 four-byte lead range still accepted by nk_json_validate_utf8."
       ],
       "resource_gaps": [
         "No byte cap of its own; a caller's cap is the only budget.",
-        "No sanitizer or coverage-guided campaign reaches nk_json directly."
+        "No sanitizer or coverage-guided campaign reaches nk_json directly.",
+        "nk_json_validate_utf8 accepts four-byte lead bytes 0xF5-0xF7; the input-profile tests leave these cases unasserted."
       ],
       "campaigns": {
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "tests/native/test_manifest_parser.c"
+            "tests/native/test_manifest_parser.c",
+            "tests/native/test_input_profile.c"
           ],
           "runner": "make CC=gcc native-core-tests"
         },
@@ -1511,7 +1529,7 @@
     {
       "boundary": "Per-user input profile JSON (bindings, deadzones, triggers)",
       "id": "nk-input-profile-json",
-      "entry": "src/core/nk_input_profile.c:1670 nk_input_profile_file_load src/core/nk_input_profile.c:1268 nk_input_profile_file_parse_json",
+      "entry": "src/core/nk_input_profile.c:1769 nk_input_profile_file_load; src/core/nk_input_profile.c:1367 nk_input_profile_file_parse_json",
       "source_paths": [
         "src/core/nk_input_profile.c",
         "src/core/nk_input_profile.h"
@@ -1519,24 +1537,27 @@
       "test_paths": [
         "tests/native/test_input_profile.c"
       ],
-      "max_input": "1 MiB per profile file at the loader; parsing then goes through nk_json depth 16.",
-      "tables_nesting": "NK_INPUT_MAX_PER_TITLE 8 title entries; NK_INPUT_GUID_MAX_LEN 64; NK_INPUT_NAME_HINT_MAX_LEN 128; NK_INPUT_DIAGNOSTIC_MAX_LEN 256. Mapping/axis/binding arrays are bounded by the schema and the 1 MiB file cap.",
+      "max_input": "1 MiB per profile file at the loader; one byte over is rejected before parsing. The shared nk_json parser caps nesting at NK_JSON_MAX_DEPTH 16.",
+      "tables_nesting": "NK_INPUT_MAX_PER_TITLE is 8 title entries; NK_INPUT_GUID_MAX_LEN is 64; NK_INPUT_NAME_HINT_MAX_LEN is 128; NK_INPUT_DIAGNOSTIC_MAX_LEN is 256. Mapping, axis and binding arrays follow the schema and the 1 MiB file cap.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
-          "src/core/nk_input_profile.c:1701@nk_input_profile_file_load",
-          "src/core/nk_input_profile.c:1361@nk_input_profile_file_parse_json"
+          "src/core/nk_input_profile.c:1800@nk_input_profile_file_load",
+          "src/core/nk_input_profile.c:1367@nk_input_profile_file_parse_json"
         ]
       },
       "allocation_time": "One bounded file read plus a depth-16 AST; save writes a temporary file and replaces the target.",
       "failure_atomicity": "nk_input_profile_file_init_default runs before any parse, and every schema error path restores the default document with a diagnostic, so a rejected profile never leaves a half-applied binding set.",
-      "harness": "tests/native/test_input_profile.c",
-      "gap": "Deterministic cases run in CI through native-core-tests, but this route has no seeded mutation, sanitizer, or coverage-guided campaign.",
+      "harness": "tests/native/test_input_profile.c:1086 test_hostile_documents_fail_closed; tests/native/test_input_profile.c:1883 test_hostile_profile_file_loader",
+      "gap": "Deterministic hostile documents and loader files are covered in native-core-tests. There is no seeded byte-mutation, sanitizer or coverage-guided campaign. The shared nk_json validator still accepts four-byte UTF-8 lead bytes 0xF5-0xF7.",
       "malformed_input_coverage": [
-        "unsupported schema versions, over-deep JSON, duplicate disc ids, oversized title counts, and truncated files"
+        "Every proper prefix of an accepted per-title profile, including empty input, is refused with defaults restored; empty/whitespace documents, wrong root types, trailing bytes, raw NUL, missing fields, wrong types and unsupported schema versions are covered.",
+        "Hostile per-title cases cover depth beyond 16, repeated disc IDs, more than 8 entries, unsafe IDs, malformed bindings and selected invalid UTF-8 byte sequences in values and keys. The tests do not assert rejection of 0xF5-0xF7 four-byte lead bytes.",
+        "The on-disk loader covers empty and truncated files, trailing NUL, a directory and absent paths, exactly 1 MiB of malformed content, and a file one byte over the 1 MiB cap; refusal restores defaults."
       ],
       "resource_gaps": [
-        "No seeded mutation or sanitizer campaign for the input-profile route."
+        "No seeded byte-mutation, sanitizer or coverage-guided campaign for input profiles.",
+        "The shared nk_json UTF-8 validator accepts four-byte lead bytes 0xF5-0xF7; the added profile tests explicitly leave these unasserted."
       ],
       "campaigns": {
         "deterministic_regression": {
@@ -1699,14 +1720,14 @@
       },
       "allocation_time": "Two bounded file reads plus depth-16 ASTs; host-path concatenation is length-checked before it is written.",
       "failure_atomicity": "Each reader names its failure (PREREQUISITE_MANIFEST_NOT_FOUND and similar) and leaves the previous install state untouched; the progress parser returns false rather than a partial receipt.",
-      "harness": "tests/native/test_package_builder.c covers the build-progress line parser; the prerequisite-manifest and install-receipt readers have no direct test",
-      "gap": "Only the build-progress line parser has deterministic coverage; the prerequisite manifest and install-receipt readers are reached by no direct test. There is no seeded mutation, sanitizer, or coverage-guided campaign for this route.",
+      "harness": "tests/native/test_package_builder.c:48 test_progress_line_parsing; tests/native/test_package_builder.c:417 test_pinned_prerequisite_manifest. The prerequisite reader has one direct valid-manifest test; the install-receipt reader has no direct test.",
+      "gap": "The progress-line parser has deterministic malformed cases. package_builder_load_prerequisites has a valid metadata test but no malformed-manifest case; package_builder_mark_prerequisites_installed has no direct test. There is no seeded mutation, sanitizer, or coverage-guided campaign for this route.",
       "malformed_input_coverage": [
-        "non-object and unterminated build-progress lines, plus a NULL/empty progress line",
-        "the prerequisite-manifest and install-receipt readers have no direct malformed-input test"
+        "Non-object and unterminated build-progress lines, plus NULL and empty progress lines.",
+        "The prerequisite reader has a direct valid metadata test but no malformed manifest case; the install-receipt reader has no direct test."
       ],
       "resource_gaps": [
-        "package_builder_load_prerequisites and package_builder_mark_prerequisites_installed are untested.",
+        "No direct malformed-input test for package_builder_load_prerequisites; package_builder_mark_prerequisites_installed has no direct test.",
         "No seeded mutation or sanitizer campaign for the package-builder JSON route."
       ],
       "campaigns": {
@@ -1715,7 +1736,7 @@
           "tests": [
             "tests/native/test_package_builder.c"
           ],
-          "runner": "make CC=gcc native-core-tests runs tests/native/test_package_builder.c, which covers package_builder_parse_progress_line only; no direct test calls package_builder_load_prerequisites or package_builder_mark_prerequisites_installed"
+          "runner": "make CC=gcc native-core-tests runs tests/native/test_package_builder.c: the progress-line parser has malformed cases and test_pinned_prerequisite_manifest reads a valid manifest; there is no malformed prerequisite-manifest or install-receipt reader case."
         },
         "seeded_mutations": {
           "status": "NOT_AVAILABLE",
@@ -1790,7 +1811,7 @@
     {
       "boundary": "Flight-recorder bundle JSON read by the diff tool",
       "id": "python-flight-bundle-json",
-      "entry": "tools/flight_diff.py:167 load_bundle tools/flight_diff.py:28 _validate_schema tools/flight_diff.py:115 _forbid_embedded_text",
+      "entry": "tools/flight_diff.py:202@load_bundle; tools/flight_diff.py:55 _validate_schema; tools/flight_diff.py:142 _forbid_embedded_text",
       "source_paths": [
         "tools/flight_diff.py",
         "assets/flight_recorder_schema.json"
@@ -1804,19 +1825,20 @@
       "arithmetic": {
         "safe": "PARTIAL",
         "evidence": [
-          "tools/flight_diff.py:169@load_bundle",
-          "tools/flight_diff.py:28 _validate_schema"
+          "tools/flight_diff.py:202@load_bundle",
+          "tools/flight_diff.py:55 _validate_schema"
         ]
       },
       "allocation_time": "Whole-file read plus a decoded document; diffing is linear in the decoded event arrays.",
-      "failure_atomicity": "load_bundle raises FlightDiffError naming the file, and a bundle that fails validation is never diffed or written.",
+      "failure_atomicity": "load_bundle raises FlightDiffError naming the file before comparison. Schema-valid pairs that fail build/runtime, recorder-policy, retained-history or terminal comparability raise BundleIncomparable and return INCOMPARABLE rather than MATCH. No bundle is written.",
       "harness": "tools/test_flight_diff.py; tools/test_flight_build_identity.py",
       "gap": "Schema and embedded-text rejection are well covered, but there is no byte cap, no seeded mutation campaign, and no sanitizer coverage.",
       "malformed_input_coverage": [
-        "unreadable and non-JSON bundles, unknown or mismatched schema versions, guest-derived strings, and host paths in identity fields"
+        "unreadable and non-JSON bundles, unknown or mismatched schema versions, guest-derived strings, and host paths in identity fields",
+        "Schema-valid pairs with different runtime identities, enabled-class/trigger policies, dropped-history completeness or terminal semantics are reported INCOMPARABLE with cumulative reasons, never MATCH."
       ],
       "resource_gaps": [
-        "No byte cap on the bundle or the schema document.",
+        "No byte, explicit nesting or aggregate member-count cap on external bundle JSON.",
         "No seeded mutation or sanitizer campaign."
       ],
       "campaigns": {
@@ -1837,6 +1859,62 @@
           "status": "NOT_COVERED",
           "target": null,
           "instrumentation": "No sanitizer campaign for this Python parser route",
+          "ci": false
+        },
+        "coverage_guided_fuzzer": "NOT_CONFIGURED",
+        "overflow_oob_mutation_kill": "NOT_RUN"
+      },
+      "status": "PARTIAL"
+    },
+    {
+      "boundary": "Performance-summary JSON consumed by the diff tool",
+      "id": "python-performance-summary-json",
+      "entry": "tools/perf_summary_diff.py:147@load_summary; tools/perf_summary_diff.py:92@validate_summary",
+      "source_paths": [
+        "tools/perf_summary_diff.py"
+      ],
+      "test_paths": [
+        "tools/test_perf_summary_diff.py"
+      ],
+      "max_input": "No byte cap: load_summary reads the whole file before json.loads.",
+      "tables_nesting": "No explicit nesting or aggregate member-count limit. The consumed top-level/object shapes are checked after parsing; each transitions.top_pcs direction is capped at 16 entries, while boundaries has no count cap.",
+      "arithmetic": {
+        "safe": "PARTIAL",
+        "evidence": [
+          "tools/perf_summary_diff.py:64@_is_number",
+          "tools/perf_summary_diff.py:70@_require_number",
+          "tools/perf_summary_diff.py:147@load_summary"
+        ]
+      },
+      "allocation_time": "Whole-file text read and decoded JSON object; unbounded input size and the boundaries list can grow memory and validation work.",
+      "failure_atomicity": "load_summary raises the named PerfSummaryError for unreadable/invalid JSON or invalid consumed fields before the caller compares summaries; it performs no file writes.",
+      "harness": "tools/test_perf_summary_diff.py tests finite metrics and tolerances, schema-aware comparisons, and large-integer differences.",
+      "gap": "Finite-value validation and deterministic numeric regressions exist, but there is no byte, depth or aggregate-list cap, seeded mutation campaign, or sanitizer coverage.",
+      "malformed_input_coverage": [
+        "NaN and Infinity metrics loaded from a synthetic JSON document are rejected with PerfSummaryError; non-finite tolerances are rejected by the diff API.",
+        "A schema-version mismatch is rejected by the CLI, and a zero tolerance retains adjacent integer differences above 2^53."
+      ],
+      "resource_gaps": [
+        "No byte cap, explicit depth/member-count budget or cap for the boundaries array; standard json.loads keeps its duplicate-key last-value behavior.",
+        "No direct malformed-syntax, truncation or duplicate-key test; no seeded mutation or sanitizer campaign."
+      ],
+      "campaigns": {
+        "deterministic_regression": {
+          "status": "IN_CI",
+          "tests": [
+            "tools/test_perf_summary_diff.py"
+          ],
+          "runner": "Python unit-test shards in .github/workflows/ci.yml"
+        },
+        "seeded_mutations": {
+          "status": "NOT_AVAILABLE",
+          "tests": [],
+          "campaign": "No dedicated seeded byte-mutation campaign located."
+        },
+        "sanitizer": {
+          "status": "NOT_COVERED",
+          "target": null,
+          "instrumentation": "No sanitizer campaign for this Python JSON route.",
           "ci": false
         },
         "coverage_guided_fuzzer": "NOT_CONFIGURED",
@@ -1906,13 +1984,14 @@
     {
       "boundary": "Supported tooling JSON readers: title runtime config, staging manifests, sweep reports, and the publication profile",
       "id": "python-tooling-json-readers",
-      "entry": "tools/title_runtime_config.py:317 load_config tools/nk_core/prep_engine.py:62 _validate_staged_outputs tools/library_sweep.py:229 _read_existing_rows tools/build_public_export.py:271 load_public_safe_profile",
+      "entry": "tools/title_runtime_config.py:317 load_config; tools/title_manifest.py:306@load_manifest; tools/nk_core/prep_engine.py:62 _validate_staged_outputs; tools/library_sweep.py:229@_read_existing_rows; tools/build_public_export.py:271@load_public_safe_profile",
       "source_paths": [
         "tools/title_runtime_config.py",
         "tools/nk_core/prep_engine.py",
         "tools/library_sweep.py",
         "tools/build_public_export.py",
-        "tools/public_export.py"
+        "tools/public_export.py",
+        "tools/title_manifest.py"
       ],
       "test_paths": [
         "tools/test_title_runtime_config.py",
@@ -1920,8 +1999,8 @@
         "tools/test_library_sweep.py",
         "tools/test_public_export.py"
       ],
-      "max_input": "No byte cap in any of these four readers. title_runtime_config inherits the 256 KiB load_manifest default; prep_engine, library_sweep, and build_public_export read whole files with json.load or json.loads.",
-      "tables_nesting": "Standard-library json parsing with no post-parse depth or member-count ceiling. Each reader does check the fields it depends on: schema_version, disc/title identity, row-array shape, and profile disposition.",
+      "max_input": "title_runtime_config inherits the 262144-byte PUBLIC_MANIFEST_MAX_BYTES limit from title_manifest.load_manifest. prep_engine, library_sweep and the public-profile loader read whole JSON files without a byte cap.",
+      "tables_nesting": "title_manifest applies MAX_JSON_DEPTH 16 and rejects duplicate keys. prep_engine, library_sweep and the public-profile reader have no explicit JSON depth or aggregate member-count cap; their route validators check the fields they consume after parsing.",
       "arithmetic": {
         "safe": "PARTIAL",
         "evidence": [
@@ -1932,17 +2011,18 @@
           "tools/public_export.py:172 index_files"
         ]
       },
-      "allocation_time": "Whole-file reads for each reader; library_sweep retains only the rows whose source_key matches the current tree, and public_export indexes tracked blobs in one git cat-file batch.",
+      "allocation_time": "title runtime-config input is capped at 256 KiB; the staged manifest, sweep report and tracked public profile are read whole. library_sweep retains only rows whose source_key matches the current tree, and public_export indexes tracked blobs in one git cat-file batch.",
       "failure_atomicity": "Each reader refuses rather than guessing: title_runtime_config converts a TitleManifestError into exit code 2, prep_engine raises PreparationOutputError and leaves the previous install untouched, library_sweep discards a report whose source fingerprint no longer matches, and build_public_export refuses a profile the shared validator rejects.",
-      "harness": "tools/test_title_runtime_config.py and tools/test_prep_fail_closed.py drive the first two readers directly. The other two are reached only indirectly, on valid paths: tools/test_library_sweep.py reaches _read_existing_rows through the resume path of library_sweep.run_sweep (tools/library_sweep.py:1080@run_sweep), and tools/test_public_export.py reaches load_public_safe_profile through export_sanitized_public_tree(public_safe_profile=True) (tools/build_public_export.py:501@export_sanitized_public_tree). Neither indirect route supplies a malformed document to its reader.",
-      "gap": "None of these four readers has a byte, depth, or member-count cap, and none has a seeded mutation or sanitizer campaign. The sweep-report reader and the publication profile loader have no direct malformed-input test: they are reached on valid paths only, through run_sweep's resume and through a profile-filtered export. tools/public_export.py itself only writes JSON; its reader is load_public_safe_profile in tools/build_public_export.py.",
+      "harness": "tools/test_title_runtime_config.py and tools/test_prep_fail_closed.py drive the first two readers directly. tools/test_library_sweep.py reaches _read_existing_rows through a valid resume and through malformed retained reports via library_sweep.main; non-object rows and missing, non-string, empty or duplicate source_key values fail before bring-up and leave outputs unchanged. tools/test_public_export.py reaches load_public_safe_profile indirectly through a valid profile-filtered export; no malformed profile is supplied.",
+      "gap": "title_runtime_config has the inherited 256 KiB and depth-16 limits; prep_engine, library_sweep and the public-profile reader have no byte, depth or member-count cap. There is no seeded mutation or sanitizer campaign. The sweep-report reader has deterministic malformed-checkpoint coverage through library_sweep.main; load_public_safe_profile is covered only with valid profile input. tools/public_export.py itself only writes JSON.",
       "malformed_input_coverage": [
-        "unsupported manifest versions for title_runtime_config, and unreadable, non-object, and unattributable staged manifests for prep_engine",
-        "the sweep-report reader and the publication profile loader are exercised only on valid documents: no direct malformed-input test for either"
+        "Unsupported title-manifest versions, and unreadable, non-object and unattributable staged manifests for prep_engine.",
+        "The sweep-report reader rejects malformed retained rows: non-object rows and missing, non-string, empty or duplicate source_key values, exercised through library_sweep.main before outputs advance.",
+        "The publication profile loader is reached only with a valid document through the profile-filtered export; no direct malformed-profile test is listed."
       ],
       "resource_gaps": [
-        "No byte/depth/member-count cap in any of the four readers.",
-        "No direct malformed-input test for _read_existing_rows or load_public_safe_profile; both are reached indirectly through tools/library_sweep.py:1080@run_sweep and tools/build_public_export.py:501@export_sanitized_public_tree.",
+        "No byte cap on staged manifests, sweep reports or the tracked public-profile reader; title runtime config inherits a 256 KiB cap. The other routes have no explicit depth or member-count limit.",
+        "No direct helper-level test for _read_existing_rows (malformed checkpoint cases run through library_sweep.main); no direct malformed-profile test for load_public_safe_profile.",
         "No seeded mutation or sanitizer campaign for this tooling JSON route."
       ],
       "campaigns": {
@@ -1954,7 +2034,7 @@
             "tools/test_library_sweep.py",
             "tools/test_public_export.py"
           ],
-          "runner": "Python unit-test shards in .github/workflows/ci.yml drive load_config and _validate_staged_outputs directly, and reach _read_existing_rows and load_public_safe_profile indirectly through the resume and export paths those shards exercise"
+          "runner": "Python unit-test shards in .github/workflows/ci.yml drive load_config and _validate_staged_outputs directly, exercise _read_existing_rows with valid resumes and malformed existing reports through library_sweep.main, and reach load_public_safe_profile through valid profile-filtered exports."
         },
         "seeded_mutations": {
           "status": "NOT_AVAILABLE",
