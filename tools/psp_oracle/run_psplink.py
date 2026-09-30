@@ -1067,7 +1067,12 @@ class PsplinkCampaignRunner:
             "RECOVERY_EVENTS": list(self.recovery_events),
             "QUALIFICATION_STATUS": "QUALIFIED" if case_qualified else "UNQUALIFIED",
             "QUALIFICATION_BLOCKERS": qualification_blockers,
-            "SESSION_QUALIFICATION_STATUS": "QUALIFIED" if self.state == "READY" else "LOST",
+            # The envelope is built while the case is still RUN_CASE (READY is restored only
+            # after it is appended); a recovery that succeeded restores READY. Any other state
+            # means the session was lost during this case.
+            "SESSION_QUALIFICATION_STATUS": (
+                "QUALIFIED" if self.state in ("RUN_CASE", "READY") else "LOST"
+            ),
             "EVIDENCE_CLASS": "PSP_HARDWARE" if acceptance_eligible else "UNQUALIFIED_CAPTURE",
             "ACCEPTANCE_ELIGIBLE": acceptance_eligible,
             "ACCEPTANCE_BLOCKERS": blockers,

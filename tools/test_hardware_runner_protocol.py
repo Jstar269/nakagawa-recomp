@@ -1722,6 +1722,29 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertFalse(is_unmeasured(label))
 
+    def test_session_qualification_reflects_the_session_not_the_case_phase(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for failing, expected in ((False, "QUALIFIED"), (True, "LOST")):
+            with self.subTest(failing=failing), tempfile.TemporaryDirectory(
+                prefix="runner-session-status-", dir=fixture_dir
+            ) as scratch_name:
+                scratch = Path(scratch_name)
+                binary = scratch / "transport-write.prx"
+                binary.write_bytes(b"synthetic PRX")
+                transport = SimulatedPsplinkTransport(
+                    timeout_cases={"transport-write"} if failing else None
+                )
+                transport.host0_root = scratch
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000",
+                    source_commit=SOURCE_COMMIT,
+                ).run([CampaignCase("transport-write", binary, 1.0)])
+                envelope = report["envelopes"][0]
+                self.assertEqual(envelope["SESSION_QUALIFICATION_STATUS"], expected)
+                if not failing:
+                    self.assertEqual(envelope["QUALIFICATION_STATUS"], "QUALIFIED")
+
     def test_campaign_unmeasured_model_is_not_acceptance_eligible(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="runner-unmeasured-model-", dir=fixture_dir) as scratch_name:
