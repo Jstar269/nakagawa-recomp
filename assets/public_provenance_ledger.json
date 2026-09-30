@@ -1255,7 +1255,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4c3f6568c0e6ded5d477e11bc3eefd49f4d806a3da4a3e200ac0850c8215382b"
+      "sha256": "87684eeffdabbea64bae8fb98f84d2acf6ea14ba8f9cf1ed3cf91ab9c6a9937c"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -2726,7 +2726,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6d43e42bed4062597baa5292f6b1f54076681085e0d863aabbbc56b9c78f8c20"
+      "sha256": "3adc3d9fef183b468871c493440ea40edc16b579fafcf95a90534be7114a8192"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -5987,7 +5987,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a8ac437e88025efa6c0fdcb7d85fb32ae2a6036bc1f02d35c6155cd9bc28218"
+      "sha256": "f1f219e3a2cf6bcc7b29bfca6523a54f3ea707fd79acc8f37e5c7657cdd09f69"
     },
     {
       "path": "tools/host_stubs.py",
@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ee65209dd0ae0baeabd4a1f0ae986af3f9640a4721313414a0ebd6e2edaa107"
+      "sha256": "2f32577018e9fd7ef5fa5af7079fc681179db93d15f66cbbed2be949aea509e4"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6278,7 +6278,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b1442031db2715e99c44f6eb58b39fdb1abb41d1bc86fccc41201d1fba77183"
+      "sha256": "ac334475c8daafebb582db8259d4b98d5418102639b0ba2e1c5dd30747873687"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -6398,7 +6398,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef0559ce367036afa41ad321438ea120afbab1877f97c08621d37daefe2cbe0e"
+      "sha256": "752ddc3a45c00764a01257c7ce7248b0f105c84b411ddaaf03b1c534cd0b28ea"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -8119,7 +8119,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c7d9d876f6aa34acb78d25a9abe5d3ea42b1105434b9f70ec272b8cc4aa91353"
+      "sha256": "579b2d381f4b5017ce87e9fe4bfd5278827c56e41e7b8f21457477ebf92c53b3"
     },
     {
       "path": "tools/test_package_cache.py",
@@ -8131,7 +8131,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "10a576e0a9a88045c5070dcf3cc1db8582455334a87698fb22717c52c78cea30"
+      "sha256": "cbe263e6ad5f51ed6573c4a150145defe7dc37bc3497e1240446f92fd68cfe9f"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -8215,7 +8215,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9d4295864b43334a8d22368fa0cf5d52e7de5f2a533ca2586e4528a409eb5932"
+      "sha256": "7535eab73199ed09b63c3a8691c1cdddf93f12317eb8af70cae40c4058a8cda2"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -9248,7 +9248,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ec2fdd8f2a6d5b83c6ff55e2ba797cf3ee9560753509a147de770bb465f97c6c"
+      "sha256": "b90068016728457aefe703c3b24d316fccb1f25f32fd1b7709fe465c1e5ae2b8"
     },
     {
       "path": "tools/title_manager_plan.ps1",
@@ -9471,17 +9471,19 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "ec2ec0f8248f389b82a6a59315c467bb3cb61db7",
-    "candidate_tree": "ebb70bf71ba335c39d1bdd41f89a63a6b1419956",
+    "trusted_tree": "8b9f193e0493278383ee94bf9587bc97aa41372c",
+    "candidate_tree": "dc41244f611bf07131cc59ba48fabba2a23b05d1",
     "refreshed_paths": [
-      ".pre-commit-config.yaml",
-      "assets/prereq_manifest.json",
-      "assets/pypi_tool_metadata_2026-09-25.json",
-      "assets/third_party_components.json",
-      "tools/generate_sbom.py",
-      "tools/requirements-lock.txt",
-      "tools/test_sbom.py",
-      "tools/test_sbom_fail_closed.py"
+      "docs/PROVENANCE_MERGE_GATE.md",
+      "src/core/nk_title_manifest.c",
+      "tools/hle_registry_meta.py",
+      "tools/nk_cli.py",
+      "tools/nk_core/iso_inspect.py",
+      "tools/nk_doctor_checks.py",
+      "tools/test_nk_core.py",
+      "tools/test_package_cache.py",
+      "tools/test_player_package_route.py",
+      "tools/title_codegen_plan.py"
     ]
   }
 }
