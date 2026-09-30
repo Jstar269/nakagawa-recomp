@@ -5,18 +5,16 @@
 
 Evidence classification
 -----------------------
-NOT_MEASURED.  The `vasin` unit reduces its argument to a fixed 9.23 index into
-a 128-entry segment table, so every `|x| > 1` encoding lies outside the
-reconstructed domain.  `assets/vfpu/` is PPSSPP's reconstruction and upstream
-describes that domain edge as a guess; `pspdev` `vfpu-docs` states no edge case
-for it.  The runtime therefore fails closed to the PSP invalid NaN rather than
-inventing a value, and these tests pin THAT contract -- the current, explicitly
-unmeasured fail-closed result -- plus the two properties that must hold for it
-to be honest:
+HARDWARE_MEASURED for the 14 exact argument words in the PSP oracle table
+(2026-09-30).  Both fresh runs returned identical records: the +/-1 endpoints
+returned themselves, and all sampled `|x| > 1` words returned the signed PSP
+invalid NaN (`0x7F800001` / `0xFF800001`).  The existing shared helper already
+matches those observations.  These tests pin the measured table and the two
+properties that must hold for it to remain honest:
 
-  * the fail-closed branch is the only out-of-domain path, it is keyed on the
-    documented domain boundary (`0x3F800000`, `|x| = 1`), and it returns the
-    PSP invalid NaN carrying the input's sign;
+  * the single shared helper's out-of-domain branch is keyed on the documented
+    boundary (`0x3F800000`, `|x| = 1`) and returns the sampled PSP invalid NaN
+    carrying the input's sign;
   * the AOT emitter and the AOT-gap interpreter route through the ONE shared
     implementation, so the two tiers cannot answer this edge differently;
   * the boundary is named in the product (`docs/COMPATIBILITY.md`) and in the
@@ -39,6 +37,7 @@ is a semantics contract, not a title fixture.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import struct
 import unittest
 
@@ -48,6 +47,7 @@ CODEGEN_PY = ROOT / "tools" / "codegen.py"
 VFPU_INTERP_C = ROOT / "src" / "rt" / "vfpu_interp.c"
 COMPATIBILITY_MD = ROOT / "docs" / "COMPATIBILITY.md"
 HARDWARE_ORACLE_MD = ROOT / "docs" / "HARDWARE_ORACLE.md"
+VFPU_INTERP_SELFTEST_C = ROOT / "src" / "rt" / "vfpu_interp_selftest.c"
 
 #: `|x| = 1.0` in raw bits: the documented end of the arc-sine domain.
 DOMAIN_LIMIT_WORD = 0x3F800000
@@ -102,13 +102,13 @@ class ReproducedCorpusTests(unittest.TestCase):
         self.assertEqual(DOMAIN_LIMIT_WORD & 0x7FFFFFFF, DOMAIN_LIMIT_WORD)
 
 
-class FailClosedResultTests(unittest.TestCase):
-    """The one shared implementation states its out-of-domain result."""
+class MeasuredResultTests(unittest.TestCase):
+    """The one shared implementation matches the exact measured words."""
 
     def setUp(self) -> None:
         self.src = RECOMP_C.read_text(encoding="utf-8")
 
-    def test_out_of_domain_branch_returns_the_psp_invalid_nan(self) -> None:
+    def test_out_of_domain_branch_returns_the_measured_psp_invalid_nan(self) -> None:
         self.assertIn(
             "if(bits>0x3F800000u){bits=0x7F800001u^sign;",
             self.src,
@@ -170,18 +170,26 @@ class NamedBoundaryTests(unittest.TestCase):
         self.assertIn("arc-sine domain", row)
         self.assertIn("issues/69", row)
 
-    def test_hardware_oracle_records_the_edge_as_not_measured(self) -> None:
-        self.assertIn("Out-of-domain transcendental arguments", self.oracle)
-        self.assertIn("NOT_MEASURED", self.oracle)
-        self.assertIn("#69", self.oracle)
-
-    def test_hardware_oracle_does_not_claim_a_measured_value(self) -> None:
-        # A cell may only lose its NOT_MEASURED label together with a recorded
-        # measurement; asserting the wording keeps a silent promotion impossible.
+    def test_hardware_oracle_records_the_measured_words(self) -> None:
+        test_src = VFPU_INTERP_SELFTEST_C.read_text(encoding="utf-8")
+        start = test_src.index("static int check_vasin_measured_domain_words(void)")
+        body = test_src[start:test_src.index("\nint main(void)", start)]
+        measured = re.findall(
+            r"\{0x([0-9A-Fa-f]{8})u,\s*0x([0-9A-Fa-f]{8})u\}", body)
+        self.assertEqual(len(measured), 14, "the runtime regression must retain all 14 PSP words")
         start = self.oracle.index("Out-of-domain transcendental arguments")
         cell = self.oracle[start:self.oracle.index("\n- ", start + 1)]
-        self.assertIn("fails closed", cell)
-        self.assertNotIn("HARDWARE_MEASURED", cell)
+        self.assertIn("HARDWARE_MEASURED", cell)
+        self.assertIn("#69", cell)
+        for input_word, result_word in measured:
+            row = f"`0x{input_word.upper()}` | `0x{result_word.upper()}`"
+            self.assertIn(row, cell, f"missing measured row: {row}")
+
+    def test_compatibility_names_measured_result_and_open_issue(self) -> None:
+        row = self._vfpu_row()
+        self.assertIn("measured VASIN at the arc-sine domain boundary", row)
+        self.assertIn("in the works", row)
+        self.assertIn("issues/69", row)
 
 
 if __name__ == "__main__":

@@ -32,20 +32,37 @@ proposals. Each claim covers only the exact fixture named:
   overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
   route and date. Bulk random differential fuzz (Loop A) remains unbuilt, and
   the PPSSPP-derived-table warning stands for every unmeasured encoding.
-- **Out-of-domain transcendental arguments** (issue #69): NOT_MEASURED, and the
-  runtime therefore fails closed rather than inventing a result. The
-  `vasin` unit reduces its argument to a fixed 9.23 index and a 128-entry
-  segment table, so every `|x| > 1` encoding is outside the reconstructed
-  domain; the runtime returns the PSP invalid NaN `0x7F800001` with the input
-  sign. Upstream describes that branch as a guess (its own accuracy sweeps stop
-  at `|x| = 1`) and `pspdev` `vfpu-docs` states no edge case for it, so the
-  real silicon result is unknown here. A qualified private-title route reaches
-  it: the `NAN_TRAP` diagnostic on the main-menu transition shows every
-  arc-sine argument of the guest's rotation solve leaving the domain
-  (`|x|` in `[1.026, 2.0]`), which propagates to the bone matrices the title
-  uploads. Closing this needs a Loop B microtest over the existing oracle
-  vector, which already carries `+2.0` and `-10.0`; the answer must be
-  measured before any value is baked in.
+- **Out-of-domain transcendental arguments** (issue #69): `HARDWARE_MEASURED`
+  for these 14 exact raw words on the authorized PSP-3000-series / 6.61 /
+  ARK-5.1.0 route (2026-09-30). Two fresh USBHostFS/PSPLink sessions returned
+  byte-identical records. The `vasin` implementation's current signed invalid
+  signaling NaN matches every sampled out-of-domain result; the endpoints return
+  themselves. This is evidence for these exact words, not every possible
+  out-of-domain encoding.
+
+  | Input word | PSP result word |
+  | :--- | :--- |
+  | `0xBF800000` | `0xBF800000` |
+  | `0x3F800000` | `0x3F800000` |
+  | `0xBF800001` | `0xFF800001` |
+  | `0x3F800001` | `0x7F800001` |
+  | `0x3F80000B` | `0x7F800001` |
+  | `0xBF80000B` | `0xFF800001` |
+  | `0xBF80DABC` | `0xFF800001` |
+  | `0xBF82026A` | `0xFF800001` |
+  | `0xBF8FA2B7` | `0xFF800001` |
+  | `0xBF9A419C` | `0xFF800001` |
+  | `0xBFB63DDA` | `0xFF800001` |
+  | `0xBFFB5A51` | `0xFF800001` |
+  | `0xBFFFFE00` | `0xFF800001` |
+  | `0xC0000000` | `0xFF800001` |
+
+  A qualified private-title route reaches this edge: its `NAN_TRAP`
+  diagnostic on the main-menu transition shows the guest rotation solve
+  leaving the arc-sine domain (`|x|` in `[1.026, 2.0]`) and propagating to the
+  uploaded bone matrices. The measured result does not establish the root
+  cause of the one-frame skinned-model corruption; that issue remains in the
+  works under #69.
 - **Display/vblank masking** (detail: `ARCHITECTURE.md` display-mask section
   and the shipped `PSP-DISPLAY-001` oracle results): masked-window behavior is
   HARDWARE_MEASURED (+0 when no period crossed, +1 when one or two crossed,
