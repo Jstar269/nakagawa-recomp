@@ -590,6 +590,38 @@ void     sr_exec_span_reset(void);
 int      sr_exec_span_register(uint32_t start, uint32_t end);
 int      sr_exec_span_owns_fetch(uint32_t pc);
 
+#if defined(SR_STACK_CENSUS_ENABLED)
+/* Opt-in dynamic check of guest stack preservation at generated callable
+ * boundaries. Codegen supplies its sorted callable-entry set. Resume entries
+ * share an existing callable frame and are deliberately not counted. */
+typedef enum SrStackCensusStatus {
+    SR_STACK_CENSUS_NOT_OBSERVED = 0,
+    SR_STACK_CENSUS_COMPLETE = 1,
+    SR_STACK_CENSUS_PARTIAL = 2,
+    SR_STACK_CENSUS_FAILED = 3
+} SrStackCensusStatus;
+typedef struct SrStackCensusSummary {
+    SrStackCensusStatus status;
+    uint64_t entries;
+    uint64_t returns;
+    uint64_t excluded;
+    uint64_t unexpected;
+    uint64_t mismatches;
+    uint32_t first_mismatch_entry;
+    uint32_t first_mismatch_expected_sp;
+    uint32_t first_mismatch_actual_sp;
+    uint32_t first_mismatch_flow;
+    int has_mismatch;
+} SrStackCensusSummary;
+void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_count);
+void sr_stack_census_enter(uint32_t entry);
+void sr_stack_census_exit(uint32_t entry, uint32_t expected_sp,
+                          uint32_t actual_sp, uint32_t flow_kind);
+void sr_stack_census_snapshot(SrStackCensusSummary *summary);
+SrStackCensusStatus sr_stack_census_status(void);
+void sr_stack_census_report(void);
+#endif
+
 #define SR_HAS_GUEST_CALL_BOUNDARY 1
 void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume boundary */
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);

@@ -340,20 +340,68 @@ def write_funcs_header(path, emitted, resume_owners=None):
         f.write("#endif\n")
 
 
-def emit_host_return(resumable, comment=None):
+def emit_host_return(resumable, comment=None, stack_census=False):
     """The single host-exit policy for callable and live-frame resume entries."""
     if resumable:
+        return "return;"
+    if stack_census:
+        # The census wrapper records the actual guest SP before restoring the
+        # callable ABI boundary. The ordinary generated path remains unchanged.
         return "return;"
     if comment:
         return f"s->r[29] = _sp_entry; /* {comment} */\n    return;"
     return "s->r[29] = _sp_entry; return;"
 
 
-def emit_host_fallthrough(resumable):
+def emit_host_fallthrough(resumable, stack_census=False):
     """Natural C fallthrough follows the same entry contract without a fake guest return."""
     if resumable:
         return "/* resume fall-through: guest owns SP */"
+    if stack_census:
+        # Let the outer census wrapper observe the actual guest SP before it
+        # restores the callable host ABI boundary.
+        return "/* census wrapper records fall-through SP */"
     return "s->r[29] = _sp_entry; /* o32 ABI: sp is callee-saved; balance on fall-through end (F3E) */"
+
+
+def wrap_stack_census_functions(func_texts, emitted, resume_owners):
+    """Wrap each callable generated entry with opt-in dynamic SP observation."""
+    for addr in sorted(set(emitted)):
+        if addr in resume_owners:
+            continue
+        symbol = f"f_{addr:08x}"
+        pattern = re.compile(
+            rf"(?m)^void {re.escape(symbol)}\(CpuState \*s\) \{{"
+        )
+        matches = [
+            (index, pattern.search(text))
+            for index, text in enumerate(func_texts)
+            if pattern.search(text) is not None
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"stack census expected one emitted callable body for "
+                f"0x{addr:08x}, found {len(matches)}"
+            )
+        index, match = matches[0]
+        body = f"_sr_stack_census_body_{addr:08x}"
+        replacement = f"static void {body}(CpuState *s) {{"
+        func_texts[index] = (
+            func_texts[index][:match.start()]
+            + replacement
+            + func_texts[index][match.end():]
+        )
+        func_texts[index] += (
+            f"\n\nvoid {symbol}(CpuState *s) {{\n"
+            f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
+            f"    sr_stack_census_enter(0x{addr:08x}u);\n"
+            f"    {body}(s);\n"
+            f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
+            "s->r[29], s->flow_kind);\n"
+            "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
+            "}"
+        )
+    return func_texts
 
 R = lambda i: "0u" if i == 0 else f"s->r[{i}]"           # read GPR (r0 is constant 0)
 F = lambda i: f"s->f[{i}]"
@@ -1909,7 +1957,8 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
 }"""
 
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
-                  profile=None, dispatch_boundaries=None, lle_cpu=False):
+                  profile=None, dispatch_boundaries=None, lle_cpu=False,
+                  stack_census=False):
     hst_profile = profile == "hst"
     if lle_cpu is False:
         lle_cpu = LLE_CPU
@@ -2261,7 +2310,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
             else:
                 out.append(
-                    f"      dispatch(s, _t); {emit_host_return(resumable)} }}"
+                    f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}"
                 )
             continue
         if op == 0 and fn == 0x08:  # jr rs
@@ -2270,22 +2319,22 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
                 # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
-                out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, 0x{ds:08x}u); {emit_host_return(resumable)}")
+                out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, 0x{ds:08x}u); {emit_host_return(resumable, stack_census=stack_census)}")
             elif ds_is_syscall and dsw is not None:
                 # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
                 if a == 31:
-                    out.append(f"    {emit_host_return(resumable)}")
+                    out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
                 else:
                     out.append(f"    {{ uint32_t _t = {R(a)};")
-                    out.append(f"      dispatch(s, _t); {emit_host_return(resumable)} }}")
+                    out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
             elif a == 31:
                 # `jr $ra` IS the host return; $ra is read at the transfer by
                 # construction, so a slot that rewrites it cannot redirect this.
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-                out.append(f"    {emit_host_return(resumable)}")
+                out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
@@ -2293,19 +2342,19 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
-                out.append(f"      dispatch(s, _t); {emit_host_return(resumable)} }}")
+                out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
             continue
         if op == 2:  # j
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in host_entries and not (target in resume_owners and target in labels):
-                out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable)}")
+                out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable, stack_census=stack_census)}")
             elif target in labels:
                 y = f"SR_YIELD(s, 0x{addr:08x}u); " if target <= addr else ""   # backward j: loop edge
                 out.append(f"    {y}goto L_{target:08x};")
             else:
-                out.append(f"    {{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t); {emit_host_return(resumable)} }}")
+                out.append(f"    {{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
             continue
         # conditional branch
         target = branch_target(addr, w)
@@ -2334,10 +2383,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
         else:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
+                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
             else:
                 out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
+                out.append(f"      if (_c) {{ {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
         if addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
     if continuations:
@@ -2353,13 +2402,13 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # dispatch the guest target and then leave the current native body.
                 out.append(
                     f"    {{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t); "
-                    f"{emit_host_return(resumable)} }}"
+                    f"{emit_host_return(resumable, stack_census=stack_census)} }}"
                 )
             else:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
-                out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame')}")
+                out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame', stack_census=stack_census)}")
         out.append("  _sr_fallthrough_return: ;")
-    out.append(f"    {emit_host_fallthrough(resumable)}")
+    out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
     out.append("}")
     out.append("")
     return out
@@ -2379,7 +2428,8 @@ def main(argv):
         sys.stderr.write(
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
             "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
-            "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate]\n"
+            "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
+            "[--stack-census]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -2408,6 +2458,7 @@ def main(argv):
     extra_span_arg = None
     cfg_report_path = None
     cfg_gate = False
+    stack_census = False
     omit_aot = _OmitAot()
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
@@ -2423,6 +2474,8 @@ def main(argv):
                 return 2
         elif o == "--cfg-gate":
             cfg_gate = True
+        elif o == "--stack-census":
+            stack_census = True
         elif o == "--static-verify":
             global SV_ENABLED
             SV_ENABLED = True
@@ -2482,6 +2535,11 @@ def main(argv):
         elif o.startswith("--extra-elf="):
             cli_extra_specs.append(o.split("=", 1)[1])
 
+    if stack_census:
+        # The dynamic run is meaningful only after the static ownership floor
+        # accepts the same image.
+        cfg_gate = True
+
     try:
         extra_specs = build_profile.resolve_list(
             "GAME_EXTRA_ELFS_ENV", use_env=use_env_extra, cli_values=cli_extra_specs,
@@ -2505,7 +2563,11 @@ def main(argv):
     # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
-    analyzed, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
+    analyzed, ranges = analyze(
+        elf,
+        extra_spans=resolve_extra_spans(extra_span_arg),
+        cfg_gate=cfg_gate or cfg_report_path is not None,
+    )
     if cfg_report_path is not None or cfg_gate:
         # This opt-in gate audits the primary image. Extra modules have their own
         # analyzer invocation below and remain a separate bring-up surface until
@@ -2529,7 +2591,8 @@ def main(argv):
             print(
                 "CFG_GATE PASS: "
                 f"{len(cfg_report['instructions'])} executable words, "
-                f"{len(cfg_report['entries'])} entries"
+                f"{len(cfg_report['entries'])} entries, "
+                f"{len(cfg_report['unowned_executable'])} unowned words recorded"
             )
     owned_exec_ranges = list(ranges)
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
@@ -2729,7 +2792,8 @@ def main(argv):
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries)))
+                dispatch_boundaries=dispatch_boundaries,
+                stack_census=stack_census)))
             func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
             text = """void f_000468c8(CpuState *s) {  /* custom stub: main_RunGameLoop - infinite frame loop */
     for (;;) {
@@ -2751,7 +2815,8 @@ def main(argv):
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries)))
+                dispatch_boundaries=dispatch_boundaries,
+                stack_census=stack_census)))
             func_texts[-1] = func_texts[-1].replace(
                 "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
             text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
@@ -2834,7 +2899,8 @@ def main(argv):
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries)))
+                dispatch_boundaries=dispatch_boundaries,
+                stack_census=stack_census)))
             emitted.append(a)
             if STALE_DETECT:
                 stale_funcs.append(a)
@@ -2853,9 +2919,42 @@ def main(argv):
         sys.stderr.write(f"Processing extra ELF: {extra_elf_path} @ 0x{extra_base:08x}\n")
         extra_elf = Elf(extra_elf_path, base=extra_base)
         extra_ranges = exec_ranges(extra_elf)
+        if cfg_gate:
+            for lo, hi in extra_ranges:
+                if hi <= lo:
+                    continue
+                for old_lo, old_hi in owned_exec_ranges:
+                    if old_hi > old_lo and lo < old_hi and old_lo < hi:
+                        sys.stderr.write(
+                            "CODEGEN_EXEC_SPAN_OVERLAP: extra executable span "
+                            f"0x{lo:08x},0x{hi:08x} overlaps existing span "
+                            f"0x{old_lo:08x},0x{old_hi:08x}\n"
+                        )
+                        return 2
         owned_exec_ranges.extend(extra_ranges)
-        extra_known, _ = analyze(extra_elf)
+        extra_analyzed, _ = analyze(
+            extra_elf, cfg_gate=cfg_gate or cfg_report_path is not None
+        )
+        extra_known = set(extra_analyzed)
         extra_known = set(a for a in extra_known if in_ranges(a, extra_ranges))
+        if cfg_gate:
+            extra_report = canonical_cfg_report(
+                extra_elf, ranges=extra_ranges, entries=sorted(extra_known)
+            )
+            extra_findings = canonical_cfg_gate(extra_report)
+            if extra_findings:
+                for finding in extra_findings:
+                    sys.stderr.write(
+                        f"CFG_GATE extra-module {finding['code']}: "
+                        f"{finding['message']}\n"
+                    )
+                return 1
+            print(
+                "CFG_GATE PASS: extra module "
+                f"{len(extra_report['instructions'])} executable words, "
+                f"{len(extra_report['entries'])} entries, "
+                f"{len(extra_report['unowned_executable'])} unowned words recorded"
+            )
 
         extra_impmap = {}
         if extra_elf.reloc is not None:
@@ -2884,7 +2983,9 @@ def main(argv):
                 emitted.append(a)
                 continue
             try:
-                func_texts.append("\n".join(emit_function(extra_elf, a, extra_ranges, extra_known, profile=profile)))
+                func_texts.append("\n".join(emit_function(
+                    extra_elf, a, extra_ranges, extra_known, profile=profile,
+                    stack_census=stack_census)))
                 emitted.append(a)
             except Unsupported as e:
                 reason = str(e).replace('"', "'")
@@ -2895,6 +2996,15 @@ def main(argv):
                 emitted.append(a)
                 stubbed.append((a, reason))
                 sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
+
+    if stack_census:
+        try:
+            func_texts = wrap_stack_census_functions(
+                func_texts, emitted, resume_owners
+            )
+        except ValueError as exc:
+            sys.stderr.write(f"codegen: {exc}\n")
+            return 2
 
     if chunk_target_bytes > 0:
         # Deterministic size-aware partition: preserve emitted function order and
@@ -2953,6 +3063,15 @@ def main(argv):
         "#include <stdio.h>",
         ""
     ]
+    census_entries = sorted({a for a in emitted if a not in resume_owners})
+    if stack_census:
+        census_values = census_entries or [0]
+        main_out.append(
+            "static const uint32_t sr_stack_census_expected_entries[] = {"
+            + ", ".join(f"0x{addr:08x}u" for addr in census_values)
+            + "};"
+        )
+        main_out.append("")
     for i in range(num_files):
         main_out.append(f"void sr_register_chunk_{i}(void);")
     main_out.append("\nvoid sr_register_all(void) {")
@@ -2969,6 +3088,11 @@ def main(argv):
         )
         main_out.append("        exit(1);")
         main_out.append("    }")
+    if stack_census:
+        main_out.append(
+            "    sr_stack_census_begin(sr_stack_census_expected_entries, "
+            f"{len(census_entries)}u);"
+        )
     if STALE_DETECT:
         # TD-27 compact translation-time records (address + entry word +
         # word count + FNV-1a per translated primary-image function). No raw

@@ -912,9 +912,12 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
                 add_edge(address, None, "unresolved-indirect", "computed-jump")
                 row["terminator"] = "indirect-jump"
         elif op == 0 and funct == 9:
-            add_edge(address, None, "unresolved-indirect", "computed-call")
-            if address + 8 in nodes:
-                add_edge(address, address + 8, "fallthrough", "call-return")
+            if (word >> 11) & 0x1F:
+                add_edge(address, None, "unresolved-indirect", "computed-call")
+                if address + 8 in nodes:
+                    add_edge(address, address + 8, "fallthrough", "call-return")
+            else:
+                add_edge(address, None, "unresolved-indirect", "computed-tail-transfer")
         elif address not in delay_owner and address + 4 in nodes:
             add_edge(address, address + 4, "fallthrough", "linear")
 
@@ -1109,6 +1112,7 @@ _CFG_DETAIL_NAMES = (
     "computed-call",
     "linear",
     "known-entry-tail-transfer",
+    "computed-tail-transfer",
 )
 _CFG_DETAIL_IDS = {name: index for index, name in enumerate(_CFG_DETAIL_NAMES)}
 _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
@@ -1495,9 +1499,14 @@ def canonical_cfg_state(image, ranges=None, entries=None):
                     add_edge(source_index, None, "unresolved-indirect", "computed-jump")
                     state.terminators[source_index] = 2
             elif op == 0 and funct == 9:
-                add_edge(source_index, None, "unresolved-indirect", "computed-call")
-                if node_index.get(address + 8) is not None:
-                    add_edge(source_index, address + 8, "fallthrough", "call-return")
+                if (word >> 11) & 0x1F:
+                    add_edge(source_index, None, "unresolved-indirect", "computed-call")
+                    if node_index.get(address + 8) is not None:
+                        add_edge(source_index, address + 8, "fallthrough", "call-return")
+                else:
+                    add_edge(
+                        source_index, None, "unresolved-indirect", "computed-tail-transfer"
+                    )
             elif state.delay_of[source_index] == _CFG_NONE and next_index is not None:
                 add_edge(source_index, address + 4, "fallthrough", "linear")
 
@@ -2037,11 +2046,12 @@ def canonical_cfg_gate(report):
     """Return fail-closed ownership-gate findings for a CFG report.
 
     ``verify_canonical_cfg_report`` checks that the serialized projections agree
-    with one another.  This gate adds the semantic rule needed by the analyzer
-    bring-up path: every non-padding executable word must have an explicit
-    ownership result, and ambiguous ownership or unmapped entries must remain
-    visible instead of becoming native fall-through.  Continuation/interior
-    entries are valid classifications and therefore do not fail the gate.
+    with one another. This gate requires every known in-range successor of an
+    owned instruction to have an owner, and keeps ambiguous ownership or
+    unmapped entries fail-closed. Non-padding words that are not reached from
+    the supplied entries remain explicitly classified as unowned; that is not
+    proof that no dynamic entry exists, but file adjacency alone is not a
+    control-flow edge. Continuation/interior entries are valid classifications.
     """
     findings = verify_canonical_cfg_report(report)
     if findings:
@@ -2054,10 +2064,26 @@ def canonical_cfg_gate(report):
             "message": "machine-readable ownership map is absent",
         })
 
-    for address in report.get("unowned_executable", ()):
+    node_by_address = {
+        node["address"]: node
+        for node in report.get("instructions", ())
+        if isinstance(node, dict) and type(node.get("address")) is int
+    }
+    for edge in report.get("edges", ()):
+        if not isinstance(edge, dict):
+            continue
+        source = node_by_address.get(edge.get("source"))
+        target = node_by_address.get(edge.get("target"))
+        if (source is None or target is None
+                or not source.get("owners") or target.get("owners")):
+            continue
         findings.append({
             "code": "ownership-gap",
-            "message": f"unowned executable word at 0x{address:08x}",
+            "message": (
+                f"owned {edge.get('kind')} successor from "
+                f"0x{edge['source']:08x} reaches unowned executable word "
+                f"at 0x{edge['target']:08x}"
+            ),
         })
     for conflict in report.get("ownership_conflicts", ()):
         address = conflict.get("address") if isinstance(conflict, dict) else conflict
@@ -2156,7 +2182,7 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None):
+def analyze(elf, extra_spans=None, cfg_gate=False):
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
 
@@ -2328,7 +2354,12 @@ def analyze(elf, extra_spans=None):
                     jtails.add(target)
             if (word >> 16) == 0x27BD and (word & 0x8000):  # addiu $sp,$sp,-N prologue
                 noisy.add(addr)
-            is_uncond = (op == 2 or (op == 0 and (word & 0x3F) == 0x08)
+            # The opt-in ownership gate does not treat a direct `j` as having
+            # a sequential successor after its delay slot. Keep the legacy
+            # discovery heuristic when the gate is off so default output stays
+            # byte-identical.
+            is_uncond = ((not cfg_gate and op == 2)
+                         or (op == 0 and (word & 0x3F) == 0x08)
                          or (op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0))
             if is_uncond and in_ranges(addr + 8, ranges):
                 tb = elf.read_at_vaddr(addr + 8, 4)
@@ -2659,7 +2690,11 @@ def main(argv):
         elif o == "--cfg-gate":
             cfg_gate = True
     elf = Elf(args[0], base=base)
-    starts, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
+    starts, ranges = analyze(
+        elf,
+        extra_spans=resolve_extra_spans(extra_span_arg),
+        cfg_gate=cfg_gate or cfg_report_path is not None,
+    )
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts
