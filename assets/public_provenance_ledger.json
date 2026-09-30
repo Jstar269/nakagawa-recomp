@@ -5501,7 +5501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "503d4ab4229b090ac4bd9e72f5c5ec09c70f64a5aa812cf7df58ac2eee5c5c8c"
+      "sha256": "bf4fb660ba277571f6a8f84a6c4752e4790d5b590f38fd8c2f50544a589c3d7f"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5623,7 +5623,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0f449b92d16c3807ee7cb1ab40feae2ca1741975a653dbd324e0ea93e90cf93f"
+      "sha256": "1b1eb5dfd22844d54f51b8dc9ca6ec2249b48e4128f81ac595e1a672f0aa5587"
     },
     {
       "path": "tools/ci_required.py",
@@ -7097,7 +7097,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "00d5746bec632e4382af4cc7c5d41f700332e7f6156cbe07c84ecbae9259bc85"
+      "sha256": "a1ad5b631993b8ad07f983671ae5b37622e531dd21f398805427a6e608b499f0"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7927,7 +7927,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c099d227d92505270613b81ec30089446e816cd55d53161eebb03111a711a19b"
+      "sha256": "cb53e133fb6d62aae0cbcd89258338348e503d0b1ae884fa65d1a24caa9a9735"
     },
     {
       "path": "tools/test_manager_safety.ps1",
@@ -9471,15 +9471,13 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "8b9f193e0493278383ee94bf9587bc97aa41372c",
-    "candidate_tree": "e17bdaded2190da59a00751e51455e06d33be5d3",
+    "trusted_tree": "5d688f3037434f5eef366ffbc989c907e7716611",
+    "candidate_tree": "c363f2c9c2c3209d4431cea8f4b66adfbb5638b4",
     "refreshed_paths": [
-      ".github/workflows/ci.yml",
-      "CMakeLists.txt",
-      "docs/CI.md",
-      "docs/LINUX_DEVELOPMENT.md",
-      "docs/SETUP.md",
-      "tools/test_public_ci_wiring.py"
+      "tools/README.md",
+      "tools/ci_paths.py",
+      "tools/test_ci_paths.py",
+      "tools/test_lint_docs.py"
     ]
   }
 }
