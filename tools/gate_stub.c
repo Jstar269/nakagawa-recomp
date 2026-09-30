@@ -179,7 +179,7 @@ uint32_t gui_buttons(void) { return 0u; }
 void     gui_consume_button_pulses(void) {}
 void     gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = 128; if (ly) *ly = 128; }
 int      gui_pad_present(void) { return 0; }
-void     gui_present(uint32_t fbaddr, int fmt, uint32_t stride) { (void)fbaddr; (void)fmt; (void)stride; }
+int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride) { (void)fbaddr; (void)fmt; (void)stride; return 1; }
 
 /* --- Extracted-data preparation stub (hle.c seam; the gate never scans) --- */
 int sr_host_data_prepare(void) { return 4; /* SR_DATA_STATE_DISABLED */ }
