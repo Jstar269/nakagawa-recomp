@@ -147,11 +147,14 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         char esc_title[NK_MAX_TITLE_LEN * 2];
         char esc_iso[NK_MAX_PATH * 2];
         char esc_prep[NK_MAX_PATH * 2];
+        char esc_boot_executable[NK_MAX_EXECUTABLE_PATH * 2];
         char esc_executable[NK_MAX_EXECUTABLE_PATH * 2];
 
         escape_json_string(esc_title, sizeof(esc_title), g->title_name);
         escape_json_string(esc_iso, sizeof(esc_iso), g->iso_path);
         escape_json_string(esc_prep, sizeof(esc_prep), g->prepared_root);
+        escape_json_string(esc_boot_executable, sizeof(esc_boot_executable),
+                           g->boot_executable);
         escape_json_string(esc_executable, sizeof(esc_executable), g->selected_executable);
 
         fprintf(f, "    {\n");
@@ -169,6 +172,7 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"executable_selection\": %u,\n", (unsigned)g->executable_selection);
         fprintf(f, "      \"executable_boot_fallback\": %s,\n",
                 g->executable_boot_fallback ? "true" : "false");
+        fprintf(f, "      \"boot_executable\": \"%s\",\n", esc_boot_executable);
         fprintf(f, "      \"selected_executable\": \"%s\",\n", esc_executable);
         fprintf(f, "      \"is_prepared\": %s,\n", g->is_prepared ? "true" : "false");
         fprintf(f, "      \"assets_staged\": %s,\n", g->assets_staged ? "true" : "false");
@@ -445,6 +449,11 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                     p = next_p;
                 } else if (strcmp(key, "title_id") == 0) {
                     next_p = parse_string_val(p, entry.title_id, sizeof(entry.title_id));
+                    if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
+                } else if (strcmp(key, "boot_executable") == 0) {
+                    next_p = parse_string_val(p, entry.boot_executable,
+                                              sizeof(entry.boot_executable));
                     if (!next_p) { entry_failed = true; break; }
                     p = next_p;
                 } else if (strcmp(key, "selected_executable") == 0) {

@@ -58,6 +58,9 @@ typedef struct {
     uint32_t executable_boot_kind;
     uint32_t executable_selection;
     bool executable_boot_fallback;
+    /* Original executable filename as loaded by the PSP, separate from the
+       normalized executable selected for analysis/package identity. */
+    char boot_executable[NK_MAX_EXECUTABLE_PATH];
     char selected_executable[NK_MAX_EXECUTABLE_PATH];
     bool is_prepared;
     /* Disc payload staging is deliberately separate from runtime readiness.

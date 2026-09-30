@@ -69,6 +69,24 @@ static bool launch_join_path(const char *base, const char *relative,
     return written >= 0 && (size_t)written < out_size;
 }
 
+/* Build the UMD ISO route's disc path; Memory Stick launches need their own
+   route-specific path and must not reuse this synthesized prefix. */
+static bool launch_boot_path_env(const char *selected_executable,
+                                 char *out_env, size_t out_size) {
+    if (!selected_executable || !selected_executable[0] || !out_env || out_size == 0u ||
+        strcmp(selected_executable, ".") == 0 || strcmp(selected_executable, "..") == 0) {
+        return false;
+    }
+    for (const unsigned char *ch = (const unsigned char *)selected_executable;
+         *ch; ++ch) {
+        if (*ch < 0x20u || *ch == '/' || *ch == '\\' || *ch == ':') return false;
+    }
+    int written = snprintf(out_env, out_size,
+                           "SR_BOOT_PATH=disc0:/PSP_GAME/SYSDIR/%s",
+                           selected_executable);
+    return written > 0 && (size_t)written < out_size;
+}
+
 static bool launch_store_existing(const char *candidate, bool directory,
                                   char *out_path, size_t out_size) {
     if (!candidate || !out_path || out_size == 0) return false;
@@ -741,6 +759,8 @@ NkResult nk_launch_prepare_session(
     snprintf(session->user_data_root, sizeof(session->user_data_root), "%s", root);
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
+    snprintf(session->boot_executable, sizeof(session->boot_executable), "%s",
+             game->boot_executable[0] ? game->boot_executable : game->selected_executable);
     snprintf(session->selected_executable, sizeof(session->selected_executable), "%s",
              game->selected_executable);
     snprintf(session->prepared_root, sizeof(session->prepared_root), "%s", game->prepared_root);
@@ -1098,6 +1118,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
 
     /* Build environment variables via runtime provider */
     char env_iso[NK_MAX_PATH + 16];
+    char env_boot_path[NK_MAX_EXECUTABLE_PATH + 64];
     char env_fps[32];
     char env_ge[32];
     char env_debug[32];
@@ -1132,6 +1153,18 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     /* An empty value masks an inherited ISO for staged sessions with no ISO. */
     snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
     envp[env_count++] = env_iso;
+    snprintf(env_boot_path, sizeof(env_boot_path), "SR_BOOT_PATH=");
+    const char *boot_executable = session->boot_executable[0]
+        ? session->boot_executable : session->selected_executable;
+    if (session->iso_path[0] && boot_executable[0]) {
+        if (!launch_boot_path_env(boot_executable, env_boot_path,
+                                  sizeof(env_boot_path))) {
+            snprintf(session->last_error, sizeof(session->last_error),
+                     "Selected executable has no safe PSP boot path.");
+            return NK_ERROR_INVALID_EXECUTABLE;
+        }
+    }
+    envp[env_count++] = env_boot_path;
     envp[env_count++] = env_fps;
     envp[env_count++] = env_ge;
     envp[env_count++] = env_scale;

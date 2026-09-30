@@ -351,6 +351,41 @@ static void seed_from_init(const char *trace_path, CpuState *s) {
     if (!found) { fprintf(stderr, "no '# init' in %s\n", trace_path); exit(2); }
 }
 
+static int sr_driver_seed_boot_arguments(CpuState *state) {
+    const char *path = getenv("SR_BOOT_PATH");
+    if (!path || !path[0]) return 1;
+
+    size_t path_len = strlen(path);
+    if (path_len == 0u || path_len >= 4096u) {
+        fprintf(stderr, "SR_BOOT_PATH must contain a path shorter than 4096 bytes\n");
+        return 0;
+    }
+    uint32_t arglen = (uint32_t)path_len + 1u;
+    if (arglen > UINT32_MAX - 15u) {
+        fprintf(stderr, "SR_BOOT_PATH argument block size overflows stack alignment\n");
+        return 0;
+    }
+    uint32_t rounded = (arglen + 15u) & ~15u;
+    uint32_t sp = state->r[29];
+    if (sp < rounded) {
+        fprintf(stderr, "SR_BOOT_PATH could not be placed below the guest stack pointer\n");
+        return 0;
+    }
+    uint32_t argp = sp - rounded;
+    /* sched_start_thread copies this temporary source block onto the entry
+       thread's own stack before guest code runs; keep boot args off the heap. */
+    if (argp == 0u || !sr_guest_span_writable(argp, arglen)) {
+        fprintf(stderr, "SR_BOOT_PATH could not be placed in guest memory\n");
+        return 0;
+    }
+
+    memcpy(SR_HOST(argp), path, arglen);
+    state->r[4] = arglen;
+    state->r[5] = argp;
+    sr_driver_boot_event("BOOT_EVENT phase=boot_arguments_seeded bytes=%u", arglen);
+    return 1;
+}
+
 #ifdef SR_SELFTEST_ONLY
 int driver_main(int argc, char **argv) {
 #else
@@ -467,6 +502,7 @@ have_image:;
     seed_from_init(ref_trace, &s);
     if (s.r[29] == 0) s.r[29] = 0x09F00000;   /* default stack: top of user RAM (0x08000000..0x0BFFFFFF); was 0x00400000 (kernel driver region — wrong) */
     s.pc = entry;
+    if (!sr_driver_seed_boot_arguments(&s)) return 2;
 
     fprintf(stderr, "Calling sr_register_all()...\n");
     sr_register_all();

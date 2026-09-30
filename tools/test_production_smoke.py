@@ -1581,6 +1581,11 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         self.assertEqual(preflight["selected_executable_source"], "EBOOT.OLD")
         self.assertEqual(preflight["selected_executable"], "EBOOT.elf")
+        self.assertEqual(
+            nk_cli._psp_boot_path(preflight["selected_executable_source"]),
+            "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD",
+        )
+        self.assertIsNone(nk_cli._psp_boot_path("../outside.elf"))
         cfw_check = next(
             check for check in preflight["checks"]
             if check["code"] == "MODIFIED_DUMP_CFW_LOADER"
@@ -1609,6 +1614,12 @@ class TestSanitizedBringup(unittest.TestCase):
             summary,
         )
         self.assertIn("in the works (#308)", summary)
+        library = json.loads(
+            (work_root / "work" / "user-data" / "library.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(library["games"][0]["selected_executable"], "EBOOT.BIN")
+        self.assertEqual(library["games"][0]["boot_executable"], "EBOOT.OLD")
         nk_cli.validate_bringup_report(report)
 
     def test_relocatable_main_entry_is_rebased_to_guest_address(self):

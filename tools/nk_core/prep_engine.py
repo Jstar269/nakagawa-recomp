@@ -14,7 +14,7 @@ import tempfile
 import time
 from typing import Callable, Optional
 
-from .iso_inspect import inspect_iso
+from .iso_inspect import inspect_compatibility_preflight, inspect_iso
 from .title_registry import TitleRegistry, get_default_registry
 from .types import (
     CancellationToken,
@@ -181,6 +181,9 @@ class PreparationEngine:
                 )
 
             profile = iso_meta.matched_profile
+            boot_selection = inspect_compatibility_preflight(
+                iso, metadata=iso_meta, runtime_root=destination_root or iso.parent
+            )
             emit(
                 PrepStage.INSPECTING_ISO,
                 f"Identified {profile.name} ({iso_meta.disc_id})",
@@ -281,6 +284,7 @@ class PreparationEngine:
                 "runtime_profile": profile.runtime_profile,
                 "archive_format": profile.archive_format,
                 "save_namespace": profile.save_namespace,
+                "boot_executable": boot_selection.get("selected_executable_source", ""),
             }
             manifest_path = staging_dir / "manifest.json"
             with open(manifest_path, "w", encoding="utf-8") as f:
