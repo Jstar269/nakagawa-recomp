@@ -494,21 +494,24 @@ def validate_meta(regs: list[dict]) -> None:
             f"FLOAT_RETURN_HANDLERS names handlers hle.c no longer registers: {stale_float_handlers}"
         )
     for handler, status in meta.HANDLER_STATUS.items():
+        evidence = meta.HANDLER_EVIDENCE.get(handler)
         if status == "complete":
-            evidence = meta.HANDLER_EVIDENCE.get(handler)
             if not evidence or not isinstance(evidence, list):
                 raise ManifestError(
                     f"handler {handler!r} is marked 'complete' but has no evidence metadata; "
                     "a complete handler must cite at least one verifiable evidence entry "
                     "(public ABI/doc, source-owned test name, hardware oracle id, or guest-module takeover)"
                 )
+        if evidence is not None:
+            if not isinstance(evidence, list) or not evidence:
+                raise ManifestError(f"handler {handler!r} has empty evidence metadata")
             for ev in evidence:
                 if not isinstance(ev, str) or not ev.strip():
                     raise ManifestError(f"handler {handler!r} has empty evidence entry")
                 candidate_path = ev.split(":")[0].strip()
                 if (
-                    candidate_path.startswith("src/")
-                    or candidate_path.startswith("tools/")
+                    candidate_path == "Makefile"
+                    or candidate_path.startswith(("src/", "tools/", "fixtures/"))
                 ) and not (ROOT / candidate_path).exists():
                     raise ManifestError(
                         f"handler {handler!r} cites non-existent evidence file {candidate_path!r}"
@@ -1072,7 +1075,7 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
 # grouped by API family (library name). Generic success handlers (h_ok)
 # and refusal markers (h_ControlledUnsupported) are excluded.
 
-CENSUS_SCHEMA = 1
+CENSUS_SCHEMA = 2
 CENSUS_STATUSES = (
     "complete",
     "partial",
@@ -1121,9 +1124,10 @@ def build_census(manifest: dict | None = None) -> dict:
             "status": status,
             "registrations": apis,
         }
-        if status == "complete":
-            entry["evidence"] = meta.HANDLER_EVIDENCE.get(h, [])
-        elif status in ("partial", "compatibility"):
+        evidence = meta.HANDLER_EVIDENCE.get(h, [])
+        if evidence:
+            entry["evidence"] = evidence
+        if status in ("partial", "compatibility"):
             entry["limitation"] = meta.HANDLER_LIMITATIONS.get(h, "")
         handler_entries.append(entry)
 
@@ -1147,10 +1151,20 @@ def build_census(manifest: dict | None = None) -> dict:
         fam_dict["summary"][entry["status"]] = fam_dict["summary"].get(entry["status"], 0) + 1
 
     total_by_status = {s: 0 for s in CENSUS_STATUSES}
+    status_registrations = {s: 0 for s in CENSUS_STATUSES}
     for e in handler_entries:
         total_by_status[e["status"]] = total_by_status.get(e["status"], 0) + 1
+        status_registrations[e["status"]] = (
+            status_registrations.get(e["status"], 0) + len(e["registrations"])
+        )
 
     total_registrations = sum(len(e["registrations"]) for e in handler_entries)
+    registration_classification: dict[str, int] = {}
+    for reg in regs:
+        classification = reg["classification"]
+        registration_classification[classification] = (
+            registration_classification.get(classification, 0) + 1
+        )
 
     by_family_summary = {
         fam: {
@@ -1165,9 +1179,12 @@ def build_census(manifest: dict | None = None) -> dict:
         "schema": CENSUS_SCHEMA,
         "source": manifest.get("source", "src/rt/hle.c"),
         "summary": {
+            "total_registrations": len(regs),
+            "registration_classification": dict(sorted(registration_classification.items())),
             "total_dedicated_handlers": len(handler_entries),
             "total_dedicated_registrations": total_registrations,
             "by_status": total_by_status,
+            "by_status_registrations": status_registrations,
             "by_family": by_family_summary,
         },
         "families": {fam: families[fam] for fam in sorted(families)},
@@ -1175,31 +1192,53 @@ def build_census(manifest: dict | None = None) -> dict:
     }
 
 
-def render_census_markdown(census: dict) -> str:
+def render_census_markdown(census: dict, *, heading_level: int = 1) -> str:
     """Render a GitHub-flavored Markdown summary table and review details."""
+    if not 1 <= heading_level <= 5:
+        raise ValueError("heading_level must leave room for the detail headings")
+    heading = "#" * heading_level
+    detail_heading = "#" * (heading_level + 1)
     out = []
-    out.append("# HLE Semantic Status Census")
+    out.append(f"{heading} HLE Semantic Status Census")
     out.append("")
     s = census["summary"]
     out.append(
-        f"Dedicated handlers audited: **{s['total_dedicated_handlers']}** "
-        f"({s['total_dedicated_registrations']} registrations) across **{len(s['by_family'])}** API families."
+        f"Registered NIDs: **{s['total_registrations']}** "
+        f"(dedicated **{s['registration_classification'].get('dedicated', 0)}**, "
+        f"fake_success **{s['registration_classification'].get('fake_success', 0)}**, "
+        f"controlled_unsupported **{s['registration_classification'].get('controlled_unsupported', 0)}**)."
+    )
+    out.append(
+        f"Semantic handler census: **{s['total_dedicated_handlers']}** handlers "
+        f"across **{len(s['by_family'])}** API families, covering "
+        f"**{s['total_dedicated_registrations']}** handler-associated NID registrations."
     )
     out.append("")
+    out.append("| Semantic Status | Handlers | NID Registrations |")
+    out.append("| :--- | :---: | :---: |")
+    for status in CENSUS_STATUSES:
+        out.append(
+            f"| `{status}` | {s['by_status'][status]} | "
+            f"{s['by_status_registrations'][status]} |"
+        )
+    out.append("")
     out.append(
-        "| API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers |"
+        "| API Family | Complete | Partial | Compatibility | Controlled Unsupported | "
+        "Unreviewed | Total Handlers | NID Registrations |"
     )
-    out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+    out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
     tot = s["by_status"]
     for fam, stats in sorted(s["by_family"].items()):
         out.append(
             f"| `{fam}` | {stats['complete']} | {stats['partial']} | {stats['compatibility']} | "
-            f"{stats['controlled_unsupported']} | {stats['unreviewed']} | {stats['total_handlers']} |"
+            f"{stats['controlled_unsupported']} | {stats['unreviewed']} | "
+            f"{stats['total_handlers']} | {stats['total_registrations']} |"
         )
     out.append(
         f"| **Total** | **{tot['complete']}** | **{tot['partial']}** | **{tot['compatibility']}** | "
-        f"**{tot['controlled_unsupported']}** | **{tot['unreviewed']}** | **{s['total_dedicated_handlers']}** |"
+        f"**{tot['controlled_unsupported']}** | **{tot['unreviewed']}** | "
+        f"**{s['total_dedicated_handlers']}** | **{s['total_dedicated_registrations']}** |"
     )
     out.append("")
 
@@ -1210,7 +1249,7 @@ def render_census_markdown(census: dict) -> str:
     controlled_handlers = [h for h in handlers if h["status"] == "controlled_unsupported"]
 
     if complete_handlers:
-        out.append("## Complete Handlers (Evidence-Backed)")
+        out.append(f"{detail_heading} Complete Handlers (Evidence-Backed)")
         out.append("")
         for h in complete_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
@@ -1220,25 +1259,29 @@ def render_census_markdown(census: dict) -> str:
         out.append("")
 
     if partial_handlers:
-        out.append("## Partial Handlers (Named Limitations)")
+        out.append(f"{detail_heading} Partial Handlers (Named Limitations)")
         out.append("")
         for h in partial_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
             out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
             out.append(f"  - Limitation: {h.get('limitation', '')}")
+            for ev in h.get("evidence", []):
+                out.append(f"  - Evidence: {ev}")
         out.append("")
 
     if compat_handlers:
-        out.append("## Compatibility Handlers (Named Limitations)")
+        out.append(f"{detail_heading} Compatibility Handlers (Named Limitations)")
         out.append("")
         for h in compat_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
             out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
             out.append(f"  - Limitation: {h.get('limitation', '')}")
+            for ev in h.get("evidence", []):
+                out.append(f"  - Evidence: {ev}")
         out.append("")
 
     if controlled_handlers:
-        out.append("## Controlled Unsupported Dedicated Handlers")
+        out.append(f"{detail_heading} Controlled Unsupported Dedicated Handlers")
         out.append("")
         for h in controlled_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
