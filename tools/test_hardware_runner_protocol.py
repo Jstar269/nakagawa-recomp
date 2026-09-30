@@ -227,6 +227,7 @@ class SimulatedPsplinkTransport:
         stdout_record_cases: set[str] | None = None,
         stdout_result_overrides: dict[str, str] | None = None,
         host0_log_contents: dict[str, str] | None = None,
+        device_source_commit: str | None = SOURCE_COMMIT,
         write_host0_logs: bool = True,
         stale_host0_mtime: bool = False,
     ):
@@ -242,6 +243,7 @@ class SimulatedPsplinkTransport:
         self.stdout_record_cases = stdout_record_cases or set()
         self.stdout_result_overrides = stdout_result_overrides or {}
         self.host0_log_contents = host0_log_contents or {}
+        self.device_source_commit = device_source_commit
         self.write_host0_logs = write_host0_logs
         self.stale_host0_mtime = stale_host0_mtime
         self.post_case_ver_failed = False
@@ -335,7 +337,13 @@ class SimulatedPsplinkTransport:
             self.stale_log_present_at_load = bool(host0_log and host0_log.exists())
             metadata_record = (
                 "NAKAGAWA_PSP_META schema=1 source=psp model=fixture firmware=test "
-                "binary_sha256=" + "0" * 64 + " source_commit=" + SOURCE_COMMIT + "\n"
+                "binary_sha256=" + "0" * 64
+                + (
+                    " source_commit=" + self.device_source_commit
+                    if self.device_source_commit is not None
+                    else ""
+                )
+                + "\n"
             )
             if case_id == "transport-write":
                 result_record = (
@@ -1248,18 +1256,68 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 stdout_record_cases={"transport-write"}
             )
             transport.host0_root = scratch
-            report = PsplinkCampaignRunner(
-                transport,
-                console_model="PSP-3000-04g",
-                source_commit=SOURCE_COMMIT,
-                model_code=3,
-            ).run([CampaignCase("transport-write", binary, 1.0)])
+            with patch(
+                "psp_oracle.run_psplink._check_source_tree", return_value=None
+            ):
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000-04g",
+                    source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run([CampaignCase("transport-write", binary, 1.0)])
 
         envelope = report["envelopes"][0]
         self.assertTrue(envelope["ACCEPTANCE_ELIGIBLE"])
         self.assertEqual(envelope["QUALIFICATION_STATUS"], "QUALIFIED")
         self.assertTrue(envelope["HOST0_LOG_FRESH"])
         self.assertIn("case_id=host0-write-readback", envelope["RAW_RESULT"])
+
+    def test_campaign_device_identity_is_compared_before_canonicalization(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for device_commit, expected_binding, expected_eligible, expected_blocker in (
+            (SOURCE_COMMIT, "MATCH", True, None),
+            ("f" * 40, "MISMATCH", False, "IDENTITY_MISMATCH"),
+            ("0" * 40, "PLACEHOLDER", False, "IDENTITY_NOT_BOUND"),
+            (None, "NOT_REPORTED", False, "IDENTITY_NOT_BOUND"),
+        ):
+            with self.subTest(device_commit=device_commit):
+                with tempfile.TemporaryDirectory(
+                    prefix="runner-device-identity-", dir=fixture_dir
+                ) as scratch_name:
+                    scratch = Path(scratch_name)
+                    binary = scratch / "transport-write.prx"
+                    binary.write_bytes(b"synthetic transport PRX")
+                    transport = SimulatedPsplinkTransport(
+                        device_source_commit=device_commit
+                    )
+                    transport.host0_root = scratch
+                    with patch(
+                        "psp_oracle.run_psplink._check_source_tree", return_value=None
+                    ):
+                        report = PsplinkCampaignRunner(
+                            transport,
+                            console_model="PSP-3000-04g",
+                            source_commit=SOURCE_COMMIT,
+                            model_code=3,
+                        ).run([CampaignCase("transport-write", binary, 1.0)])
+
+                envelope = report["envelopes"][0]
+                self.assertEqual(
+                    envelope["DEVICE_REPORTED_SOURCE_COMMIT"], device_commit
+                )
+                self.assertEqual(
+                    envelope["SOURCE_COMMIT_BINDING"], expected_binding
+                )
+                self.assertEqual(
+                    envelope["ACCEPTANCE_ELIGIBLE"], expected_eligible
+                )
+                if expected_blocker is None:
+                    self.assertEqual(envelope["DEVICE_IDENTITY_BLOCKERS"], [])
+                else:
+                    self.assertIn(
+                        expected_blocker,
+                        " | ".join(envelope["ACCEPTANCE_BLOCKERS"]),
+                    )
 
     def test_campaign_stale_host0_log_is_cleared_and_rejected_by_mtime(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
