@@ -1483,7 +1483,9 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
-    launcher = RuntimeLauncher()
+    # The CLI's runtime assets belong to its checkout, even when the command is
+    # invoked from another working directory.
+    launcher = RuntimeLauncher(repo_root=ROOT)
     try:
         cmd, env = launcher.build_launch_plan(
             args.game_dir,
