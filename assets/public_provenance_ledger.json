@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "457b94ef5509f1247ed77ff4e446fbe3895a236e6b56f91b4573959b4b4af084"
+      "sha256": "7503a9c028fa8aa16803056d9aaa50640fec5f217d7d422fd1e3e6cd5d761968"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1108,7 +1108,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26749c31fab8a65aa648474b30f0faf4ca0bcf5e3718cec51b323fcfcc82ac19"
+      "sha256": "2eba6ffd587a1c2090253b1a86feb6476c7070b970eaeb9637c76e8d60d78c9c"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -5781,7 +5781,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "62745cf053637ba2813e698ddb5708975549211d061dcd3b529a4bfcd8b066a8"
+      "sha256": "2c990465a13702ba37485992b776b0bf6e0c715a9b5dc5a21720a069900db007"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7530,7 +7530,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25efed3f775484e1fc8d08b09bf1dd2e767029dc282eeced0fb6933b645bbb42"
+      "sha256": "0e1d7fb44d60ffcf6f49c5d63256fd3358663033f6415988e49ce3afa34a88f7"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -7542,7 +7542,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e70417c00842f350ff05fe4f5972e85220d8d36b9c77e92d2d88bbc5a321a7cb"
+      "sha256": "d3cb03656d26f8289e0fee8a3ff36da49763a620a22d7455abc29427a6167c0d"
     },
     {
       "path": "tools/test_font_provisioning.py",
@@ -9471,11 +9471,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "2684ecaaa418ac185a02e48234cc2d70f47d2c07",
-    "candidate_tree": "c05948892b75fedf0ada5182f098598b07c7fc7e",
+    "trusted_tree": "720e2f592e3533f4cb82da0a754e20c4552b9835",
+    "candidate_tree": "da2e68dd2e1bf33a36dc84e5c60da3dd951d40fe",
     "refreshed_paths": [
-      "src/rt/psmf_producer.c",
-      "src/rt/psmf_producer_selftest.c"
+      "docs/CI.md",
+      "docs/ENHANCEMENT_CONTRACT.md",
+      "tools/flight_diff.py",
+      "tools/test_flight_build_identity.py",
+      "tools/test_flight_diff.py"
     ]
   }
 }
