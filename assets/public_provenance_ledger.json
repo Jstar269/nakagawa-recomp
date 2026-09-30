@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "68010840231fcb07346ee4751d4c861cbaff40da0d68b23a670da282cfecefe2"
+      "sha256": "113467e86e5f38c11816606979e937d9b654760be01c28bff9edc1cae9c270d0"
     },
     {
       "path": "NOTICE.md",
@@ -1042,7 +1042,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e75fb608c00def0962a2db21d470fbf42f9574250294a721dd3cc8ca8351e85f"
+      "sha256": "9485739a245a9242c710c3696d08c5112546ccb21645a0d56420f3c2714464c9"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1699,7 +1699,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "66a7835843c9fc32a9fed93c09059f478d81d361e5cdfb7c6e7e78704833a077"
+      "sha256": "69a9daf76418f8920bd7740d1b89b3d547b20789bc2d2645bf8b54100801fb1a"
     },
     {
       "path": "fixtures/production_smoke/generate.py",
@@ -1711,7 +1711,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "775ff1e8dcfc26b2fda58d915e6afc01b39c759d425c3ffce62dd2ead0743bf8"
+      "sha256": "c7af94658b9fabf4a06480bb92b445e1f226d32f24ff7e468380e4698d087918"
     },
     {
       "path": "fixtures/profile_zero/Makefile",
@@ -8275,7 +8275,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e425455b9a75e93062774a0a62425d699cfd9c3bd2bbd81134b5b3c85c4482d3"
+      "sha256": "a6e9b61d464a17304e77373dce39570f2904b421ba9b6f937b95fbf717876c13"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
@@ -9471,11 +9471,14 @@
   ],
   "refresh": {
     "workflow": "refresh-reviewed",
-    "trusted_tree": "822fb80605d8e4e726984973a32c163651b25ee5",
-    "candidate_tree": "ef9475e2b4d5588b221dd8aeeb5111ef885aee22",
+    "trusted_tree": "c4cdf65dfba8d12a06085de3593b3d66058cac5d",
+    "candidate_tree": "dfbe70490bc0c53db4f6bc775b3401df20f02c0d",
     "refreshed_paths": [
-      ".betterleaks.toml",
-      ".pre-commit-config.yaml"
+      "Makefile",
+      "docs/ARCHITECTURE.md",
+      "fixtures/production_smoke/README.md",
+      "fixtures/production_smoke/generate.py",
+      "tools/test_production_smoke.py"
     ]
   }
 }
