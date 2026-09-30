@@ -1189,7 +1189,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0746f06291ba62514e39724bd9cb01e2d05b9fc28523dc8516978c4c5706769d"
+      "sha256": "d38c8b176c2907aea5519b626394664139bfe67a70b55d8d805dac662df42a8b"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -1198,7 +1198,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6cd795cdde4b2242f1e72195891975b6ed495f9f6c634ab98c267865cba6cbee"
+      "sha256": "f46f863497dedd65715ed9912f04758a9a9985e82cc2a4f5bef087aec2413ec8"
     },
     {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
@@ -1312,7 +1312,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3c894b6f2196eb74b55bd0a7acd0a7bfafbd64dd03b20e83dd66cd73df55528f"
+      "sha256": "65950ca8b05890b86779dcfdafdd5cb47426ed7ca97329abfd9977e7910a8646"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -6096,7 +6096,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57755ebf257d8ba0e3b8966c7127f1cec5640f7d9d40fff53b5d956405144bdb"
+      "sha256": "d982d6e171af4ab02734d9ca5ac5b76db4e0e945c899a35d1fbe6468da1cc3cb"
     },
     {
       "path": "tools/mem_debug.py",
@@ -7927,7 +7927,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cb53e133fb6d62aae0cbcd89258338348e503d0b1ae884fa65d1a24caa9a9735"
+      "sha256": "95ad5d12610cc29cad6576e5dd63c010026470d480fe9974deb2af9ae004aa5e"
     },
     {
       "path": "tools/test_manager_safety.ps1",
