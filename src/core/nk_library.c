@@ -122,6 +122,13 @@ static void escape_json_string(char *dest, size_t dest_size, const char *src) {
 
 NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     if (!lib) return NK_ERROR_GENERIC;
+    if (lib->count < 0 || lib->count > NK_MAX_GAMES) return NK_ERROR_GENERIC;
+    for (int i = 0; i < lib->count; i++) {
+        if (!memchr(lib->entries[i].boot_executable, '\0',
+                    sizeof(lib->entries[i].boot_executable))) {
+            return NK_ERROR_INVALID_EXECUTABLE;
+        }
+    }
 
     char default_path[NK_MAX_PATH];
     const char *target = file_path ? file_path : (lib->library_path[0] ? lib->library_path : NULL);
@@ -147,11 +154,14 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         char esc_title[NK_MAX_TITLE_LEN * 2];
         char esc_iso[NK_MAX_PATH * 2];
         char esc_prep[NK_MAX_PATH * 2];
-        char esc_executable[NK_MAX_EXECUTABLE_PATH * 2];
+        char esc_boot_executable[NK_MAX_EXECUTABLE_PATH * 2];
+        char esc_executable[NK_MAX_SELECTED_EXECUTABLE_PATH * 2];
 
         escape_json_string(esc_title, sizeof(esc_title), g->title_name);
         escape_json_string(esc_iso, sizeof(esc_iso), g->iso_path);
         escape_json_string(esc_prep, sizeof(esc_prep), g->prepared_root);
+        escape_json_string(esc_boot_executable, sizeof(esc_boot_executable),
+                           g->boot_executable);
         escape_json_string(esc_executable, sizeof(esc_executable), g->selected_executable);
 
         fprintf(f, "    {\n");
@@ -169,6 +179,7 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"executable_selection\": %u,\n", (unsigned)g->executable_selection);
         fprintf(f, "      \"executable_boot_fallback\": %s,\n",
                 g->executable_boot_fallback ? "true" : "false");
+        fprintf(f, "      \"boot_executable\": \"%s\",\n", esc_boot_executable);
         fprintf(f, "      \"selected_executable\": \"%s\",\n", esc_executable);
         fprintf(f, "      \"is_prepared\": %s,\n", g->is_prepared ? "true" : "false");
         fprintf(f, "      \"assets_staged\": %s,\n", g->assets_staged ? "true" : "false");
@@ -446,6 +457,20 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                 } else if (strcmp(key, "title_id") == 0) {
                     next_p = parse_string_val(p, entry.title_id, sizeof(entry.title_id));
                     if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
+                } else if (strcmp(key, "boot_executable") == 0) {
+                    char parsed_boot_executable[NK_MAX_EXECUTABLE_PATH + 1u];
+                    next_p = parse_string_val(
+                        p, parsed_boot_executable, sizeof(parsed_boot_executable)
+                    );
+                    if (!next_p) { entry_failed = true; break; }
+                    size_t boot_length = strlen(parsed_boot_executable);
+                    if (boot_length >= sizeof(entry.boot_executable)) {
+                        free(buf);
+                        return NK_ERROR_INVALID_EXECUTABLE;
+                    }
+                    memcpy(entry.boot_executable, parsed_boot_executable,
+                           boot_length + 1u);
                     p = next_p;
                 } else if (strcmp(key, "selected_executable") == 0) {
                     next_p = parse_string_val(p, entry.selected_executable,
