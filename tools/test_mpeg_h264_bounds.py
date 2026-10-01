@@ -156,7 +156,13 @@ class TestMpegYcbcrContracts(unittest.TestCase):
         self.assertIn("ycbcr_fingerprint(b->buf, b->size) != b->guest_tag", guard)
         self.assertIn("modified guest YCbCr state", block)
         self.assertIn("test_mpeg_ycbcr_guest_contract", PSMF_MEDIA)
+        self.assertIn("sr_syscall(&cpu, nid)", PSMF_MEDIA)
+        self.assertIn("guest CSC writes decoded I_PCM pixels into the guest destination", PSMF_MEDIA)
+        self.assertIn("test_mpeg_ycbcr_fail_closed_paths", PSMF_MEDIA)
         self.assertIn("guest mutation cannot reuse hidden RGBA state", PSMF_MEDIA)
+        decode = block[block.index("uint32_t mpeg_avc_decode_ycbcr") : block.index("uint32_t mpeg_avc_decode_stop_ycbcr")]
+        self.assertIn("b->valid = 1;", decode)
+        self.assertIn("MEM_W32(initAddr, 1u);", decode)
 
     def test_ycbcr_operations_preflight_ranges_and_modes(self) -> None:
         block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
@@ -185,6 +191,10 @@ class TestMpegYcbcrContracts(unittest.TestCase):
             "h_MpegChangeGetAuMode": "partial",
         }
         self.assertEqual({k: meta.HANDLER_STATUS.get(k) for k in expected}, expected)
+        self.assertIn("guest plane bytes remain modeled zeroes, not the PSP layout",
+                      meta.HANDLER_METADATA["h_MpegAvcDecodeYCbCr"]["limitation"])
+        self.assertIn("Csc writes the retained decoded picture",
+                      meta.HANDLER_METADATA["h_MpegAvcCsc"]["limitation"])
 
 
 if __name__ == "__main__":

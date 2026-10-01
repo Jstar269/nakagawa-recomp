@@ -46,9 +46,12 @@ otherwise incomplete. A failed hygiene/security job is never hidden by the
 aggregate. Python/native jobs also wait for hygiene, so an early full-tree
 failure does not spend additional runner time on dependent expensive gates.
 
-The full-tree pre-commit run retains the publication audit and the separate
-Betterleaks current-tree scan. Hygiene then runs an explicit Betterleaks
-reachable-history scan and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+The full-tree pre-commit run retains the publication audit and the Betterleaks
+current-tree scan; the hook runs Betterleaks in directory mode over the files it
+is given (every tracked file under `--all-files`, the staged files at the commit
+stage). The hook is commit-stage only: at pre-push pre-commit supplies no file
+names, which would turn directory mode into a whole-working-tree scan. Hygiene then runs an explicit Betterleaks reachable-history
+scan in git mode and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
@@ -76,13 +79,19 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
-The Linux `native_tools` job also builds SDL3 from its pinned 3.4.16 release commit, installs
-Vulkan development headers, and downloads the PSPDEV archive identified by
-[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its SHA-256 before use. It
-then runs `make CC=gcc showcase-linux`, which builds and boots the two source-owned showcase
-packages with dummy SDL video and audio drivers. This is Linux runtime build-and-boot evidence
-for those fixtures; it does not establish general consumer-title compatibility or PSP hardware
-acceptance.
+The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit and installs
+Vulkan development headers. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
+runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
+archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
+SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
+source-owned showcase packages with dummy SDL video and audio drivers, then passes the generated
+TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requires
+`STAGING_RESULT status=PASS`. This is build, test, and headless staging evidence for the named
+synthetic fixtures. The CMake player is configured with CMake's default, unoptimized build type, so
+the gate covers only that configuration: an optimized Release configuration fails under the global
+`-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
+job does not claim that configuration builds. Consumer ISO compatibility remains in the works
+(#306); these checks do not establish PSP hardware acceptance or interactive desktop presentation.
 
 ## Local readiness before opening a pull request
 
