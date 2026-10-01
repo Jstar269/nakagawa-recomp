@@ -51,8 +51,10 @@ the tree rather than quadratic in the number of candidates.
 Exit status is 0 for the reporting default, whatever the tree contains; 1 only
 under ``--check`` when at least one tracked file lacks an unambiguous reference and is
 not allowlisted; and 2 when the tree or the allowlist cannot be read or validated
-(a tracked tree that cannot be read is an error, never an empty report).  The Makefile target runs the reporting form so a local inspection
-never fails solely because it found candidates.  The always-on CI hygiene job runs
+(a tracked tree that cannot be read is an error, never an empty report).
+
+The Makefile target runs the reporting form so a local inspection never fails
+solely because it found candidates.  The always-on CI hygiene job runs
 ``--check``: each candidate must be removed or receive a reviewed, checkable allowlist
 reason before the change can land.
 """
