@@ -301,6 +301,21 @@ class NkCoreTests(unittest.TestCase):
         self.assertIn("INSPECTING_ISO", stages)
         self.assertIn("READY", stages)
 
+    def test_preparation_records_the_selected_boot_executable(self) -> None:
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        iso_file = self.temp_dir / "synthetic-with-eboot.iso"
+        create_test_iso_with_executables(
+            iso_file, build_plain_mips_elf(), disc_id="TEST00001"
+        )
+        result = PreparationEngine(base_dir=self.temp_dir).prepare_game(
+            iso_file, destination_root=self.temp_dir / "installed_games"
+        )
+        self.assertTrue(result.success)
+        with result.manifest_path.open("r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        self.assertEqual(manifest["boot_executable"], "EBOOT.BIN")
+
     def test_preparation_preserves_compatible_revision_identity(self) -> None:
         """A disc matched through a compatible revision keeps its own identity.
 
@@ -422,6 +437,7 @@ class NkCoreTests(unittest.TestCase):
             "title_id": "synthetic-allegrex-v1",
             "disc_id": "TEST00001",
             "iso_path": str(mock_iso),
+            "boot_executable": "EBOOT.OLD",
         }
         manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
 
@@ -443,6 +459,7 @@ class NkCoreTests(unittest.TestCase):
         assert mock_image is not None
         self.assertEqual(cmd[2], str(mock_image))
         self.assertEqual(env["PSP_ISO"], str(mock_iso))
+        self.assertEqual(env["SR_BOOT_PATH"], "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD")
         self.assertEqual(env["SR_FPS_CAP"], "60")
         self.assertEqual(env["SR_GPU_GE"], "1")
         self.assertEqual(env["SR_DEBUG"], "0x20")
@@ -479,16 +496,19 @@ class NkCoreTests(unittest.TestCase):
                     json.dumps({
                         "title_id": "synthetic-allegrex-v1",
                         "disc_id": "TEST00001",
+                        "boot_executable": "EBOOT.OLD",
                         **iso_field,
                     }),
                     encoding="utf-8",
                 )
                 with patch.dict(os.environ, {
                     "PSP_ISO": "poisoned-parent.iso",
+                    "SR_BOOT_PATH": "poisoned-parent-path",
                     "NK_UNRELATED_SENTINEL": "preserved",
                 }):
                     _, env = launcher.build_launch_plan(game_dir)
                 self.assertIsNone(env.get("PSP_ISO"))
+                self.assertIsNone(env.get("SR_BOOT_PATH"))
                 self.assertEqual(env["NK_UNRELATED_SENTINEL"], "preserved")
 
         resolved_iso = self.temp_dir / "resolved.iso"
@@ -501,6 +521,7 @@ class NkCoreTests(unittest.TestCase):
         with patch.dict(os.environ, {"PSP_ISO": "poisoned-parent.iso"}):
             _, env = launcher.build_launch_plan(game_dir)
         self.assertEqual(env["PSP_ISO"], str(resolved_iso))
+        self.assertIsNone(env.get("SR_BOOT_PATH"))
 
     def test_runtime_launcher_missing_image_fails_closed(self) -> None:
         """No image means no runnable plan, and saying so beats a usage exit."""
@@ -834,6 +855,18 @@ def _load_python_module_from_source(name: str, source: str, package: str = "nk_c
     module.__file__ = f"<{name}>"
     exec(compile(source, module.__file__, "exec"), module.__dict__)  # noqa: S102
     return module
+
+
+class BootExecutablePathLimitTests(unittest.TestCase):
+    def test_psp_boot_path_limit_is_255_utf8_bytes(self) -> None:
+        from nk_core.launcher import psp_boot_path
+
+        valid = "é" * 127 + "A"
+        self.assertEqual(len(valid.encode("utf-8")), 255)
+        self.assertEqual(
+            psp_boot_path(valid), f"disc0:/PSP_GAME/SYSDIR/{valid}"
+        )
+        self.assertIsNone(psp_boot_path("é" * 128))
 
 
 class GenericLauncherHostileTests(unittest.TestCase):

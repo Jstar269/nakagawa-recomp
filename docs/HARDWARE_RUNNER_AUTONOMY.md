@@ -172,19 +172,29 @@ stops after the single attempt.
 One envelope per case iteration, written before the next case starts:
 
 ```text
-CONSOLE_ID, PHYSICAL_MODEL_LABEL, SOFTWARE_MODEL_RAW_VALUE, FW, CFW, CLOCK,
-TRANSPORT_PROFILE, SOURCE_COMMIT, BINARY_SHA256, RUNNER_SHA256, CASE_ID,
-ITERATION, RAW_RESULT, CONTROL_RESULT, START_TIME, END_TIME,
-RECOVERY_EVENTS[], QUALIFICATION_STATUS, EVIDENCE_CLASS, WHAT_IS_NOT_PROVEN
+CONSOLE_ID, PHYSICAL_MODEL_LABEL, SOFTWARE_MODEL_RAW_VALUE,
+INTERPRETED_MODEL_FAMILY, MODEL_INTERPRETATION_RULE,
+MODEL_IDENTITY_AGREEMENT, FW, CFW, CLOCK, TRANSPORT_PROFILE, SOURCE_COMMIT,
+BINARY_SHA256, RUNNER_SHA256, CASE_ID, ITERATION, RAW_RESULT, CONTROL_RESULT,
+START_TIME, END_TIME, RECOVERY_EVENTS[], QUALIFICATION_STATUS, EVIDENCE_CLASS,
+WHAT_IS_NOT_PROVEN
 ```
 
 Two standing rules:
 
-- Raw vs interpreted device values are stored separately and never silently
-  reconciled. The known physical-PSP-3000-series vs `kuKernelGetModel()==3`
-  contradiction must survive into every envelope that reports a model field:
-  `PHYSICAL_MODEL_LABEL=psp-3000-series (chassis observation)` alongside
-  `SOFTWARE_MODEL_RAW_VALUE=3` plus `MODEL_CONTRADICTION=RECORDED`.
+- `PHYSICAL_MODEL_LABEL` is the operator-declared chassis/family observation.
+  `SOFTWARE_MODEL_RAW_VALUE` preserves the exact scalar reported by the device;
+  interpretation never changes it. Rule ID `PSPSDK_PMODEL_ORDINAL_V1` applies
+  the PSPSDK/kubridge `PspModel` ordinal mapping: raw `3` means generation
+  `04g`, in the PSP-3000 family, and raw `4` means generation `05g`, PSP-N1000.
+  It does not apply to the kernel-only `sceKernelGetModel()` original/slim
+  convention. The computed
+  `MODEL_IDENTITY_AGREEMENT` is `AGREES`, `DISAGREES`, or `UNKNOWN` when the
+  operator label, raw code, or rule cannot be compared. Thus the recorded
+  PSP-3000-series / `kuKernelGetModel()==3` pair agrees under this rule; it is
+  not a model contradiction. Older stored envelopes with
+  `MODEL_CONTRADICTION=RECORDED` remain readable as historical records and are
+  never rewritten to the new vocabulary.
 - `EVIDENCE_CLASS` uses the repository vocabulary (`PSP_HARDWARE`,
   `PRODUCTION_DISPATCH`, ...). A runner self-test or empty-fixture pass is at
   best `PRODUCTION_HELPER`; it is never promoted to hardware truth by the
@@ -239,6 +249,8 @@ physical power intervention. The system says so plainly instead of looping.
 3. REQ_002 prerequisite: an import/startup fixture that resolves ThreadManForUser
    mutex NIDs, starts clean, emits one marker, asserts nothing — validated on
    host/toolchain first so PSP sessions debug semantics, not linker plumbing.
-4. Model discriminator (bounded): compare `kuKernelGetModel`, plain syscall
-   paths, and other identity sources to explain raw value 3 on the
-   PSP-3000-series unit; measure first, generalize never.
+4. Additional model-source discriminator (bounded): compare plain syscall
+   paths and other identity sources with `kuKernelGetModel`. The PSPSDK ordinal
+   mapping already interprets raw value 3 as PSP-3000 generation 04g under
+   `PSPSDK_PMODEL_ORDINAL_V1`; remaining cross-API distinctions are still in
+   the works under issue #356. Measure each source first and generalize never.

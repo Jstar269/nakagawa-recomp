@@ -20,6 +20,7 @@ from tools.nk_core.git_isolation import run_git
 from tools.lint_docs import (
     ROOT,
     get_tracked_markdown_files,
+    lint_capability_disposition_table,
     lint_doc_links_and_topology,
     lint_doc_truth,
     lint_docs_index_completeness,
@@ -257,6 +258,159 @@ class TestDocTruthInvariants(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(lint_toolchain_baseline_marker(root), [])
+
+
+class TestCapabilityDispositionTable(unittest.TestCase):
+    """The per-capability disposition of the retired web UI must name real evidence.
+
+    Every row answers one question a consumer asks before adding an ISO: what does
+    this product actually do, on which surface, and which test proves it. A row that
+    cannot answer is the failure this table exists to prevent, so the linter rejects
+    a missing section, an unknown status, a PASS/PARTIAL row whose test path does not
+    exist, and an UNBUILT/DROPPED row with no tracking issue.
+    """
+
+    HEADER = (
+        "| ID | Capability | Status | Surface | Owning evidence |\n"
+        "| --- | :--- | :---: | :--- | :--- |\n"
+    )
+
+    @staticmethod
+    def _matrix(root: pathlib.Path, rows: str) -> pathlib.Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "tools").mkdir(exist_ok=True)
+        (root / "tools" / "test_nk_core.py").write_text("# scratch\n", encoding="utf-8")
+        doc = root / lint_docs.CAPABILITY_MATRIX_DOC
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(
+            "# Native UI Regression Matrix\n\n"
+            f"{lint_docs.CAPABILITY_TABLE_BEGIN}\n\n"
+            f"{TestCapabilityDispositionTable.HEADER}{rows}"
+            f"{lint_docs.CAPABILITY_TABLE_END}\n",
+            encoding="utf-8",
+        )
+        return doc
+
+    def test_repository_disposition_table_is_complete(self) -> None:
+        errors = lint_capability_disposition_table(ROOT)
+        self.assertEqual(
+            errors,
+            [],
+            "the capability disposition table declares no valid status or evidence:\n"
+            + "\n".join(errors),
+        )
+
+    def test_pass_row_naming_an_existing_test_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._matrix(
+                root,
+                "| `ISO_ADD` | Add an ISO | **PASS** | native player | "
+                "`tools/test_nk_core.py` |\n",
+            )
+            errors = lint_capability_disposition_table(root)
+        self.assertEqual(errors, [])
+
+    def test_unknown_status_is_rejected(self) -> None:
+        """The older vocabularies (`IN_PROGRESS`, `NOT_SUPPORTED`) escape both rules."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._matrix(
+                root,
+                "| `MULTI_TITLE` | Many discs | IN_PROGRESS | native player | "
+                "`tools/test_nk_core.py` |\n",
+            )
+            errors = lint_capability_disposition_table(root)
+        self.assertTrue(
+            any("has status 'IN_PROGRESS'" in error for error in errors), errors)
+
+    def test_pass_row_naming_a_test_that_does_not_exist_is_rejected(self) -> None:
+        """A named test that was never written is an unbacked claim, so it must fail."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._matrix(
+                root,
+                "| `HUD` | Frame overlay | PASS | native runtime | "
+                "`tools/test_never_written.py` |\n",
+            )
+            errors = lint_capability_disposition_table(root)
+            self.assertTrue(
+                any("names no repository path that exists" in error for error in errors), errors)
+            # The same row becomes valid once the path it names actually exists.
+            (root / "tools" / "test_never_written.py").write_text("# scratch\n", encoding="utf-8")
+            self.assertEqual(lint_capability_disposition_table(root), [])
+
+    def test_pass_row_naming_only_a_command_is_rejected(self) -> None:
+        """A backticked make target is not a repository path and proves nothing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._matrix(
+                root,
+                "| `HUD` | Frame overlay | PASS | native runtime | "
+                "`mingw32-make display-smoke-player` |\n",
+            )
+            errors = lint_capability_disposition_table(root)
+        self.assertTrue(any("names no backticked repository test path" in error for error in errors),
+                        errors)
+
+    def test_unbuilt_row_without_an_issue_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._matrix(
+                root,
+                "| `VRAM_VIEWER` | Guest VRAM inspection | UNBUILT | none | "
+                "Not implemented yet. |\n",
+            )
+            errors = lint_capability_disposition_table(root)
+            self.assertTrue(
+                any("UNBUILT row VRAM_VIEWER names no tracking issue" in error for error in errors),
+                errors)
+            doc = root / lint_docs.CAPABILITY_MATRIX_DOC
+            doc.write_text(
+                doc.read_text(encoding="utf-8").replace(
+                    "Not implemented yet. |",
+                    "In the works: [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314) |"),
+                encoding="utf-8",
+            )
+            self.assertEqual(lint_capability_disposition_table(root), [])
+
+    def test_dropped_row_without_a_reference_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._matrix(
+                root,
+                "| `DASHBOARD` | Localhost web dashboard | DROPPED | none | "
+                "The browser UI is gone. |\n",
+            )
+            errors = lint_capability_disposition_table(root)
+        self.assertTrue(
+            any("DROPPED row DASHBOARD names no tracking issue" in error for error in errors),
+            errors)
+
+    def test_missing_or_empty_table_fails_closed(self) -> None:
+        """No table, and an empty table, must both be errors rather than an agreeing set."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            (root / "docs").mkdir()
+            doc = root / lint_docs.CAPABILITY_MATRIX_DOC
+            doc.write_text("# Native UI Regression Matrix\n\n## 1. Status\n\nNo table yet.\n",
+                           encoding="utf-8")
+            errors = lint_capability_disposition_table(root)
+            self.assertTrue(
+                any("must be delimited by exactly one" in error for error in errors), errors)
+            self._matrix(root, "")
+            errors = lint_capability_disposition_table(root)
+            self.assertTrue(any("declares no rows" in error for error in errors), errors)
+
+    def test_wrong_column_count_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._matrix(
+                root,
+                "| `HUD` | Frame overlay | PASS | native runtime |\n",
+            )
+            errors = lint_capability_disposition_table(root)
+        self.assertTrue(any("has 4 columns, not 5" in error for error in errors), errors)
 
 
 if __name__ == "__main__":
