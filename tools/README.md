@@ -248,6 +248,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | Module | Purpose |
 | --- | --- |
 | `run_perf_benchmarks.py` | Run the public source-owned performance benchmark matrix. |
+| `compiler_compare.py` | Compare GCC against Clang on the public corpus, with the semantic veto ahead of every timing. |
 | `generate_benchmarks.py` | Generate the public benchmark matrix. |
 | `capture_native_screenshots.py` | Capture showcase screenshots from a built native player. |
 | `ppmdiff.py` | Diff two PPM framebuffer directories, optionally watching for changes. |
@@ -255,6 +256,31 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `pngcmp.py` | Compare two framebuffer PNGs written by `ppm2png.py`. |
 | `padscript_from_log.py` | Convert recorded controller transitions into a replay pad script. |
 | `mem_debug.py` | Interactive memory and CPU-state query and mutation tool for bring-up. |
+
+#### Comparing host compilers (issue #317)
+
+`compiler_compare.py` answers "is Clang faster here?" only after it has shown that Clang is
+still correct here. Each requested compiler that resolves on `PATH` builds the same public
+source-owned corpus into its own build root, then runs a fixed veto chain — the cosimulation,
+the cosimulation negative corpus, the stale-code detector and the LLE COP0/exception
+selftest. The first failing gate stops the chain, and the compiler is reported `VETOED`
+naming that gate, with no build time, no binary size and no workload timing recorded for it.
+A compiler missing from `PATH` is reported `NOT_AVAILABLE`, never a pass. The per-compiler
+`run_perf_benchmarks.py` workload matrix runs only after the whole chain passes, into a build
+prefix of its own so no candidate reuses another candidate's objects.
+
+```powershell
+python tools/compiler_compare.py                        # gcc then clang
+python tools/compiler_compare.py --compilers gcc        # one candidate
+python tools/compiler_compare.py --output build/compiler-compare
+```
+
+The report is `build/compiler-compare/compiler_compare.json`, and its shape is fixed by
+`validate_report()`, which refuses to accept a report that carries a timing under a vetoed or
+unavailable compiler. Exit status is `0` only when at least one compiler is `MEASURED` and
+none is `VETOED` or `WORKLOAD_FAILED`; a missing `make` is exit `2`. Every write stays inside
+the `--output` root, no title/ISO/ELF/PRX input is read, and running the harness changes no
+compiler default. Findings belong in issue #317.
 
 ### Regression tests: code generation and the guest interpreter
 
@@ -459,6 +485,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `test_build_system_parity.py` | Machine-checkable parity between the Makefile and the CMake build. |
 | `test_ci_paths.py` | Path-gated CI classification tests. |
 | `test_ci_required.py` | Required-CI status evaluation tests. |
+| `test_compiler_compare.py` | The compiler comparison must not publish a timing its semantic veto did not earn. |
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |
 | `test_hst_doctor.py` | Doctor checks: data directories, ELF validation, private inputs, repository contract. |
