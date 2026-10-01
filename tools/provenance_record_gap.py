@@ -41,6 +41,9 @@ Three modes, with different exit behaviour:
   independence-campaign owner and disposition and is not in the reviewed
   baseline (or the baseline holds a stale entry).
 
+``--check`` and ``--check-records`` are mutually exclusive: passing both exits 2
+without running either gate, so run them as two invocations.
+
 This tool never edits a ledger, a policy, or any other control.  It prints an
 inventory; a human decides what to admit.  For an upstream-derived production
 gap, the inventory also reports whether the maintained independence campaign

@@ -221,7 +221,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `provenance_ledger.py` | Build and validate the explicit public provenance ledger. |
 | `provenance_refresh.py` | Generate the public provenance controls with the hosted attestation logic. |
 | `provenance_attest_verify.py` | Verify a candidate tree's public provenance against external authority. |
-| `provenance_record_gap.py` | Inventory the tracked paths that have no exact trusted provenance record (`--check-records` gates on it); `--check` is the separate upstream-derived disposition ratchet. |
+| `provenance_record_gap.py` | Inventory the tracked paths that have no exact trusted provenance record (`--check-records` gates on it); `--check` is the separate upstream-derived disposition ratchet; the two flags are mutually exclusive (exit 2), so run them as two invocations. |
 | `modified_file_notice_audit.py` | Check the explicit notices recorded in the inherited-file manifest. |
 | `history_audit.py` | Non-destructive full-history secret, proprietary-material and privacy audit. |
 | `betterleaks_canary.py` | Exercise the pinned Betterleaks policy with synthetic, non-secret canaries. |
