@@ -23,6 +23,7 @@
 
 #include "nk_font.h"
 #include "nk_launch.h"
+#include "nk_psp_keystore.h"
 #include "nk_platform.h"
 #include "nk_title_manifest.h"
 #include "nk_types.h"
@@ -468,9 +469,16 @@ static void test_posix_data_directory_rule(void) {
  * The fixture names mix Latin-1-supplement and CJK characters: an ANSI code
  * page that can represent neither loses the name, and one that can represent
  * only the first part still misroutes the rest, so neither host can satisfy
- * the path through a narrow call. */
-#define NK_NONASCII_ROOT "nk_ünïcode_日本"
-#define NK_NONASCII_LEAF "café_ünïcode_日本.bin"
+ * the path through a narrow call.
+ *
+ * The names are spelled as explicit UTF-8 byte escapes, split into adjacent
+ * literals so no hex escape swallows a following hex digit, so the byte string
+ * is exact whatever source charset a compiler assumes (MSVC without /utf-8
+ * would re-encode raw literals in the active code page). The bytes are
+ * U+00FC, U+00EF, U+00E9 (Latin-1 supplement) and U+65E5 U+672C (CJK). The
+ * comment itself stays ASCII for the same reason. */
+#define NK_NONASCII_ROOT "nk_" "\xC3\xBC" "n" "\xC3\xAF" "code_" "\xE6\x97\xA5\xE6\x9C\xAC"
+#define NK_NONASCII_LEAF "caf" "\xC3\xA9" "_" "\xC3\xBC" "n" "\xC3\xAF" "code_" "\xE6\x97\xA5\xE6\x9C\xAC" ".bin"
 
 /* The narrow _rmdir/rmdir would fail on the same non-ASCII name the fixture
  * exercises, so cleanup converts the name the same way the product does. */
@@ -618,6 +626,24 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
                                  sizeof(pgf_error)));
     assert(strstr(pgf_error, "Cannot open font file") == NULL);
     assert(strstr(pgf_error, "PGF0") != NULL);
+
+    /* The key file lives under the same per-user root. A malformed key file
+     * is enough to prove it was OPENED: "no key file at" is the verdict an
+     * unopenable path produces, and it must not appear for an existing file. */
+    {
+        char key_path[1300];
+        char key_error[256] = "";
+        snprintf(key_path, sizeof(key_path), "%s%ckeys.json", root, sep);
+        write_file_utf8(key_path, "{ this is not json");
+        NkKeystore *keystore = nk_keystore_create();
+        assert(keystore != NULL);
+        assert(nk_keystore_load_file(keystore, key_path, key_error,
+                                     sizeof(key_error)) != 0);
+        assert(strstr(key_error, "no key file at") == NULL);
+        assert(strlen(key_error) > 0);
+        nk_keystore_free(keystore);
+        nk_remove_utf8(key_path);
+    }
 
     nk_remove_utf8(staged_eboot);
     nk_remove_utf8(manifest);

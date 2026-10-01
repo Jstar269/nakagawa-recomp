@@ -68,7 +68,7 @@ FILE *nk_fopen_utf8(const char *path, const char *mode) {
 
 int nk_remove_utf8(const char *path) {
     if (!path || !*path) return -1;
-    return remove(path);
+    return unlink(path);
 }
 
 int nk_rename_utf8(const char *from, const char *to) {
