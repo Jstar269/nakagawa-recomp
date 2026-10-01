@@ -900,6 +900,10 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
     return errors
 
 
+#: Same bound the former inline RAW_RESULT string had (schema maxLength 16384).
+GE_RESULT_RECORD_MAX_BYTES = 16384
+
+
 def _load_result_record(record: Any, results_root: Path | None) -> tuple[str | None, str]:
     """Return (raw result text, "") or (None, refusal reason) for a RESULT_RECORD.
 
@@ -915,9 +919,18 @@ def _load_result_record(record: Any, results_root: Path | None) -> tuple[str | N
     if base not in target.parents:
         return None, "RESULT_RECORD path leaves the results directory."
     try:
-        data = target.read_bytes()
+        size = target.stat().st_size
+        if not target.is_file():
+            return None, "RESULT_RECORD is not a regular file."
+        if size > GE_RESULT_RECORD_MAX_BYTES:
+            return None, (f"RESULT_RECORD is {size} bytes; a GE result record is at most "
+                          f"{GE_RESULT_RECORD_MAX_BYTES} bytes.")
+        with target.open("rb") as handle:
+            data = handle.read(GE_RESULT_RECORD_MAX_BYTES + 1)
     except OSError:
         return None, "RESULT_RECORD is not present in the results directory."
+    if len(data) > GE_RESULT_RECORD_MAX_BYTES:
+        return None, "RESULT_RECORD grew past the size bound while being read."
     if hashlib.sha256(data).hexdigest() != record["sha256"]:
         return None, "RESULT_RECORD sha256 does not match the stored result."
     try:

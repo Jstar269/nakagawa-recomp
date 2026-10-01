@@ -423,6 +423,22 @@ class GeCorpusGateTests(unittest.TestCase):
         result = ge_corpus_report(document, self._schema(), self.root)["cases"][0]
         self.assertEqual(result["status"], "REFUSED")
 
+    def test_result_record_loader_refuses_escape_and_oversize(self) -> None:
+        from psp_oracle.protocol import GE_RESULT_RECORD_MAX_BYTES, _load_result_record
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch) / "results"
+            base.mkdir()
+            outside = Path(scratch) / "outside.txt"
+            outside.write_text("x", encoding="utf-8")
+            text, reason = _load_result_record({"path": "../outside.txt", "sha256": "0" * 64}, base)
+            self.assertIsNone(text)
+            self.assertIn("leaves the results directory", reason)
+            big = base / "big.txt"
+            big.write_bytes(b"a" * (GE_RESULT_RECORD_MAX_BYTES + 1))
+            text, reason = _load_result_record({"path": "big.txt", "sha256": "0" * 64}, base)
+            self.assertIsNone(text)
+            self.assertIn("at most", reason)
+
     def test_non_object_identity_entries_are_refused_not_raised(self) -> None:
         for key, value in (("semantic_boundary", "GE_RASTER_PIXEL_CONFORMANCE"), ("tracking_issue", 343)):
             with self.subTest(key=key):
