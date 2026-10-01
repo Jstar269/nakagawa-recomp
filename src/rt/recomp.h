@@ -602,6 +602,8 @@ typedef enum SrStackCensusStatus {
 } SrStackCensusStatus;
 typedef struct SrStackCensusSummary {
     SrStackCensusStatus status;
+    uint32_t unobserved;
+    int unobserved_known;
     uint64_t entries;
     uint64_t returns;
     uint64_t excluded;

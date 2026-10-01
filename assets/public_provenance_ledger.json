@@ -1042,7 +1042,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "43f3518e32a21dc8adf7e080c7e3ef5ab184179a53cfe5b53b756f17f97fab3e"
+      "sha256": "aa7c6eb54af462124bca9ede3ffa7ad73e3701c4dca99967fe4134f5e7680b78"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1126,7 +1126,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "645eb532064c2b29794b94fde64508bfaad30f9fb8a87c676cef55f2d2f6aec8"
+      "sha256": "f73c6b64e542fc923037a113473a2e1d45164d1724a36e629df425f4bb525736"
     },
     {
       "path": "docs/HLE_AND_WORKAROUND_INVENTORY.md",
@@ -1564,7 +1564,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a73ae279d7b47b6ab4ba24604280abe19869b99c2abe8f1c9b4a1ba560168c8"
+      "sha256": "0d1385ce557422a8ff090d355246e1f93eb9b75e8b7f94a42299a3359ae991ad"
     },
     {
       "path": "fixtures/cosim/README.md",
@@ -1585,7 +1585,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "423bb0d0b940e8e5156521aadeb2251da45ff10740e4cd4720c9b69861613074"
+      "sha256": "d9696d321f3f094f62181bbf879f44f9bf428b91fef1624929103eb4aa09b2db"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -4843,7 +4843,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8e31a9a8cb76639df4b2a1bd60bea50848e02799c4e415d22877adfa0e9960c1"
+      "sha256": "60e5931aa3195b7c4676cf0f48cdedb71b82421a008b905f7215c74883b75535"
     },
     {
       "path": "src/rt/recomp.h",
@@ -4856,7 +4856,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "bda0774d128631cc643d02715dc50549fabc72f5c899374819260b1daabe3b00"
+      "sha256": "b54a326719c5d24b6142abd56c76422cfaa03dc1142792674c6757c5669149be"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5527,7 +5527,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2c71a40751cc863f0038bffbe0ad04c378c4fb00d2d558320f9ba6774198aa6f"
+      "sha256": "e867a3bf948dd156a09126f42bdb4e6a88315bf6e7e2066c05a7ed7b013c7765"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -6677,7 +6677,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4be593316510aa228bb33c5f712c0eac685c624f731abf92af8134b9e9afe63"
+      "sha256": "d406f4dc2fc8830cc51440f56d768897107908c6944a36d373d6eea1a3ac8cf3"
     },
     {
       "path": "tools/psp_oracle/run_nakagawa.py",
@@ -6713,7 +6713,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f243e7a8afc084ad1a0928419c1da8953e9cd94ca2ead2934c1dcf9185f197e"
+      "sha256": "603ff521b0aaa9e18cec12eee64a97ee44b813cc2c575e5a6bad38301e43482b"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -7302,7 +7302,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef28f17a8813e2b2ff5b1512d772f3050f5ad811237aa8fbe9080b08887e4c7d"
+      "sha256": "ef47948cd0871e6618c009c5cbd1303805e85b89181fe1fe7b19e598868e2224"
     },
     {
       "path": "tools/test_dco_policy.py",
@@ -7386,7 +7386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3094451fec2fc8d52148919f228a1e5679f7efbe6b0a68a8138459ba3ec073b9"
+      "sha256": "d33785df81d0db37fa4a5abffe69925c0b63742016ac0ff3769de663837db171"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -7434,7 +7434,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "062cf3b9859c5a6514b625cef98aa20b26abdf106de023d60aa77dd47534366b"
+      "sha256": "feccdd26f34da47fbcf5b18b37b81f5d07e1467b3f54ed106b83b9676f8d411d"
     },
     {
       "path": "tools/test_enhancement_package.py",
@@ -7710,7 +7710,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef0a4d8692b129152ffe24881cd89d34c24af4226d8b705828655d562e17febc"
+      "sha256": "949e954ba132c0225c17d9d22fb375aa0e00c4b7bde6b57a5bf17bc260b3b616"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -8467,7 +8467,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70d5b0a8948f8f27e58a50443fa720db2f25c5887ccae5d9e8d99d58c6f19fa2"
+      "sha256": "fb5293ebc78607e20e0fdbe438786f0678bfca7372d349125d8194c4a5b4e921"
     },
     {
       "path": "tools/test_psp_parsers.py",
