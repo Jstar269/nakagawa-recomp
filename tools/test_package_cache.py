@@ -295,7 +295,7 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertEqual(mismatch.status, "FAIL")
         self.assertIn("main executable changed", mismatch.detail or "")
-        self.assertIn("in the works (#315)", mismatch.detail or "")
+        self.assertIn("built from different local inputs", mismatch.detail or "")
 
         completion_path = package_dir / package_cache.COMPLETION_MANIFEST
         completion = json.loads(completion_path.read_text(encoding="utf-8"))

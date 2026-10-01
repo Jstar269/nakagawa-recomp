@@ -148,6 +148,13 @@ alongside the `sceKernelSendMbx` / `sceKernelPollMbx` / `sceKernelCancelReceiveM
 regenerated in [`PSP_INTR_WAITS_CENSUS.md`](PSP_INTR_WAITS_CENSUS.md); the cells below
 stay pinned until harness probe cases for the object model land.
 
+**Snapshot note (issue #339 wait batch superseded).** `sceKernelTerminateThread`,
+`sceKernelDelaySysClockThread`, `sceKernelDelaySysClockThreadCB`, `sceDisplayWaitVblankCB`
+and `sceDisplayWaitVblankStartCB` now resolve to dedicated production handlers
+(`h_TerminateThread`, `h_DelaySysClockThread`, `h_DelaySysClockThreadCB`,
+`h_DisplayWaitVblankCB`, `h_DisplayWaitVblankStartCB`, issue #339). Live registration
+status is regenerated in [`PSP_INTR_WAITS_CENSUS.md`](PSP_INTR_WAITS_CENSUS.md).
+
 Of the registered remainder the harness covers 54 probe cases. The registered APIs
 deliberately left out of the executable matrix, with their reasons:
 
