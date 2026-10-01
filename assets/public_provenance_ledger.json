@@ -5987,7 +5987,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9fa88ac2bf8c9a5aa3844dfda81efc2e842db75552982194239088cd7eddc558"
+      "sha256": "b801bdc5eadfa8e197391053264cea6ecf79317f7939024015d8a86bc65be037"
     },
     {
       "path": "tools/host_stubs.py",
@@ -8119,7 +8119,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "579b2d381f4b5017ce87e9fe4bfd5278827c56e41e7b8f21457477ebf92c53b3"
+      "sha256": "af69e196d5106fc0bd8ed145c35a7b0f9ee0d2d4d35cdfa71df0b4e46fc4d8a8"
     },
     {
       "path": "tools/test_package_cache.py",
