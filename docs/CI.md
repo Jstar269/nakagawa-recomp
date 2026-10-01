@@ -46,9 +46,12 @@ otherwise incomplete. A failed hygiene/security job is never hidden by the
 aggregate. Python/native jobs also wait for hygiene, so an early full-tree
 failure does not spend additional runner time on dependent expensive gates.
 
-The full-tree pre-commit run retains the publication audit and the separate
-Betterleaks current-tree scan. Hygiene then runs an explicit Betterleaks
-reachable-history scan and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+The full-tree pre-commit run retains the publication audit and the Betterleaks
+current-tree scan; the hook runs Betterleaks in directory mode over the files it
+is given (every tracked file under `--all-files`, the staged files at the commit
+stage). The hook is commit-stage only: at pre-push pre-commit supplies no file
+names, which would turn directory mode into a whole-working-tree scan. Hygiene then runs an explicit Betterleaks reachable-history
+scan in git mode and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,

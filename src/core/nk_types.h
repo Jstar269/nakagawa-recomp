@@ -16,7 +16,8 @@ extern "C" {
 #define NK_MAX_TITLE_LEN 128
 #define NK_MAX_DISC_ID_LEN 32
 #define NK_MAX_GAMES 64
-#define NK_MAX_EXECUTABLE_PATH 16
+#define NK_MAX_EXECUTABLE_PATH (255u + 1u) /* Python boot-name limit plus NUL */
+#define NK_MAX_SELECTED_EXECUTABLE_PATH 16
 
 typedef enum {
     NK_OK = 0,
@@ -58,7 +59,10 @@ typedef struct {
     uint32_t executable_boot_kind;
     uint32_t executable_selection;
     bool executable_boot_fallback;
-    char selected_executable[NK_MAX_EXECUTABLE_PATH];
+    /* Original executable filename as loaded by the PSP, separate from the
+       normalized executable selected for analysis/package identity. */
+    char boot_executable[NK_MAX_EXECUTABLE_PATH];
+    char selected_executable[NK_MAX_SELECTED_EXECUTABLE_PATH];
     bool is_prepared;
     /* Disc payload staging is deliberately separate from runtime readiness.
        A staged title has its EBOOT/XB data in prepared_root, but may still
