@@ -24,6 +24,7 @@ typedef struct {
     char *host;                /* opaque host path (UTF-8) */
     int variant;               /* -1 = unqualified, otherwise archive variant */
     uint64_t size;             /* size captured during successful enumeration */
+    uint32_t precedence;       /* Lower manifest root precedence wins a duplicate key. */
 } SrAssetIndexEntry;
 
 typedef struct {
@@ -220,6 +221,7 @@ static inline int sr_asset_index_add(SrAssetIndex *index, const char *key,
     entry->host = host_copy;
     entry->variant = variant;
     entry->size = 0;
+    entry->precedence = UINT32_MAX;
     index->finalized = 0;
     return 1;
 }
@@ -236,12 +238,22 @@ static inline int sr_asset_index_add_sized(SrAssetIndex *index, const char *key,
     return 1;
 }
 
+static inline int sr_asset_index_add_sized_precedence(
+    SrAssetIndex *index, const char *key, const char *host, int variant,
+    uint64_t size, uint32_t precedence) {
+    if (!sr_asset_index_add_sized(index, key, host, variant, size)) return 0;
+    index->entries[index->count - 1u].precedence = precedence;
+    return 1;
+}
+
 static inline int sr_asset_index_entry_cmp(const void *a, const void *b) {
     const SrAssetIndexEntry *aa = (const SrAssetIndexEntry *)a;
     const SrAssetIndexEntry *bb = (const SrAssetIndexEntry *)b;
     int r = strcmp(aa->key, bb->key);
     if (r) return r;
     if (aa->variant != bb->variant) return aa->variant < bb->variant ? -1 : 1;
+    if (aa->precedence != bb->precedence)
+        return aa->precedence < bb->precedence ? -1 : 1;
     return strcmp(aa->host, bb->host);
 }
 

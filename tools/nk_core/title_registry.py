@@ -88,6 +88,9 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         require_local_compatibility_record=bool(
             manifest.get("disc", {}).get("require_local_compatibility_record", False)
         ),
+        loose_content_roots=tuple(
+            dict(root) for root in fs.get("loose_content_roots", [])
+        ),
     )
 
 

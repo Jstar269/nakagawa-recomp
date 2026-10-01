@@ -102,6 +102,7 @@ class TitleProfile:
     min_iso_bytes: int = 10 * 1024 * 1024  # 10 MB minimum
     game_name: str = ""
     require_local_compatibility_record: bool = False
+    loose_content_roots: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
 
     def matches_disc_id(self, disc_id: str) -> bool:
         norm = disc_id.strip().upper().replace("-", "").replace("_", "")

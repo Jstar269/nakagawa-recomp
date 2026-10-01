@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import nk_cli  # noqa: E402
+import title_manifest  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 from nk_core import (
     CancellationToken,
@@ -964,6 +965,52 @@ class GenericLauncherHostileTests(unittest.TestCase):
         self.assertEqual(Path(cmd[0]), exe)
         self.assertEqual(Path(cmd[2]), img)
         self.assertEqual(env["PSP_ISO"], str(self.iso))
+
+    def test_loose_root_environment_uses_manifest_and_masks_inherited_value(self) -> None:
+        source = json.loads(
+            (REPO_ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        source["id"] = "launch-loose-roots-v1"
+        source["game_name"] = "launch-loose-roots"
+        source["display_name"] = "Launch Loose Roots"
+        source["filesystem"]["data_root"] = "extracted"
+        source["filesystem"]["loose_content_roots"] = [
+            {"root": "loose", "mount": "", "precedence": 7},
+        ]
+        source_path = self.temp_dir / "loose-roots-title.json"
+        source_path.write_text(json.dumps(source), encoding="utf-8")
+        registry = TitleRegistry(include_defaults=False)
+        registry.load_private_manifest(source_path)
+
+        game_dir = self._game_dir({"title_id": source["id"]}, name="LOOSE_ROOTS")
+        data_root = game_dir / "extracted"
+        loose_root = game_dir / "loose"
+        data_root.mkdir()
+        loose_root.mkdir()
+        exe, _ = _write_title_runtime(self.temp_dir, source["game_name"], exe_ext=".exe")
+
+        with patch.dict(
+            os.environ,
+            {"SR_DATAROOT": "inherited-data-root", "SR_LOOSE_CONTENT_ROOTS": "inherited-root"},
+        ):
+            cmd, env = RuntimeLauncher(
+                repo_root=self.temp_dir, registry=registry
+            ).build_launch_plan(game_dir)
+        expected = title_manifest.encode_loose_content_roots(
+            title_manifest.validate_manifest(source), data_root.resolve()
+        )
+        self.assertEqual(Path(cmd[0]), exe)
+        self.assertEqual(env["SR_DATAROOT"], str(data_root))
+        self.assertEqual(env["SR_LOOSE_CONTENT_ROOTS"], expected)
+        self.assertNotEqual(env["SR_LOOSE_CONTENT_ROOTS"], "inherited-root")
+
+        shutil.rmtree(loose_root)
+        with patch.dict(
+            os.environ,
+            {"SR_DATAROOT": "inherited-data-root", "SR_LOOSE_CONTENT_ROOTS": "inherited-root"},
+        ):
+            with self.assertRaisesRegex(RuntimeLaunchError, "Loose-content root binding #289"):
+                RuntimeLauncher(repo_root=self.temp_dir, registry=registry).build_launch_plan(game_dir)
 
     # Hostile 7: a session whose disc and title identities disagree is rejected
     # before any plan (and therefore before any spawn) is produced.
