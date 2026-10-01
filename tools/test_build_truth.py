@@ -1899,6 +1899,14 @@ class MachinePortabilityTests(unittest.TestCase):
         inventory = publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY
         self.assertEqual(sum(inventory.values()),
                          publish_audit.DEBT_BUDGETS["powershell_silently_continue"])
+        # The repo-wide case below is only meaningful if git actually lists the scripts;
+        # _debt_budget_findings falls back to an empty path list when git fails.
+        import subprocess
+        tracked_scripts = subprocess.run(
+            ["git", "ls-files", "*.ps1"], cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.split()
+        self.assertTrue(set(inventory) <= set(tracked_scripts),
+                        "every inventoried script must be a tracked .ps1 the audit inspects")
         self.assertEqual(
             [f for f in publish_audit._debt_budget_findings() if "SilentlyContinue" in f.detail],
             [],

@@ -109,11 +109,16 @@ class TestThirdPartyComponentInventory(unittest.TestCase):
 
     def test_every_copy_route_names_a_tracked_script(self) -> None:
         """A relocated or deleted copy script must not leave a stale route behind."""
+        import subprocess
+        tracked = set(subprocess.run(
+            ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True,
+        ).stdout.decode("utf-8").split("\0"))
+        self.assertGreater(len(tracked), 1, "git ls-files returned no tracked paths")
         for route in self.data["native"]["copy_routes"]:
             with self.subTest(route=route["id"]):
-                self.assertTrue(
-                    (ROOT / route["file"]).is_file(),
-                    f"copy route {route['id']} names a missing file: {route['file']}",
+                self.assertIn(
+                    route["file"], tracked,
+                    f"copy route {route['id']} names an untracked or missing file: {route['file']}",
                 )
 
     def test_host_resolved_dlls_are_not_also_copied_into_a_package(self) -> None:
