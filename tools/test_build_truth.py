@@ -494,13 +494,29 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
         ]
         self.assertEqual(len(media_links), 1, media_links)
         number, link = media_links[0]
-        self.assertIn(
-            "src/rt/flight_recorder.c",
-            link,
+        # The recipe either names the implementation or links the filtered
+        # runtime object set, which carries flight_recorder.o unless the filter
+        # removes it.
+        supplied = "src/rt/flight_recorder.c" in link or (
+            "$(PSMF_MEDIA_RUNTIME_OBJS)" in link
+            and "flight_recorder.o" not in _psmf_media_filtered_out(makefile)
+        )
+        self.assertTrue(
+            supplied,
             "Makefile:%d links psmf_media_selftest.exe with SR_FLIGHT_RECORDER_LINKED, "
             "but omits the implementation that defines sr_watch_store and "
             "g_sr_watch_enabled:\n%s" % (number, link.strip()),
         )
+
+
+def _psmf_media_filtered_out(makefile: str) -> str:
+    """The objects PSMF_MEDIA_RUNTIME_OBJS removes from RT_OBJS (its filter-out list)."""
+    match = re.search(
+        r"(?m)^PSMF_MEDIA_RUNTIME_OBJS\s*:=\s*\$\(filter-out\s+([^,]*),\s*\$\(RT_OBJS\)\)",
+        makefile,
+    )
+    assert match is not None, "PSMF_MEDIA_RUNTIME_OBJS must stay a filter-out of RT_OBJS"
+    return match.group(1)
 
 
 NESTED_FRAMES_C = "src/rt/nested_frames.c"
@@ -512,6 +528,9 @@ NESTED_FRAMES_BUNDLES = (
     "$(RT_OBJS)",
     "$(PORTABLE_CORE_SRCS)",
     "$(PORTABLE_CORE_OBJS)",
+    # RT_OBJS minus a fixed filter-out list; test_psmf_runtime_objs_keep_nested_frames
+    # fails if that list ever removes nested_frames.o.
+    "$(PSMF_MEDIA_RUNTIME_OBJS)",
 )
 
 
@@ -645,6 +664,11 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
         callers = _nested_frame_callers()
         for expected in ("src/rt/hle.c", "src/rt/mpeg.c", "src/rt/sched.c"):
             self.assertIn(expected, callers)
+
+    def test_psmf_runtime_objs_keep_nested_frames(self) -> None:
+        removed = _psmf_media_filtered_out(self.makefile)
+        self.assertNotIn("nested_frames.o", removed)
+        self.assertIn("src/rt/nested_frames.c", self.makefile.split("RT_SRCS    :=", 1)[1])
 
     def test_every_link_of_a_caller_also_supplies_the_module(self) -> None:
         callers = _nested_frame_callers()
@@ -1759,7 +1783,7 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_copy_build_assets_script_has_toolchain_discovery_fallback(self) -> None:
         """copy_build_assets.ps1 must attempt compiler toolchain discovery if SDL3.dll is absent from local dirs."""
-        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (ROOT / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("Get-Command gcc", script_text)
         self.assertIn("SDL3.dll", script_text)
 
@@ -1842,19 +1866,137 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_copy_build_assets_supports_explicit_sdl3_dll_path(self) -> None:
         """copy_build_assets.ps1 must declare Sdl3DllPath parameter and Makefile must pass SDL3_DLL."""
-        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (ROOT / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("[string]$Sdl3DllPath", script_text)
         self.assertIn("Copy-Item $Sdl3DllPath", script_text)
 
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("-Sdl3DllPath \"$(SDL3_DLL)\"", makefile_text)
 
+    def test_copy_build_assets_helper_is_a_tools_script_everywhere_it_is_named(self) -> None:
+        """The post-link asset copy helper is tools/copy_build_assets.ps1.
+
+        The Makefile step, the publication policy and the PowerShell debt
+        inventory are the three places that resolve the helper by path. If any
+        of them still names the repository root, `make compile` stops staging
+        SDL3, the runtime DLLs and font/ without saying so.
+        """
+        helper = ROOT / "tools" / "copy_build_assets.ps1"
+        self.assertTrue(helper.is_file(), "tools/copy_build_assets.ps1 is missing")
+        self.assertFalse(
+            (ROOT / "copy_build_assets.ps1").exists(),
+            "the helper still exists at the repository root",
+        )
+
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn(
+            "$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1",
+            makefile_text,
+        )
+        self.assertNotIn(
+            "-File copy_build_assets.ps1", makefile_text,
+            "the Makefile asset copy step still names the repository root",
+        )
+
+        policy = json.loads(
+            (ROOT / "assets" / "public_source_profile.json").read_text(encoding="utf-8"))
+        self.assertIn("tools/copy_build_assets.ps1", policy["include_paths"])
+        self.assertNotIn(
+            "copy_build_assets.ps1", policy["include_paths"],
+            "the public source profile still publishes the repository root path",
+        )
+
+        import publish_audit
+
+        self.assertIn("tools/copy_build_assets.ps1",
+                      publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY)
+        self.assertNotIn("copy_build_assets.ps1",
+                         publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY)
+
+
+    def test_powershell_debt_inventory_is_enforced_per_script(self) -> None:
+        """Each script keeps its own SilentlyContinue ceiling; the total is their sum."""
+        import tempfile
+
+        import publish_audit
+
+        inventory = publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY
+        self.assertEqual(sum(inventory.values()),
+                         publish_audit.DEBT_BUDGETS["powershell_silently_continue"])
+        # The repo-wide case below is only meaningful if git actually lists the scripts;
+        # _debt_budget_findings falls back to an empty path list when git fails.
+        import subprocess
+        tracked_scripts = subprocess.run(
+            ["git", "ls-files", "*.ps1"], cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.split()
+        self.assertTrue(set(inventory) <= set(tracked_scripts),
+                        "every inventoried script must be a tracked .ps1 the audit inspects")
+        self.assertEqual(
+            [f for f in publish_audit._debt_budget_findings() if "SilentlyContinue" in f.detail],
+            [],
+        )
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "tools").mkdir()
+            (root / "tools" / "copy_build_assets.ps1").write_text(
+                "$ErrorActionPreference = 'SilentlyContinue'\n" * 4, encoding="utf-8")
+            (root / "unlisted.ps1").write_text(
+                "Get-Item x -ErrorAction SilentlyContinue\n", encoding="utf-8")
+            findings = publish_audit._debt_budget_findings(
+                root, ["tools/copy_build_assets.ps1", "unlisted.ps1"])
+        flagged = {f.path for f in findings if "SilentlyContinue" in f.detail}
+        self.assertEqual(flagged, {"tools/copy_build_assets.ps1", "unlisted.ps1"})
+
+    def test_no_tracked_file_names_the_root_level_copy_build_assets_path(self) -> None:
+        """A relocation is complete only when nothing still names the old path.
+
+        Every tracked mention of the helper must carry its `tools/` directory,
+        so a reader and every tool that resolves the path land on the same
+        file. The generated inventories are the only records allowed to lag;
+        the maintainer regenerates those with provenance-refresh.
+        """
+        # A mention is qualified when its `tools` directory component sits
+        # immediately before it, in plain path form (`tools/...`) or in the
+        # `ROOT / "tools" / "..."` form the tree-wide Python tests use.
+        mention = re.compile(r"copy_build_assets\.ps1")
+        qualified = re.compile(r"tools[\"'\\ /]*$")
+        # The generated inventories are rewritten by provenance-refresh, and this
+        # module has to name the old path in order to assert that nothing else does.
+        allowed = {
+            "assets/public_provenance_ledger.json",
+            "PUBLIC_EXPORT.json",
+            "docs/provenance/MODIFIED_FILE_NOTICES.json",
+            "tools/test_build_truth.py",
+        }
+        if shutil.which("git") is None:
+            self.skipTest("git is required to enumerate the tracked tree")
+        listing = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            capture_output=True, text=True, check=True).stdout
+        offenders = []
+        for entry in sorted(filter(None, listing.split("\0"))):
+            if entry in allowed:
+                continue
+            try:
+                text = (ROOT / entry).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for match in mention.finditer(text):
+                window = text[max(0, match.start() - 32):match.start()]
+                if not qualified.search(window):
+                    offenders.append(entry)
+                    break
+        self.assertEqual(
+            offenders, [],
+            "these tracked files still name the root-level copy_build_assets.ps1 path",
+        )
+
     def test_windows_package_build_uses_builtin_windows_powershell(self) -> None:
         """A consumer build must not need a separately installed PowerShell 7."""
         makefile_text = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
-        script_text = (Path(__file__).resolve().parents[1] / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (Path(__file__).resolve().parents[1] / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("POWERSHELL ?= powershell.exe", makefile_text)
-        self.assertIn("$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1", makefile_text)
+        self.assertIn("$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1", makefile_text)
         self.assertIn("#requires -Version 5.1", script_text)
 
     def test_runtime_profile_records_sdl3_identity(self) -> None:

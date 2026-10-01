@@ -91,9 +91,10 @@ class DataDirectoryTests(unittest.TestCase):
             self.assertIn("unavailable", legacy_results[0].detail or "")
 
 
-# Scripts the CONSUMER package build runs. They target the Windows PowerShell
-# that ships with Windows (5.1) so a clean machine needs no PowerShell 7.
-CONSUMER_BUILD_POWERSHELL = {"copy_build_assets.ps1": "5.1"}
+# Scripts the CONSUMER package build runs, keyed by repo-relative posix path.
+# They target the Windows PowerShell that ships with Windows (5.1) so a clean
+# machine needs no PowerShell 7.
+CONSUMER_BUILD_POWERSHELL = {"tools/copy_build_assets.ps1": "5.1"}
 
 
 class ElfValidationTests(unittest.TestCase):
@@ -694,11 +695,11 @@ class EnvironmentContractTests(unittest.TestCase):
                 f"{doc.relative_to(ROOT)} does not document the PowerShell {floor}+ floor",
             )
         for script in sorted((ROOT / name for name in (
-            "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1", "tools/nk_safety.ps1",
+            "tools/copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1", "tools/nk_safety.ps1",
             "tools/test_manager_safety.ps1", "tools/test_visual_oracle.ps1",
             "tools/title_manager_plan.ps1", "tools/vulkan_sdk.ps1",
         ))):
-            want = CONSUMER_BUILD_POWERSHELL.get(script.name, floor)
+            want = CONSUMER_BUILD_POWERSHELL.get(script.relative_to(ROOT).as_posix(), floor)
             self.assertIn(
                 f"#requires -Version {want}",
                 script.read_text(encoding="utf-8-sig"),
@@ -795,7 +796,7 @@ class SimpleFrontEndTests(unittest.TestCase):
         for script in (
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
-            ROOT / "copy_build_assets.ps1",
+            ROOT / "tools" / "copy_build_assets.ps1",
             ROOT / "tools" / "nk_safety.ps1",
             ROOT / "tools" / "test_manager_safety.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",
@@ -803,7 +804,7 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "tools" / "vulkan_sdk.ps1",
         ):
             want = CONSUMER_BUILD_POWERSHELL.get(
-                script.name, _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
+                script.relative_to(ROOT).as_posix(), _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
             self.assertIn(f"#requires -Version {want}",
                           script.read_text(encoding="utf-8-sig"), script.name)
         # The build step's host is a variable (built-in Windows PowerShell by
@@ -843,7 +844,7 @@ class SimpleFrontEndTests(unittest.TestCase):
 
     def test_all_tracked_powershell_scripts_declare_consistent_requires_version(self) -> None:
         expected_scripts = {
-            ROOT / "copy_build_assets.ps1",
+            ROOT / "tools" / "copy_build_assets.ps1",
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "tools" / "nk_safety.ps1",
@@ -873,7 +874,7 @@ class SimpleFrontEndTests(unittest.TestCase):
         for script in discovered_scripts:
             content = script.read_text(encoding="utf-8-sig")
             want = CONSUMER_BUILD_POWERSHELL.get(
-                script.name, _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
+                script.relative_to(ROOT).as_posix(), _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
             expected_header = f"#requires -Version {want}"
             self.assertIn(
                 expected_header,

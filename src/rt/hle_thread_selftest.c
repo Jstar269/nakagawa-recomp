@@ -9851,6 +9851,7 @@ static void test_nested_frame_handle_hygiene(void) {
 #define NID_SCE_GE_EDRAM_GET_ADDR           0xe47e40e4u
 #define NID_SCE_GE_EDRAM_GET_SIZE           0x1f6752adu
 #define NID_SCE_GE_LIST_ENQUEUE             0xab49e76au
+#define NID_SCE_GE_LIST_DEQUEUE             0x5fb86ab0u
 #define NID_SCE_GE_LIST_SYNC                0x03444eb4u
 #define NID_SCE_GE_LIST_UPDATE_STALL_ADDR   0xe0d68148u
 #define NID_SCE_GE_GET_CMD                  0xdc93cfefu
@@ -17404,7 +17405,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 3") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 4") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -17476,6 +17477,96 @@ static void test_flight_recorder_trace(void) {
     remove(output);
     sr_flight_test_disable();
     SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+}
+
+static void test_flight_recorder_ge_present_events(void) {
+    const uint32_t list_addr = 0x08980000u;
+    SrFlightSnapshot snapshot;
+    SrFlightEvent event;
+    uint32_t qid;
+    uint32_t ge_events = 0u, present_events = 0u, draw_events = 0u;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_GE | SR_FLIGHT_CLASS_PRESENT, 32u);
+
+    /* Synthetic, zero-vertex draw still exercises the production list walk without
+     * reading vertex memory: PRIM, FINISH, END. */
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    s_cpu->r[5] = 0u;
+    s_cpu->r[6] = 0u;
+    s_cpu->r[7] = 0u;
+    qid = sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xff000000u) == 0x35000000u,
+           "flight GE fixture reaches production list enqueue");
+
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = qid;
+    s_cpu->r[5] = 0u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "flight GE fixture reaches production list sync");
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = 1u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "flight GE fixture reaches production draw sync");
+    /* DeQueue has no registered operation in this build. Exercise its recorder
+     * boundary directly; invoking the guest NID would correctly remain fail-closed. */
+    (void)sr_flight_hle_import(NID_SCE_GE_LIST_DEQUEUE, 0u, qid, 0x08980100u, 0u);
+
+    s_test_gui_on = 1;
+    expect(display_set(0x04000000u, 512, 3, 0u) == 0u,
+           "flight present fixture reaches production SetFrameBuf and presenter");
+    s_test_gui_on = 0;
+
+    expect(sr_flight_event_count() == 9,
+           "flight GE/present fixture records seven GE and two present events");
+    for (int i = 0; i < sr_flight_event_count(); ++i) {
+        expect(sr_flight_event_at((uint32_t)i, &event) != 0,
+               "flight GE/present event is readable");
+        if (event.event_class == SR_FLIGHT_CLASS_GE) {
+            ge_events++;
+            if (event.kind == SR_FLIGHT_KIND_GE_DRAW) {
+                draw_events++;
+                expect(event.arg0 == list_addr && event.arg1 == list_addr &&
+                           event.arg2 == 0u && event.arg3 == 0u,
+                       "GE draw event carries list, command, primitive, and vertex count");
+            }
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_ENQUEUE)
+                expect(event.arg0 == list_addr && event.arg1 == 0u && event.arg2 == qid,
+                       "GE enqueue event carries list, stall, and list id");
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_DEQUEUE)
+                expect(event.arg0 == qid, "GE dequeue event carries the submitted list id");
+        } else if (event.event_class == SR_FLIGHT_CLASS_PRESENT) {
+            present_events++;
+            expect(event.arg0 == 0x04000000u && event.arg1 == 3u &&
+                       event.arg2 == 512u,
+                   "present event carries framebuffer, format, and stride");
+        }
+    }
+    expect(ge_events == 7u && present_events == 2u && draw_events == 1u,
+           "flight GE/present event classes have the expected production counts");
+
+    /* The same production path with the classes disabled remains an empty trace. */
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(0u, 32u);
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    (void)sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    s_test_gui_on = 1;
+    (void)display_set(0x04000000u, 512, 3, 0u);
+    s_test_gui_on = 0;
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 0u && sr_flight_event_count() == 0,
+           "disabled GE/present classes record zero events on the same route");
+    sr_flight_test_disable();
 }
 
 static uint32_t issue339_create_pending_callback(void) {
@@ -17955,6 +18046,7 @@ int main(int argc, char **argv) {
     test_late_prx_duplicate_base_last_reference();
     test_psmf_rejected_stream_names_the_boundary();
     test_flight_recorder_trace();
+    test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can

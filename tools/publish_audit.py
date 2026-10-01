@@ -177,16 +177,19 @@ TEMP_PATH = re.compile(
 DEBT_BUDGETS: dict[str, int] = {
     "ruff_select_rule_families": 4,
     "first_party_todos": 7,
-    "powershell_silently_continue": 53,
+    "powershell_silently_continue": 49,
 }
 
+#: Per-script SilentlyContinue ceilings. The debt check enforces each entry, and a
+#: tracked script missing from this map may not use SilentlyContinue at all, so the
+#: total ceiling above is the sum of these entries.
 POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
-    "copy_build_assets.ps1": 1,
-    "nk_manager.ps1": 25,
+    "nk_manager.ps1": 24,
+    "tools/copy_build_assets.ps1": 3,
     "tools/nk_safety.ps1": 11,
     "tools/test_manager_safety.ps1": 3,
     "tools/test_visual_oracle.ps1": 3,
-    "tools/title_manager_plan.ps1": 9,
+    "tools/title_manager_plan.ps1": 4,
     "tools/vulkan_sdk.ps1": 1,
 }
 
@@ -1577,8 +1580,15 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
         text = _text(full_path)
         if text is None:
             continue
-        m = ps_pat.findall(text)
-        ps_count += len(m)
+        script_count = len(ps_pat.findall(text))
+        ps_count += script_count
+        script_ceiling = POWERSHELL_SILENTLY_CONTINUE_INVENTORY.get(rel, 0)
+        if script_count > script_ceiling:
+            findings.append(
+                Finding("DEBT_BUDGET", rel,
+                        f"PowerShell SilentlyContinue count {script_count} exceeds this "
+                        f"script's debt ceiling {script_ceiling}")
+            )
     ceiling = DEBT_BUDGETS["powershell_silently_continue"]
     if ps_count > ceiling:
         findings.append(
@@ -1846,7 +1856,7 @@ def _default_provenance(
     if rel_path.startswith(".github/") or rel_path.startswith(".") or rel_path in (".gitignore", ".gitattributes", ".clang-format", ".editorconfig", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml"):
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", "configuration", "included", policy_public
 
-    if rel_path.startswith(("src/", "tools/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1"):
+    if rel_path.startswith(("src/", "tools/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "nk.ps1", "nk_manager.ps1"):
         gen_kind = "documentation" if (rel_path.startswith("docs/") or ext == ".md") else ("data" if ext in (".json", ".jsonc", ".dat") else ("script" if ext in (".ps1", ".sh") else "source"))
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", gen_kind, "included", policy_public
 

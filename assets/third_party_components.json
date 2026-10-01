@@ -8,7 +8,7 @@
     "copy_routes": [
       {
         "id": "compile-asset-copy",
-        "file": "copy_build_assets.ps1",
+        "file": "tools/copy_build_assets.ps1",
         "copies": [
           "SDL3.dll",
           "libgcc_s_seh-1.dll",

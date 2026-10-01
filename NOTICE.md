@@ -58,7 +58,7 @@ route that copies it, and the license texts copied verbatim into
 SBOM, and the release gate all read that one file.
 
 - The native package route (`tools/package_notices.py`, invoked by the package
-  build and by `copy_build_assets.ps1`) emits `THIRD_PARTY_NOTICES.txt`,
+  build and by `tools/copy_build_assets.ps1`) emits `THIRD_PARTY_NOTICES.txt`,
   `THIRD_PARTY_NOTICES/index.json`, `SOURCE.txt`, and `RELINK.md` beside the
   package, and fails closed when a bundled binary has no license record or no
   license text.

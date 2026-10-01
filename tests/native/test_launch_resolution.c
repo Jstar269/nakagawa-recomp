@@ -21,7 +21,9 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "nk_font.h"
 #include "nk_launch.h"
+#include "nk_psp_keystore.h"
 #include "nk_platform.h"
 #include "nk_title_manifest.h"
 #include "nk_types.h"
@@ -33,6 +35,7 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
+#include <windows.h>
 #define test_rmdir _rmdir
 #else
 #include <sys/stat.h>
@@ -323,7 +326,7 @@ static void write_le32(uint8_t *p, uint32_t value) {
 }
 
 static void write_bytes(const char *path, const void *data, size_t size) {
-    FILE *f = fopen(path, "wb");
+    FILE *f = nk_fopen_utf8(path, "wb");
     assert(f != NULL);
     assert(fwrite(data, 1, size, f) == size);
     assert(fclose(f) == 0);
@@ -450,6 +453,220 @@ static void test_posix_data_directory_rule(void) {
     free(saved_xdg);
 }
 #endif
+
+/* A per-user profile directory may hold non-ASCII characters (an accented
+ * given name, a Japanese user name). Every user-data and install path the
+ * product builds therefore carries UTF-8, and on Windows the narrow CRT
+ * re-reads those bytes in the active ANSI code page, so a name it cannot
+ * represent resolves to a different directory or no directory at all. This
+ * subtest drives the three user-data surfaces named by #324 through one such
+ * root:
+ *
+ *   - nk_launch's writability probe (which decides where saves are routed),
+ *   - the shared UTF-8 fopen/remove/rename primitives every consumer uses,
+ *   - the font cache open under <user_data>/fonts/v1.
+ *
+ * The fixture names mix Latin-1-supplement and CJK characters: an ANSI code
+ * page that can represent neither loses the name, and one that can represent
+ * only the first part still misroutes the rest, so neither host can satisfy
+ * the path through a narrow call.
+ *
+ * The names are spelled as explicit UTF-8 byte escapes, split into adjacent
+ * literals so no hex escape swallows a following hex digit, so the byte string
+ * is exact whatever source charset a compiler assumes (MSVC without /utf-8
+ * would re-encode raw literals in the active code page). The bytes are
+ * U+00FC, U+00EF, U+00E9 (Latin-1 supplement) and U+65E5 U+672C (CJK). The
+ * comment itself stays ASCII for the same reason. */
+#define NK_NONASCII_ROOT "nk_" "\xC3\xBC" "n" "\xC3\xAF" "code_" "\xE6\x97\xA5\xE6\x9C\xAC"
+#define NK_NONASCII_LEAF "caf" "\xC3\xA9" "_" "\xC3\xBC" "n" "\xC3\xAF" "code_" "\xE6\x97\xA5\xE6\x9C\xAC" ".bin"
+
+/* The narrow _rmdir/rmdir would fail on the same non-ASCII name the fixture
+ * exercises, so cleanup converts the name the same way the product does. */
+static void remove_dir_utf8(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            (int)(sizeof(wide) / sizeof(wide[0]))) > 0) {
+        RemoveDirectoryW(wide);
+    }
+#else
+    rmdir(path);
+#endif
+}
+
+static void write_file_utf8(const char *path, const char *data) {
+    FILE *f = nk_fopen_utf8(path, "wb");
+    assert(f != NULL);
+    if (data && *data) {
+        assert(fwrite(data, 1, strlen(data), f) == strlen(data));
+    }
+    assert(fclose(f) == 0);
+}
+
+static void test_non_ascii_user_data_root(const char *base, char sep) {
+    printf("[LAUNCH_TEST] Subtest 19: non-ASCII user-data root\n");
+    fflush(stdout);
+
+    char root[900];
+    char probe_dir[1000];
+    char probe_file[1100];
+    char font_parent[1100];
+    char font_dir[1200];
+    char manifest[1300];
+    char pgf[1400];
+    snprintf(root, sizeof(root), "%s%c" NK_NONASCII_ROOT, base, sep);
+    assert(nk_platform_mkdir_p(root));
+    /* nk_launch probes a subdirectory of the save root, so create it here. */
+    snprintf(probe_dir, sizeof(probe_dir), "%s%csaves" NK_NONASCII_ROOT, base, sep);
+    assert(nk_platform_mkdir_p(probe_dir));
+
+    /* The shared UTF-8 file primitives: create, read back, rename, remove.
+     * Every one of these reaches a user-data path, so a narrow call here is
+     * the defect #324 reports. */
+    snprintf(probe_file, sizeof(probe_file), "%s%c" NK_NONASCII_LEAF, root, sep);
+    write_file_utf8(probe_file, "non-ascii user data");
+    FILE *readback = nk_fopen_utf8(probe_file, "rb");
+    assert(readback != NULL);
+    char observed[64] = "";
+    size_t got = fread(observed, 1, sizeof(observed) - 1, readback);
+    assert(got == strlen("non-ascii user data"));
+    assert(fclose(readback) == 0);
+    assert(strcmp(observed, "non-ascii user data") == 0);
+
+    char renamed[1200];
+    snprintf(renamed, sizeof(renamed), "%s%c" NK_NONASCII_LEAF ".renamed", root, sep);
+    assert(nk_rename_utf8(probe_file, renamed) == 0);
+    assert(!nk_platform_file_exists(probe_file));
+    assert(nk_platform_file_exists(renamed));
+    assert(nk_remove_utf8(renamed) == 0);
+    assert(!nk_platform_file_exists(renamed));
+    /* Removing what is not there fails rather than claiming success. */
+    assert(nk_remove_utf8(renamed) != 0);
+
+    /* nk_launch's writability probe: an entire session must resolve a
+     * memstick root below a non-ASCII prepared root, because ensure_writable_dir
+     * both creates and removes a probe file there. */
+    const char *unicode_name = "display-smoke";
+    char runtime_dir[1000];
+    char runtime_exe[1100];
+    char runtime_img[1200];
+    snprintf(runtime_dir, sizeof(runtime_dir), "%s%cbuild%c%s", root, sep, sep,
+             unicode_name);
+    assert(nk_platform_mkdir_p(runtime_dir));
+    snprintf(runtime_exe, sizeof(runtime_exe), "%s%c%s", runtime_dir, sep, unicode_name);
+    snprintf(runtime_img, sizeof(runtime_img), "%s%c%s_image.bin", runtime_dir, sep,
+             unicode_name);
+    write_file_utf8(runtime_exe, "binary");
+    write_file_utf8(runtime_img, "image");
+
+    NkGameEntry unicode_game;
+    NkLaunchSession unicode_session;
+    make_game(&unicode_game, "");
+    snprintf(unicode_game.disc_id, sizeof(unicode_game.disc_id), "TEST00006");
+    snprintf(unicode_game.title_id, sizeof(unicode_game.title_id), "display-smoke-v1");
+    assert(strlen(root) < sizeof(unicode_game.prepared_root));
+    memcpy(unicode_game.prepared_root, root, strlen(root) + 1);
+    unicode_game.assets_staged = true;
+    char staged_xbdata[1100];
+    snprintf(staged_xbdata, sizeof(staged_xbdata), "%s%cxbdata", root, sep);
+    assert(nk_platform_mkdir_p(staged_xbdata));
+    char staged_eboot[1100];
+    snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN", root, sep);
+    /* The staged image is validated against the selected title's own catalog
+     * addresses, so it is written at that title's declared base/entry. */
+    const NkTitleEntry *unicode_entry =
+        nk_title_catalog_find_by_id(unicode_game.title_id);
+    assert(unicode_entry != NULL);
+    write_valid_elf(staged_eboot, unicode_entry->executable_base,
+                    unicode_entry->run_entry);
+
+    NkResult unicode_result =
+        nk_launch_prepare_session(&unicode_session, &unicode_game, root);
+    if (unicode_result != NK_OK) {
+        printf("[LAUNCH_TEST] unicode prepare failed: [%s]",
+               unicode_session.last_error);
+        fflush(stdout);
+    }
+    assert(unicode_result == NK_OK);
+    assert(unicode_session.memstick_root[0] != '\0');
+    assert(strstr(unicode_session.memstick_root, NK_NONASCII_ROOT) != NULL);
+    assert(nk_platform_dir_exists(unicode_session.memstick_root));
+
+    /* The font cache open: the cache lives at <user_data>/fonts/v1, so its
+     * manifest read is another user-data narrow open (#324). */
+    snprintf(font_parent, sizeof(font_parent), "%s%cfonts", root, sep);
+    assert(nk_platform_mkdir_p(font_parent));
+    snprintf(font_dir, sizeof(font_dir), "%s%cv1", font_parent, sep);
+    assert(nk_platform_mkdir_p(font_dir));
+    /* A malformed manifest is enough to prove the file was OPENED: the
+     * "malformed JSON" verdict is only reachable after a successful read,
+     * while an unopenable path reports "unreadable". */
+    snprintf(manifest, sizeof(manifest), "%s%cmanifest.json", font_dir, sep);
+    write_file_utf8(manifest, "{ this is not json");
+    char font_message[256] = "";
+    NkFontStatus font_status = nk_font_check_cache(root, "", font_message,
+                                                   sizeof(font_message));
+    assert(font_status == NK_FONT_STATUS_INVALID);
+    assert(strstr(font_message, "malformed JSON") != NULL);
+    assert(strstr(font_message, "unreadable") == NULL);
+    snprintf(pgf, sizeof(pgf), "%s%cjpn0.pgf", font_dir, sep);
+    /* A 16-byte file whose declared header fits but whose magic is wrong.
+     * "invalid PGF magic; expected 'PGF0'" is only reachable once the
+     * non-ASCII path was opened, so it distinguishes a successful open from
+     * the "Cannot open font file" verdict a narrow fopen produces. */
+    static const uint8_t pgf_header[16] = {
+        0x00, 0x00, 0x10, 0x00, 'N', 'O', 'P', 'E',
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    write_bytes(pgf, pgf_header, sizeof(pgf_header));
+    uint64_t pgf_size = 0;
+    char pgf_sha[65] = "";
+    char pgf_error[256] = "";
+    assert(!nk_font_validate_pgf(pgf, &pgf_size, pgf_sha, pgf_error,
+                                 sizeof(pgf_error)));
+    assert(strstr(pgf_error, "Cannot open font file") == NULL);
+    assert(strstr(pgf_error, "PGF0") != NULL);
+
+    /* The key file lives under the same per-user root. A malformed key file
+     * is enough to prove it was OPENED: "no key file at" is the verdict an
+     * unopenable path produces, and it must not appear for an existing file. */
+    {
+        char key_path[1300];
+        char key_error[256] = "";
+        snprintf(key_path, sizeof(key_path), "%s%ckeys.json", root, sep);
+        write_file_utf8(key_path, "{ this is not json");
+        NkKeystore *keystore = nk_keystore_create();
+        assert(keystore != NULL);
+        assert(nk_keystore_load_file(keystore, key_path, key_error,
+                                     sizeof(key_error)) != 0);
+        assert(strstr(key_error, "no key file at") == NULL);
+        assert(strlen(key_error) > 0);
+        nk_keystore_free(keystore);
+        nk_remove_utf8(key_path);
+    }
+
+    nk_remove_utf8(staged_eboot);
+    nk_remove_utf8(manifest);
+    nk_remove_utf8(pgf);
+    remove_dir_utf8(staged_xbdata);
+    {
+        char memstick[1200];
+        snprintf(memstick, sizeof(memstick), "%s%cmemstick", root, sep);
+        remove_dir_utf8(memstick);
+    }
+    remove_dir_utf8(font_dir);
+    remove_dir_utf8(font_parent);
+    nk_remove_utf8(runtime_img);
+    nk_remove_utf8(runtime_exe);
+    remove_dir_utf8(runtime_dir);
+    {
+        char build_dir[1000];
+        snprintf(build_dir, sizeof(build_dir), "%s%cbuild", root, sep);
+        remove_dir_utf8(build_dir);
+    }
+    remove_dir_utf8(root);
+    remove_dir_utf8(probe_dir);
+}
 
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
@@ -1210,6 +1427,9 @@ int main(int argc, char **argv) {
      * when the runtime is actually spawned. The sentinel verifies that the
      * child still receives unrelated parent environment values. */
     test_no_iso_child_environment(argv[0], base, sep);
+
+    /* 19. A non-ASCII user profile must not break any user-data open. */
+    test_non_ascii_user_data_root(base, sep);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     return 0;

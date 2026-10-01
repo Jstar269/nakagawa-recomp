@@ -117,7 +117,7 @@ static float ui_font_pt_for_scale(float scale, float density) {
 
 static bool ui_font_file_exists(const char *path) {
     if (!path || !*path) return false;
-    FILE *f = fopen(path, "rb");
+    FILE *f = nk_fopen_utf8(path, "rb");
     if (!f) return false;
     fclose(f);
     return true;

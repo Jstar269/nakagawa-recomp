@@ -8,10 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32) || defined(_WIN64)
-#include <windows.h>
-#endif
-
 #define NK_LAUNCH_MAX_ELF_BYTES (256u * 1024u * 1024u)
 #define NK_LAUNCH_MAX_PH_TABLE_BYTES (4u * 1024u * 1024u)
 #define NK_LAUNCH_MAX_PROGRAM_HEADERS 4096u
@@ -39,23 +35,6 @@ static void launch_error(char *error_message, size_t error_message_size,
     if (!error_message || error_message_size == 0) return;
     snprintf(error_message, error_message_size, "%s",
              message ? message : "launch validation failed");
-}
-
-static FILE *launch_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    if (!path || !mode) return NULL;
-    WCHAR wpath[32768];
-    WCHAR wmode[32];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
-                            wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1,
-                            wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
-        return NULL;
-    }
-    return _wfopen(wpath, wmode);
-#else
-    return (path && mode) ? fopen(path, mode) : NULL;
-#endif
 }
 
 static bool launch_join_path(const char *base, const char *relative,
@@ -214,10 +193,14 @@ static bool ensure_writable_dir(const char *path) {
     int w = snprintf(probe, sizeof(probe), "%s%c.nk_write_probe", path, nk_platform_path_separator());
     if (w <= 0 || (size_t)w >= sizeof(probe)) return false;
 
-    FILE *f = fopen(probe, "wb");
+    /* The probe lives under a user profile that may hold non-ASCII
+     * characters, so it goes through the UTF-8 file primitive: a narrow
+     * fopen would report the one writable location this check exists to find
+     * as unwritable. */
+    FILE *f = nk_fopen_utf8(probe, "wb");
     if (!f) return false;
     fclose(f);
-    remove(probe);
+    nk_remove_utf8(probe);
     return true;
 }
 
@@ -461,7 +444,7 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
         return NK_ERROR_INVALID_EXECUTABLE;
     }
 
-    FILE *file = launch_fopen(path, "rb");
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) {
         launch_error(error_message, error_message_size,
                      "staged EBOOT.BIN could not be opened for validation");

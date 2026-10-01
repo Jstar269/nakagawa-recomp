@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026 the psp-recomp authors
 #requires -Version 5.1
 #
-# copy_build_assets.ps1 — post-link asset copy for the `compile` Makefile target.
+# tools/copy_build_assets.ps1 — post-link asset copy for the `compile` Makefile target.
 #
 # Pulled out of the Makefile's inline PowerShell one-liner because nested
 # quoting inside that string broke whenever `make` was invoked from a non-cmd.exe shell (Git
@@ -88,8 +88,8 @@ if ($binDir) {
 
 # Generate third-party notices bundle and relink materials
 $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-$noticesScript = if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'tools\package_notices.py'))) {
-    Join-Path $PSScriptRoot 'tools\package_notices.py'
+$noticesScript = if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'package_notices.py'))) {
+    Join-Path $PSScriptRoot 'package_notices.py'
 } elseif (Test-Path 'tools/package_notices.py') {
     'tools/package_notices.py'
 } elseif (Test-Path '../tools/package_notices.py') {
