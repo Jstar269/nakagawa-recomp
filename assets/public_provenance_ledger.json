@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e57e3f644623eec4ae7b12d9f79bbcbd9e1109d0a2927fec25bbf11d35bd8c0c"
+      "sha256": "9b6fabd6250b93be1740133acdd1be8e11e6bcdd60554486635669aad2749b8e"
     },
     {
       "path": "NOTICE.md",
@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0e8fe4c8053f25aea6b8bd0299c0ddf465bf39a8b233423948fdb00b1fa2f356"
+      "sha256": "906f87220d616b42ae8877db225ee7285369a99bb5dfd189b63ff4461da378a7"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4625,7 +4625,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f11683efdeeb712d148a5ff8bca5122da4bca8ece45f8e54fa5939fbb0f0c133"
+      "sha256": "6d064bc6f5c0d388ffacea4eefe8e9d2c7e45c212cec9b49b944770c24ee641f"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -4794,7 +4794,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7c129f80ae6031b45b2ba24afdb00b46574d0be69a1532763869beb264413b6"
+      "sha256": "0ba567e427502c05252c993b0bd334cc30cea9171605db8b10a013b3adaaafc2"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -5987,7 +5987,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a8ac437e88025efa6c0fdcb7d85fb32ae2a6036bc1f02d35c6155cd9bc28218"
+      "sha256": "c9be418b610fb508b16dd43307513a3e5a71d2f53cda678a9665deee05c12bd8"
     },
     {
       "path": "tools/host_stubs.py",
@@ -8023,7 +8023,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c39dbdf6c77a72415f2a1035c0e0a3ab791ab3fdf53efe8f316b612c64804a5"
+      "sha256": "bd084e4b002ab8807a54aa8d4c244ec50760fa3ccb68fb5c09d8bf5189abc29c"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
