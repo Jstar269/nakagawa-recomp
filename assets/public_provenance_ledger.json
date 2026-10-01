@@ -5501,7 +5501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0bd5a140e8e7e665de1b3182046f0ec8439da004464d3af50a8897e481f65754"
+      "sha256": "c457725ac733ad2bfaab92b9d44a27a34c112c9c43786e17a00dcbfbb739c9fe"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6568,7 +6568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6fbd7873bb7d9333c12b8e925576c2c84759f6b85d0ee7487f69dbd0fbd3e2a9"
+      "sha256": "c434d5c8616e1f6711dee54b0bea66ec12427ad68e641fc82381d927031c68e6"
     },
     {
       "path": "tools/provenance_refresh.py",
