@@ -2918,6 +2918,10 @@ typedef struct {
     uint32_t videoFramesOut, audioBlocksOut, videoErrors, audioErrors;
     uint32_t audioUpmixBlocks, audioFormatRejects;
     int videoDrained;
+    /* The demuxer refusal has already been named on stderr for this stream.  Latched
+     * with the same lifetime as the producer's own failure state, so one rejected
+     * element produces exactly one message and a reset stream can report the next one. */
+    int rejectNamed;
     char path[512]; SrPsmfQueue q[PSMF_TRACKS][PSMF_Q_STAGES];
 } SrPsmfPlayer;
 static SrPsmfPlayer s_psmf_players[4];
@@ -2963,12 +2967,35 @@ static int64_t psmf_be_timestamp(const uint8_t *p) {
 }
 static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEGLOG") ? 1 : 0; return v; }
 
+/* A rejected stream is a product boundary, not a debug event.  The producer fails closed
+ * and never reaches EOF, so without a named boundary the consumer only sees the picture
+ * freeze with nothing in the log: the one thing this runtime must not do.  The message is
+ * always on (SR_MPEGLOG is for counters, not for the reason playback stopped), once per
+ * stream, and it states the guest-visible consequence instead of hiding it.  The same edge
+ * goes to the flight recorder so a bring-up or library sweep can classify the run from a
+ * structured record rather than by scraping text. */
+static void psmf_name_rejection(SrPsmfPlayer *p) {
+    if (!p || !p->producer || p->rejectNamed) return;
+    if (!sr_psmf_producer_failed(p->producer)) return;
+    p->rejectNamed = 1;
+    const char *reason = sr_psmf_producer_fail_reason(p->producer);
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+    fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
+            "at source offset %llu; no further access unit is decoded and the player keeps "
+            "its current status; in the works (#288)\n",
+            reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
+                           (uint32_t)st.fail_offset,
+                           (uint32_t)(st.fail_offset >> 32), 0u, 0u);
+}
+
 /* Move access units from the producer into the player's per-track queues.  The producer's
  * own bounded queue is the only place work is throttled: an AU is never dropped here, a full
  * player queue simply leaves the next access unit upstream until the decoder drains it. */
 static void psmf_produce(SrPsmfPlayer *p) {
     if (!p || !p->producer) return;
     sr_psmf_producer_pump(p->producer, 16);
+    psmf_name_rejection(p);
     for (unsigned track = 0; track < PSMF_TRACKS; track++) {
         SrPsmfQueue *q = &p->q[track][PSMF_Q_AU];
         while (q->count < PSMF_Q_DEPTH) {
@@ -2997,6 +3024,8 @@ static void psmf_produce(SrPsmfPlayer *p) {
              * run instead of guessed from it.  vpts is the last displaypts delivered. */
             fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
                     " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
+                    " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
                     " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
                     " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
                     (unsigned)sr_audio_vbl(),
@@ -3008,6 +3037,18 @@ static void psmf_produce(SrPsmfPlayer *p) {
                     (unsigned long long)st.audio_resync_bytes,
                     p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
                     p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
+                    (unsigned long long)st.video_submitted,
+                    (unsigned long long)st.video_decoded,
+                    (unsigned long long)st.video_delivered,
+                    (unsigned long long)st.video_warmup_held,
+                    (unsigned long long)st.video_eos_drained,
+                    (unsigned long long)st.video_rejected,
+                    (unsigned long long)st.audio_submitted,
+                    (unsigned long long)st.audio_decoded,
+                    (unsigned long long)st.audio_delivered,
+                    (unsigned long long)st.audio_warmup_held,
+                    (unsigned long long)st.audio_eos_drained,
+                    (unsigned long long)st.audio_rejected,
                     (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
                     p->videoErrors, p->audioErrors,
                     (long long)p->videoClock, (long long)p->audioClock,
@@ -3041,6 +3082,9 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
     p->displayPts = 0; p->videoDrained = 0;
     p->videoFramesOut = p->audioBlocksOut = p->videoErrors = p->audioErrors = 0;
     p->audioUpmixBlocks = p->audioFormatRejects = 0;
+    /* Every caller resets or replaces the producer in the same breath, so the named
+     * boundary goes with it: a fresh stream may be rejected, and may say so once. */
+    p->rejectNamed = 0;
 }
 
 /* Presentation time of one submitted picture.  A packet that carried a PTS sets the clock;
@@ -3074,11 +3118,18 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             }
         }
         if (p->h264 >= 0) {
-            if (slot->hostData && slot->bytes &&
-                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes) < 0)
-                p->videoErrors++;
-            else
+            if (slot->hostData && slot->bytes) {
+                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                             SR_PSMF_MEDIA_SUBMITTED);
+                if (sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData,
+                                      slot->bytes) < 0) {
+                    p->videoErrors++;
+                } else {
+                    psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+                }
+            } else {
                 psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+            }
         }
         free(slot->hostData);
         slot->hostData = NULL;
@@ -3104,9 +3155,13 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
                   sr_h264_frame_ex(p->h264, 0, &target, &info);
     if (r < 0) { p->videoErrors++; return -1; }
     if (r == 0) { if (eos) p->videoDrained = 1; return 0; }
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 SR_PSMF_MEDIA_DECODED);
     if (info.width <= 0 || info.height <= 0 || info.stride <= 0 ||
         info.delivered_format < SR_H264_PIXEL_5650 ||
         info.delivered_format > SR_H264_PIXEL_8888) {
+        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                     SR_PSMF_MEDIA_REJECTED);
         p->videoErrors++;
         return -1;
     }
@@ -3119,6 +3174,9 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
     if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
     p->displayPts = value;
     *pts_out = value;
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 eos ? SR_PSMF_MEDIA_EOS_DRAINED :
+                                       SR_PSMF_MEDIA_DELIVERED);
     p->videoFramesOut++;
     return 1;
 }
@@ -3156,10 +3214,19 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                                                         PSMF_AUDIO_SAMPLES * sizeof(int16_t));
                     if (p->atrac && p->audioPcm) {
                         int samples = 0;
+                        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                     SR_PSMF_MEDIA_SUBMITTED);
                         int rc = atrac3p_bridge_decode(p->atrac, frame + 8, (int)data,
                                                        p->audioPcm, &samples);
-                        if (rc == 0 && samples == PSMF_AUDIO_SAMPLES) {
-                            if (channels == 2) {
+                        if (rc == 0) {
+                            sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                         SR_PSMF_MEDIA_DECODED);
+                            p->audioPcmSampleCount = 0;
+                            if (samples != PSMF_AUDIO_SAMPLES) {
+                                p->audioFormatRejects++;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
+                            } else if (channels == 2) {
                                 p->audioPcmSampleCount = samples;
                             } else if (channels == 1) {
                                 /* The PSP block is stereo; a mono stream is duplicated into both
@@ -3174,6 +3241,8 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                             } else {
                                 p->audioFormatRejects++;
                                 p->audioPcmSampleCount = 0;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
                             }
                             if (p->audioPcmSampleCount == PSMF_AUDIO_SAMPLES) {
                                 if (slot->flags & 1u) { p->audioClock = slot->pts; p->audioClockValid = 1; }
@@ -3270,7 +3339,8 @@ static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
  * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
  * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
- * public PSP player contract. */
+ * public PSP player contract. Its initial NO_DATA gate precedes decode, so no decoded picture
+ * enters the warm-up-held disposition on this path. */
 static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
 /* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
  * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
@@ -3284,6 +3354,8 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     if(!psmf_audio_fill(p)){sched_delay_current(10000);return PSMF_ERR_NO_DATA;}
     const uint8_t*src=(const uint8_t*)p->audioPcm;
     for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                 SR_PSMF_MEDIA_DELIVERED);
     p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
     sched_delay_current(30000);
     return 0;}
@@ -17535,6 +17607,27 @@ static void hle_register_impose_handlers(void) {
     sr_hle_register(0x24fd7bcf, "sceImposeGetLanguageMode", h_ImposeGetLanguageMode);
 }
 
+/* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
+ * implemented here; decoder output remains a separate fail-closed stage.  One definition,
+ * called by both registry branches, so the executable harness dispatches the production
+ * mapping and the named media boundaries are reachable from a production-path test. */
+static void hle_register_psmf_player_handlers(void) {
+    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
+    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
+    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
+    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
+    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
+    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
+    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
+    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
+    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
+    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
+    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
+    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
+    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
+    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -17572,6 +17665,7 @@ void sr_hle_init(void) {
     hle_register_power_lock_handlers();
     hle_register_gpi_gpo_handlers();
     hle_register_mpeg_shared_handlers();
+    hle_register_psmf_player_handlers();
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
@@ -17684,20 +17778,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xf8dcb679, "sceMpegQueryAtracEsSize", h_MpegQueryAtracEsSize);
     /* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
      * implemented here; decoder output remains a separate fail-closed stage. */
-    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
-    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
-    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
-    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
-    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
-    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
-    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
-    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
-    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
-    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
-    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
-    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
-    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
-    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+    hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
     sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
     sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
