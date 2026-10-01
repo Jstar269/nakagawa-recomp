@@ -1111,6 +1111,68 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertFalse((bad_output / "build-report.json").exists())
 
 
+class TestFlightSmokeProjection(unittest.TestCase):
+    @staticmethod
+    def _bundle(set_fb_args):
+        events = [{"class": "ge", "kind": 20, "sequence": 1,
+                   "arg0": 1, "arg1": 0, "arg2": 0, "arg3": 0}]
+        for args in set_fb_args:
+            events.append({"class": "present", "kind": 28, "sequence": len(events) + 1,
+                           "arg0": args[0], "arg1": 3, "arg2": 512, "arg3": args[1]})
+            events.append({"class": "present", "kind": 29, "sequence": len(events) + 1,
+                           "arg0": 0, "arg1": 0, "arg2": 0, "arg3": 0})
+        return {"events": events, "recorder": {"recorded": len(events), "dropped": 0},
+                "terminal": {"sequence": len(events)}}
+
+    def test_set_framebuf_vblank_count_is_not_compared(self):
+        """The VBLANK count at SetFrameBuf follows host pacing; two identical runs differ in it."""
+        first = display_generator._without_host_present_events(
+            self._bundle([(0x04000000, 32), (0x04088000, 33)]))
+        second = display_generator._without_host_present_events(
+            self._bundle([(0x04000000, 28), (0x04088000, 30)]))
+        self.assertEqual(first, second)
+        self.assertEqual([e["kind"] for e in first["events"]], [20, 28, 28])
+
+    def test_set_framebuf_buffer_address_is_still_compared(self):
+        first = display_generator._without_host_present_events(
+            self._bundle([(0x04000000, 32)]))
+        second = display_generator._without_host_present_events(
+            self._bundle([(0x04088000, 32)]))
+        self.assertNotEqual(first, second)
+
+
+    def test_projection_leaves_ge_event_arguments_untouched(self):
+        """The draw-count mutation check depends on arg3 surviving outside SetFrameBuf."""
+        bundle = self._bundle([(0x04000000, 32)])
+        bundle["events"][0].update({"kind": 25, "arg3": 7})
+        projected = display_generator._without_host_present_events(bundle)
+        self.assertEqual(projected["events"][0]["arg3"], 7)
+
+    def test_a_stalled_vblank_count_is_refused(self):
+        display_generator._require_vblank_progress(
+            self._bundle([(0x04000000, 30), (0x04088000, 30), (0x04000000, 31)]), "healthy")
+        for counts in ((30, 30, 30), (31, 30, 32)):
+            with self.subTest(counts=counts):
+                bundle = self._bundle([(0x04000000, count) for count in counts])
+                with self.assertRaises(RuntimeError):
+                    display_generator._require_vblank_progress(bundle, "stalled")
+
+
+    def test_a_single_frame_run_is_not_blamed_on_the_vblank_clock(self):
+        display_generator._require_vblank_progress(self._bundle([(0x04000000, 5)]), "one-frame")
+
+    def test_flight_smoke_checks_vblank_progress_before_projecting(self):
+        """Both runs are gated before the host-paced count is zeroed for the comparison."""
+        source = DISPLAY_GENERATOR_PATH.read_text(encoding="utf-8")
+        body = source[source.index("def flight_smoke("):source.index("def run_player(")]
+        loop = body.index('for label, bundle in (("first", first), ("second", second)):')
+        gate = body.index("_require_vblank_progress(bundle, label)")
+        self.assertLess(loop, gate)
+        # The gate is inside the loop over both runs: nothing but loop body lies between.
+        self.assertNotIn("\n        kind_counts", body[loop:gate])
+        self.assertLess(gate, body.index("_without_host_present_events(source)"))
+
+
 class TestPresenterContract(unittest.TestCase):
     def test_gdi_acceptance_requires_window_dc_and_positive_scanlines(self):
         """The headless suite cannot open GDI, so pin its acceptance contract in source."""
