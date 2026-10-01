@@ -1245,7 +1245,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_memstick, sizeof(env_memstick), "SR_MEMSTICK=%s", session->memstick_root);
     snprintf(env_tables, sizeof(env_tables), "PSP_VFPU_TABLES=assets%cvfpu", sep);
 
-    const char *envp[32];
+    const char *envp[48];
     int env_count = 0;
     /* An empty value masks an inherited ISO for staged sessions with no ISO. */
     snprintf(env_iso, sizeof(env_iso), "PSP_ISO=%s", session->iso_path);
@@ -1332,6 +1332,10 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     if (session->config.benchmark_mode) {
         snprintf(env_debug, sizeof(env_debug), "SR_DEBUG=0x20");
         envp[env_count++] = env_debug;
+    } else {
+        /* A normal player launch clears SR_NOVBPACE from the child environment
+           so an inherited diagnostic turbo mode does not leak into the game (#643). */
+        envp[env_count++] = "SR_NOVBPACE";
     }
 
     /* The player launch smoke uses this opt-in side channel because a spawned

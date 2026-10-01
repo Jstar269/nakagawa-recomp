@@ -164,14 +164,14 @@ and every field is a guest address:
 | `fallback_entry` | `driver.c` when the image entry is not compiled |
 | `worker_thread_entry` | `sched.c` worker role capture and create-reuse |
 | `launcher_thread_entry` | `sched.c` launcher role capture and priority demotion |
-| `vblank_frame_counter_addr` | retired: validated and recorded, but no runtime code writes it (a delivered VBLANK writes no guest memory; the guest's own VBLANK handler is the only writer) |
-| `vblank_vsync_counter_addr` | retired: validated and recorded, but no runtime code writes it (same reason) |
 
-Validation fails closed on an unknown field, a non-integer or out-of-range address, a
-misaligned address, an explicit zero (the runtime's "not configured" value, so a
-configured zero would be ambiguous), a half-specified VBLANK counter pair, two equal
-counter addresses, and equal worker and launcher entries. Omitting the block entirely
-is valid and configures nothing.
+`vblank_frame_counter_addr` and `vblank_vsync_counter_addr` are retired (#643): a delivered
+VBLANK writes no guest memory, and manifests declaring them are refused.
+
+Validation fails closed on an unknown field, a retired field, a non-integer or
+out-of-range address, a misaligned address, an explicit zero (the runtime's "not
+configured" value, so a configured zero would be ambiguous), and equal worker and
+launcher entries. Omitting the block entirely is valid and configures nothing.
 
 The block may name addresses and roles. It cannot redefine a PSP semantic: what a
 worker entry or a launcher demotion *means* stays in the
