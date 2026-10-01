@@ -205,6 +205,12 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_RTC_SET_TICK 0x7ed29e40u
 #define NID_SCE_RTC_GET_WIN32_FILETIME 0xcf561893u
 #define NID_SCE_KERNEL_DELAY_THREAD 0xceadeb47u
+#define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD 0xbd123d9eu
+#define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB 0x1181e963u
+#define NID_SCE_KERNEL_TERMINATE_THREAD 0x616403bau
+#define NID_SCE_DISPLAY_WAIT_VBLANK_CB 0x8eb9ec49u
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_CB 0x46f186c3u
+#define TEST_SYSCLOCK_DELAY_ADDR 0x00270000u
 #define NID_DISPLAY_FRAME_PER_SEC 0xdba6c4c4u
 #define NID_SCE_KERNEL_LIBC_CLOCK 0x91e4f6a7u
 #define NID_SCE_AUDIO_CH_RESERVE 0x5ec81c55u
@@ -2978,9 +2984,11 @@ static void test_display_clock_reads_are_observational(void) {
 }
 
 static int s_delay_done;      /* set when the delay guest body returned */
-static uint32_t s_delay_ret;  /* return code of sceKernelDelayThread */
+static uint32_t s_delay_ret;  /* return code of the selected delay import */
+static uint32_t s_delay_nid = NID_SCE_KERNEL_DELAY_THREAD;
+static uint32_t s_delay_argument = 1000u;
 
-/* Guest body for the delay test: enters sceKernelDelayThread through the real
+/* Guest body for the delay test: enters the selected delay import through the real
  * NID inside its own coroutine (the production shape), then parks on the
  * scheduler.  The delay's own switch_to_scheduler() is a genuine child->main
  * switch here, so the coroutine-lifecycle invariant (no suppressed
@@ -2989,8 +2997,8 @@ static void delay_coro_body(void *arg) {
     (void)arg;
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 1000u;   /* 1 ms */
-    s_delay_ret = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD);
+    cpu.r[4] = s_delay_argument;
+    s_delay_ret = sr_syscall(&cpu, s_delay_nid);
     s_delay_done = 1;
     selftest_park_on_scheduler();
 }
@@ -3019,6 +3027,8 @@ static void test_delay_advances_unified_timeline(void) {
     s_vbl_event_period_rem = 0;
     s_delay_done = 0;
     s_delay_ret = 0xFFFFFFFFu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_THREAD;
+    s_delay_argument = 1000u;
 
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -9516,6 +9526,7 @@ static void test_nested_frame_handle_hygiene(void) {
 #define NID_SCE_GE_EDRAM_GET_ADDR           0xe47e40e4u
 #define NID_SCE_GE_EDRAM_GET_SIZE           0x1f6752adu
 #define NID_SCE_GE_LIST_ENQUEUE             0xab49e76au
+#define NID_SCE_GE_LIST_DEQUEUE             0x5fb86ab0u
 #define NID_SCE_GE_LIST_SYNC                0x03444eb4u
 #define NID_SCE_GE_LIST_UPDATE_STALL_ADDR   0xe0d68148u
 #define NID_SCE_GE_GET_CMD                  0xdc93cfefu
@@ -14320,12 +14331,15 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mtx_parks;
         extern int s_pool_parks;
         extern int s_mbx_parks;
-        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
+        int expected_parks = 8 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
         char msg[256];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
+                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
+                 "+ 1 issue #339 joiner + 1 completed sysclock delay body "
+                 "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
+                 "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -17066,7 +17080,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 3") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 4") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -17140,6 +17154,420 @@ static void test_flight_recorder_trace(void) {
     SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
 }
 
+static void test_flight_recorder_ge_present_events(void) {
+    const uint32_t list_addr = 0x08980000u;
+    SrFlightSnapshot snapshot;
+    SrFlightEvent event;
+    uint32_t qid;
+    uint32_t ge_events = 0u, present_events = 0u, draw_events = 0u;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_GE | SR_FLIGHT_CLASS_PRESENT, 32u);
+
+    /* Synthetic, zero-vertex draw still exercises the production list walk without
+     * reading vertex memory: PRIM, FINISH, END. */
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    s_cpu->r[5] = 0u;
+    s_cpu->r[6] = 0u;
+    s_cpu->r[7] = 0u;
+    qid = sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xff000000u) == 0x35000000u,
+           "flight GE fixture reaches production list enqueue");
+
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = qid;
+    s_cpu->r[5] = 0u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "flight GE fixture reaches production list sync");
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = 1u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "flight GE fixture reaches production draw sync");
+    /* DeQueue has no registered operation in this build. Exercise its recorder
+     * boundary directly; invoking the guest NID would correctly remain fail-closed. */
+    (void)sr_flight_hle_import(NID_SCE_GE_LIST_DEQUEUE, 0u, qid, 0x08980100u, 0u);
+
+    s_test_gui_on = 1;
+    expect(display_set(0x04000000u, 512, 3, 0u) == 0u,
+           "flight present fixture reaches production SetFrameBuf and presenter");
+    s_test_gui_on = 0;
+
+    expect(sr_flight_event_count() == 9,
+           "flight GE/present fixture records seven GE and two present events");
+    for (int i = 0; i < sr_flight_event_count(); ++i) {
+        expect(sr_flight_event_at((uint32_t)i, &event) != 0,
+               "flight GE/present event is readable");
+        if (event.event_class == SR_FLIGHT_CLASS_GE) {
+            ge_events++;
+            if (event.kind == SR_FLIGHT_KIND_GE_DRAW) {
+                draw_events++;
+                expect(event.arg0 == list_addr && event.arg1 == list_addr &&
+                           event.arg2 == 0u && event.arg3 == 0u,
+                       "GE draw event carries list, command, primitive, and vertex count");
+            }
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_ENQUEUE)
+                expect(event.arg0 == list_addr && event.arg1 == 0u && event.arg2 == qid,
+                       "GE enqueue event carries list, stall, and list id");
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_DEQUEUE)
+                expect(event.arg0 == qid, "GE dequeue event carries the submitted list id");
+        } else if (event.event_class == SR_FLIGHT_CLASS_PRESENT) {
+            present_events++;
+            expect(event.arg0 == 0x04000000u && event.arg1 == 3u &&
+                       event.arg2 == 512u,
+                   "present event carries framebuffer, format, and stride");
+        }
+    }
+    expect(ge_events == 7u && present_events == 2u && draw_events == 1u,
+           "flight GE/present event classes have the expected production counts");
+
+    /* The same production path with the classes disabled remains an empty trace. */
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(0u, 32u);
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    (void)sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    s_test_gui_on = 1;
+    (void)display_set(0x04000000u, 512, 3, 0u);
+    s_test_gui_on = 0;
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 0u && sr_flight_event_count() == 0,
+           "disabled GE/present classes record zero events on the same route");
+    sr_flight_test_disable();
+}
+
+static uint32_t issue339_create_pending_callback(void) {
+    static const char name[] = "issue339-callback";
+    for (size_t i = 0; i < sizeof(name); i++)
+        MEM_W8(ORACLE_CALLBACK_NAME + (uint32_t)i, (uint8_t)name[i]);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ORACLE_CALLBACK_NAME;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x339u;
+    uint32_t uid = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+    cpu.r[4] = uid;
+    cpu.r[5] = 0x339a11u;
+    if (uid) (void)sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK);
+    return uid;
+}
+
+static void test_issue339_terminate_waiting_thread(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x3390u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t mbx_uid = selftest_mbx_create(0);
+    expect(mbx_uid != 0, "issue #339 termination mailbox created through production dispatch");
+
+    uint32_t target_uid = sched_create_thread(ORACLE_THREAD_ENTRY, 40, 0x2000u);
+    TCB *target = tcb_by_uid(target_uid);
+    expect(target && target_uid != 0, "issue #339 termination target created");
+    if (!target || !mbx_uid) return;
+    target->state = TH_READY;
+    target->started = 1;
+    SelftestMbxWaiterCtx waiter;
+    memset(&waiter, 0, sizeof(waiter));
+    waiter.uid = target_uid;
+    waiter.tcb = target;
+    waiter.mbx_uid = mbx_uid;
+    waiter.outptr = MBX_OUTPTR;
+    target->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &waiter,
+                                  (size_t)4 << 20);
+    expect(target->coro != NULL, "issue #339 blocked target coroutine created");
+    s_cur = (int)(target - s_tcb);
+    if (target->coro) sr_coro_switch(target->coro);
+    expect(!waiter.returned && target->state == TH_WAIT_OBJ &&
+           target->wait_kind == 5,
+           "issue #339 target is blocked in a production mailbox wait");
+    expect(selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 1u,
+           "issue #339 mailbox reports the blocked target as its waiter");
+
+    TCB *joiner = fixture_thread(0x3391u, TH_READY, 35);
+    joiner->started = 1;
+    s_joiner_woken = 0;
+    s_joiner_ret = 0xffffffffu;
+    joiner->coro = sr_coro_create(joiner_coro_body, target, (size_t)4 << 20);
+    expect(joiner->coro != NULL, "issue #339 joiner coroutine created");
+    s_cur = (int)(joiner - s_tcb);
+    if (joiner->coro) sr_coro_switch(joiner->coro);
+    expect(joiner->state == TH_WAIT_OBJ && joiner->join_waiting &&
+           joiner->join_target == target_uid,
+           "issue #339 joiner parks on the target through WaitThreadEnd");
+
+    TCB *dormant = fixture_thread(0x3392u, TH_DORMANT, 40);
+    dormant->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = owner->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x80020197u,
+           "TerminateThread(self) returns ILLEGAL_THID");
+    cpu.r[4] = 0x339fffffu;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x80020198u,
+           "TerminateThread(unknown) returns UNKNOWN_THID");
+    cpu.r[4] = dormant->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x800201a2u,
+           "TerminateThread(dormant) returns DORMANT");
+
+    s_cur = (int)(owner - s_tcb);
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0,
+           "TerminateThread stops another thread blocked in an object wait");
+    expect(target->state == TH_DORMANT && !target->coro &&
+           target->exit_status == (int32_t)0x800201acu &&
+           target->wait_obj == 0 && target->wait_kind == 0 &&
+           target->pending_wait_kind == 0 && !target->wake_result_valid,
+           "TerminateThread sets THREAD_TERMINATED and clears the target wait state");
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_EXIT_STATUS) == 0x800201acu,
+           "GetThreadExitStatus reports THREAD_TERMINATED after TerminateThread");
+    expect(selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 0u,
+           "TerminateThread removes the target from its mailbox wait queue");
+    expect(joiner->state == TH_READY && !joiner->join_waiting &&
+           joiner->join_result_valid &&
+           joiner->join_result == 0x800201acu && joiner->wait_obj == 0 &&
+           joiner->wait_kind == 0 && joiner->pending_wait_kind == 0,
+           "TerminateThread wakes the joiner with a clean THREAD_TERMINATED result");
+
+    if (joiner->coro) {
+        s_cur = (int)(joiner - s_tcb);
+        sr_coro_switch(joiner->coro);
+        expect(s_joiner_woken && s_joiner_ret == 0x800201acu,
+               "WaitThreadEnd returns THREAD_TERMINATED when resumed");
+        sr_coro_destroy(joiner->coro);
+        joiner->coro = NULL;
+    }
+    s_cur = (int)(owner - s_tcb);
+    uint32_t msg = MBX_MSG_BASE;
+    mbx_init_packet(msg, 0);
+    expect(selftest_mbx_send(mbx_uid, msg) == 0 &&
+           selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 0u && MEM_R32(MBX_INFO + 44) == 1u,
+           "mailbox send after termination queues a message without a ghost waiter");
+    expect(selftest_mbx_recv(mbx_uid, MBX_OUTPTR, 0) == 0 &&
+           MEM_R32(MBX_OUTPTR) == msg,
+           "mailbox remains usable after its waiter is terminated");
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_THREAD) == 0,
+           "terminated target remains deletable through DeleteThread");
+    expect(selftest_mbx_delete(mbx_uid) == 0,
+           "issue #339 termination mailbox deletes cleanly");
+}
+
+static void test_issue339_sysclock_delay_dispatch(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x3393u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    s_vtime_us = 5000u;
+    s_vbl_next_us = 100000u;
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 1250u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 0u);
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    uint64_t before = s_vtime_us;
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(self->coro != NULL, "issue #339 sysclock delay coroutine created");
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(!s_delay_done && self->state == TH_WAIT_DELAY &&
+           self->wake == before + 1250u,
+           "DelaySysClockThread uses the low-word microsecond duration");
+    sr_hle_advance_time(1250u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done && s_delay_ret == 0,
+           "DelaySysClockThread returns after the same elapsed time as DelayThread");
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD) == 0x800200d3u,
+           "DelaySysClockThread rejects a null SceKernelSysClock pointer");
+
+    /* The high word is significant; leave this long wait parked and terminate it
+     * through the production handler rather than attempting to elapse 2^32 us. */
+    TCB *owner = fixture_thread(0x3394u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *wide = fixture_thread(0x3395u, TH_READY, 40);
+    wide->started = 1;
+    s_vtime_us = 900u;
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 77u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 1u);
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    wide->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(wide->coro != NULL, "wide sysclock delay coroutine created");
+    s_cur = (int)(wide - s_tcb);
+    if (wide->coro) sr_coro_switch(wide->coro);
+    expect(wide->state == TH_WAIT_DELAY &&
+           wide->wake == 900u + UINT64_C(0x10000004d),
+           "DelaySysClockThread includes the full 64-bit SceKernelSysClock value");
+    s_cur = (int)(owner - s_tcb);
+    cpu.r[4] = wide->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0 &&
+           wide->state == TH_DORMANT && wide->wake == 0,
+           "TerminateThread releases a parked full-range sysclock delay");
+}
+
+typedef struct {
+    uint32_t nid;
+    uint32_t ret;
+    int returned;
+} SelftestVblankWaitCtx;
+
+static void selftest_vblank_waiter_fiber_body(void *arg) {
+    SelftestVblankWaitCtx *ctx = (SelftestVblankWaitCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    ctx->ret = sr_syscall(&cpu, ctx->nid);
+    ctx->returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_issue339_callback_wait_dispatch(void) {
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x3396u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    expect(callback_uid != 0, "issue #339 DelaySysClockThreadCB callback created and queued");
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 1000u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 0u);
+    s_vtime_us = 3000u;
+    s_vbl_next_us = 100000u;
+    uint64_t before = s_vtime_us;
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_oracle_callback_calls == 1 && self->state == TH_WAIT_DELAY &&
+           self->is_cb_wait && self->wake == before + 1000u,
+           "DelaySysClockThreadCB services its callback and waits the full duration");
+    sr_hle_advance_time(1000u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done && s_delay_ret == 0,
+           "DelaySysClockThreadCB completes after its sysclock duration");
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "issue #339 delay callback unregisters cleanly");
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *in_window = fixture_thread(0x3397u, TH_RUNNING, 32);
+    in_window->started = 1;
+    s_cur = (int)(in_window - s_tcb);
+    s_vtime_us = 800u;
+    s_vbl_count = 1u;
+    s_vbl_last_us = s_vtime_us;
+    callback_uid = issue339_create_pending_callback();
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t vblank_ret = sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_CB);
+    expect(vblank_ret == 1u && s_oracle_callback_calls == 2,
+           "WaitVblankCB services a callback and preserves the in-window fast result");
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "WaitVblankCB callback unregisters cleanly");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x3398u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x3399u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx vblank;
+    memset(&vblank, 0, sizeof(vblank));
+    vblank.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_CB;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &vblank,
+                                  (size_t)4 << 20);
+    s_cur = (int)(waiter - s_tcb);
+    callback_uid = issue339_create_pending_callback();
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(callback_uid != 0 && s_oracle_callback_calls == 3 &&
+           waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+           waiter->is_cb_wait,
+           "WaitVblankStartCB services a callback then blocks on the real vblank wait object");
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    expect(waiter->state == TH_READY && s_vbl_count == 1u,
+           "a delivered vblank wakes the WaitVblankStartCB waiter");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(vblank.returned && vblank.ret == 0 && !waiter->is_cb_wait,
+           "WaitVblankStartCB returns zero after the delivered vblank");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "WaitVblankStartCB callback unregisters cleanly");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_oracle_mode = saved_oracle_mode;
+}
+
+static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
+    reset_fixture();
+    s_cur = -1;
+    uint64_t before = s_vbl_count;
+    expect(sched_wait_vblank_cb(0) < 0 && sched_wait_vblank_cb(1) < 0,
+           "display CB waits refuse when no current thread exists");
+    expect(s_vbl_count == before,
+           "a refused display CB wait does not advance the vblank count");
+}
+
+static void test_issue339_wait_nids_production_dispatch(void) {
+    reset_fixture();
+    sr_hle_init();
+    int all_registered =
+        sr_hle_test_is_registered(NID_SCE_KERNEL_TERMINATE_THREAD) &&
+        sr_hle_test_is_registered(NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD) &&
+        sr_hle_test_is_registered(NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB) &&
+        sr_hle_test_is_registered(NID_SCE_DISPLAY_WAIT_VBLANK_CB) &&
+        sr_hle_test_is_registered(NID_SCE_DISPLAY_WAIT_VBLANK_START_CB);
+    expect(all_registered,
+           "issue #339 first missing-NID batch is registered for production dispatch");
+    if (!all_registered) return; /* Calling an absent import is a fatal dispatch trap. */
+    test_issue339_terminate_waiting_thread();
+    test_issue339_sysclock_delay_dispatch();
+    test_issue339_callback_wait_dispatch();
+    test_issue339_vblank_cb_wait_requires_a_current_thread();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -17193,6 +17621,7 @@ int main(int argc, char **argv) {
     test_explicit_exit_status_exact((int32_t)-17, 0x800200d2u);
     test_explicit_exit_status_exact(0x78, 0x78u);
     test_thread_delete_lifecycle_and_cleanup();
+    test_issue339_wait_nids_production_dispatch();
     test_start_thread_error_semantics();
     test_exit_delete_lifecycle_and_join_result();
     test_wait_thread_end_invalid_targets();
@@ -17291,6 +17720,7 @@ int main(int argc, char **argv) {
     test_late_prx_duplicate_base_last_reference();
     test_psmf_rejected_stream_names_the_boundary();
     test_flight_recorder_trace();
+    test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can

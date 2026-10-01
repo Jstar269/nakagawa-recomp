@@ -1840,9 +1840,8 @@ static uint32_t h_DelayThread(CpuState *s) {
     sched_delay_current(A0);
     return 0;
 }
-static uint32_t h_DelayThreadCB(CpuState *s) {
+static uint32_t h_DelayThreadCBForUsec(uint64_t usec) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;  /* L6/L7 */
-    uint32_t usec = A0;
     uint32_t thread_uid = sched_current_uid();
     sched_vtime_refresh();
     uint64_t end_time = sched_vtime_deadline_after(usec);
@@ -1855,11 +1854,51 @@ static uint32_t h_DelayThreadCB(CpuState *s) {
         }
         uint64_t remaining = end_time - sched_vtime_us();
         sched_set_current_cb_wait(1);
-        sched_delay_current((uint32_t)remaining);
+        sched_delay_current(remaining);
         sched_set_current_cb_wait(0);
         sched_vtime_refresh();
     }
     return 0;
+}
+static uint32_t h_DelayThreadCB(CpuState *s) {
+    return h_DelayThreadCBForUsec(A0);
+}
+
+/* PSP's public pspkerror.h names ILLEGAL_ADDR as 0x800200D3 for kernel APIs.
+ * Keep it distinct from the subsystem-specific 0x80000103 memory error used by
+ * several HLE objects below. */
+#define SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR 0x800200d3u
+
+static uint32_t h_ReadSysClockDelay(uint32_t addr, uint64_t *usec_out) {
+    if (!addr || !usec_out || !sr_guest_span_readable(addr, 8u))
+        return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
+    uint64_t low = MEM_R32(addr);
+    uint64_t high = MEM_R32(addr + 4u);
+    *usec_out = low | (high << 32);
+    return 0;
+}
+
+/* Public PSPSDK pspthreadman.h: int sceKernelDelaySysClockThread(SceKernelSysClock *delay)
+ * and int sceKernelDelaySysClockThreadCB(SceKernelSysClock *delay). The only argument is
+ * the pointer in $a0; the SceKernelSysClock it names (low word, high word) is the delay in
+ * microseconds, so $a1 is not an argument of either call. */
+static uint32_t h_DelaySysClockThread(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    sched_delay_current(usec);
+    return 0;
+}
+
+static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    return h_DelayThreadCBForUsec(usec);
 }
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
@@ -1869,6 +1908,12 @@ static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
     return sched_delete_thread(A0);
+}
+static uint32_t h_TerminateThread(CpuState *s) {
+    /* DORMANT and invalid/self targets have distinct public PSPSDK error
+     * classes; sched_terminate_thread supplies ILLEGAL_THID/UNKNOWN_THID. */
+    if (sched_is_dormant(A0)) return 0x800201a2u; /* SCE_KERNEL_ERROR_DORMANT */
+    return sched_terminate_thread(A0);
 }
 static uint32_t h_DeleteThread(CpuState *s) {
     return sched_delete_thread(A0);
@@ -2983,6 +3028,8 @@ static void psmf_produce(SrPsmfPlayer *p) {
              * run instead of guessed from it.  vpts is the last displaypts delivered. */
             fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
                     " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
+                    " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
                     " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
                     " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
                     (unsigned)sr_audio_vbl(),
@@ -2994,6 +3041,18 @@ static void psmf_produce(SrPsmfPlayer *p) {
                     (unsigned long long)st.audio_resync_bytes,
                     p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
                     p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
+                    (unsigned long long)st.video_submitted,
+                    (unsigned long long)st.video_decoded,
+                    (unsigned long long)st.video_delivered,
+                    (unsigned long long)st.video_warmup_held,
+                    (unsigned long long)st.video_eos_drained,
+                    (unsigned long long)st.video_rejected,
+                    (unsigned long long)st.audio_submitted,
+                    (unsigned long long)st.audio_decoded,
+                    (unsigned long long)st.audio_delivered,
+                    (unsigned long long)st.audio_warmup_held,
+                    (unsigned long long)st.audio_eos_drained,
+                    (unsigned long long)st.audio_rejected,
                     (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
                     p->videoErrors, p->audioErrors,
                     (long long)p->videoClock, (long long)p->audioClock,
@@ -3063,11 +3122,18 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             }
         }
         if (p->h264 >= 0) {
-            if (slot->hostData && slot->bytes &&
-                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes) < 0)
-                p->videoErrors++;
-            else
+            if (slot->hostData && slot->bytes) {
+                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                             SR_PSMF_MEDIA_SUBMITTED);
+                if (sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData,
+                                      slot->bytes) < 0) {
+                    p->videoErrors++;
+                } else {
+                    psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+                }
+            } else {
                 psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+            }
         }
         free(slot->hostData);
         slot->hostData = NULL;
@@ -3093,9 +3159,13 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
                   sr_h264_frame_ex(p->h264, 0, &target, &info);
     if (r < 0) { p->videoErrors++; return -1; }
     if (r == 0) { if (eos) p->videoDrained = 1; return 0; }
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 SR_PSMF_MEDIA_DECODED);
     if (info.width <= 0 || info.height <= 0 || info.stride <= 0 ||
         info.delivered_format < SR_H264_PIXEL_5650 ||
         info.delivered_format > SR_H264_PIXEL_8888) {
+        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                     SR_PSMF_MEDIA_REJECTED);
         p->videoErrors++;
         return -1;
     }
@@ -3108,6 +3178,9 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
     if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
     p->displayPts = value;
     *pts_out = value;
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 eos ? SR_PSMF_MEDIA_EOS_DRAINED :
+                                       SR_PSMF_MEDIA_DELIVERED);
     p->videoFramesOut++;
     return 1;
 }
@@ -3145,10 +3218,19 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                                                         PSMF_AUDIO_SAMPLES * sizeof(int16_t));
                     if (p->atrac && p->audioPcm) {
                         int samples = 0;
+                        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                     SR_PSMF_MEDIA_SUBMITTED);
                         int rc = atrac3p_bridge_decode(p->atrac, frame + 8, (int)data,
                                                        p->audioPcm, &samples);
-                        if (rc == 0 && samples == PSMF_AUDIO_SAMPLES) {
-                            if (channels == 2) {
+                        if (rc == 0) {
+                            sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                         SR_PSMF_MEDIA_DECODED);
+                            p->audioPcmSampleCount = 0;
+                            if (samples != PSMF_AUDIO_SAMPLES) {
+                                p->audioFormatRejects++;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
+                            } else if (channels == 2) {
                                 p->audioPcmSampleCount = samples;
                             } else if (channels == 1) {
                                 /* The PSP block is stereo; a mono stream is duplicated into both
@@ -3163,6 +3245,8 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                             } else {
                                 p->audioFormatRejects++;
                                 p->audioPcmSampleCount = 0;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
                             }
                             if (p->audioPcmSampleCount == PSMF_AUDIO_SAMPLES) {
                                 if (slot->flags & 1u) { p->audioClock = slot->pts; p->audioClockValid = 1; }
@@ -3259,7 +3343,8 @@ static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
  * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
  * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
- * public PSP player contract. */
+ * public PSP player contract. Its initial NO_DATA gate precedes decode, so no decoded picture
+ * enters the warm-up-held disposition on this path. */
 static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
 /* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
  * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
@@ -3273,6 +3358,8 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     if(!psmf_audio_fill(p)){sched_delay_current(10000);return PSMF_ERR_NO_DATA;}
     const uint8_t*src=(const uint8_t*)p->audioPcm;
     for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                 SR_PSMF_MEDIA_DELIVERED);
     p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
     sched_delay_current(30000);
     return 0;}
@@ -7249,7 +7336,7 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
  * the settle, fire the UMD-ready signal so any waiting thread and the registered callback fire. */
 static uint32_t h_UmdActivate(CpuState *s) {
     (void)s;
-    extern void sched_delay_current(uint32_t);
+    extern void sched_delay_current(uint64_t);
     /* 30 ms virtual delay keeps the loader's stat-read interleaving realistic. */
     sched_delay_current(30000);
     sr_umd_signal_ready();
@@ -7349,10 +7436,12 @@ void sr_callback_unregister_owner(uint32_t thread_uid) {
 }
 
 extern void sr_mutex_release_thread(uint32_t thread_uid);
+static void mbx_remove_thread_waiters(uint32_t thread_uid);
 
 void sr_hle_release_thread_resources(uint32_t thread_uid) {
     sr_mutex_release_thread(thread_uid);
     if (thread_uid) {
+        mbx_remove_thread_waiters(thread_uid);
         for (int i = 0; i < FPL_MAX; i++) {
             if (s_fpls[i].used) fpl_remove_waiter(&s_fpls[i], thread_uid);
         }
@@ -12986,11 +13075,17 @@ static void display_present_active(void) {
                 s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         return;
     }
-    if (gui_present(s_display_active.addr, s_display_active.fmt,
-                    (uint32_t)s_display_active.stride) && getenv("SR_PRESENT_TRACE"))
-        fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
-                s_vcount, s_display_active.addr, s_display_active.fmt,
-                s_display_active.stride);
+    int presented = gui_present(s_display_active.addr, s_display_active.fmt,
+                                (uint32_t)s_display_active.stride);
+    if (presented) {
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_FRAME,
+                               s_display_active.addr, (uint32_t)s_display_active.fmt,
+                               (uint32_t)s_display_active.stride, s_vcount);
+        if (getenv("SR_PRESENT_TRACE"))
+            fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
+                    s_vcount, s_display_active.addr, s_display_active.fmt,
+                    s_display_active.stride);
+    }
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------
@@ -13283,6 +13378,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     int32_t stride = (int32_t)A1;
     int32_t fmt = (int32_t)A2;
     uint32_t sync = A3;
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_SET_FRAMEBUF,
+                           addr, (uint32_t)fmt, (uint32_t)stride, s_vcount);
     if (ge_log_on())
         fprintf(stderr, "DISPLAY_SET_FB: buf=0x%08x stride=%d fmt=%d sync=%u vcount=%u\n",
                 addr, stride, fmt, sync, s_vcount);
@@ -13518,9 +13615,8 @@ static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t str
  * sceDisplayWaitVblank succeeds with 1 (L323) while sceDisplayWaitVblankStart
  * returns ILLEGAL_CONTEXT (L325). Those cells are `NOT RUN` against this runtime
  * in docs/PSP_INTR_WAITS_MATRIX.md and belong to the interrupt-context work.
- * The CB variants (0x46f186c3, 0xdba6c4c4's neighbours) remain unregistered
- * until the callback-aware wait transaction lands; splitting these two handlers
- * does not change that. */
+ * The callback variants below use the same measured wait split, while the
+ * scheduler keeps servicing callbacks until a delivered VBLANK satisfies it. */
 static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
     (void)s;
     if (ge_log_on()) fprintf(stderr, "HLE: WaitVblankStart (vcount=%u)\n", s_vcount);
@@ -13535,6 +13631,20 @@ static uint32_t h_DisplayWaitVblank(CpuState *s) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     /* 1 when the caller was already inside the interval and did not block. */
     return (uint32_t)sched_wait_vblank();
+}
+
+static uint32_t h_DisplayWaitVblankStartCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(1);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : 0u;
+}
+
+static uint32_t h_DisplayWaitVblankCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(0);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : (uint32_t)result;
 }
 static uint32_t h_DisplayGetMode(CpuState *s) {
     if (A0) MEM_W32(A0, 0);  /* mode 0 */
@@ -14124,6 +14234,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     uint32_t cbid = A2;
     uint32_t cbarg = A3;
     uint32_t list_id = 0x35000000u | (s_ge_list_next++ & 0x00ffffffu);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_ENQUEUE,
+                           list, stall, list_id, cbid);
 
     ge_enqueue_trace_emit(s, "enqueue", list_id, list, stall, cbid);
 
@@ -14174,6 +14286,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, list, stall, next_pc);
         ge_finish_callback(s, cbid, list_id, cbarg);
     } else {
         /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
@@ -14204,6 +14318,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                           slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
                           new_stall,
                           slot >= 0 ? s_ge_lists[slot].cbid : 0u);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_STALL_UPDATE,
+                           list_id, slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
+                           new_stall, slot >= 0 ? s_ge_lists[slot].stall_addr : 0u);
 
     if (slot == -1) {
         ge_enqueue_trace_result(s, "update_stall", list_id, "not_found", 0u, 0);
@@ -14247,6 +14364,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, s_ge_lists[slot].start_pc,
+                               s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
         ge_finish_callback(s, s_ge_lists[slot].cbid, list_id, s_ge_lists[slot].cbarg);
@@ -14266,6 +14386,9 @@ static uint32_t h_GeListSync(CpuState *s) {
     uint32_t syncType = A1;
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].uid == qid) {
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                                   qid, s_ge_lists[i].start_pc,
+                                   s_ge_lists[i].stall_addr, syncType);
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
@@ -14277,6 +14400,8 @@ static uint32_t h_GeListSync(CpuState *s) {
             }
         }
     }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                           qid, 0u, 0u, syncType);
     if (ge_log_on())
         fprintf(stderr, "GE_SYNC: qid=0x%08x NOT FOUND in list table\n", qid);
     return 0;
@@ -14314,6 +14439,8 @@ static uint32_t h_GeDrawSync(CpuState *s) {
     int busy = 0;
     for (int i = 0; i < GE_LIST_MAX; i++)
         if (s_ge_lists[i].status == 1) { busy = 1; break; }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
+                           mode, (uint32_t)busy, 0u, 0u);
     if (mode == 1u) return busy ? 1u : 0u;
     if (busy) sched_delay_current(1000);
     return 0;
@@ -15302,6 +15429,12 @@ static void mbx_remove_waiter(Mbx *m, uint32_t thid) {
             m->nwaiters--;
             break;
         }
+    }
+}
+
+static void mbx_remove_thread_waiters(uint32_t thread_uid) {
+    for (int i = 0; i < MBX_MAX; i++) {
+        if (s_mbx[i].used) mbx_remove_waiter(&s_mbx[i], thread_uid);
     }
 }
 
@@ -17138,9 +17271,14 @@ static void hle_register_selftest_oracle_handlers(void) {
 static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xceadeb47, "sceKernelDelayThread", h_DelayThread);
     sr_hle_register(0x68da9e36, "sceKernelDelayThreadCB", h_DelayThreadCB);
+    sr_hle_register(0xbd123d9e, "sceKernelDelaySysClockThread", h_DelaySysClockThread);
+    sr_hle_register(0x1181e963, "sceKernelDelaySysClockThreadCB", h_DelaySysClockThreadCB);
+    sr_hle_register(0x616403ba, "sceKernelTerminateThread", h_TerminateThread);
     sr_hle_register(0x82826f70, "sceKernelSleepThreadCB", h_SleepThreadCB);
     sr_hle_register(0x36cdfade, "sceDisplayWaitVblank", h_DisplayWaitVblank);
     sr_hle_register(0x984c27e7, "sceDisplayWaitVblankStart", h_DisplayWaitVblankStart);
+    sr_hle_register(0x8eb9ec49, "sceDisplayWaitVblankCB", h_DisplayWaitVblankCB);
+    sr_hle_register(0x46f186c3, "sceDisplayWaitVblankStartCB", h_DisplayWaitVblankStartCB);
     sr_hle_register(0x4e3a1105, "sceKernelWaitSema", h_WaitSema);
     sr_hle_register(0x6d212bac, "sceKernelWaitSemaCB", h_WaitSemaCB);
     sr_hle_register(0x55c20a00, "sceKernelCreateEventFlag", h_CreateEventFlag);

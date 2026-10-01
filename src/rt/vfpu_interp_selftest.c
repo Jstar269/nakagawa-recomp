@@ -23,6 +23,8 @@
 //   * the vrot overlap quirk only inspects ACTIVE destination lanes — a scalar
 //     source register 0 must not match a zero-filled inactive pair lane, while
 //     an active source lane still triggers the cosine-recompute quirk;
+//   * the shared VASIN helper matches the real-PSP measured domain words,
+//     including signed invalid-NaN payloads just outside +/-1;
 //   * valid aligned quad round-trips still work.
 //
 // The final check count is printed by the executable. No game inputs or private
@@ -645,11 +647,56 @@ static int check_mfvc_zero_is_noop(void) {
     return bad;
 }
 
+static int check_vasin_measured_domain_words(void) {
+    /* The 14 raw-word results from two byte-identical PSP runs; see issue #69
+     * and the exact fixture/method in docs/HARDWARE_ORACLE.md. */
+    static const struct {
+        uint32_t input;
+        uint32_t result;
+    } cases[] = {
+        {0xBF800000u, 0xBF800000u},
+        {0x3F800000u, 0x3F800000u},
+        {0xBF800001u, 0xFF800001u},
+        {0x3F800001u, 0x7F800001u},
+        {0x3F80000Bu, 0x7F800001u},
+        {0xBF80000Bu, 0xFF800001u},
+        {0xBF80DABCu, 0xFF800001u},
+        {0xBF82026Au, 0xFF800001u},
+        {0xBF8FA2B7u, 0xFF800001u},
+        {0xBF9A419Cu, 0xFF800001u},
+        {0xBFB63DDAu, 0xFF800001u},
+        {0xBFFB5A51u, 0xFF800001u},
+        {0xBFFFFE00u, 0xFF800001u},
+        {0xC0000000u, 0xFF800001u},
+    };
+    int bad = 0;
+
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        float input;
+        float output;
+        uint32_t actual;
+        memcpy(&input, &cases[i].input, sizeof(input));
+        output = sr_vfpu_asin(input);
+        memcpy(&actual, &output, sizeof(actual));
+        g_checks++;
+        if (actual != cases[i].result) {
+            g_failures++;
+            bad = 1;
+            fprintf(stderr,
+                    "FAIL: measured VASIN word[%u] input=0x%08x "
+                    "expected=0x%08x actual=0x%08x\n",
+                    i, cases[i].input, cases[i].result, actual);
+        }
+    }
+    return bad;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_cop2_control_transfers();
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
+    bad |= check_vasin_measured_domain_words();
     bad |= check_reserved_cmov_forms();
     bad |= check_mfvc_zero_is_noop();
     bad |= check_vrot_overlap();

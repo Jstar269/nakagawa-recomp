@@ -1863,6 +1863,7 @@ int main(int argc, char **argv) {
         || stack_census.mismatches != 1u
         || stack_census.entries == 0u
         || stack_census.entries != stack_census.returns
+        || !stack_census.unobserved_known
         || stack_census.excluded != 0u
         || stack_census.unexpected != 0u
         || !stack_census.has_mismatch
@@ -1873,14 +1874,14 @@ int main(int argc, char **argv) {
             - stack_census.first_mismatch_actual_sp != 32u) {
         sr_stack_census_report();
         fprintf(stderr,
-                "cosim: stack census was not limited to the declared spleak positive control\n");
+                "cosim: stack census positive control failed or expected-entry coverage was unknown\n");
         return 1;
     }
     sr_stack_census_report();
     fprintf(stderr,
             "cosim: stack census caught the declared spleak control at 0x%08x; "
-            "all other observed entries balanced\n",
-            stack_leak_control->address);
+            "unobserved=%u, all other observed entries balanced\n",
+            stack_leak_control->address, stack_census.unobserved);
 #endif
     fprintf(stderr, "\ncosim: %u comparison cases, %d divergence report(s)\n",
             executed, g_failures);

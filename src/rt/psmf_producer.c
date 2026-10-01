@@ -771,6 +771,53 @@ void sr_psmf_producer_stats(const SrPsmfProducer *p, SrPsmfProducerStats *out) {
     out->failed = p->failed;
 }
 
+static uint64_t *media_stage_counter(SrPsmfProducerStats *st,
+                                     SrPsmfAuKind kind,
+                                     SrPsmfMediaStage stage) {
+    if (!st) return NULL;
+    if (kind == SR_PSMF_AU_VIDEO) {
+        switch (stage) {
+            case SR_PSMF_MEDIA_SUBMITTED: return &st->video_submitted;
+            case SR_PSMF_MEDIA_DECODED: return &st->video_decoded;
+            case SR_PSMF_MEDIA_DELIVERED: return &st->video_delivered;
+            case SR_PSMF_MEDIA_WARMUP_HELD: return &st->video_warmup_held;
+            case SR_PSMF_MEDIA_EOS_DRAINED: return &st->video_eos_drained;
+            case SR_PSMF_MEDIA_REJECTED: return &st->video_rejected;
+        }
+    } else if (kind == SR_PSMF_AU_AUDIO) {
+        switch (stage) {
+            case SR_PSMF_MEDIA_SUBMITTED: return &st->audio_submitted;
+            case SR_PSMF_MEDIA_DECODED: return &st->audio_decoded;
+            case SR_PSMF_MEDIA_DELIVERED: return &st->audio_delivered;
+            case SR_PSMF_MEDIA_WARMUP_HELD: return &st->audio_warmup_held;
+            case SR_PSMF_MEDIA_EOS_DRAINED: return &st->audio_eos_drained;
+            case SR_PSMF_MEDIA_REJECTED: return &st->audio_rejected;
+        }
+    }
+    return NULL;
+}
+
+void sr_psmf_producer_media_stage(SrPsmfProducer *p, SrPsmfAuKind kind,
+                                  SrPsmfMediaStage stage) {
+    if (!p) return;
+    uint64_t *counter = media_stage_counter(&p->stats, kind, stage);
+    if (counter) (*counter)++;
+}
+
+int sr_psmf_producer_resolve_warmup_hold(SrPsmfProducer *p,
+                                         SrPsmfAuKind kind,
+                                         SrPsmfMediaStage disposition) {
+    if (!p || (disposition != SR_PSMF_MEDIA_DELIVERED &&
+               disposition != SR_PSMF_MEDIA_EOS_DRAINED &&
+               disposition != SR_PSMF_MEDIA_REJECTED)) return 0;
+    uint64_t *held = media_stage_counter(&p->stats, kind, SR_PSMF_MEDIA_WARMUP_HELD);
+    uint64_t *terminal = media_stage_counter(&p->stats, kind, disposition);
+    if (!held || !terminal || *held == 0) return 0;
+    (*held)--;
+    (*terminal)++;
+    return 1;
+}
+
 int sr_psmf_producer_select_streams(SrPsmfProducer *p, uint32_t vs, uint32_t as) {
     if (!p) return 0;
     if (vs >= p->video_stream_count) return 0;

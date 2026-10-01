@@ -83,6 +83,69 @@ static void test_progress_line_parsing(void) {
     assert(!package_builder_parse_progress_line("{truncated", 10, &ev));
 }
 
+/* Elapsed time runs while a build is active: the first poll starts the clock and
+ * later polls advance it (it stayed at 0.0 s because nothing set the start time). */
+static void test_elapsed_time_advances_while_building(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: elapsed time advances while building\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST00001", "Elapsed Clock");
+    session.is_building = true;
+    session.start_time_ms = 0;
+    package_builder_poll(&session, 5000u);
+    assert(session.elapsed_ms == 0);
+    package_builder_poll(&session, 7500u);
+    assert(session.elapsed_ms == 2500);
+    package_builder_poll(&session, 9100u);
+    assert(session.elapsed_ms == 4100);
+}
+
+/* A session is reusable. A new start must not inherit the previous run's
+ * clock, or the UI reports the earlier build's elapsed time. This drives the
+ * production entry point with an unavailable interpreter: Windows rejects the
+ * spawn synchronously, while POSIX may fork successfully before exec fails.
+ * Both paths must start with a reset clock. */
+static void test_reused_session_restarts_the_clock(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: reused session restarts the clock\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST00001", "Reused Clock");
+
+    /* State left behind by a finished build. */
+    session.is_building = false;
+    session.is_complete = true;
+    session.is_failed = true;
+    session.is_cancelled = true;
+    session.exit_code = 3;
+    session.start_time_ms = 5000u;
+    session.elapsed_ms = 90000u;
+
+    char log_dir[NK_MAX_PATH];
+    char user_data_root[NK_MAX_PATH];
+    const char *probe = getenv("TMPDIR");
+    if (!probe || !probe[0]) probe = getenv("TEMP");
+    if (!probe || !probe[0]) probe = ".";
+    snprintf(log_dir, sizeof(log_dir), "%s%cnk_pkg_reuse_logs", probe,
+             nk_platform_path_separator());
+    snprintf(user_data_root, sizeof(user_data_root), "%s%cnk_pkg_reuse_data",
+             probe, nk_platform_path_separator());
+
+    /* An unspawnable interpreter still exercises the reset: a reused session
+     * must not keep reporting the previous build while a new start is refused. */
+    NkResult result = package_builder_start(&session,
+                                            "nk-no-such-python-for-clock-test",
+                                            "nk-no-such-cli",
+                                            user_data_root, log_dir);
+    assert(session.start_time_ms == 0);
+    assert(session.elapsed_ms == 0);
+    assert(!session.is_complete);
+    assert(!session.is_cancelled);
+    assert(session.is_building == (result == NK_OK));
+    assert(session.exit_code == -1);
+
+    /* Reap a child accepted by the POSIX spawn backend. The clock's poll
+     * behavior is exercised separately by test_elapsed_time_advances_while_building. */
+    if (result == NK_OK) package_builder_cancel(&session);
+}
+
 static void test_state_machine_transitions(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 2: state machine transitions\n");
     PackageBuildSession session;
@@ -422,7 +485,7 @@ static void test_pinned_prerequisite_manifest(void) {
     assert(package_builder_find_cli(NULL, cli_path, sizeof(cli_path)));
     assert(package_builder_load_prerequisites(cli_path, &list, error, sizeof(error)));
     assert(list.count == 35);
-    assert(list.total_bytes == UINT64_C(100499173));
+    assert(list.total_bytes == UINT64_C(100665604));
     assert(strcmp(list.items[0].id, "cpython-embed-amd64") == 0);
     assert(strcmp(list.items[0].host, "www.python.org") == 0);
     assert(strcmp(list.items[0].version, "3.14.7") == 0);
@@ -579,6 +642,8 @@ int main(int argc, char *argv[]) {
         return run_build_package_route(argv[2], argv[3], argv[4], argv[5]);
     }
     test_progress_line_parsing();
+    test_elapsed_time_advances_while_building();
+    test_reused_session_restarts_the_clock();
     test_state_machine_transitions();
     test_output_line_circular_buffer();
     test_python_and_cli_discovery();
