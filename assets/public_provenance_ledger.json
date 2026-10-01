@@ -5993,7 +5993,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0819fe24473d5f43f41e1b3151c9df7f4a8f171209ff7fcbb8011a9a3601d42a"
+      "sha256": "57c7fd3830a8cafab819dfed9cad38d8be854943cb81edee51be91125b63ba2c"
     },
     {
       "path": "tools/history_audit.py",
@@ -7356,7 +7356,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7fd3ca235385db4268a8fca41591e0f3768830dfc42c7b53218117f677748df"
+      "sha256": "bb6bad047da2f2ea423022dc952fcf73f556948bdf2cb741dd8c9bfddef67e1f"
     },
     {
       "path": "tools/test_cpu_lle.py",
@@ -9074,7 +9074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "41a39af42dc143c58bf16f25a3910b000dae98039c2b234ede5f960452e35b01"
+      "sha256": "1f9c02ee486073498ab7ddf0800d95bd9a56ccfd3c67eea5f88db2ffeca47472"
     },
     {
       "path": "tools/test_tree_lint.py",
