@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b657b32074caa4e3527bb1aa538d188daa8da5abf136161af70e8e152d5be9d"
+      "sha256": "155f878e9134c941134e132e2adf28250d50ef63021516d6843bcb9c0fac95a3"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a156b86cf4b162df982bd61e236d0e6617d230fbe7d2caddea1b0a848326d987"
+      "sha256": "347e05be9fa7f51518f55966b1fadac12820764995a9cb448e8c5bfc4a555e86"
     },
     {
       "path": "AGENTS.md",
@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7fd06e5ada5479c14579e6d76f89bf49b9f7a6aaa983523f32bef69bd815b055"
+      "sha256": "9edcc115c751c6c0a5a364fcc0679fdaebe226136b4d6e1fe90bc43515d82c52"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1339,7 +1339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8cc73e8bd28550f2c27ae8b2f246967b9ff6f932aa1042e379138b2210a65cc5"
+      "sha256": "4eb1efa21281231b42d1c6f96f8e0da16839c85f6881da8c15195c3302259dd1"
     },
     {
       "path": "docs/SHOWCASE.md",
