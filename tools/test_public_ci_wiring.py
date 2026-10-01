@@ -194,6 +194,15 @@ class PublicCiWiringTests(unittest.TestCase):
                     "SR_SOURCE_COMMIT explicitly",
                 )
 
+    def test_provenance_record_gap_check_is_wired_in_ci_and_make(self) -> None:
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        precommit = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("python tools/provenance_record_gap.py --check", ci)
+        self.assertIn("tools/provenance_record_gap.py --check", makefile)
+        self.assertIn("python tools/provenance_record_gap.py --check", precommit)
+
 
 if __name__ == "__main__":
     unittest.main()
