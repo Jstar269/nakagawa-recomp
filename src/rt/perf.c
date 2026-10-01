@@ -9,6 +9,7 @@
 
 #include "perf.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -551,6 +552,40 @@ static void write_summary(const char *path, uint64_t wall_ns) {
     fclose(json);
 }
 
+/* A telemetry line leaves the process as ONE stdio write.
+ *
+ * stderr is unbuffered, and on the MinGW C runtime a formatted fprintf() to an unbuffered
+ * stream issues a separate WriteFile per output piece.  With stderr redirected to a log file
+ * a ~330-character PERF line cost ~25 ms and the ~450-character PERF_ATTRIB line ~30 ms,
+ * measured around the two calls inside the running flagship.  Both lines are written from
+ * the guest thread at the end of every telemetry interval, and guest time is host time, so
+ * the guest was stopped for ~55 ms once a second whenever SR_PERF was on (every Benchmark
+ * profile run): one VBLANK in 18, which is how a title that gates its frame on two VBLANKs
+ * measured 2.26 per frame instead of 2.02.  Formatting into a buffer first and handing the
+ * finished line to a single fwrite() removes the per-piece writes.  The sink exists so the
+ * selftest can observe the unit in which a line is emitted. */
+static SrPerfReportSink s_report_sink;
+
+static void perf_emit_line(const char *line, size_t len) {
+    if (s_report_sink) {
+        s_report_sink(line, len);
+        return;
+    }
+    fwrite(line, 1, len, stderr);
+}
+
+static void perf_emit_format(const char *fmt, ...) {
+    char line[1536];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    size_t len = (size_t)n < sizeof line ? (size_t)n : sizeof line - 1u;
+    if (len == sizeof line - 1u) line[len - 1u] = '\n';   /* a truncated line still ends the line */
+    perf_emit_line(line, len);
+}
+
 static void report_if_due(uint64_t now) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     if (!s_perf.interval_start_ns) {
@@ -576,7 +611,7 @@ static void report_if_due(uint64_t now) {
     s_hud_frame_ms = frame_ms;
     s_hud_vblank_hz = vblank_hz;
     if (s_perf_stderr_enabled) {
-    fprintf(stderr,
+    perf_emit_format(
             "PERF vblank_total=%llu wall_ms=%.3f fps=%.3f frame_ms=%.3f vblank_hz=%.3f "
             "cpu_ms=%.3f ge_wait_ms=%.3f present_ms=%.3f idle_ms=%.3f "
             "submits=%llu ge_submits=%llu present_submits=%llu waits=%llu "
@@ -588,7 +623,7 @@ static void report_if_due(uint64_t now) {
             (unsigned long long)m.readback_waits,
             (unsigned long long)m.present_skips, ms(m.present_wait_ns),
             fps >= 29.5 ? "yes" : "no");
-    fprintf(stderr,
+    perf_emit_format(
             "PERF_ATTRIB aot_ms=%.3f aot_calls=%llu aot_instructions=%llu interp_ms=%.3f interp_calls=%llu interp_instructions=%llu aot_to_interp=%llu interp_to_aot=%llu vfpu_ms=%.3f ge_cpu_ms=%.3f vk_submit_ms=%.3f vk_wait_ms=%.3f texture_decode_ms=%.3f iso_read_ms=%.3f vfs_read_ms=%.3f h264_ms=%.3f atrac_ms=%.3f mix_ms=%.3f output_ms=%.3f\n",
             ms(m.aot_ns), (unsigned long long)m.aot_calls,
             (unsigned long long)m.aot_instructions, ms(m.interp_ns),
@@ -610,6 +645,17 @@ static void report_if_due(uint64_t now) {
     s_perf.interval_start_ns = now;
     s_perf.interval_count++;
 }
+
+#ifdef SR_PROFILER_SELFTEST
+void sr_perf_test_set_report_sink(SrPerfReportSink sink) { s_report_sink = sink; }
+
+/* Make the current interval due and report it, so a selftest need not wait a second. */
+void sr_perf_test_force_report(void) {
+    uint64_t now = raw_now_ns();
+    s_perf.interval_start_ns = now > 2000000000ull ? now - 2000000000ull : 1u;
+    report_if_due(now);
+}
+#endif
 
 static void make_summary_path(const char *csv_path, char *out, size_t out_size) {
     const char *slash = strrchr(csv_path, '/');
