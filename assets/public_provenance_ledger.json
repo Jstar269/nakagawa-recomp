@@ -1645,7 +1645,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae2a9e1d29f2a2de8103476498b226bb55c3c3fc85b7a8703afe390e44658f13"
+      "sha256": "57076c66510254c0e610c51a6a404d5c968a5655bb0699f5a27ea7107e395d6d"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
@@ -4187,7 +4187,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5f1ec873b5aa0d4d54f21960f5a35728d065efbc322d39cd19374a4330618ca6"
+      "sha256": "bed62ded5af1dc951f1bfb952ab806dcf50634e1cb41e821d99583c4ebf7464c"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "dddf7a0df5e3f5bd91691d6564cb0aabbf48ed0bc7ab4f2741dfccf4d15def76"
+      "sha256": "aa382a5fc1fb432b03640b2c4786bf7c0733c2168aa38ec8f02ae8da9e3ed58c"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "526114775891b2005acc164d76f9abf8a42b4450b6f284302a5fa3209301efdc"
+      "sha256": "5dfb4c29cd66651610f28338d136d1f57b2f686232f217c202d6a14aeb2e294f"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8107,7 +8107,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "070355bdcfa2bfcc88bb6af97d77b4b77e5cb331ea54ecdd0e6835414cb90614"
+      "sha256": "9c4926cb27d373023ef56adedcc12e84fdf4d94f291a22a7e16fb7fcc77918b9"
     },
     {
       "path": "tools/test_nk_core.py",
