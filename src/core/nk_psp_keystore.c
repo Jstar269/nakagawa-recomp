@@ -344,8 +344,12 @@ done:
 
 /* A key file may live under a per-user data root that holds non-ASCII
  * characters, which the narrow CRT would re-read in the active ANSI code page.
- * This file is compiled by tools/nk_core/decrypt_tool.py from a source list
- * that has no platform layer, so the strict wide conversion lives here. */
+ * This local copy exists for one build only: tools/nk_core/decrypt_tool.py
+ * compiles this file for nk_decrypt from a fixed source list with no platform
+ * layer. The player and nakagawa_core builds link nk_platform and could call
+ * nk_fopen_utf8 instead; this is a deliberate, documented exception (one of the
+ * file-local wide opens listed in nk_platform.h), not a general property of the
+ * file. */
 static FILE *keystore_fopen(const char *path)
 {
 #if defined(_WIN32) || defined(_WIN64)
