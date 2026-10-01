@@ -7,8 +7,6 @@ OBJS = $(BUILD_DIR)/probe.o
 PSP_EBOOT = $(BUILD_DIR)/EBOOT.PBP
 PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 
-$(shell mkdir -p "$(BUILD_DIR)")
-
 # Build one deterministic probe case at a time.  A physical session should
 # rebuild with CASE=callback-notify-check, CASE=wait-cancel, or
 # CASE=thread-lifecycle rather than mixing unrelated waits in one launch.  The
@@ -163,6 +161,26 @@ endif
 # (threadman_user_imports.S). CASE_IDs 29/30 are reserved for open PR #244
 # (exception-a3-mload/mstore) so a future merge cannot collide.
 PROBE_BUILD_COMMIT ?= $(shell git rev-parse --short HEAD)
+# The main probe emits this full object id in source_commit for host comparison.
+# Refuse an unknown, overridden, or dirty source tree instead of producing a
+# PRX that claims to represent a commit it does not contain.
+PROBE_BUILD_COMMIT_FULL ?= $(shell git rev-parse --verify HEAD 2>/dev/null)
+PROBE_BUILD_COMMIT_HEAD := $(shell git rev-parse --verify HEAD 2>/dev/null)
+PROBE_BUILD_TREE_STATUS := $(shell git status --porcelain --untracked-files=normal 2>/dev/null || echo __GIT_STATUS_UNAVAILABLE__)
+ifeq ($(strip $(PROBE_BUILD_COMMIT_FULL)),)
+$(error PROBE_BUILD_COMMIT could not be determined; refusing probe build)
+endif
+ifneq ($(PROBE_BUILD_COMMIT_FULL),$(PROBE_BUILD_COMMIT_HEAD))
+$(error PROBE_BUILD_COMMIT must match the clean checkout HEAD)
+endif
+ifneq ($(filter __GIT_STATUS_UNAVAILABLE__,$(PROBE_BUILD_TREE_STATUS)),)
+$(error source tree status could not be determined; refusing probe build)
+endif
+ifneq ($(strip $(PROBE_BUILD_TREE_STATUS)),)
+$(error source tree is dirty; refusing to embed PROBE_BUILD_COMMIT)
+endif
+$(shell mkdir -p "$(BUILD_DIR)")
+CFLAGS += -DPROBE_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT_FULL)\"
 ifeq ($(CASE),exception-a1)
 TARGET = $(BUILD_DIR)/psp_a1
 OBJS = $(BUILD_DIR)/probe_exception_a1.o
