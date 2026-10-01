@@ -15,6 +15,14 @@ Two complementary layers:
   mutation pattern, every replacement asserts its anchor exists first, so a
   refactor that silently orphans a mutant cannot produce a vacuous pass.
 
+  A behavioral kill is staged, never a bare nonzero status: the mutant must
+  build, must actually execute, must exit nonzero, and must print the guest
+  semantic diagnostic the mutation is supposed to break. A compiler error, a
+  launch failure, a host toolchain problem or a timeout is INVALID evidence,
+  never a kill. Every mutant also carries its expected diagnostic label so a
+  mutant cannot be "killed" by an unrelated assertion, and a pristine control
+  proves the same harness passes the unmutated header.
+
 * Structural regressions (fast path removal, FCC0 coherence, cvt.s.w
   routing): instant source-shape anchors over tools/codegen.py,
   src/rt/fp_convert.h and src/ref/interp.cpp. These are the committed-form
@@ -24,6 +32,7 @@ Two complementary layers:
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import shutil
@@ -32,6 +41,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -43,9 +53,73 @@ SELFTEST = ROOT / "src" / "rt" / "fp_convert_selftest.c"
 CODEGEN = ROOT / "tools" / "codegen.py"
 REF_INTERP = ROOT / "src" / "ref" / "interp.cpp"
 
+# Separate phase budgets: a wedged compiler and a wedged mutant are different
+# failures and must be named differently (see classify_mutant_run).
+BUILD_TIMEOUT_S = 300.0
+RUN_TIMEOUT_S = 120.0
+# fp_convert_selftest.c returns 1 after printing its own accounting line; any
+# other nonzero status means the host killed the process, which is only
+# accepted together with the expected guest semantic diagnostic.
+SELFTEST_VERDICT_RC = 1
+SELFTEST_SUMMARY = "fp_convert_selftest: "
+SELFTEST_PRISTINE_MARKER = "fixed-vector checks passed"
 
-def _build_mutated_selftest(header_text: str) -> int:
-    """Compile+run the real selftest against a mutated header copy at -O2."""
+SEMANTIC_KILL = "SEMANTIC_KILL"
+SURVIVED = "SURVIVED"
+INVALID_BUILD_TIMEOUT = "INVALID_BUILD_TIMEOUT"
+INVALID_BUILD_LAUNCH_FAILED = "INVALID_BUILD_LAUNCH_FAILED"
+INVALID_BUILD_FAILED = "INVALID_BUILD_FAILED"
+INVALID_RUN_TIMEOUT = "INVALID_RUN_TIMEOUT"
+INVALID_RUN_LAUNCH_FAILED = "INVALID_RUN_LAUNCH_FAILED"
+INVALID_NON_SEMANTIC_FAILURE = "INVALID_NON_SEMANTIC_FAILURE"
+INVALID_NO_SELFTEST_ACCOUNTING = "INVALID_NO_SELFTEST_ACCOUNTING"
+
+
+@dataclasses.dataclass(frozen=True)
+class StagedRun:
+    """One staged mutant attempt: build status, run status, and raw output.
+
+    ``build_rc``/``run_rc`` are ``None`` when the phase never produced a
+    status (launch error, or timeout before any status was observable).
+    """
+
+    build_rc: int | None
+    build_output: str
+    run_rc: int | None
+    run_output: str
+    build_timed_out: bool = False
+    run_timed_out: bool = False
+
+    @property
+    def combined_output(self) -> str:
+        return self.build_output + self.run_output
+
+
+def classify_mutant_run(staged: StagedRun, expected_diagnostics: tuple[str, ...]) -> str:
+    """Name a staged mutant verdict.
+
+    Only a mutant that BUILT, LAUNCHED, EXECUTED and printed every expected
+    guest semantic diagnostic while exiting nonzero is a behavioral kill. Every
+    other outcome is named so the failure text says which discipline was
+    violated instead of collapsing everything into "nonzero".
+    """
+    if staged.build_timed_out or staged.build_rc is None:
+        return INVALID_BUILD_TIMEOUT if staged.build_timed_out else INVALID_BUILD_LAUNCH_FAILED
+    if staged.build_rc != 0:
+        return INVALID_BUILD_FAILED
+    if staged.run_timed_out or staged.run_rc is None:
+        return INVALID_RUN_TIMEOUT if staged.run_timed_out else INVALID_RUN_LAUNCH_FAILED
+    if staged.run_rc == 0:
+        return SURVIVED
+    if any(diagnostic not in staged.run_output for diagnostic in expected_diagnostics):
+        return INVALID_NON_SEMANTIC_FAILURE
+    if staged.run_rc == SELFTEST_VERDICT_RC and SELFTEST_SUMMARY not in staged.run_output:
+        return INVALID_NO_SELFTEST_ACCOUNTING
+    return SEMANTIC_KILL
+
+
+def _build_mutated_selftest(header_text: str) -> StagedRun:
+    """Compile and run the real selftest against a mutated header copy at -O2."""
     assert CC is not None
     with tempfile.TemporaryDirectory(prefix="fp_scalar_mut_") as tmp:
         work = Path(tmp)
@@ -58,42 +132,226 @@ def _build_mutated_selftest(header_text: str) -> int:
             "-I", str(work),
             str(work / "fp_convert_selftest.c"), "-lm", "-o", str(exe),
         ]
-        compiled = subprocess.run(command, capture_output=True, text=True)
+        try:
+            compiled = subprocess.run(command, capture_output=True, text=True,
+                                      timeout=BUILD_TIMEOUT_S)
+        except subprocess.TimeoutExpired as exc:
+            return StagedRun(None, _timeout_text(command, exc), None, "", build_timed_out=True)
+        except OSError as exc:
+            return StagedRun(None, f"compiler launch failed: {exc}", None, "")
+        build_output = compiled.stderr + compiled.stdout
         if compiled.returncode != 0:
-            return 1  # a mutant that breaks compilation is dead too
-        ran = subprocess.run([str(exe)], capture_output=True, text=True)
-        return ran.returncode
+            # Build breakage is NOT a behavioral kill; keep it staged and named.
+            return StagedRun(compiled.returncode, build_output, None, "")
+        try:
+            ran = subprocess.run([str(exe)], capture_output=True, text=True,
+                                 timeout=RUN_TIMEOUT_S)
+        except subprocess.TimeoutExpired as exc:
+            return StagedRun(0, build_output, None, _timeout_text([str(exe)], exc),
+                             run_timed_out=True)
+        except OSError as exc:
+            return StagedRun(0, build_output, None, f"mutant launch failed: {exc}")
+        return StagedRun(0, build_output, ran.returncode, ran.stderr + ran.stdout)
+
+
+def _timeout_text(command: list[str], exc: subprocess.TimeoutExpired) -> str:
+    detail = exc.stderr or ""
+    if isinstance(detail, bytes):
+        detail = detail.decode("utf-8", "replace")
+    return f"phase timeout\ncommand: {' '.join(command)}\n{detail}"
+
+
+class FpMutationVerdictTests(unittest.TestCase):
+    """The staged verdict policy, driven without a compiler.
+
+    These lock the rule that build/launch/timeout failures are never semantic
+    kills; the real mutant tests below supply the compiler-side evidence.
+    """
+
+    def _staged(self, **kwargs) -> StagedRun:
+        fields = dict(build_rc=0, build_output="", run_rc=1,
+                      run_output="FAIL: guest rounding wrong\n")
+        fields.update(kwargs)
+        return StagedRun(**fields)
+
+    def test_build_failure_is_never_a_semantic_kill(self):
+        staged = self._staged(build_rc=1, build_output="error: 'sr_rm_to' undeclared",
+                              run_rc=None, run_output="")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         INVALID_BUILD_FAILED)
+
+    def test_build_launch_failure_is_never_a_semantic_kill(self):
+        staged = self._staged(build_rc=None, build_output="compiler launch failed",
+                              run_rc=None, run_output="")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         INVALID_BUILD_LAUNCH_FAILED)
+
+    def test_build_timeout_is_never_a_semantic_kill(self):
+        staged = self._staged(build_rc=None, build_output="phase timeout",
+                              run_rc=None, run_output="", build_timed_out=True)
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         INVALID_BUILD_TIMEOUT)
+
+    def test_run_launch_failure_is_never_a_semantic_kill(self):
+        staged = self._staged(run_rc=None, run_output="mutant launch failed")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         INVALID_RUN_LAUNCH_FAILED)
+
+    def test_run_timeout_is_never_a_semantic_kill(self):
+        staged = self._staged(run_rc=None, run_output="phase timeout", run_timed_out=True)
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         INVALID_RUN_TIMEOUT)
+
+    def test_surviving_mutant_is_reported_as_survived(self):
+        staged = self._staged(run_rc=0,
+                              run_output="fp_convert_selftest: all 338 fixed-vector checks passed\n")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         SURVIVED)
+
+    def test_nonzero_without_expected_diagnostic_is_not_a_kill(self):
+        staged = self._staged(run_output="FAIL: an unrelated vector row\n")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         INVALID_NON_SEMANTIC_FAILURE)
+
+    def test_selftest_verdict_needs_its_own_accounting_line(self):
+        staged = self._staged(run_rc=SELFTEST_VERDICT_RC,
+                              run_output="FAIL: guest rounding wrong\n")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         INVALID_NO_SELFTEST_ACCOUNTING)
+
+    def test_executed_semantic_failure_is_a_kill(self):
+        staged = self._staged(
+            run_rc=SELFTEST_VERDICT_RC,
+            run_output="FAIL: guest rounding wrong\nfp_convert_selftest: 1/338 checks FAILED\n")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         SEMANTIC_KILL)
+
+    def test_host_killed_process_with_expected_diagnostic_is_a_kill(self):
+        """A host FP exception after the wrong-result rows is still evidence.
+
+        The diagnostic rows are printed before the process dies, so the guest
+        semantic violation was observed; the abnormal status only means the
+        harness could not finish its accounting.
+        """
+        staged = self._staged(run_rc=0xC0000093,
+                              run_output="FAIL: guest rounding wrong\n")
+        self.assertEqual(classify_mutant_run(staged, ("FAIL: guest rounding wrong",)),
+                         SEMANTIC_KILL)
+
+    def test_every_named_verdict_is_distinct(self):
+        verdicts = {
+            SEMANTIC_KILL, SURVIVED, INVALID_BUILD_TIMEOUT,
+            INVALID_BUILD_LAUNCH_FAILED, INVALID_BUILD_FAILED, INVALID_RUN_TIMEOUT,
+            INVALID_RUN_LAUNCH_FAILED, INVALID_NON_SEMANTIC_FAILURE,
+            INVALID_NO_SELFTEST_ACCOUNTING,
+        }
+        self.assertEqual(len(verdicts), 9)
+
+    def test_mocked_compiler_failure_never_reaches_execution(self):
+        """A mocked compiler error must be staged as INVALID_BUILD_FAILED.
+
+        Drives the real _build_mutated_selftest, so this is the defect the old
+        single-returncode helper hid: it returned 1 and the caller read that as
+        a behavioral kill without ever executing anything.
+        """
+        completed = subprocess.CompletedProcess(args=["gcc"], returncode=1,
+                                                stdout="", stderr="error: undeclared")
+        with mock.patch.object(sys.modules[__name__].subprocess, "run",
+                               return_value=completed) as runner:
+            staged = _build_mutated_selftest("/* mutated */\n")
+        self.assertEqual(runner.call_count, 1,
+                         "a failed build must not attempt execution")
+        self.assertEqual(staged.build_rc, 1)
+        self.assertIsNone(staged.run_rc, "no run status may be invented")
+        self.assertEqual(
+            classify_mutant_run(staged, ("FAIL: never printed",)),
+            INVALID_BUILD_FAILED)
+
+    def test_mocked_launch_failure_after_clean_build_is_invalid(self):
+        def fake_run(command, **kwargs):
+            if command and command[0] == CC:
+                return subprocess.CompletedProcess(args=command, returncode=0,
+                                                   stdout="", stderr="")
+            raise OSError("exec format error")
+
+        with mock.patch.object(sys.modules[__name__].subprocess, "run", side_effect=fake_run):
+            staged = _build_mutated_selftest("/* mutated */\n")
+        self.assertEqual(staged.build_rc, 0)
+        self.assertIsNone(staged.run_rc)
+        self.assertEqual(
+            classify_mutant_run(staged, ("FAIL: never printed",)),
+            INVALID_RUN_LAUNCH_FAILED)
+
+    def test_mocked_run_timeout_is_invalid_not_a_kill(self):
+        def fake_run(command, **kwargs):
+            if command and command[0] == CC:
+                return subprocess.CompletedProcess(args=command, returncode=0,
+                                                   stdout="", stderr="")
+            raise subprocess.TimeoutExpired(cmd=command, timeout=RUN_TIMEOUT_S)
+
+        with mock.patch.object(sys.modules[__name__].subprocess, "run", side_effect=fake_run):
+            staged = _build_mutated_selftest("/* mutated */\n")
+        self.assertEqual(staged.build_rc, 0)
+        self.assertTrue(staged.run_timed_out)
+        self.assertEqual(
+            classify_mutant_run(staged, ("FAIL: never printed",)),
+            INVALID_RUN_TIMEOUT)
 
 
 class FpScalarHeaderMutantTests(unittest.TestCase):
     """Each behavioral mutant must be killed by the committed selftest."""
 
-    def assert_killed(self, old: str, new: str) -> None:
+    def assert_killed(self, old: str, new: str, expected_diagnostics: tuple[str, ...]) -> None:
         original = HEADER.read_text(encoding="utf-8")
         self.assertIn(old, original, f"mutation anchor vanished from {HEADER.name}: {old!r}")
-        rc = _build_mutated_selftest(original.replace(old, new))
-        self.assertNotEqual(
-            rc, 0,
-            f"mutation SURVIVED the -O2 selftest (anchor={old!r}): "
-            "the committed semantic regression did not fire")
+        staged = _build_mutated_selftest(original.replace(old, new))
+        verdict = classify_mutant_run(staged, expected_diagnostics)
+        self.assertEqual(
+            verdict, SEMANTIC_KILL,
+            f"{verdict} (anchor={old!r}, expected diagnostics="
+            f"{list(expected_diagnostics)}): a mutant counts as killed only when "
+            "it builds, executes and fails the guest semantic assertion it "
+            "breaks\n" + staged.combined_output[-2000:])
+        print(f"MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED ({verdict}) "
+              f"run_rc={staged.run_rc}")
+
+    @unittest.skipUnless(CC, "gcc required")
+    def test_pristine_header_passes_the_same_harness(self):
+        """Control for the staged kills below: the unmutated header must build,
+        execute and pass, so the mutant diagnostics cannot be vacuous."""
+        staged = _build_mutated_selftest(HEADER.read_text(encoding="utf-8"))
+        self.assertEqual(staged.build_rc, 0,
+                         f"PRISTINE_BUILD_FAILED\n{staged.combined_output}")
+        self.assertEqual(staged.run_rc, 0,
+                         f"PRISTINE_SELFTEST_FAILED: production FP semantics "
+                         f"regressed\n{staged.combined_output}")
+        self.assertIn(SELFTEST_PRISTINE_MARKER, staged.run_output,
+                      "PRISTINE_NO_SELFTEST_ACCOUNTING\n" + staged.run_output)
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M1_ignore_rounding_mode(self):
         self.assert_killed(
             "csr |= rm_to_mxcsr[fcr31 & SR_FCR31_RM_MASK] << 13;",
-            "csr |= 0u << 13;")
+            "csr |= 0u << 13;",
+            ("FAIL: mul RM anchors RZ", "FAIL: div 1/3 RZ"))
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M2_force_RN(self):
-        self.assert_killed("{0u, 3u, 2u, 1u}", "{0u, 0u, 0u, 0u}")
+        self.assert_killed(
+            "{0u, 3u, 2u, 1u}", "{0u, 0u, 0u, 0u}",
+            ("FAIL: mul RM anchors RZ", "FAIL: add tie RP bumps"))
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M3_ignore_FS_flush_gate(self):
-        self.assert_killed("csr |= 1u << 15;", "(void)fcr31;")
+        self.assert_killed(
+            "csr |= 1u << 15;", "(void)fcr31;",
+            ("FAIL: mul FS=1 flush",))
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M4_force_FTZ_regardless_of_guest(self):
-        self.assert_killed("csr &= ~(1u << 15);", "csr |= 1u << 15;")
+        self.assert_killed(
+            "csr &= ~(1u << 15);", "csr |= 1u << 15;",
+            ("FAIL: mul FS=0 gradual", "FAIL: mul subnormal input exact"))
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M9_helper_leaks_modified_mxcsr(self):
@@ -102,19 +360,30 @@ class FpScalarHeaderMutantTests(unittest.TestCase):
             "    sr_fpu_scalar_barrier();\n"
             "    sr_fpu_env_restore(saved);",
             "    volatile float vr = va * vb;\n"
-            "    sr_fpu_scalar_barrier();")
+            "    sr_fpu_scalar_barrier();",
+            ("FAIL: hostile-env restoration inexact",
+             "FAIL: helper left host FP env modified"))
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M11_preserve_ambient_DAZ(self):
         self.assert_killed(
             "csr &= ~(1u << 6);                              /* DAZ off: inputs stay gradual */",
-            "")
+            "",
+            ("FAIL: subnormal input keeps weight under hostile DAZ",))
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M12_drop_volatile_result_window(self):
         # The pre-fix mechanism: barrier-bracketed plain expression. Killed by
         # the folding/reorder guards and the hostile matrix at -O2.
-        self.assert_killed("volatile float vr = va * vb;", "const float vr = va * vb;")
+        #
+        # Known Windows-only detail: once the mutant lets MXCSR exception masks
+        # leak, the unhandled host FP underflow exception (0xC0000093) can end
+        # the process AFTER the wrong-result rows are printed. The expected
+        # diagnostic requirement above is what makes that still a semantic
+        # kill instead of an unexamined crash.
+        self.assert_killed(
+            "volatile float vr = va * vb;", "const float vr = va * vb;",
+            ("FAIL: mul gradual out under FTZ", "FAIL: mul subnormal in under FTZ"))
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M13_partial_restore_preserves_stickies(self):

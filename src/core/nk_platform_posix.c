@@ -320,6 +320,8 @@ bool nk_platform_spawn_process(
                     *eq = '\0';
                     setenv(envp[i], eq + 1, 1);
                     *eq = '=';
+                } else {
+                    unsetenv(envp[i]);
                 }
             }
         }

@@ -81,7 +81,47 @@ def first_syscall_step(oracle, exit_pc):
     return None
 
 
+class CoverageError(ValueError):
+    """The oracle stream does not supply the required pre-exit coverage."""
+
+
+def pre_exit_record_count(oracle, count):
+    """Prove the oracle supplied every record in [0, count).
+
+    Truncation alone cannot prove this: a gapped or short oracle would simply
+    yield a shorter trace that still compares equal. Returns ``count`` on
+    success and raises CoverageError with the observed indices otherwise.
+    """
+
+    indices = []
+    with open(oracle, "r", encoding="utf-8") as handle:
+        for lineno, raw in enumerate(handle, start=1):
+            line = raw.rstrip("\r\n")
+            if not line or line[0] == "#":
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            try:
+                index = int(parts[0], 10)
+            except ValueError as exc:
+                raise CoverageError(
+                    f"{oracle}:{lineno}: step index is not a decimal integer: "
+                    f"{parts[0]!r}") from exc
+            if index >= count:
+                break
+            indices.append(index)
+    expected = list(range(count))
+    if indices != expected:
+        raise CoverageError(
+            f"{oracle}: required pre-exit coverage is {count} records "
+            f"(0..{count - 1}) but the oracle supplied {len(indices)}: {indices}")
+    return count
+
+
 def truncate(oracle, out, count):
+    """Copy the oracle's records below ``count``; returns the records written."""
+    written = 0
     with open(oracle, "r", encoding="utf-8") as src, open(out, "w", encoding="utf-8", newline="\n") as dst:
         for line in src:
             line_stripped = line.rstrip("\r\n")
@@ -94,6 +134,8 @@ def truncate(oracle, out, count):
             if int(p[0]) >= count:
                 break
             dst.write(line_stripped + "\n")
+            written += 1
+    return written
 
 
 def main(argv):
@@ -176,9 +218,25 @@ def main(argv):
     if s is None:
         sys.stderr.write("no syscall in oracle trace\n")
         return 2
-    truncate(oracle, trunc, s)
+    if s == 0:
+        sys.stderr.write(
+            "oracle trace reaches the exit syscall at step 0: zero pre-exit "
+            "instructions is a non-semantic probe, never evidence that CPU "
+            "semantics matched\n")
+        return 2
+    try:
+        pre_exit_record_count(oracle, s)
+    except CoverageError as exc:
+        sys.stderr.write(f"ERROR: oracle pre-exit coverage is incomplete: {exc}\n")
+        return 2
+    written = truncate(oracle, trunc, s)
+    if written != s:
+        sys.stderr.write(
+            f"ERROR: truncated oracle carries {written} records, required {s}\n")
+        return 2
     print(f"comparing the {s} pre-exit instructions")
-    rc = run([sys.executable, os.path.join(ROOT, "tools", "tracediff.py"), trunc, mine])
+    rc = run([sys.executable, os.path.join(ROOT, "tools", "tracediff.py"),
+              "--strict-local", trunc, mine, "--expect-steps", str(s)])
     if rc == 0:
         print("codegen gate OK: generated C matches internal reference-interpreter trace")
     return rc

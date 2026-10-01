@@ -235,9 +235,7 @@ class PublicTitleIsolationTests(unittest.TestCase):
                     "schema_version": 1,
                     "fallback_entry": 142622976,
                     "worker_thread_entry": 142623232,
-                    "launcher_thread_entry": 142623488,
-                    "vblank_frame_counter_addr": 142737408,
-                    "vblank_vsync_counter_addr": 142737412
+                    "launcher_thread_entry": 142623488
                 }
             }
             json.dump(fake_private, f)

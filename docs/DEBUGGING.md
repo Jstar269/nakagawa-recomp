@@ -814,7 +814,7 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
 | `SR_VRAMDUMP_DIR=PATH` | Existing directory for `vram_<vblank>.bin` and `.json` capture files |
-| `SR_NOVBPACE=1` | Disable vblank pacing |
+| `SR_NOVBPACE=0\|1` | Vblank pacing mode: unset, empty, or "0" = paced (default); "1" = turbo. Any other value fails closed at startup |
 
 For a replayable GE fixture, set `SR_GE_CAPTURE_FRAME=<vblank>` or
 `SR_GE_CAPTURE_FRAME=<first>-<last>`. The range form captures the first submitted frame in that
