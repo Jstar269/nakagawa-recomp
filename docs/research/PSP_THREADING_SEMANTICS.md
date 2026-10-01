@@ -10,7 +10,12 @@ oracle work. It is intentionally title-neutral.
 `CT/ST-ORACLE_EXECUTION = HARDWARE_MEASURED` (56 gating records across 10 launches; all 28 core cases observed twice, plus optional CT-C05 and CT-C06 covering all 30 matrix cases).
 Observed on physical PSP hardware under authorized session (branch `oracle/psp-hardware-20260903`, commit `140791823067c65bc231ca5920a5ca567df8cfad`):
 
-- **Model generation:** `kuKernelGetModel = 3` → 04g (PSP-3000 family, matching the [PSP Developer SKU table](https://www.psdevwiki.com/psp/SKU_Models)).
+- **Model generation:** `kuKernelGetModel = 3` → 04g (PSP-3000 family) under
+  the host-side `PSPSDK_PMODEL_ORDINAL_V1` rule in
+  [`tools/psp_oracle/protocol.py`](../../tools/psp_oracle/protocol.py), matching
+  the [PSP Developer SKU table](https://www.psdevwiki.com/psp/SKU_Models). This
+  rule interprets the PSPSDK/kubridge ordinal only; it does not rewrite the
+  captured raw value or apply to the kernel-only `sceKernelGetModel()` convention.
 - **Environment:** Firmware 6.61 (`0x06060110`), ARK-5.1.0, 222/111 MHz.
 - **Threading campaign:** 56 gating records across 10 launches; all 28 cases observed twice. The 13 raw-variable cases differed only in allocator UIDs/addresses; semantics remained stable. Optional CT-C05/CT-C06 completed, covering all 30 matrix cases.
 - **Phase-B campaign:** 42/42 ordered records passed, including 41 semantic cells plus completion sentinel.

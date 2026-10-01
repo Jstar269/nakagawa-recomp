@@ -28,6 +28,16 @@ five documented categories and, for src/rt/hle.c groups, exactly one title-2
 readiness census bucket plus the five review answers for override-classified
 groups.
 
+TEMPORARY-PATCH DEBT GATE (issue #363).  A `temporary_compatibility_patch` is
+by definition a patch over an open bug, so the manifest also has to say who
+owns it, when it is done, and what pins it.  TemporaryCompatibilityDebtGateTests
+fails any such entry whose owner_issue does not lead with a live GitHub issue
+number, whose retirement condition is empty, or whose test is "none"/empty --
+unless the entry is listed in TEMPORARY_PATCH_TEST_WAIVERS below, the single
+reviewed place an untested temporary patch is tolerated.  The census it checks
+comes from compat_overrides.temporary_compatibility_patches(), the same
+function `python tools/compat_overrides.py --debt-census` reports.
+
 SCANNER CONTRACT.  The extractor recognizes two families of shape.
 
 DIRECT shapes: a guest-address literal written inside the call itself --
@@ -782,6 +792,188 @@ class CompatManifestCoverageTests(unittest.TestCase):
         for group in getattr(compat_overrides, "HLE_TITLE_CONFIGURED_COMPAT", []):
             self.assertNotEqual(group.get("test"), "none",
                                 f"migrated HLE group {group['name']} must have a test")
+
+
+#: Reviewed no-test allowlist for temporary compatibility patches (issue #363).
+#:
+#: A `temporary_compatibility_patch` may keep test="none" ONLY when it is
+#: listed here, keyed by its census id from
+#: compat_overrides.temporary_compatibility_patches(), and only with the owner
+#: issue that owns the gap and a one-line reason why no existing test
+#: exercises it.  This dict -- in reviewed test code, not in the manifest --
+#: is the single place the debt gate accepts an untested behavior-changing
+#: patch, so the waiver cannot be added by the entry it waives and the gap
+#: stays visible in review.  A new temporary patch with test="none" and no
+#: entry here fails TemporaryCompatibilityDebtGateTests.
+#:
+#: Empty as of 2026-09-30: every live temporary patch names an executable
+#: regression (see the #363 census), so nothing needs waiving.
+TEMPORARY_PATCH_TEST_WAIVERS: dict[str, dict[str, str]] = {
+}
+
+#: Live manifest collections the debt census must still scan.  Removing a name
+#: here -- or renaming the collection -- would make its temporary patches
+#: invisible to the gate, so it is a reviewed change rather than a silent one.
+CENSUS_LIVE_COLLECTIONS = (
+    "GUEST_PATCHES",
+    "CODEGEN_CUSTOM_STUBS",
+    "HST_SIMPLE_STUBS",
+    "DISPATCH_HOOKS",
+    "DISPATCH_RANGE_HOOKS",
+    "SCHEDULER_HOOKS",
+    "TITLE_CONFIGURED_SCHEDULER_COMPAT",
+    "TITLE_CONFIGURED_DISPATCH",
+    "HLE_GUEST_ADDRESS_GROUPS",
+    "HLE_TITLE_CONFIGURED_COMPAT",
+)
+
+#: A test path named by a manifest entry.  Used to reject an invented
+#: regression: a temporary patch that points at a file that does not exist has
+#: no test at all, whatever the field says.
+MANIFEST_TEST_PATH_RE = re.compile(r"tools/[\w./]+\.py")
+
+
+def temporary_debt_failures() -> list[str]:
+    """Every #363 debt-gate violation, as "census id: problem" strings.
+
+    The gate test asserts this is empty; the mutation test below proves it is
+    not vacuous by injecting an untested temporary patch and watching it fill.
+    """
+    failures: list[str] = []
+    for patch in compat_overrides.temporary_compatibility_patches():
+        problems = compat_overrides.temporary_patch_defects(patch)
+        if patch["id"] in TEMPORARY_PATCH_TEST_WAIVERS:
+            # The waiver covers exactly one defect: no executable test.
+            problems = [p for p in problems if p != "test is none/empty"]
+        failures.extend(f"{patch['id']}: {problem}" for problem in problems)
+    return failures
+
+
+class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
+    """Issue #363: no temporary compatibility patch without an owner, a
+    retirement condition and a real test.
+
+    A temporary patch papers over an open bug, so the three census facts are
+    what make it debt instead of a mystery: an owner issue to retire it
+    against, a condition that says when it is done, and a regression that pins
+    it so removing it later proves something.  Missing any one is reported,
+    never waived here -- the only escape is the reviewed
+    TEMPORARY_PATCH_TEST_WAIVERS table.
+    """
+
+    def test_the_census_scans_every_live_collection(self):
+        scanned = compat_overrides.manifest_collections()
+        for name in CENSUS_LIVE_COLLECTIONS:
+            self.assertIn(
+                name, scanned,
+                f"the debt census no longer scans {name}; every temporary patch in "
+                "that collection would be invisible to this gate",
+            )
+
+    def test_the_census_is_not_vacuous(self):
+        """A census that returns nothing would pass every check below for the
+        wrong reason, so pin that it finds the real entries."""
+        patches = compat_overrides.temporary_compatibility_patches()
+        self.assertTrue(patches, "temporary compatibility debt census is empty")
+        ids = [patch["id"] for patch in patches]
+        self.assertEqual(len(ids), len(set(ids)), "census ids are not unique")
+        # The #363 subject: the forced branches, the walk/backdrop stubs and the
+        # eight static-success HST_SIMPLE_STUBS must all be inventoried.
+        anchors = {patch["id"].split(":")[1] for patch in patches}
+        for address in ("0x00010950", "0x00048320", "0x0001034c", "0x001d9eb0",
+                        "0x00015f98", "0x0001c604"):
+            self.assertIn(address, anchors, f"census lost {address}")
+
+    def test_every_temporary_patch_has_owner_retirement_and_test(self):
+        """The gate itself: unowned, unretractable or untested debt fails."""
+        failures = temporary_debt_failures()
+        self.assertEqual(
+            failures, [],
+            "temporary compatibility patch(es) missing an owner issue, a retirement "
+            "condition or an executable test (fill the field, or review an entry "
+            "into TEMPORARY_PATCH_TEST_WAIVERS):\n  " + "\n  ".join(failures),
+        )
+
+    def test_a_named_regression_test_must_exist(self):
+        """A test path is a claim; a path that resolves to nothing is an
+        invented regression, which is exactly what this gate forbids."""
+        missing: list[str] = []
+        for patch in compat_overrides.temporary_compatibility_patches():
+            test_field = str(patch.get("test") or "")
+            for path in MANIFEST_TEST_PATH_RE.findall(test_field):
+                if not (ROOT / path).is_file():
+                    missing.append(f"{patch['id']}: {path}")
+        self.assertEqual(
+            missing, [],
+            "temporary patch names a regression test file that does not exist: "
+            + "; ".join(missing),
+        )
+
+    def test_the_no_test_allowlist_is_attributed_and_current(self):
+        """A waiver without an owner or a reason is an unexplained hole, and a
+        waiver for an entry that no longer exists is a stale one."""
+        patches = {patch["id"]: patch for patch in
+                   compat_overrides.temporary_compatibility_patches()}
+        for patch_id, waiver in TEMPORARY_PATCH_TEST_WAIVERS.items():
+            with self.subTest(waiver=patch_id):
+                self.assertIn(
+                    patch_id, patches,
+                    f"stale waiver: {patch_id} is not a live temporary patch",
+                )
+                for key in ("owner_issue", "reason"):
+                    self.assertTrue(
+                        str(waiver.get(key, "")).strip(),
+                        f"waiver {patch_id} must record {key}",
+                    )
+                self.assertTrue(
+                    compat_overrides.OWNER_ISSUE_RE.match(
+                        str(waiver["owner_issue"]).strip()),
+                    f"waiver {patch_id} owner must lead with a live issue number",
+                )
+                # The waiver must be doing work: the entry really has no test.
+                self.assertIn(
+                    "test is none/empty",
+                    compat_overrides.temporary_patch_defects(patches[patch_id]),
+                    f"waiver {patch_id} covers an entry that now has a test; "
+                    "delete the waiver instead of carrying a stale one",
+                )
+
+    def test_an_unowned_temporary_patch_is_reported(self):
+        """NEGATIVE: the predicate fires on the shape the gate exists to catch,
+        and stays quiet on a complete entry -- otherwise it is vacuous."""
+        synthetic = dict(address=0x08ff0000, category="temporary_compatibility_patch",
+                         name="synthetic unowned patch", test="none")
+        self.assertEqual(
+            sorted(compat_overrides.temporary_patch_defects(synthetic)),
+            ["no retirement condition",
+             "owner_issue must lead with a live GitHub issue number (e.g. #363)",
+             "test is none/empty"],
+        )
+        complete = dict(synthetic, owner_issue="#363", retirement="remove the patch",
+                        test="tools/test_compat_manifest.py")
+        self.assertEqual(compat_overrides.temporary_patch_defects(complete), [])
+        # An ISSUES.md anchor is a documentation pointer, not a live owner.
+        pointed = dict(complete, owner_issue="ISSUES.md #5.1")
+        self.assertTrue(compat_overrides.temporary_patch_defects(pointed))
+
+    def test_a_new_untested_temporary_patch_fails_the_gate(self):
+        """MUTATION: appending an untested temporary patch to a live collection
+        must make the failure list non-empty -- this is the pre-fix state the
+        #363 census started from."""
+        mutant = dict(address=0x08ff0004, category="temporary_compatibility_patch",
+                      name="synthetic untested patch", test="none")
+        compat_overrides.HST_SIMPLE_STUBS.append(mutant)
+        try:
+            failures = temporary_debt_failures()
+        finally:
+            compat_overrides.HST_SIMPLE_STUBS.pop()
+        matching = [f for f in failures
+                    if f.startswith("HST_SIMPLE_STUBS:0x08ff0004:synthetic untested patch")]
+        self.assertTrue(
+            matching,
+            "an untested temporary patch was added to a live collection and the "
+            f"debt gate did not report it; failures were: {failures}",
+        )
 
 
 #: The eight ensure_runtime_sync_callbacks addresses, re-derived from src/rt/hle.c

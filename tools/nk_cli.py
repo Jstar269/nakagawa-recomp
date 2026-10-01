@@ -1218,8 +1218,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 f"Unqualified revision (SFO DISC_VERSION {metadata.version}): this manifest requires "
                 "an explicit local compatibility record. Rebuild with "
-                "--register-local-compatibility-record after reviewing the selected local inputs; "
-                "revision qualification is in the works (#315)."
+                "--register-local-compatibility-record after reviewing the selected local inputs."
             )
         if (requires_local_identity and recorded_identity is not None and
             recorded_identity["disc"]["disc_version"] != metadata.version and
@@ -1227,7 +1226,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 f"Unqualified revision (SFO DISC_VERSION {metadata.version}): the local compatibility "
                 "record names a different SFO revision. Review and register this revision explicitly "
-                "with --register-local-compatibility-record; revision qualification is in the works (#315)."
+                "with --register-local-compatibility-record."
             )
         reporter.report("preflight", "PASS", "Library entry and manifest validated")
         reporter.report("extract", "START", "Extracting executable and guest modules...")
@@ -1294,7 +1293,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         ):
             if module_dir is None or not (module_dir / module["name"]).is_file():
                 raise PackageBuildError(
-                    f"Required guest PRX {module['name']} is unavailable for title identity (#315)."
+                    f"Required guest PRX {module['name']} is unavailable for title identity."
                 )
             identity_modules.append({
                 "name": module["name"],
@@ -1328,7 +1327,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 raise PackageBuildError(
                     "Local compatibility record mismatch: " + ", ".join(identity_changes) +
                     ". Review and register the changed inputs with "
-                    "--register-local-compatibility-record; revision qualification is in the works (#315)."
+                    "--register-local-compatibility-record."
                 )
         identity_path = cache_dir / "title-input-identity.json"
         _write_private_file(
