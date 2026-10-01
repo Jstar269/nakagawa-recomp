@@ -5501,7 +5501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf4fb660ba277571f6a8f84a6c4752e4790d5b590f38fd8c2f50544a589c3d7f"
+      "sha256": "62e701b67b205db3d7f7ab7a34115cfffe31de62df70a5516162a173f3b1dedf"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -9032,7 +9032,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb98a1a8d7759d29a5b1e69ba01d969b899e29646588f8c7d7e8fa5fb4741797"
+      "sha256": "a95693f04edafbea768ff199becb5d877bb013f4c5ce1c95b4a88a8f87c06596"
     },
     {
       "path": "tools/test_vfpu_domain_boundary.py",
@@ -9381,7 +9381,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "803a7a594b128fd7f5371d10e1bf0499d1877086e01d9d269ee7a233818ac1c4"
+      "sha256": "94df80da1b87906ed4079bc165f4e78e816c2fe16380d9f6e19279c66cacbfae"
     },
     {
       "path": "tools/vfpu_fuzz_gen.py",
