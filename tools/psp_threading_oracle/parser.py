@@ -47,7 +47,12 @@ from typing import Any
 
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from psp_oracle.protocol import parse_output, ProtocolError, _HEX_RE  # noqa: E402
+from psp_oracle.protocol import (
+    ProtocolError,
+    _HEX_RE,
+    is_unmeasured,
+    parse_output,
+)  # noqa: E402
 
 CAMPAIGN_VERSION = "psp-threading-v1"
 EXPECTED_TEST_ID = "PSP-THREAD-001"
@@ -103,11 +108,11 @@ class HardwareCaptureContext:
             return False
         if not re.fullmatch(r"[0-9a-f]{64}", self.binary_sha256):
             return False
-        if not re.fullmatch(r"[0-9a-f]{40,64}", self.source_commit):
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", self.source_commit):
             return False
-        if not self.model or self.model.strip().lower() in {"unknown","placeholder","none","unset","n/a","na","tbd"}:
+        if not self.model or is_unmeasured(self.model):
             return False
-        if not self.firmware or self.firmware.strip().lower() in {"unknown","placeholder","none","unset","n/a","na","tbd"}:
+        if not self.firmware or is_unmeasured(self.firmware):
             return False
         if not self.capture_timestamp:
             return False
