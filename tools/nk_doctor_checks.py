@@ -1801,7 +1801,7 @@ def check_runtime_package_cache(
             "RUNTIME_PACKAGE_CACHE",
             "Runtime package has no current local title input identity",
             path=package_dir,
-            detail="The exact revision binding is in the works (#315).",
+            detail="No local compatibility record exists for this disc's current inputs.",
             remediation=remediation,
         )
         return
@@ -1814,7 +1814,7 @@ def check_runtime_package_cache(
             "Runtime package identity does not match the current local inputs",
             path=package_dir,
             detail=(", ".join(identity_changes) +
-                    "; exact revision binding is in the works (#315)."),
+                    "; the package was built from different local inputs."),
             remediation=remediation,
         )
         return
