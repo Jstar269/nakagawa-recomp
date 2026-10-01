@@ -878,7 +878,7 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic
+INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1049,6 +1049,7 @@ endif
 	@test -n "$(NK_GIT_REV_HEAD)" || { echo "readiness: FAIL -- no source revision: $(GIT) is unavailable or this is not a git checkout, and the provenance attestation compares a candidate revision. Readiness needs a git checkout; set GIT to a git executable if it is not on PATH."; exit 1; }
 	$(PYTHON) tools/policy_sync.py
 	$(PYTHON) tools/lint_docs.py
+	$(PYTHON) tools/provenance_record_gap.py --check
 	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate "$(NK_GIT_REV_HEAD)" --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
@@ -1076,6 +1077,9 @@ ifndef NK_TRUSTED_LEDGER
 else
 	$(PYTHON) tools/provenance_refresh.py --trusted-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
 endif
+
+provenance-record-gap-check:
+	$(PYTHON) tools/provenance_record_gap.py --check
 
 # The contributor fast path: one command, only the gates that apply to the
 # files this branch changed against origin/main, finished in minutes.
@@ -1126,23 +1130,26 @@ test:
 	$(PYTHON) -m unittest discover -s tools -p "test_*.py" -v
 
 check:
-	@echo "== [1/5] Documentation freshness lint =="
+	@echo "== [1/6] Documentation freshness lint =="
 	$(PYTHON) tools/lint_docs.py
-	@echo "== [2/5] Canonical publication policy coverage =="
+	@echo "== [2/6] Canonical publication policy coverage =="
 	$(PYTHON) -m unittest tools/test_publication_policy_gate.py
-	@echo "== [3/5] Publication safety audits (index & worktree) =="
+	@echo "== [3/6] Provenance record and disposition gap check =="
+	$(PYTHON) tools/provenance_record_gap.py --check
+	@echo "== [4/6] Publication safety audits (index & worktree) =="
 	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-	@echo "== [4/5] Native host core tests =="
+	@echo "== [5/6] Native host core tests =="
 	$(MAKE) native-core-tests
-	@echo "== [5/5] Fast critical test subset =="
+	@echo "== [6/6] Fast critical test subset =="
 	$(PYTHON) -m unittest \
 		tools/test_title_manifest.py \
 		tools/test_title_catalog.py \
 		tools/test_build_system_parity.py \
 		tools/test_sync_drift_check.py \
 		tools/test_ci_paths.py \
-		tools/test_ci_required.py
+		tools/test_ci_required.py \
+		tools/test_provenance_record_gap.py
 	@echo "== All public verification checks PASSED =="
 
 # Two-phase build: `pipeline` (codegen) must finish and write the chunk .c files
@@ -1222,6 +1229,7 @@ display-smoke:
 display-smoke-run: display-smoke
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) vramdump --build-dir $(DISPLAY_SMOKE_DIR)
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) flight --build-dir $(DISPLAY_SMOKE_DIR)
 
 display-smoke-gui:

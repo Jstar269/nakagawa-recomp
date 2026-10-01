@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 
 def _ensure_cli_module_path() -> None:
@@ -74,6 +75,225 @@ PACKAGE_CACHE_MARKER = ".nk-aot-package-cache-v1"
 MAX_GUEST_MODULES = 32
 MAX_GUEST_MODULE_BYTES = 256 * 1024 * 1024
 MAX_GUEST_MODULE_SET_BYTES = 512 * 1024 * 1024
+_VRAM_BASE = 0x04000000
+_VRAM_SIZE = 2 * 1024 * 1024
+_VRAM_FORMATS = {
+    "5650": 0, "5551": 1, "4444": 2, "8888": 3,
+    "CLUT4": 4, "CLUT8": 5, "CLUT16": 6, "CLUT32": 7,
+    "DXT1": 8, "DXT3": 9, "DXT5": 10, "DEPTH16": 11,
+}
+
+
+def _vram_address(value: str) -> int:
+    try:
+        address = int(value, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("address must be a decimal or 0x-prefixed integer") from exc
+    if not 0 <= address <= 0xFFFFFFFF:
+        raise argparse.ArgumentTypeError("address must fit in 32 bits")
+    return address
+
+
+def _clut_format(value: str) -> int:
+    named = {"5650": 0, "5551": 1, "4444": 2, "8888": 3}
+    if value.upper() in named:
+        return named[value.upper()]
+    try:
+        result = int(value, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("CLUT format must be 5650, 5551, 4444, 8888, or a format word") from exc
+    if not 0 <= result <= 0xFFFFFF:
+        raise argparse.ArgumentTypeError("CLUT format word must fit in 24 bits")
+    return result
+
+
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    return (struct.pack(">I", len(payload)) + kind + payload +
+            struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
+
+
+def _write_rgba_png(path: Path, width: int, height: int, rgba: bytes) -> None:
+    if width <= 0 or height <= 0 or len(rgba) != width * height * 4:
+        raise ValueError("decoded RGBA dimensions do not match the pixel buffer")
+    row_bytes = width * 4
+    scanlines = b"".join(b"\0" + rgba[y * row_bytes:(y + 1) * row_bytes]
+                         for y in range(height))
+    payload = (b"\x89PNG\r\n\x1a\n" +
+               _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) +
+               _png_chunk(b"IDAT", zlib.compress(scanlines)) +
+               _png_chunk(b"IEND", b""))
+    path.write_bytes(payload)
+
+
+def _build_vram_decoder(temp_dir: Path) -> Path:
+    compiler = shutil.which("gcc")
+    if compiler is None:
+        raise ValueError("vram decoder requires GCC on PATH (UCRT64 GCC on Windows)")
+    source = ROOT / "src" / "rt" / "ge.c"
+    executable = temp_dir / ("ge-vram-decoder.exe" if os.name == "nt" else "ge-vram-decoder")
+    command = [
+        compiler, "-std=c99", "-O2", "-flto", "-ffunction-sections", "-fdata-sections",
+        "-DSR_GE_VRAM_DECODER_CLI", "-Isrc/rt", "-Isrc/core", "-Isrc/core/generated",
+        "-Isrc/player", str(source), "-Wl,--gc-sections", "-lm", "-o", str(executable),
+    ]
+    built = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    if built.returncode:
+        detail = (built.stderr or built.stdout).strip()
+        raise ValueError(f"could not build the existing GE texture decoder: {detail}")
+    return executable
+
+
+def _decode_vram_surface(
+    decoder: Path, image: Path, output: Path, *, addr: int, width: int,
+    height: int, stride: int, format_code: int, swizzled: bool,
+    clut_addr: int = 0, clut_format: int = 0, clut_file: Path | None = None,
+) -> None:
+    raw_output = output.with_suffix(".rgba")
+    command = [
+        str(decoder), str(image), hex(addr), str(width), str(height), str(stride),
+        str(format_code), "1" if swizzled else "0", hex(clut_addr), str(clut_format),
+        str(clut_file) if clut_file else "-", str(raw_output),
+    ]
+    decoded = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    if decoded.returncode:
+        raw_output.unlink(missing_ok=True)
+        raise ValueError((decoded.stderr or decoded.stdout).strip() or
+                         f"GE texture decoder exited {decoded.returncode}")
+    try:
+        rgba = raw_output.read_bytes()
+        _write_rgba_png(output, width, height, rgba)
+    finally:
+        raw_output.unlink(missing_ok=True)
+
+
+def cmd_vram(args: argparse.Namespace) -> int:
+    try:
+        if args.from_sidecar:
+            if args.out_dir is None:
+                raise ValueError("--from-sidecar requires --out-dir")
+            _cmd_vram_sidecar(args.from_sidecar, args.out_dir)
+        else:
+            if not args.image or args.addr is None or not args.width or not args.height:
+                raise ValueError("direct vram export requires IMAGE, --addr, --width, --height, and --output")
+            if args.output is None:
+                raise ValueError("direct vram export requires --output")
+            if not args.stride:
+                args.stride = args.width
+            if args.format in ("CLUT4", "CLUT8", "CLUT16", "CLUT32") and args.clut_addr is None:
+                raise ValueError("CLUT formats require --clut-addr")
+            image = args.image.resolve(strict=True)
+            if image.stat().st_size != _VRAM_SIZE:
+                raise ValueError("input VRAM image must be exactly 2 MiB")
+            if args.clut_addr is not None and args.clut_addr < _VRAM_BASE:
+                raise ValueError("--clut-addr must be in the captured 2 MiB VRAM address range")
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="nk-vram-decoder-") as temporary:
+                decoder = _build_vram_decoder(Path(temporary))
+                _decode_vram_surface(
+                    decoder, image, args.output, addr=args.addr, width=args.width,
+                    height=args.height, stride=args.stride,
+                    format_code=_VRAM_FORMATS[args.format], swizzled=args.swizzled,
+                    clut_addr=args.clut_addr or 0, clut_format=args.clut_format,
+                )
+            print(f"VRAM_PNG status=PASS output={args.output}")
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"VRAM_PNG status=FAIL reason={exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_vram_sidecar(sidecar_path: Path, output_dir: Path) -> None:
+    sidecar_path = sidecar_path.resolve(strict=True)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    if sidecar.get("schema") != "nakagawa-vram-dump-v1":
+        raise ValueError("unsupported VRAM sidecar schema")
+    vram_info = sidecar.get("vram", {})
+    if vram_info.get("size_bytes") != _VRAM_SIZE:
+        raise ValueError("sidecar does not describe an exact 2 MiB VRAM image")
+    image_name = vram_info.get("image_file")
+    if not isinstance(image_name, str) or Path(image_name).name != image_name:
+        raise ValueError("sidecar image_file must be a basename next to the JSON file")
+    image = (sidecar_path.parent / image_name).resolve(strict=True)
+    if image.stat().st_size != _VRAM_SIZE:
+        raise ValueError("sidecar VRAM image must be exactly 2 MiB")
+    surfaces = sidecar.get("surfaces")
+    if not isinstance(surfaces, list):
+        raise ValueError("sidecar surfaces must be an array")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    unavailable = [
+        item for item in sidecar.get("texture_levels", [])
+        if isinstance(item, dict) and item.get("in_vram") is False
+    ]
+    for item in unavailable:
+        print(f"VRAM_SURFACE_UNAVAILABLE name=texture_level_{item.get('level')} "
+              "reason=outside_snapshot issue=#314", file=sys.stderr)
+    clut = sidecar.get("clut", {})
+    clut_data = clut.get("loaded_data_hex", "")
+    clut_path = None
+    with tempfile.TemporaryDirectory(prefix="nk-vram-decoder-") as temporary:
+        temporary_path = Path(temporary)
+        decoder = _build_vram_decoder(temporary_path)
+        if clut_data:
+            if len(clut_data) % 2 or len(clut_data) > 4096:
+                raise ValueError("sidecar CLUT byte data is malformed or exceeds 2048 bytes")
+            clut_path = temporary_path / "clut.bin"
+            clut_path.write_bytes(bytes.fromhex(clut_data))
+        exported = 0
+        failed: list[str] = []
+        for surface in surfaces:
+            if not isinstance(surface, dict):
+                raise ValueError("sidecar surface entry must be an object")
+            name = surface.get("name")
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
+                raise ValueError("sidecar surface name is not a safe output basename")
+            try:
+                width = int(surface["width"])
+                height = int(surface["height"])
+                stride = int(surface["stride"])
+                addr = int(surface["addr"], 0)
+                format_code = int(surface["format_code"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"sidecar surface {name!r} has invalid dimensions or format") from exc
+            if format_code not in range(12) or not width or not height or width > 4096 or height > 4096:
+                raise ValueError(f"sidecar surface {name!r} has unsupported dimensions or format")
+            output = output_dir / f"{name}.png"
+            if surface.get("kind") == "palette" and surface.get("data_hex"):
+                palette_bytes = bytes.fromhex(surface["data_hex"])
+                if len(palette_bytes) > _VRAM_SIZE:
+                    raise ValueError("sidecar palette exceeds the captured VRAM size")
+                palette_image = temporary_path / f"{name}-palette.bin"
+                palette_image.write_bytes(palette_bytes + bytes(_VRAM_SIZE - len(palette_bytes)))
+                image_for_surface = palette_image
+                addr = _VRAM_BASE
+            else:
+                image_for_surface = image
+            try:
+                _decode_vram_surface(
+                    decoder, image_for_surface, output, addr=addr, width=width,
+                    height=height, stride=stride, format_code=format_code,
+                    swizzled=bool(surface.get("swizzled", False)),
+                    clut_addr=int(clut.get("addr", "0"), 0) if clut_path is None else 0,
+                    clut_format=int(clut.get("format_word", clut.get("format_code", 0)), 0)
+                    if isinstance(clut.get("format_word", clut.get("format_code", 0)), str)
+                    else int(clut.get("format_word", clut.get("format_code", 0))),
+                    clut_file=clut_path if format_code in (4, 5, 6, 7) else None,
+                )
+            except ValueError as exc:
+                # One surface the decoder rejects (an extent that leaves the captured
+                # span, say) must not abandon the surfaces after it -- the display
+                # framebuffer is the one these diagnostics exist for.
+                detail = " ".join(str(exc).split())[:160]
+                print(f"VRAM_SURFACE_UNAVAILABLE name={name} reason=decoder_rejected "
+                      f"detail={detail!r} issue=#314", file=sys.stderr)
+                failed.append(name)
+                continue
+            exported += 1
+            print(f"VRAM_PNG status=PASS surface={name} output={output}")
+        if failed:
+            print(f"VRAM_EXPORT_PARTIAL exported={exported} unavailable={len(failed)}",
+                  file=sys.stderr)
+        if surfaces and not exported:
+            raise ValueError("no sidecar surface could be decoded")
 
 
 class PackageBuildError(ValueError):
@@ -2696,6 +2916,27 @@ def main() -> int:
     p_bringup.add_argument("--private-sweep-import-report", type=Path, default=None,
                            help=argparse.SUPPRESS)
     p_bringup.set_defaults(func=cmd_bringup)
+
+    p_vram = subparsers.add_parser("vram", help="Decode a captured PSP VRAM image to PNG")
+    p_vram.add_argument("image", nargs="?", type=Path,
+                        help="exact 2 MiB raw VRAM image (omit with --from-sidecar)")
+    p_vram.add_argument("--from-sidecar", type=Path,
+                        help="export every surface described by a runtime capture sidecar")
+    p_vram.add_argument("--out-dir", type=Path,
+                        help="destination directory for sidecar exports")
+    p_vram.add_argument("--addr", type=_vram_address, help="surface guest address (decimal or 0x hex)")
+    p_vram.add_argument("--width", type=int, help="surface width in pixels")
+    p_vram.add_argument("--height", type=int, help="surface height in pixels")
+    p_vram.add_argument("--stride", type=int, help="row stride in pixels; defaults to width")
+    p_vram.add_argument("--format", choices=tuple(_VRAM_FORMATS),
+                        help="5650, 5551, 4444, 8888, CLUT4/8/16/32, DXT1/3/5, or DEPTH16")
+    p_vram.add_argument("--clut-addr", type=_vram_address,
+                        help="CLUT guest address for indexed texture formats")
+    p_vram.add_argument("--clut-format", type=_clut_format, default=0,
+                        help="palette format (5650/5551/4444/8888 or a GE format word)")
+    p_vram.add_argument("--swizzled", action="store_true", help="decode PSP swizzled texture storage")
+    p_vram.add_argument("--output", type=Path, help="destination PNG for a direct surface export")
+    p_vram.set_defaults(func=cmd_vram)
 
     args = parser.parse_args()
     return args.func(args)

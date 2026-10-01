@@ -2,10 +2,13 @@
 // Copyright (C) 2026 the psp-recomp authors
 
 #include "recomp.h"
+#include "perf.h"
 
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static int s_checks;
 static int s_failures;
@@ -20,7 +23,57 @@ static int s_failures;
     }                                                                           \
 } while (0)
 
+/* Telemetry emission unit.  A PERF line is written from the guest thread, and guest time is
+ * host time, so how many stdio calls a line costs is guest-visible latency: on the MinGW C
+ * runtime a formatted fprintf() to the unbuffered stderr stopped the flagship for ~25-30 ms
+ * per line (~55 ms every second under SR_PERF), which made a two-VBLANK-gated title run at 2.26
+ * VBLANKs per frame instead of 2.02.  The contract pinned here is that each telemetry line
+ * reaches the emitter as one finished, newline-terminated string, so the stream sees one write
+ * per line.  The production report path is driven through the test sink; with the old direct
+ * fprintf(stderr, ...) the sink is never reached and the line count below is 0. */
+static char s_report_lines[4][2048];
+static size_t s_report_lens[4];
+static int s_report_count;
+
+static void capture_report_line(const char *line, size_t len) {
+    if (s_report_count < 4 && len < sizeof s_report_lines[0]) {
+        memcpy(s_report_lines[s_report_count], line, len);
+        s_report_lines[s_report_count][len] = '\0';
+        s_report_lens[s_report_count] = len;
+    }
+    s_report_count++;
+}
+
+static int whole_line(int i, const char *prefix) {
+    if (i >= s_report_count || i >= 4) return 0;
+    const char *l = s_report_lines[i];
+    size_t n = s_report_lens[i];
+    return n > strlen(prefix) && strncmp(l, prefix, strlen(prefix)) == 0 &&
+           n == strlen(l) && l[n - 1u] == '\n' && strchr(l, '\n') == l + n - 1u;
+}
+
+static void test_telemetry_lines_are_emitted_whole(void) {
+    putenv("SR_PERF=1");
+    sr_perf_init();
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
+    sr_perf_test_force_report();
+    sr_perf_test_set_report_sink(NULL);
+    CHECK(s_report_count == 2,
+          "one telemetry interval emitted %d line units (expected 2: PERF and PERF_ATTRIB)",
+          s_report_count);
+    CHECK(whole_line(0, "PERF vblank_total="),
+          "the PERF line was not delivered as one whole newline-terminated string");
+    CHECK(whole_line(0, "PERF vblank_total=") && strstr(s_report_lines[0], " target30=") != NULL,
+          "the PERF line lost its final field");
+    CHECK(whole_line(1, "PERF_ATTRIB aot_ms="),
+          "the PERF_ATTRIB line was not delivered as one whole newline-terminated string");
+    CHECK(whole_line(1, "PERF_ATTRIB aot_ms=") && strstr(s_report_lines[1], " output_ms=") != NULL,
+          "the PERF_ATTRIB line lost its final field");
+}
+
 int main(void) {
+    test_telemetry_lines_are_emitted_whole();
     sr_profile_test_reset();
 
     /* HST and other zero-based PSP images can legitimately execute PC zero. It must be a

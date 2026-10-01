@@ -26,8 +26,23 @@ The default source of truth is the committed *public* ledger, which discloses a
 the same answer the gate derives, read from a file that is in the repository, so
 the inventory can be produced by anyone -- including the maintainer -- without
 the private input ever entering a contributor's hands.  Pass
-``--trusted-ledger`` to ask the private authority directly instead; the two
-must agree, and ``--check`` fails closed when they do not.
+``--trusted-ledger`` to ask the private authority directly instead: the
+record-coverage answer and the path classifications then come from the
+authority, not from the candidate-editable public projection.
+
+Three modes, with different exit behaviour:
+
+* default: print the inventory and exit 0;
+* ``--check-records``: print the inventory and exit non-zero while any tracked
+  public path has no exact trusted record (the admission inventory, not a merge
+  gate);
+* ``--check``: the disposition ratchet.  It does not compare record coverage at
+  all; it fails closed when an upstream-derived production path has no
+  independence-campaign owner and disposition and is not in the reviewed
+  baseline (or the baseline holds a stale entry).
+
+``--check`` and ``--check-records`` are mutually exclusive: passing both exits 2
+without running either gate, so run them as two invocations.
 
 This tool never edits a ledger, a policy, or any other control.  It prints an
 inventory; a human decides what to admit.  For an upstream-derived production
@@ -66,6 +81,15 @@ _CAMPAIGN_INVENTORY_ROW = re.compile(r"^\|\s*(G\d+)\s*\|\s*(.*?)\s*\|")
 _CAMPAIGN_TARGET = re.compile(r"^\s*-\s+\*\*(G\d+)\b")
 _CODE_SPAN = re.compile(r"`([^`]+)`")
 _PRODUCTION_PREFIXES = ("src/", "tools/")
+#: Third-party notices and format documents under the production prefixes are not
+#: code an independence campaign would rewrite, so the disposition ratchet and the
+#: independence annotation skip them; a vendored dependency's licence or notice
+#: file must never have to be pruned from the baseline when it is relocated.
+_NON_CODE_SUFFIXES = (".md", ".txt")
+
+
+def _is_production_code(path: str) -> bool:
+    return path.startswith(_PRODUCTION_PREFIXES) and not path.endswith(_NON_CODE_SUFFIXES)
 
 
 def _campaign_groups(plan_text: str) -> dict[str, tuple[str, ...]]:
@@ -192,6 +216,15 @@ def public_classifications(ledger_path: Path) -> dict[str, str]:
     }
 
 
+def classifications_from_trusted_ledger(trusted_ledger: Path) -> dict[str, str]:
+    """Path classifications the private authority assigns through exact records."""
+    exact, _patterns, _ids = verifier.load_trusted_records(trusted_ledger.read_bytes())
+    return {
+        path: provenance_ledger.class_for(path, record)[0]
+        for path, record in exact.items()
+    }
+
+
 def exact_paths_from_trusted_ledger(trusted_ledger: Path) -> set[str]:
     """Ask the private authority directly (maintainer-side, optional)."""
     exact, _patterns, _ids = verifier.load_trusted_records(trusted_ledger.read_bytes())
@@ -232,7 +265,7 @@ def record_gaps(
             "reason": "no exact trusted record",
             "deterministic_class": classification,
         }
-        if path.startswith(_PRODUCTION_PREFIXES) and classification in {
+        if _is_production_code(path) and classification in {
             "upstream_derived",
             "unresolved",
         }:
@@ -246,26 +279,260 @@ def record_gaps(
     return gaps
 
 
+#: Known upstream-derived production paths with no explicit roadmap disposition
+#: in docs/INDEPENDENCE_CAMPAIGN.md, grouped by owner issue.  This baseline is a
+#: strict ratchet: a listed gap is permitted only while it remains unresolved and
+#: must be removed once the campaign gives it a disposition.  Any unlisted gap
+#: fails closed, and so does any stale entry.
+_KNOWN_DISPOSITION_GAP_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "#355",
+        "decryption primitives (AES, Kirk, KLE, PRX, SHA-1) have no independence campaign group yet",
+        (
+            "src/core/nk_psp_aes.c",
+            "src/core/nk_psp_aes.h",
+            "src/core/nk_psp_kirk.c",
+            "src/core/nk_psp_kirk.h",
+            "src/core/nk_psp_kle.c",
+            "src/core/nk_psp_kle.h",
+            "src/core/nk_psp_prx.c",
+            "src/core/nk_psp_prx.h",
+            "src/core/nk_psp_sha1.c",
+            "src/core/nk_psp_sha1.h",
+        ),
+    ),
+    (
+        "#355",
+        "vendored LGPL ATRAC3+ decoder and its selftest have no independence campaign group yet",
+        (
+            "src/rt/atrac3p/atrac3p_api.c",
+            "src/rt/atrac3p/atrac3p_api.h",
+            "src/rt/atrac3p/libavcodec/atrac.c",
+            "src/rt/atrac3p/libavcodec/atrac.h",
+            "src/rt/atrac3p/libavcodec/atrac3plus.c",
+            "src/rt/atrac3p/libavcodec/atrac3plus.h",
+            "src/rt/atrac3p/libavcodec/atrac3plus_data.h",
+            "src/rt/atrac3p/libavcodec/atrac3plusdec.c",
+            "src/rt/atrac3p/libavcodec/atrac3plusdsp.c",
+            "src/rt/atrac3p/libavcodec/avcodec.h",
+            "src/rt/atrac3p/libavcodec/avfft.h",
+            "src/rt/atrac3p/libavcodec/bitstream.c",
+            "src/rt/atrac3p/libavcodec/config.h",
+            "src/rt/atrac3p/libavcodec/fft-internal.h",
+            "src/rt/atrac3p/libavcodec/fft.h",
+            "src/rt/atrac3p/libavcodec/fft_float.c",
+            "src/rt/atrac3p/libavcodec/fft_init_table.c",
+            "src/rt/atrac3p/libavcodec/fft_table.h",
+            "src/rt/atrac3p/libavcodec/fft_template.c",
+            "src/rt/atrac3p/libavcodec/get_bits.h",
+            "src/rt/atrac3p/libavcodec/internal.h",
+            "src/rt/atrac3p/libavcodec/mathops.h",
+            "src/rt/atrac3p/libavcodec/mdct_float.c",
+            "src/rt/atrac3p/libavcodec/mdct_template.c",
+            "src/rt/atrac3p/libavcodec/put_bits.h",
+            "src/rt/atrac3p/libavcodec/sinewin.c",
+            "src/rt/atrac3p/libavcodec/sinewin.h",
+            "src/rt/atrac3p/libavcodec/sinewin_tablegen.h",
+            "src/rt/atrac3p/libavcodec/version.h",
+            "src/rt/atrac3p/libavcodec/vlc.h",
+            "src/rt/atrac3p/libavutil/attributes.h",
+            "src/rt/atrac3p/libavutil/avassert.h",
+            "src/rt/atrac3p/libavutil/avconfig.h",
+            "src/rt/atrac3p/libavutil/avutil.h",
+            "src/rt/atrac3p/libavutil/bswap.h",
+            "src/rt/atrac3p/libavutil/channel_layout.h",
+            "src/rt/atrac3p/libavutil/common.h",
+            "src/rt/atrac3p/libavutil/config.h",
+            "src/rt/atrac3p/libavutil/dynarray.h",
+            "src/rt/atrac3p/libavutil/error.h",
+            "src/rt/atrac3p/libavutil/float_dsp.c",
+            "src/rt/atrac3p/libavutil/float_dsp.h",
+            "src/rt/atrac3p/libavutil/intmath.c",
+            "src/rt/atrac3p/libavutil/intmath.h",
+            "src/rt/atrac3p/libavutil/intreadwrite.h",
+            "src/rt/atrac3p/libavutil/libm.h",
+            "src/rt/atrac3p/libavutil/log.h",
+            "src/rt/atrac3p/libavutil/log2_tab.c",
+            "src/rt/atrac3p/libavutil/macros.h",
+            "src/rt/atrac3p/libavutil/mathematics.h",
+            "src/rt/atrac3p/libavutil/mem.c",
+            "src/rt/atrac3p/libavutil/mem.h",
+            "src/rt/atrac3p/libavutil/mem_internal.h",
+            "src/rt/atrac3p/libavutil/qsort.h",
+            "src/rt/atrac3p/libavutil/reverse.c",
+            "src/rt/atrac3p/libavutil/reverse.h",
+            "src/rt/atrac3p/libavutil/thread.h",
+            "src/rt/atrac3p/libavutil/version.h",
+            "src/rt/atrac3p_selftest.c",
+        ),
+    ),
+    (
+        "#354",
+        "host shell glue awaiting the host-shell independence lane",
+        (
+            "src/rt/funcdiff.c",
+            "src/rt/gui.c",
+            "src/rt/osk_win.c",
+        ),
+    ),
+    (
+        "#359",
+        "extracted HLE power handlers awaiting the HLE independence lane",
+        (
+            "src/rt/hle_power.c",
+            "src/rt/hle_power.h",
+        ),
+    ),
+    (
+        "#355",
+        "trace, microtest and codegen-gate tooling has no independence campaign group yet",
+        (
+            "tools/codegen_gate.py",
+            "tools/funcdiff_cmp.py",
+            "tools/gen_microtest.py",
+            "tools/microtest_gate.py",
+            "tools/nidseq.py",
+            "tools/ppm2png.py",
+            "tools/ppmdiff.py",
+            "tools/test_codegen_gate_b_encoding.py",
+            "tools/test_hle_manifest.py",
+            "tools/test_savedata_spans.py",
+            "tools/tracediff.py",
+            "tools/vfpu_fuzz_gen.py",
+        ),
+    ),
+)
+
+KNOWN_DISPOSITION_GAPS: dict[str, dict[str, str]] = {
+    path: {"issue": issue, "reason": reason}
+    for issue, reason, paths in _KNOWN_DISPOSITION_GAP_GROUPS
+    for path in paths
+}
+
+
+def disposition_gaps(
+    *,
+    repo: Path = ROOT,
+    trusted_classifications: dict[str, str] | None = None,
+) -> list[dict[str, object]]:
+    """Return every upstream-derived production path with no campaign disposition.
+
+    Unlike :func:`record_gaps` this does not depend on record coverage: an
+    upstream-derived path needs a roadmap disposition whether or not a trusted
+    record already covers it, so admitting a record never hides the gap.
+
+    ``trusted_classifications`` (from ``--trusted-ledger``) takes precedence over
+    the committed public projection, so a contributor cannot silence the ratchet
+    by reclassifying a path in the tracked public ledger when the authority is
+    consulted.
+    """
+    classifications = public_classifications(repo / LEDGER_PATH)
+    campaign_path = repo / INDEPENDENCE_PLAN_PATH
+    policy = load_policy(repo / POLICY_PATH)
+    gaps: list[dict[str, object]] = []
+    for path in tracked_paths(repo):
+        if not _is_production_code(path):
+            continue
+        if policy.resolve(path).disposition != "included":
+            continue
+        classification = (trusted_classifications or {}).get(path)
+        if classification is None:
+            classification = classifications.get(path)
+        if classification is None:
+            classification, _evidence = provenance_ledger.class_for(path, None)
+        if classification not in {"upstream_derived", "unresolved"}:
+            continue
+        if independence_metadata(path, campaign_path=campaign_path) is not None:
+            continue
+        gaps.append({
+            "path": path,
+            "deterministic_class": classification,
+            "independence": {
+                "status": "missing",
+                "reason": "no explicit campaign owner or disposition",
+                "source": INDEPENDENCE_PLAN_PATH,
+            },
+        })
+    return gaps
+
+
+def validate_baseline(baseline: dict[str, dict[str, str]]) -> None:
+    """Validate that every baseline entry carries an owner issue and reason."""
+    for path, entry in baseline.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"baseline entry for {path!r} must be a dictionary")
+        owner = entry.get("issue")
+        reason = entry.get("reason")
+        if not isinstance(owner, str) or not re.fullmatch(r"#[1-9][0-9]*", owner):
+            raise ValueError(f"baseline entry for {path!r} missing owner issue (#N)")
+        if not reason or not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"baseline entry for {path!r} missing reason")
+
+
+def check_disposition_gaps(
+    gaps: list[dict[str, object]],
+    *,
+    baseline: dict[str, dict[str, str]] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Check gaps against the disposition ratchet baseline.
+
+    Returns (unlisted_gaps, stale_baseline_entries).
+    - unlisted_gaps: upstream-derived production paths with status=missing that
+      are not recorded in the baseline.
+    - stale_baseline_entries: baseline paths that are no longer missing gaps.
+    """
+    if baseline is None:
+        baseline = KNOWN_DISPOSITION_GAPS
+
+    missing_gaps = {
+        str(gap["path"])
+        for gap in gaps
+        if isinstance(gap.get("independence"), dict)
+        and gap["independence"].get("status") == "missing"
+    }
+
+    baseline_paths = set(baseline.keys())
+    unlisted = sorted(missing_gaps - baseline_paths)
+    stale = sorted(baseline_paths - missing_gaps)
+    return unlisted, stale
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=ROOT)
     parser.add_argument(
         "--trusted-ledger", type=Path, default=None,
         help="external detailed implementation ledger; when supplied, the exact-record answer "
-             "comes from the authority instead of the committed public projection",
+             "and (for --check) the path classifications come from the authority instead of "
+             "the committed public projection",
     )
     parser.add_argument("--json", action="store_true", help="emit the inventory as JSON")
     parser.add_argument(
         "--check", action="store_true",
-        help="exit non-zero when any gap remains (an admission inventory, not a merge gate)",
+        help="disposition ratchet: fail closed if an upstream-derived production path lacks a "
+             "roadmap disposition and is not in the reviewed baseline (does not check record "
+             "coverage; use --check-records for that)",
+    )
+    parser.add_argument(
+        "--check-records", action="store_true",
+        help="record-coverage gate: exit non-zero while any tracked public path has no exact "
+             "trusted record (an admission inventory, not a merge gate)",
     )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.check and args.check_records:
+        # The two gates report separately; combining them would let the first verdict
+        # hide the second, so run them as two invocations.
+        print("provenance_record_gap: --check and --check-records are separate gates; "
+              "run them as two invocations", file=sys.stderr)
+        return 2
 
     repo = args.repo.resolve()
     source = "committed public ledger (projection of the private authority)"
     covered = None
+    trusted_classifications = None
     if args.trusted_ledger is not None:
         covered = exact_paths_from_trusted_ledger(args.trusted_ledger)
+        trusted_classifications = classifications_from_trusted_ledger(args.trusted_ledger)
         source = "trusted authority (--trusted-ledger)"
 
     gaps = record_gaps(repo=repo, covered=covered)
@@ -284,7 +551,41 @@ def main(argv: list[str] | None = None) -> int:
         if gaps:
             print("\nBatch admission: one trusted record covering all of these paths clears them "
                   "together; per-path records are equally acceptable and are the stronger form.")
-    return 1 if (args.check and gaps) else 0
+
+    if args.check:
+        validate_baseline(KNOWN_DISPOSITION_GAPS)
+        unlisted, stale = check_disposition_gaps(
+            disposition_gaps(repo=repo, trusted_classifications=trusted_classifications),
+            baseline=KNOWN_DISPOSITION_GAPS)
+        if unlisted or stale:
+            if unlisted:
+                print(
+                    f"provenance_record_gap: FAIL -- {len(unlisted)} upstream-derived production path(s) "
+                    f"have no roadmap disposition:",
+                    file=sys.stderr,
+                )
+                for path in unlisted:
+                    print(
+                        f"  {path} (status=missing; add owner group and disposition to {INDEPENDENCE_PLAN_PATH})",
+                        file=sys.stderr,
+                    )
+            if stale:
+                print(
+                    f"provenance_record_gap: FAIL -- {len(stale)} baseline entry/entries are stale "
+                    f"(resolved; remove from baseline):",
+                    file=sys.stderr,
+                )
+                for path in stale:
+                    print(f"  {path}", file=sys.stderr)
+            return 1
+        print(f"provenance_record_gap: PASS -- no unlisted upstream-derived production gaps without "
+              f"roadmap disposition ({len(KNOWN_DISPOSITION_GAPS)} known gap(s) in the reviewed baseline)")
+        return 0
+
+    if args.check_records:
+        return 1 if gaps else 0
+
+    return 0
 
 
 if __name__ == "__main__":
