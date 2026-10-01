@@ -56,6 +56,14 @@ repos:
     rev: 81aff7a638638aae3a659845d089043e1d8fe9ac # v1.9.0
     hooks:
       - id: betterleaks
+        # Directory mode over the hook's file list. pre-commit stashes unstaged
+        # changes before hooks run, so these files hold exactly the staged
+        # content. The upstream entry uses git mode, which exports
+        # GIT_CONFIG_GLOBAL=NUL; Git for Windows only special-cases lowercase
+        # "nul", so every git call failed and the hook scanned nothing on
+        # Windows. Hosted CI still scans reachable history in git mode.
+        entry: betterleaks dir --redact --verbose
+        pass_filenames: true
         stages: [pre-commit, pre-push]
 
   - repo: local

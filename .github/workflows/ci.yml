@@ -96,12 +96,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The pinned Betterleaks pre-commit hook scans the staged diff. Build an
-          # empty-index diff so this CI step covers every tracked file in the
-          # current revision rather than only files changed by this PR.
-          git read-tree --empty
-          git add -A
-          trap 'git reset --mixed HEAD >/dev/null 2>&1 || true' EXIT
+          # The pinned Betterleaks hook runs in directory mode over the files it
+          # is given, so --all-files scans every tracked file in this revision.
           pre-commit run betterleaks --all-files --show-diff-on-failure
 
       - name: Locate the pinned Betterleaks binary
